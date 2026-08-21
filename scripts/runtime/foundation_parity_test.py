@@ -60,6 +60,49 @@ class FoundationParityParserTest(unittest.TestCase):
 
         self.assertEqual(["base", "mid"], entries[2]["public"])
 
+    def test_extracts_macros_and_dependencies_for_complete_inventory(self):
+        source = """
+        (ns tahto.example
+          (:require [tahto.base :as base] [external.util :as util]))
+        (defmacro when-ready [value] value)
+        (defn run [value] (base/identity value))
+        """
+
+        self.assertEqual(["when-ready"], parity.macro_surface(source))
+        self.assertEqual(
+            ["external.util", "tahto.base"],
+            parity.required_namespaces(source),
+        )
+
+    def test_dependency_components_and_ranks_are_stable(self):
+        graph = {
+            "demo.api": ["demo.mid"],
+            "demo.mid": ["demo.base"],
+            "demo.base": ["demo.mid"],
+        }
+
+        components, owners, ranks = parity.dependency_components(graph)
+
+        self.assertEqual([["demo.api"], ["demo.base", "demo.mid"]], components)
+        self.assertEqual(0, ranks[owners["demo.base"]])
+        self.assertEqual(1, ranks[owners["demo.api"]])
+
+    def test_maps_reference_tests_to_target_tests(self):
+        family = {
+            "source_root": "src/tahto",
+            "reference_test_roots": ["test/tahto"],
+            "target_test_root": "core/lib/test-lang/lang",
+        }
+
+        self.assertEqual(
+            ["test/tahto/model/example_test.clj"],
+            parity.reference_test_candidates("src/tahto/model/example.clj", family),
+        )
+        self.assertEqual(
+            "core/lib/test-lang/lang/model/example_test.hal",
+            parity.target_test_path("src/tahto/model/example.clj", family),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

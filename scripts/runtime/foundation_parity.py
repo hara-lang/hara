@@ -22,6 +22,7 @@ from typing import Iterable
 REPOSITORY = Path(__file__).resolve().parents[2]
 CONFIG_PATH = REPOSITORY / "core/spec/foundation-parity.json"
 SNAPSHOT_PATH = REPOSITORY / "core/spec/foundation-parity-baseline.json"
+INVENTORY_PATH = REPOSITORY / "core/spec/foundation-parity-inventory.json"
 TOKEN = re.compile(r"[^\s\[\](){}\";,]+")
 NS_FORM = re.compile(r"^\(\s*ns\+?\s+([^\s\[\](){}\";,]+)")
 DEF_FORM = re.compile(r"^\(\s*(def[^\s\[\](){}\";,]*)\s+")
@@ -42,6 +43,16 @@ def run_git(repository: Path, *args: str) -> str:
     if result.returncode:
         raise RuntimeError(result.stderr.strip() or "git command failed")
     return result.stdout
+
+
+def git_path_exists(repository: Path, commit: str, path: str) -> bool:
+    result = subprocess.run(
+        ["git", "-C", str(repository), "cat-file", "-e", f"{commit}:{path}"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
 
 
 def top_level_forms(source: str) -> Iterable[str]:
@@ -221,6 +232,248 @@ def source_paths(reference: Path, commit: str, roots: list[dict]) -> list[str]:
         *(item["source_root"] for item in roots),
     )
     return sorted(path for path in output.splitlines() if path.endswith(".clj"))
+
+
+def _configured_roots(family: dict, key: str) -> list[str]:
+    roots = family.get(key)
+    if roots is None:
+        root = family.get(key.removesuffix("s"))
+        roots = [root] if root else []
+    if isinstance(roots, str):
+        roots = [roots]
+    return [root.rstrip("/") for root in roots]
+
+
+def reference_test_candidates(path: str, family: dict) -> list[str]:
+    """Return configured Foundation test locations for a source path."""
+    source_root = family["source_root"].rstrip("/") + "/"
+    if not path.startswith(source_root):
+        raise RuntimeError(f"source path is outside its family: {path}")
+    relative = path[len(source_root) :]
+    relative = relative[:-4] + "_test.clj"
+    return [f"{root}/{relative}" for root in _configured_roots(family, "reference_test_roots")]
+
+
+def target_test_path(path: str, family: dict) -> str | None:
+    """Map a Foundation source path to its target language test path."""
+    target_root = family.get("target_test_root")
+    if not target_root:
+        return None
+    source_root = family["source_root"].rstrip("/") + "/"
+    if not path.startswith(source_root):
+        raise RuntimeError(f"source path is outside its family: {path}")
+    relative = path[len(source_root) :]
+    relative = relative[:-4] + "_test.hal"
+    return target_root.rstrip("/") + "/" + relative
+
+
+def macro_surface(source: str) -> list[str]:
+    """Extract public macro names without confusing ordinary definitions."""
+    macros = set()
+    for form in top_level_forms(source):
+        match = re.match(r"^\(\s*defmacro(?:\.[^\s\[\](){}\";,]*)?\s+", form)
+        if not match:
+            continue
+        offset = skip_metadata(form, match.end())
+        name = TOKEN.match(form, offset)
+        if name and not name.group(0).endswith("-"):
+            macros.add(name.group(0))
+    return sorted(macros)
+
+
+def required_namespaces(source: str, known: set[str] | None = None) -> list[str]:
+    """Extract namespace dependencies from require/intern forms."""
+    dependencies: set[str] = set()
+    for form in top_level_forms(source):
+        operator = re.match(r"^\(\s*([^\s\[\](){}\";,]+)", form)
+        markers = [marker for marker in (":require", ":use", ":import") if marker in form]
+        if markers:
+            for marker in markers:
+                body = form.split(marker, 1)[1]
+                dependencies.update(match.group(1) for match in REQUIRE_ENTRY.finditer(body))
+        elif operator and operator.group(1) in {"require", "require-macros"}:
+            dependencies.update(match.group(1) for match in REQUIRE_ENTRY.finditer(form))
+        elif operator and operator.group(1) in INTERN_ALL:
+            dependencies.update(
+                token
+                for token in TOKEN.findall(form)
+                if "." in token and "/" not in token and not token.startswith(":")
+            )
+    if known is not None:
+        dependencies &= known
+    return sorted(dependencies)
+
+
+def dependency_graph(entries: list[dict]) -> dict[str, list[str]]:
+    """Build a deterministic graph from the complete source inventory."""
+    known = {entry["namespace"] for entry in entries if entry.get("namespace")}
+    return {
+        entry["namespace"]: required_namespaces(entry.get("source_blob", ""), known)
+        for entry in entries
+        if entry.get("namespace")
+    }
+
+
+def dependency_components(graph: dict[str, list[str]]) -> tuple[list[list[str]], dict[str, int], dict[int, int]]:
+    """Return deterministic SCCs, owners, and dependency ranks."""
+    index = 0
+    indexes: dict[str, int] = {}
+    lows: dict[str, int] = {}
+    stack: list[str] = []
+    active: set[str] = set()
+    components: list[list[str]] = []
+
+    def visit(node: str) -> None:
+        nonlocal index
+        indexes[node] = index
+        lows[node] = index
+        index += 1
+        stack.append(node)
+        active.add(node)
+        for dependency in graph.get(node, []):
+            if dependency not in indexes:
+                visit(dependency)
+                lows[node] = min(lows[node], lows[dependency])
+            elif dependency in active:
+                lows[node] = min(lows[node], indexes[dependency])
+        if lows[node] != indexes[node]:
+            return
+        group = []
+        while True:
+            member = stack.pop()
+            active.remove(member)
+            group.append(member)
+            if member == node:
+                break
+        components.append(sorted(group))
+
+    for node in sorted(graph):
+        if node not in indexes:
+            visit(node)
+    components.sort(key=lambda group: "|".join(group))
+    owners = {
+        namespace: number
+        for number, component in enumerate(components)
+        for namespace in component
+    }
+    requirements = {
+        number: sorted(
+            {
+                owners[dependency]
+                for namespace in component
+                for dependency in graph.get(namespace, [])
+                if owners[dependency] != number
+            }
+        )
+        for number, component in enumerate(components)
+    }
+    memo: dict[int, int] = {}
+
+    def rank(number: int) -> int:
+        if number not in memo:
+            dependencies = requirements[number]
+            memo[number] = 0 if not dependencies else 1 + max(rank(dep) for dep in dependencies)
+        return memo[number]
+
+    ranks = {number: rank(number) for number in requirements}
+    return components, owners, ranks
+
+
+def complete_inventory(config: dict, reference: Path) -> dict:
+    """Extract source/test blobs and dependency order from the Foundation tree."""
+    commit = config["reference"]["commit"]
+    resolved = run_git(reference, "rev-parse", f"{commit}^{{commit}}").strip()
+    if resolved != commit:
+        raise RuntimeError(f"reference commit resolved to {resolved}, expected {commit}")
+
+    entries = []
+    for path in source_paths(reference, commit, config["families"]):
+        source = run_git(reference, "show", f"{commit}:{path}")
+        namespace, public, intern_all = namespace_surface(source)
+        family = family_for_path(path, config["families"])
+        test_path = next(
+            (
+                candidate
+                for candidate in reference_test_candidates(path, family)
+                if git_path_exists(reference, commit, candidate)
+            ),
+            None,
+        )
+        test_source = run_git(reference, "show", f"{commit}:{test_path}") if test_path else ""
+        entry = {
+            "id": namespace or f"@file:{path}",
+            "family": family["id"],
+            "namespace": namespace,
+            "source_path": path,
+            "source_blob": source,
+            "source_sha256": sha256(source),
+            "public_symbols": public,
+            "macros": macro_surface(source),
+            "intern_all": intern_all,
+            "dependencies": required_namespaces(source),
+            "reference_test_path": test_path,
+            "reference_test_blob": test_source if test_path else None,
+            "reference_test_sha256": sha256(test_source) if test_path else None,
+            "reference_test_namespace": namespace_surface(test_source)[0] if test_path else None,
+            "reference_test_public_symbols": namespace_surface(test_source)[1] if test_path else [],
+            "reference_test_macros": macro_surface(test_source) if test_path else [],
+            "target_namespace": mapped_namespace(namespace, family) if namespace else None,
+            "target_test_path": target_test_path(path, family),
+        }
+        entries.append(entry)
+
+    known = {entry["namespace"] for entry in entries if entry.get("namespace")}
+    for entry in entries:
+        entry["external_dependencies"] = sorted(
+            set(entry["dependencies"]) - known
+        )
+
+    targets = target_index(config)
+    for entry in entries:
+        target = targets.get(entry.get("target_namespace"))
+        target_path = target["path"] if target else None
+        target_test = (
+            REPOSITORY / entry["target_test_path"]
+            if entry.get("target_test_path")
+            else None
+        )
+        entry["target_source_path"] = target_path
+        entry["target_source_sha256"] = target["sha256"] if target else None
+        entry["target_test_present"] = bool(target_test and target_test.is_file())
+        entry["target_test_sha256"] = (
+            sha256(target_test.read_text(encoding="utf-8"))
+            if target_test and target_test.is_file()
+            else None
+        )
+
+    graph = dependency_graph(entries)
+    components, owners, ranks = dependency_components(graph)
+    for entry in entries:
+        namespace = entry.get("namespace")
+        if namespace is None:
+            continue
+        owner = owners[namespace]
+        entry["dependency/component"] = components[owner]
+        entry["dependency/rank"] = ranks[owner]
+        entry["dependency/cycle"] = len(components[owner]) > 1 or namespace in graph[namespace]
+
+    entries.sort(key=lambda entry: (entry.get("dependency/rank", 0), entry["id"]))
+    digest_input = {
+        "reference_commit": commit,
+        "namespaces": entries,
+        "dependency_graph": graph,
+        "components": components,
+        "ranks": ranks,
+    }
+    return {
+        "schema_version": 2,
+        "reference_commit": commit,
+        "inventory_sha256": sha256(json.dumps(digest_input, sort_keys=True, separators=(",", ":"))),
+        "dependency_graph": graph,
+        "components": components,
+        "ranks": ranks,
+        "namespaces": entries,
+    }
 
 
 def family_for_path(path: str, roots: list[dict]) -> dict:
@@ -447,10 +700,12 @@ def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser()
     command.add_argument("--config", type=Path, default=CONFIG_PATH)
     command.add_argument("--snapshot", type=Path, default=SNAPSHOT_PATH)
+    command.add_argument("--inventory", type=Path, default=INVENTORY_PATH)
     command.add_argument("--reference", type=Path, default=default_reference)
     command.add_argument("--ignatius", type=Path, default=default_ignatius)
     command.add_argument("--v2", type=Path, default=default_v2)
     command.add_argument("--refresh-snapshot", action="store_true")
+    command.add_argument("--refresh-inventory", action="store_true")
     command.add_argument("--strict", action="store_true")
     command.add_argument("--downstream-strict", action="store_true")
     command.add_argument("--json", action="store_true")
@@ -461,6 +716,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
         config = load_json(args.config)
+        if args.refresh_inventory:
+            inventory = complete_inventory(config, args.reference)
+            args.inventory.write_text(
+                json.dumps(inventory, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            print(f"wrote {args.inventory.relative_to(REPOSITORY)}")
         if args.refresh_snapshot:
             consumers = {
                 "ignatius": args.ignatius / "db",
