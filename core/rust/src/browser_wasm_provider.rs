@@ -250,20 +250,38 @@ fn invoke_memory(
     }
     let mut slot = session.borrow_mut();
     let mut session = slot.take().ok_or("native/import-not-started")?;
-    let result = invoke_memory_inner(plan, function_plan, &mut session, arguments);
+    let mut release_always = BTreeSet::new();
+    let mut release_on_failure = BTreeSet::new();
+    let mut call_completed = false;
+    let result = invoke_memory_inner(
+        plan,
+        function_plan,
+        &mut session,
+        arguments,
+        &mut release_always,
+        &mut release_on_failure,
+        &mut call_completed,
+    );
+    if !call_completed {
+        release_always.extend(release_on_failure);
+    }
+    let cleanup = release_memory(plan, &session, &release_always);
+    let result = combine_memory_outcome(result, cleanup);
     *slot = Some(session);
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 fn invoke_memory_inner(
     plan: &MemoryBindingPlan,
     function_plan: &crate::wasm_binding::MemoryFunctionPlan,
     session: &mut BrowserMemorySession,
     arguments: &[Value],
+    release_always: &mut BTreeSet<i32>,
+    release_on_failure: &mut BTreeSet<i32>,
+    call_completed: &mut bool,
 ) -> Result<Value, String> {
     let raw_arguments = js_sys::Array::new();
-    let mut release_always = BTreeSet::new();
-    let mut release_on_failure = BTreeSet::new();
     let mut total_input_bytes = 0usize;
     let mut total_copy_bytes = 0usize;
 
@@ -355,26 +373,21 @@ fn invoke_memory_inner(
                 js_error(error)
             )
         });
-    let mut call_completed = false;
     let outcome = match raw_result {
         Ok(raw_result) => {
-            call_completed = true;
+            *call_completed = true;
             lift_memory_result(
                 &function_plan.name,
                 &function_plan.returns,
                 raw_result,
                 session,
-                &mut release_always,
+                release_always,
                 &mut total_copy_bytes,
             )
         }
         Err(error) => Err(error),
     };
-    if !call_completed {
-        release_always.extend(release_on_failure);
-    }
-    let cleanup = release_memory(plan, session, &release_always);
-    combine_memory_outcome(outcome, cleanup)
+    outcome
 }
 
 fn scalar_argument(
