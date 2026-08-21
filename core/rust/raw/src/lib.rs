@@ -4,6 +4,13 @@ mod core;
 mod clock;
 #[path = "../../src/file.rs"]
 pub mod file;
+#[path = "../../src/file/interface.rs"]
+pub mod filesystem;
+#[path = "../../src/runtime/filesystem_bridge.rs"]
+mod filesystem_bridge;
+#[path = "../../src/runtime/filesystem_adapter.rs"]
+mod filesystem_runtime;
+mod host_filesystem;
 #[path = "../../src/hta.rs"]
 mod hta;
 mod instrumentation;
@@ -29,7 +36,7 @@ mod task;
 mod vm;
 
 use core::{EvalFiber, EvalFiberState, Promise, PromiseRejection, PromiseState, Value};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
@@ -129,7 +136,9 @@ struct Session {
     protocols: core::ProtocolRegistry,
     macros: Rc<RefCell<HashMap<(String, String), Rc<core::Function>>>>,
     generated_configs: HashMap<String, kernel::GeneratedNamespaceConfig>,
-    next_call: u64,
+    next_call: Rc<Cell<u64>>,
+    pending_calls:
+        Rc<RefCell<Vec<(u64, u64, Promise, String, String, Vec<Value>)>>>,
     events: Rc<RefCell<VecDeque<Vec<u8>>>>,
     ready: Rc<RefCell<VecDeque<(u64, PromiseState)>>>,
     calls: HashMap<u64, (u64, Promise)>,
@@ -325,7 +334,8 @@ impl Session {
                 "user".into(),
                 kernel::GeneratedNamespaceConfig::defaults(),
             )]),
-            next_call: 1,
+            next_call: Rc::new(Cell::new(1)),
+            pending_calls: Rc::new(RefCell::new(Vec::new())),
             events,
             ready: Rc::new(RefCell::new(VecDeque::new())),
             calls: HashMap::new(),
@@ -432,36 +442,34 @@ impl Session {
         enqueue_event(&self.events, value);
     }
     fn host_handler(
-        &mut self,
-        _task: u64,
-    ) -> (
-        Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>>,
-        Rc<RefCell<Vec<(u64, Promise, String, String, Vec<Value>)>>>,
-        Rc<RefCell<u64>>,
-    ) {
-        let pending = Rc::new(RefCell::new(Vec::new()));
-        let queue = pending.clone();
-        let next = Rc::new(RefCell::new(self.next_call));
-        let ids = next.clone();
-        let handler = Rc::new(move |service: String, method: String, args: Vec<Value>| {
-            let call = *ids.borrow();
-            *ids.borrow_mut() += 1;
-            let promise = Promise::new();
-            queue
-                .borrow_mut()
-                .push((call, promise.clone(), service, method, args));
-            Ok(Value::Promise(promise))
-        });
-        (handler, pending, next)
-    }
-    fn collect_calls(
-        &mut self,
+        &self,
         task: u64,
-        pending: Rc<RefCell<Vec<(u64, Promise, String, String, Vec<Value>)>>>,
-        next: Rc<RefCell<u64>>,
-    ) {
-        self.next_call = *next.borrow();
-        for (call, promise, service, method, args) in pending.borrow_mut().drain(..) {
+    ) -> Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>> {
+        let queue = self.pending_calls.clone();
+        let ids = self.next_call.clone();
+        Rc::new(move |service: String, method: String, args: Vec<Value>| {
+            let call = ids.get();
+            ids.set(call.saturating_add(1));
+            let promise = Promise::new();
+            queue.borrow_mut().push((
+                task,
+                call,
+                promise.clone(),
+                service,
+                method,
+                args,
+            ));
+            Ok(Value::Promise(promise))
+        })
+    }
+
+    fn collect_calls(&mut self) {
+        let pending = self
+            .pending_calls
+            .borrow_mut()
+            .drain(..)
+            .collect::<Vec<_>>();
+        for (task, call, promise, service, method, args) in pending {
             let value = Value::Vector(
                 vec![
                     Value::Number(2),
@@ -644,12 +652,10 @@ impl Session {
         source: &str,
         bindings: Vec<Value>,
     ) -> Result<(), String> {
-        let (handler, pending, next) = self.host_handler(task);
-        let file_provider = self.mount_id.map(|_| {
-            Rc::new(HostFileProvider {
-                handler: handler.clone(),
-            }) as Rc<dyn core::FileProvider>
-        });
+        let handler = self.host_handler(task);
+        let file_provider = self
+            .mount_id
+            .map(|_| host_filesystem::provider(handler.clone()));
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         let macros = self.macros.clone();
@@ -684,7 +690,7 @@ impl Session {
                 })
             })
         })?;
-        self.collect_calls(task, pending, next);
+        self.collect_calls();
         self.drive(task, fiber);
         Ok(())
     }
@@ -699,12 +705,10 @@ impl Session {
         let mut forms = self.prepare_forms(forms)?;
         forms.push(kernel::Form::Bool(true));
         let environment = self.env.clone();
-        let (handler, pending, next) = self.host_handler(task);
-        let file_provider = self.mount_id.map(|_| {
-            Rc::new(HostFileProvider {
-                handler: handler.clone(),
-            }) as Rc<dyn core::FileProvider>
-        });
+        let handler = self.host_handler(task);
+        let file_provider = self
+            .mount_id
+            .map(|_| host_filesystem::provider(handler.clone()));
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         let macros = self.macros.clone();
@@ -729,13 +733,13 @@ impl Session {
                 })
             })
         })?;
-        self.collect_calls(task, pending, next);
+        self.collect_calls();
         self.drive(task, fiber);
         Ok(())
     }
     #[cfg(feature = "bytecode-vm")]
     fn start_vm_fiber(&mut self, task: u64, source: &str) -> Result<(), String> {
-        let (handler, pending, next) = self.host_handler(task);
+        let handler = self.host_handler(task);
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         let program = vm::compile_source_with(source, &namespaces)
@@ -746,7 +750,7 @@ impl Session {
                 core::with_host_calls(handler, || vm::VmFiber::start(program))
             })
         });
-        self.collect_calls(task, pending, next);
+        self.collect_calls();
         self.drive_vm(task, fiber);
         Ok(())
     }
@@ -758,7 +762,7 @@ impl Session {
             .get(&program)
             .cloned()
             .ok_or_else(|| format!("vm/program-missing: {program}"))?;
-        let (handler, pending, next) = self.host_handler(task);
+        let handler = self.host_handler(task);
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         let fiber = core::with_namespace_registry(&namespaces, || {
@@ -766,7 +770,7 @@ impl Session {
                 core::with_host_calls(handler, || vm::VmFiber::start(program))
             })
         });
-        self.collect_calls(task, pending, next);
+        self.collect_calls();
         self.drive_vm(task, fiber);
         Ok(())
     }
@@ -776,7 +780,7 @@ impl Session {
         let Some(mut fiber) = self.vm_fibers.remove(&task) else {
             return;
         };
-        let (handler, pending, next) = self.host_handler(task);
+        let handler = self.host_handler(task);
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         core::with_namespace_registry(&namespaces, || {
@@ -786,7 +790,7 @@ impl Session {
                 });
             });
         });
-        self.collect_calls(task, pending, next);
+        self.collect_calls();
         self.drive_vm(task, fiber);
     }
 
@@ -846,12 +850,10 @@ impl Session {
         let Some(mut fiber) = self.fibers.remove(&task) else {
             return;
         };
-        let (handler, pending, next) = self.host_handler(task);
-        let file_provider = self.mount_id.map(|_| {
-            Rc::new(HostFileProvider {
-                handler: handler.clone(),
-            }) as Rc<dyn core::FileProvider>
-        });
+        let handler = self.host_handler(task);
+        let file_provider = self
+            .mount_id
+            .map(|_| host_filesystem::provider(handler.clone()));
         let namespaces = self.namespaces.clone();
         let protocols = self.protocols.clone();
         let macros = self.macros.clone();
@@ -876,7 +878,7 @@ impl Session {
                 });
             });
         });
-        self.collect_calls(task, pending, next);
+        self.collect_calls();
         self.drive(task, fiber);
     }
     fn drive(&mut self, task: u64, fiber: EvalFiber) {
@@ -920,6 +922,22 @@ impl Session {
         }
     }
     fn drain_ready(&mut self) {
+        // Provider-neutral filesystem futures wrap host Promises. Poll each
+        // suspended outer Promise before consuming the ready queue so a host
+        // settlement can drive the shared FilesystemRuntimeAdapter exactly
+        // once without retaining a private FileProvider settlement path.
+        for fiber in self.fibers.values() {
+            if let Some(promise) = fiber.pending() {
+                promise.state();
+            }
+        }
+        for promise in self.tasks.values() {
+            promise.state();
+        }
+        // Host services may be invoked by the poll above, after the evaluator's
+        // original synchronous collection window. Publish those deferred calls
+        // through the same canonical HTA event and Session-owned call table.
+        self.collect_calls();
         loop {
             let next = { self.ready.borrow_mut().pop_front() };
             match next {
@@ -934,207 +952,6 @@ impl Session {
                 None => break,
             }
         }
-    }
-}
-
-struct HostFileProvider {
-    handler: Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>>,
-}
-
-impl HostFileProvider {
-    fn promise(
-        &self,
-        method: &str,
-        arguments: Vec<Value>,
-    ) -> Result<Promise, core::FileError> {
-        match (self.handler)("file".into(), method.into(), arguments) {
-            Ok(Value::Promise(promise)) => Ok(promise),
-            Ok(_) => Err(core::FileError::Io(
-                "file host call did not return a promise".into(),
-            )),
-            Err(error) => Err(core::FileError::Io(error)),
-        }
-    }
-}
-
-impl core::FileProvider for HostFileProvider {
-    fn read_bytes(&self, _path: &str) -> Result<Vec<u8>, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn write_bytes(
-        &self,
-        _path: &str,
-        _bytes: Vec<u8>,
-        _options: core::WriteOptions,
-    ) -> Result<String, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn exists_value(&self, _path: &str) -> Result<bool, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn stat_entry(&self, _path: &str) -> Result<core::FileEntry, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn entries_values(&self, _path: &str) -> Result<Vec<core::FileEntry>, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn mkdir_path(
-        &self,
-        _path: &str,
-        _options: core::MkdirOptions,
-    ) -> Result<String, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn delete_path(
-        &self,
-        _path: &str,
-        _options: core::DeleteOptions,
-    ) -> Result<String, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn copy_path(
-        &self,
-        _source: &str,
-        _target: &str,
-        _options: core::CopyOptions,
-    ) -> Result<String, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn move_path(
-        &self,
-        _source: &str,
-        _target: &str,
-        _options: core::MoveOptions,
-    ) -> Result<String, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn temp_file_path(
-        &self,
-        _parent: &str,
-        _options: core::TempFileOptions,
-    ) -> Result<String, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn temp_directory_path(
-        &self,
-        _parent: &str,
-        _options: core::TempDirectoryOptions,
-    ) -> Result<String, core::FileError> {
-        Err(core::FileError::Unsupported)
-    }
-
-    fn read(&self, path: &str) -> Result<Promise, core::FileError> {
-        self.promise("read", vec![Value::String(path.into())])
-    }
-
-    fn write(&self, path: &str, bytes: Vec<u8>) -> Result<Promise, core::FileError> {
-        self.promise(
-            "write",
-            vec![Value::String(path.into()), Value::Bytes(bytes)],
-        )
-    }
-
-    fn write_with_options(
-        &self,
-        path: &str,
-        bytes: Vec<u8>,
-        _options: core::WriteOptions,
-    ) -> Result<Promise, core::FileError> {
-        self.write(path, bytes)
-    }
-
-    fn exists(&self, path: &str) -> Result<Promise, core::FileError> {
-        self.promise("exists", vec![Value::String(path.into())])
-    }
-
-    fn stat(&self, path: &str) -> Result<Promise, core::FileError> {
-        self.promise("stat", vec![Value::String(path.into())])
-    }
-
-    fn entries(&self, path: &str) -> Result<Promise, core::FileError> {
-        self.promise("entries", vec![Value::String(path.into())])
-    }
-
-    fn list(&self, path: &str) -> Result<Promise, core::FileError> {
-        self.promise("list", vec![Value::String(path.into())])
-    }
-
-    fn walk(&self, path: &str) -> Result<Promise, core::FileError> {
-        self.promise("walk", vec![Value::String(path.into())])
-    }
-
-    fn mkdir(&self, path: &str) -> Result<Promise, core::FileError> {
-        self.promise("mkdir", vec![Value::String(path.into())])
-    }
-
-    fn mkdir_with_options(
-        &self,
-        path: &str,
-        _options: core::MkdirOptions,
-    ) -> Result<Promise, core::FileError> {
-        self.mkdir(path)
-    }
-
-    fn delete(&self, path: &str) -> Result<Promise, core::FileError> {
-        self.promise("delete", vec![Value::String(path.into())])
-    }
-
-    fn delete_with_options(
-        &self,
-        path: &str,
-        _options: core::DeleteOptions,
-    ) -> Result<Promise, core::FileError> {
-        self.delete(path)
-    }
-
-    fn copy(
-        &self,
-        source: &str,
-        target: &str,
-        _options: core::CopyOptions,
-    ) -> Result<Promise, core::FileError> {
-        self.promise(
-            "copy",
-            vec![Value::String(source.into()), Value::String(target.into())],
-        )
-    }
-
-    fn move_entry(
-        &self,
-        source: &str,
-        target: &str,
-        _options: core::MoveOptions,
-    ) -> Result<Promise, core::FileError> {
-        self.promise(
-            "move",
-            vec![Value::String(source.into()), Value::String(target.into())],
-        )
-    }
-
-    fn temp_file(
-        &self,
-        parent: &str,
-        _options: core::TempFileOptions,
-    ) -> Result<Promise, core::FileError> {
-        self.promise("temp-file", vec![Value::String(parent.into())])
-    }
-
-    fn temp_directory(
-        &self,
-        parent: &str,
-        _options: core::TempDirectoryOptions,
-    ) -> Result<Promise, core::FileError> {
-        self.promise("temp-directory", vec![Value::String(parent.into())])
     }
 }
 

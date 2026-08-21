@@ -15,8 +15,7 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-pub(crate) type HostHandler =
-    Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>>;
+pub(crate) type HostHandler = Rc<dyn Fn(String, String, Vec<Value>) -> Result<Value, String>>;
 
 pub(crate) fn provider(handler: HostHandler) -> Rc<dyn FileProvider> {
     let handle = FilesystemHandle::new(HostFilesystem::new(handler));
@@ -175,10 +174,7 @@ impl IFilesystem for HostFilesystem {
         options: DeleteOptions,
         mutation: FilesystemMutationContext,
     ) -> FilesystemFuture<'a, FilesystemMutation> {
-        let values = mutation_options(
-            [("missing-ok?", Value::Bool(options.missing_ok))],
-            mutation,
-        );
+        let values = mutation_options([("missing-ok?", Value::Bool(options.missing_ok))], mutation);
         self.invoke(
             context,
             "delete",
@@ -199,10 +195,7 @@ impl IFilesystem for HostFilesystem {
             [
                 ("replace?", Value::Bool(options.replace)),
                 ("parents?", Value::Bool(options.parents)),
-                (
-                    "preserve-modified?",
-                    Value::Bool(options.preserve_modified),
-                ),
+                ("preserve-modified?", Value::Bool(options.preserve_modified)),
             ],
             mutation,
         );
@@ -246,10 +239,7 @@ impl IFilesystem for HostFilesystem {
         )
     }
 
-    fn close<'a>(
-        &'a self,
-        context: FilesystemCallContext,
-    ) -> FilesystemFuture<'a, ()> {
+    fn close<'a>(&'a self, context: FilesystemCallContext) -> FilesystemFuture<'a, ()> {
         Box::pin(ready(context.check().map(|()| ())))
     }
 }
@@ -375,8 +365,8 @@ fn decode_entry(value: Value) -> Result<FilesystemEntry, FileError> {
     let modified_at = optional_number(&value, "modified-at")?;
     let extensions = field(&value, "extensions");
     let id = extensions.and_then(|value| optional_string(value, "file/id").ok().flatten());
-    let revision = extensions
-        .and_then(|value| optional_string(value, "file/revision").ok().flatten());
+    let revision =
+        extensions.and_then(|value| optional_string(value, "file/revision").ok().flatten());
     Ok(FilesystemEntry {
         path,
         name,
@@ -422,9 +412,7 @@ fn field<'a>(value: &'a Value, key: &str) -> Option<&'a Value> {
 fn required_string(value: &Value, key: &str, context: &str) -> Result<String, FileError> {
     match field(value, key) {
         Some(Value::String(value)) => Ok(value.clone()),
-        _ => Err(FileError::Io(format!(
-            "{context} :{key} must be a string"
-        ))),
+        _ => Err(FileError::Io(format!("{context} :{key} must be a string"))),
     }
 }
 
@@ -441,9 +429,7 @@ fn optional_string(value: &Value, key: &str) -> Result<Option<String>, FileError
 fn required_keyword(value: &Value, key: &str, context: &str) -> Result<String, FileError> {
     match field(value, key) {
         Some(Value::Keyword(value)) => Ok(value.as_str().into()),
-        _ => Err(FileError::Io(format!(
-            "{context} :{key} must be a keyword"
-        ))),
+        _ => Err(FileError::Io(format!("{context} :{key} must be a keyword"))),
     }
 }
 
@@ -662,10 +648,7 @@ mod tests {
         }));
 
         assert_eq!(
-            poll_ready(filesystem.read(
-                FilesystemCallContext::default(),
-                "/missing".into()
-            )),
+            poll_ready(filesystem.read(FilesystemCallContext::default(), "/missing".into())),
             Err(FileError::NotFound)
         );
     }
