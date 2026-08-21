@@ -94,6 +94,46 @@ fn representative_direct_callables_preserve_value_behavior() {
         call_value(satisfies, vec![ifn, identity]).unwrap(),
         Value::Bool(true)
     );
+
+    let boolean_predicate = direct_callable_value("boolean?").unwrap();
+    assert_eq!(
+        call_value(boolean_predicate.clone(), vec![Value::Bool(true)]).unwrap(),
+        Value::Bool(true)
+    );
+    assert_eq!(
+        call_value(boolean_predicate, vec![Value::Number(1)]).unwrap(),
+        Value::Bool(false)
+    );
+}
+
+#[test]
+fn specs_owned_direct_callable_bootstrap_fixture_runs_before_foundation_source_loading() {
+    let registry = std::env::var_os("HARA_SPECS_REGISTRY")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("..")
+                .join("hara-specs-registry")
+        });
+    let path = registry
+        .join("01-lang/004-foundation/draft/conformance/fixtures/direct_callable_bootstrap.hal");
+    let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "authoritative direct-callable bootstrap fixture is required at {}: {error}",
+            path.display()
+        )
+    });
+
+    let mut runtime = crate::Runtime::core();
+    let report = runtime
+        .eval_text(&(source + "\n(direct-callable-bootstrap-report)"))
+        .unwrap();
+    assert_eq!(
+        report,
+        "[true false :std.native.Promise :std.native.Promise]"
+    );
 }
 
 #[test]
