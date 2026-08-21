@@ -29,7 +29,7 @@ final class WebdavFilesystem implements IFilesystem {
   interface Client extends AutoCloseable {
     boolean authenticated();
 
-    default boolean hostKeyVerified() {
+    default boolean transportVerified() {
       return true;
     }
 
@@ -166,7 +166,7 @@ final class WebdavFilesystem implements IFilesystem {
             new IllegalArgumentException(
                 "WebDAV credential reference did not resolve to a trusted WebDAV client"));
       }
-      if (!client.authenticated() || !client.hostKeyVerified()) {
+      if (!client.authenticated() || !client.transportVerified()) {
         return CompletableFuture.failedFuture(
             failure(
                 "authentication-failed",

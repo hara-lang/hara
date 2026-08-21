@@ -131,7 +131,7 @@ public class WebdavFilesystemTest {
     }
 
     void setHostKeyVerified(boolean verified) {
-      client.hostKeyVerified = verified;
+      client.transportVerified = verified;
     }
 
     @Override
@@ -139,7 +139,7 @@ public class WebdavFilesystemTest {
 
     private final class Client implements WebdavFilesystem.Client {
       boolean authenticated = true;
-      boolean hostKeyVerified = true;
+      boolean transportVerified = true;
 
       @Override
       public boolean authenticated() {
@@ -147,8 +147,8 @@ public class WebdavFilesystemTest {
       }
 
       @Override
-      public boolean hostKeyVerified() {
-        return hostKeyVerified;
+      public boolean transportVerified() {
+        return transportVerified;
       }
 
       @Override

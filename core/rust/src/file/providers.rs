@@ -654,7 +654,7 @@ impl GoogleDriveFilesystem {
         display: impl Into<String>,
         read_only: bool,
     ) -> Result<Self, FileError> {
-        require_text(root_id.into(), "Google Drive root id")?;
+        let root_id = require_text(root_id.into(), "Google Drive root id")?;
         Ok(Self {
             core: RemoteFilesystem::new(
                 FilesystemProviderKind::GoogleDrive,
@@ -670,6 +670,7 @@ impl GoogleDriveFilesystem {
                 [
                     ("provider/workspace-documents", "unsupported".into()),
                     ("provider/shared-drive?", "false".into()),
+                    ("provider/root-id", root_id),
                 ],
             )?,
         })
@@ -701,8 +702,8 @@ impl S3Filesystem {
         display: impl Into<String>,
         read_only: bool,
     ) -> Result<Self, FileError> {
-        require_bucket(bucket.into())?;
-        validate_prefix(prefix.into())?;
+        let bucket = require_bucket(bucket.into())?;
+        let prefix = validate_prefix(prefix.into())?;
         Ok(Self {
             core: RemoteFilesystem::new(
                 FilesystemProviderKind::S3,
@@ -719,6 +720,8 @@ impl S3Filesystem {
                 [
                     ("provider/virtual-directories?", "true".into()),
                     ("provider/atomic-move?", "false".into()),
+                    ("provider/bucket", bucket),
+                    ("provider/prefix", prefix),
                 ],
             )?,
         })
@@ -1112,6 +1115,10 @@ mod tests {
                 .get("provider/root-scoped?"),
             Some(&"true".to_string())
         );
+        assert_eq!(
+            drive.core.descriptor.extensions().get("provider/root-id"),
+            Some(&"drive-root".to_string())
+        );
 
         let s3 =
             S3Filesystem::from_client(client.clone(), "bucket", "prefix/", "S3", false).unwrap();
@@ -1119,6 +1126,14 @@ mod tests {
         assert_eq!(
             s3.core.descriptor.extensions().get("provider/atomic-move?"),
             Some(&"false".to_string())
+        );
+        assert_eq!(
+            s3.core.descriptor.extensions().get("provider/bucket"),
+            Some(&"bucket".to_string())
+        );
+        assert_eq!(
+            s3.core.descriptor.extensions().get("provider/prefix"),
+            Some(&"prefix".to_string())
         );
 
         let github = GitHubFilesystem::from_client(
