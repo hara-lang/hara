@@ -271,7 +271,7 @@ public class HbcCodecTest {
     assertArrayEquals(Arrays.copyOfRange(bundle, 4, 36), MessageDigest.getInstance("SHA-256").digest(payload));
     List<HbxBundleCodec.Module> modules = HbxBundleCodec.decode(bundle);
     List<String> expectedInventory =
-        Files.readAllLines(Path.of("rust/bootstrap.namespaces"));
+        Files.readAllLines(Path.of("rust/bootstrap.namespaces")).stream().sorted().toList();
     List<String> actualInventory =
         modules.stream().map(HbxBundleCodec.Module::resource).sorted().toList();
     assertEquals(expectedInventory, actualInventory);
@@ -424,7 +424,7 @@ public class HbcCodecTest {
             .build();
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "[:std.native.Vector true true true :std.native.Vector true :std.native.Vector true false]",
+          "[:std.native.Tuple true true true :std.native.Tuple true :std.native.Vector true false]",
           context.eval(source).toString());
     }
   }

@@ -292,7 +292,7 @@ pub(crate) fn apply_primitive(primitive: Primitive, arguments: &[Value]) -> Resu
             }
             Ok(Value::Bool(matches!(
                 arguments[0],
-                Value::Number(_) | Value::Float(_) | Value::BigInteger(_) | Value::Decimal(_)
+                Value::Number(_) | Value::Float(_) | Value::BigInteger(_)
             )))
         }
         Primitive::ArrayNew => Ok(Value::Array(Rc::new(RefCell::new(arguments.to_vec())))),

@@ -14,6 +14,7 @@ import hara.lang.protocol.ILookup;
 import hara.lang.protocol.IExInfo;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
+import hara.truffle.bytecode.HbcFormatException;
 import hara.truffle.bytecode.HbcProgram;
 import hara.truffle.bytecode.HbcProgram.Function;
 import hara.truffle.bytecode.HbcProgram.Instruction;
@@ -351,9 +352,6 @@ public final class HbcMachine {
         }
         case THROW -> {
           Object error = pop(stack);
-          if (!(error instanceof IExInfo)) {
-            throw new HaraException("throw expects an Exception value created by ex");
-          }
           if (error instanceof hara.lang.base.Ex.Info info) {
             HbcProgram.Position position = function.sourceMap().get(ip);
             info.recordThrow(
@@ -405,7 +403,8 @@ public final class HbcMachine {
   private static Object metadataValue(HbcProgram.MetadataValue metadata) {
     Object value = metadata.value();
     return switch (metadata.kind()) {
-      case NIL, BOOLEAN, NUMBER, FLOAT, BIG_INTEGER, DECIMAL, REGEX, STRING, KEYWORD, SYMBOL -> value;
+      case NIL, BOOLEAN, NUMBER, FLOAT, BIG_INTEGER, REGEX, STRING, KEYWORD, SYMBOL -> value;
+      case RESERVED_DECIMAL -> throw new HbcFormatException("reserved decimal metadata in bytecode");
       case CHARACTER -> {
         int codePoint = ((Number) value).intValue();
         yield Character.isBmpCodePoint(codePoint)

@@ -9,7 +9,6 @@ import java.io.ByteArrayOutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.regex.Pattern;
 import java.util.ArrayList;
@@ -41,7 +40,6 @@ public final class HtaValueCodec {
   private static final int F64 = 15;
   private static final int CHARACTER = 19;
   private static final int BIG_INTEGER = 20;
-  private static final int DECIMAL = 21;
   private static final int REGEX = 22;
   private static final int TUPLE = 23;
   private static final int CONS = 24;
@@ -111,9 +109,6 @@ public final class HtaValueCodec {
       writeInt(output, (Character) value);
     } else if (value instanceof BigInteger) {
       output.write(BIG_INTEGER);
-      writeText(output, value.toString());
-    } else if (value instanceof BigDecimal) {
-      output.write(DECIMAL);
       writeText(output, value.toString());
     } else if (value instanceof Pattern) {
       output.write(REGEX);
@@ -362,8 +357,6 @@ public final class HtaValueCodec {
               : new String(Character.toChars(codePoint));
         case BIG_INTEGER:
           return new BigInteger(text());
-        case DECIMAL:
-          return new BigDecimal(text());
         case REGEX:
           return Pattern.compile(text());
         case STRING:

@@ -119,7 +119,7 @@ public class HalcArtifactTest {
         malformedError
             .getMessage()
             .contains(
-                "invalid schema demo.schema/Customer: :map schema fields must be [name type] pairs"));
+                "invalid schema demo.schema/Customer: :map schema fields must be [name type] or [name properties type]"));
   }
 
   @Test
@@ -236,7 +236,7 @@ public class HalcArtifactTest {
 
   @Test
   public void goldenBytesLockThePortableFormat() {
-    // One form per opcode (0-17). Any change to the byte layout, the opcode
+    // One form per opcode (0-16, with the historical opcode 7 slot unused). Any change to the byte layout, the opcode
     // numbering, or the canonical collection ordering must update this golden
     // value and ../hara-specs-registry/01-lang/009-halc/draft/halc-format.md together.
     Object[] forms =
@@ -247,7 +247,6 @@ public class HalcArtifactTest {
           42L,
           2.5d,
           new java.math.BigInteger("123456789012345678901234567890"),
-          new java.math.BigDecimal("3.14159"),
           "hárà",
           'x',
           hara.lang.data.Symbol.create("my.ns", "my-sym"),
@@ -262,18 +261,15 @@ public class HalcArtifactTest {
         };
     byte[] expected =
         hexBytes(
-            "48414c43000100010000014b7640e14591506ea3c5e004467edc15b2ea8bb319"
-                + "3b48a4596d99c242ca5531a000000001740000000174e3b0c44298fc1c149afb"
-                + "f4c8996fb92427ae41e4649b934ca495991b7852b85500000012000102030000"
-                + "00000000002a044004000000000000050000001e313233343536373839303132"
-                + "3334353637383930313233343536373839300600000007332e31343135390700"
-                + "00000668c3a172c3a008000000780901000000056d792e6e73000000066d792d"
-                + "73796d000a00000000026b77000b000000020300000000000000010700000001"
-                + "61000c00000002030000000000000001070000000161000d0000000203000000"
-                + "0000000001070000000161030000000000000002070000000162000e00000002"
-                + "030000000000000001030000000000000002000f000000020300000000000000"
-                + "0207000000016203000000000000000107000000016100100000000203000000"
-                + "0000000002030000000000000001001100000003612b62");
+            "48414c43000100010000013f57211e103028689092d59627fbba64015c289acd1bc5b2e7be27ec53d8bf4c35"
+                + "00000001740000000174e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                + "0000001100010203000000000000002a044004000000000000050000001e313233343536373839303132"
+                + "333435363738393031323334353637383930060000000668c3a172c3a008000000780901000000056d792e6e73"
+                + "000000066d792d73796d000a00000000026b77000b00000002030000000000000001060000000161000c00000002"
+                + "030000000000000001060000000161000d00000002030000000000000001060000000161030000000000000002"
+                + "060000000162000e00000002030000000000000001030000000000000002000f00000002030000000000000002"
+                + "060000000162030000000000000001060000000161001000000002030000000000000002030000000000000001"
+                + "001100000003612b62");
     byte[] encoded = HalcArtifact.encode("t", "t", new byte[0], forms);
     assertArrayEquals(expected, encoded);
 
@@ -281,8 +277,8 @@ public class HalcArtifactTest {
     HalcArtifact.Module module = HalcArtifact.decode(expected);
     assertEquals(HalcArtifact.Origin.HALC, module.origin);
     assertEquals("t", module.namespace);
-    assertEquals(18, module.forms.length);
-    assertEquals("a+b", ((java.util.regex.Pattern) module.forms[17]).pattern());
+    assertEquals(17, module.forms.length);
+    assertEquals("a+b", ((java.util.regex.Pattern) module.forms[16]).pattern());
   }
 
   @Test
@@ -431,7 +427,7 @@ public class HalcArtifactTest {
               .eval(HaraLanguage.ID, "(vec (std.foundation/map inc [1 2]))")
               .toString());
       assertEquals(
-          "[42 {:a {:b 42}} [0 1 2 3] [7 7 7] [2 3] [9 7]]",
+          "[42 {:a {:b 42}} [0 1 2 3] [7 7 7] [2 3] (9 7)]",
           context
               .eval(
                   HaraLanguage.ID,

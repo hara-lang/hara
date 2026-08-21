@@ -59,7 +59,7 @@ public class StdFoundationTest {
   public void nativeTypesAreDescriptorsAndFoundationLibrariesAreHalWrappers() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).allowAllAccess(true).build()) {
       assertEquals(
-          "[\"#<native-type std.native.Maths>\" \"Maths\" \"std.native\" true 0.0 \"HARA\" \"HARA\" 255 255]",
+          "[\"#<native-type std.native.Maths>\" \"Maths\" \"std.native\" true (double 0.0) \"HARA\" \"HARA\" 255 255]",
           context
               .eval(
                   HaraLanguage.ID,
@@ -210,7 +210,7 @@ public class StdFoundationTest {
   public void basicMathHasThePortableRootSurfaceAndExplicitNumericBoundary() {
     try (Context context = Context.newBuilder(HaraLanguage.ID).build()) {
       assertEquals(
-          "[true true 0.0 1.0 0.0 0.0 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 2.0 8.0 3 1.0 3.0]",
+          "[true true (double 0.0) (double 1.0) (double 0.0) (double 0.0) (double 0.0) (double 0.0) (double 0.0) (double 0.0) (double 1.0) (double 0.0) (double 0.0) (double 0.0) (double 0.0) (double 1.0) (double 2.0) (double 8.0) 3 (double 1.0) (double 3.0)]",
           context
               .eval(
                   HaraLanguage.ID,

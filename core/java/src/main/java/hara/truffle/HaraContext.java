@@ -3312,7 +3312,6 @@ public final class HaraContext {
     String type;
     if (raw == null || raw == HaraNull.SINGLETON) type = "Nil";
     else if (raw instanceof HaraBigInteger || raw instanceof java.math.BigInteger) type = "Integer";
-    else if (raw instanceof HaraDecimal || raw instanceof java.math.BigDecimal) type = "Decimal";
     else if (raw instanceof Byte || raw instanceof Short || raw instanceof Integer || raw instanceof Long) type = "Integer";
     else if (raw instanceof Float || raw instanceof Double) type = "Float";
     else if (raw instanceof Character) type = "Character";

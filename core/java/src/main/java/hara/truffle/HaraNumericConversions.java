@@ -21,10 +21,6 @@ final class HaraNumericConversions {
         || value instanceof BigInteger;
   }
 
-  static boolean isDecimal(Object input) {
-    return numericValue(input) instanceof BigDecimal;
-  }
-
   static boolean fitsLong(Object input) {
     try {
       toLong(input);
@@ -58,7 +54,6 @@ final class HaraNumericConversions {
     Object value = numericValue(input);
     try {
       if (value instanceof BigInteger integer) return integer.longValueExact();
-      if (value instanceof BigDecimal decimal) return decimal.toBigInteger().longValueExact();
       if (value instanceof Byte
           || value instanceof Short
           || value instanceof Integer
@@ -140,7 +135,6 @@ final class HaraNumericConversions {
   private static BigInteger boundaryInteger(Object input) {
     Object value = numericValue(input);
     if (value instanceof BigInteger integer) return integer;
-    if (value instanceof BigDecimal decimal) return decimal.toBigIntegerExact();
     if (value instanceof Byte
         || value instanceof Short
         || value instanceof Integer
@@ -159,7 +153,6 @@ final class HaraNumericConversions {
   private static Object numericValue(Object input) {
     Object value = HaraBox.unwrap(input);
     if (value instanceof HaraBigInteger integer) return integer.value();
-    if (value instanceof HaraDecimal decimal) return decimal.value();
     return value;
   }
 

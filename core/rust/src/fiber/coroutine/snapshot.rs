@@ -685,7 +685,6 @@ fn value_kind(value: &Value) -> &'static str {
     match value {
         Value::Number(_) | Value::BigInteger(_) => "integer",
         Value::Float(_) => "float",
-        Value::Decimal(_) => "decimal",
         Value::Character(_) => "character",
         Value::Bool(_) => "boolean",
         Value::String(_) => "string",

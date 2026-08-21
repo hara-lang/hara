@@ -5,7 +5,6 @@ fn value_to_metadata(value: &Value) -> Result<MetadataValue, String> {
         Value::Number(value) => Ok(MetadataValue::Number(*value)),
         Value::Float(value) => Ok(MetadataValue::Float(*value)),
         Value::BigInteger(value) => Ok(MetadataValue::BigInteger(value.clone())),
-        Value::Decimal(value) => Ok(MetadataValue::Decimal(value.clone())),
         Value::Character(value) => Ok(MetadataValue::Character(*value)),
         Value::Regex(value) => Ok(MetadataValue::Regex(value.clone())),
         Value::Tagged(value) => Ok(MetadataValue::Tagged(
@@ -74,7 +73,6 @@ fn metadata_to_value(value: &MetadataValue) -> Result<Value, String> {
         MetadataValue::Number(value) => Ok(Value::Number(*value)),
         MetadataValue::Float(value) => Ok(Value::Float(*value)),
         MetadataValue::BigInteger(value) => Ok(Value::BigInteger(value.clone())),
-        MetadataValue::Decimal(value) => Ok(Value::Decimal(value.clone())),
         MetadataValue::Character(value) => Ok(Value::Character(*value)),
         MetadataValue::Regex(value) => Ok(Value::Regex(value.clone())),
         MetadataValue::Tagged(tag, value) => Ok(Value::Tagged(Box::new(PTaggedLiteral::new(
@@ -1229,7 +1227,7 @@ fn protocol_encode_with(arguments: &[Value]) -> Result<Value, String> {
     let (method, visitor_arguments) = match value {
         Value::Nil => ("visit-nil", vec![visitor.clone()]),
         Value::Bool(_) => ("visit-boolean", vec![visitor.clone(), value.clone()]),
-        Value::Number(_) | Value::Float(_) | Value::BigInteger(_) | Value::Decimal(_) => {
+        Value::Number(_) | Value::Float(_) | Value::BigInteger(_) => {
             ("visit-number", vec![visitor.clone(), value.clone()])
         }
         Value::Character(_) => ("visit-character", vec![visitor.clone(), value.clone()]),

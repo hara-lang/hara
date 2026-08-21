@@ -563,10 +563,6 @@ fn write_metadata_value(out: &mut Writer, value: &MetadataValue) -> Result<(), S
             out.byte(4);
             out.string(v)?;
         }
-        Decimal(v) => {
-            out.byte(5);
-            out.string(v)?;
-        }
         Character(v) => {
             out.byte(6);
             out.u32(*v as u32);
@@ -631,7 +627,7 @@ fn read_metadata_value(reader: &mut Reader<'_>) -> Result<MetadataValue, String>
         2 => MetadataValue::Number(reader.i64()?),
         3 => MetadataValue::Float(f64::from_bits(reader.u64()?)),
         4 => MetadataValue::BigInteger(reader.string()?),
-        5 => MetadataValue::Decimal(reader.string()?),
+        5 => return Err("unsupported metadata tag: decimal".into()),
         6 => MetadataValue::Character(
             char::from_u32(reader.u32()?).ok_or("invalid metadata character")?,
         ),

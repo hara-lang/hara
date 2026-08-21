@@ -1,15 +1,14 @@
 package hara.lang.base;
 
 import hara.lang.base.primitive.Array;
-import hara.lang.base.primitive.Num;
 import hara.lang.protocol.Constant;
 import hara.lang.protocol.IDisplay;
 import hara.lang.protocol.IHash;
 
-import java.util.Iterator;
-import java.util.Map.Entry;
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.util.Iterator;
+import java.util.Map.Entry;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
@@ -81,11 +80,6 @@ public interface G {
   }
 
 
-  public static String displayDecimal(BigDecimal value) {
-    String text = Num.canonicalDecimal(value).toPlainString();
-    return text.indexOf('.') >= 0 ? text : text + ".0";
-  }
-
   public static String displayBytes(byte[] value) {
     StringBuilder display = new StringBuilder("(bytes");
     for (byte element : value) {
@@ -116,8 +110,6 @@ public interface G {
       return "(double " + Double.toString(value) + ")";
     } else if (e instanceof BigInteger) {
       return e.toString();
-    } else if (e instanceof BigDecimal) {
-      return displayDecimal((BigDecimal) e);
     } else if (e instanceof Class) {
       return ((Class) e).getName();
     } else if (e instanceof java.util.List) {
@@ -196,14 +188,13 @@ public interface G {
       double number = ((Number) value).doubleValue();
       if (number == 0.0d) return 0;
       if (!Double.isFinite(number)) return Double.hashCode(number);
-      return Num.canonicalDecimal(BigDecimal.valueOf(number)).hashCode();
-    }
-    if (value instanceof BigDecimal) {
-      return Num.canonicalDecimal((BigDecimal) value).hashCode();
+      return BigDecimal.valueOf(number).stripTrailingZeros().hashCode();
     }
     if (value instanceof BigInteger) {
-      return Num.canonicalDecimal(new BigDecimal((BigInteger) value)).hashCode();
+      return new BigDecimal((BigInteger) value).stripTrailingZeros().hashCode();
     }
-    return Num.canonicalDecimal(BigDecimal.valueOf(((Number) value).longValue())).hashCode();
+    return BigDecimal.valueOf(((Number) value).longValue())
+        .stripTrailingZeros()
+        .hashCode();
   }
 }
