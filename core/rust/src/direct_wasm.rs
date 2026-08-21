@@ -145,9 +145,10 @@ pub fn inspect(bytes: &[u8]) -> Result<DirectWasmInspection, String> {
                     false,
                 )
             };
-            let signature = types.get(type_index).cloned().ok_or_else(|| {
-                format!("native/module-invalid: bad type for export {name}")
-            })?;
+            let signature = types
+                .get(type_index)
+                .cloned()
+                .ok_or_else(|| format!("native/module-invalid: bad type for export {name}"))?;
             Ok(DirectWasmFunctionExport {
                 name,
                 signature,
@@ -253,11 +254,7 @@ fn parse_imports(
     Ok(())
 }
 
-fn parse_functions(
-    bytes: &[u8],
-    at: &mut usize,
-    functions: &mut Vec<usize>,
-) -> Result<(), String> {
+fn parse_functions(bytes: &[u8], at: &mut usize, functions: &mut Vec<usize>) -> Result<(), String> {
     for _ in 0..unsigned(bytes, at)? {
         functions.push(unsigned(bytes, at)? as usize);
     }
@@ -357,16 +354,10 @@ fn tag_type(bytes: &[u8], at: &mut usize, type_count: usize) -> Result<(), Strin
     Ok(())
 }
 
-fn limits(
-    bytes: &[u8],
-    at: &mut usize,
-    subject: &str,
-) -> Result<(u32, Option<u32>, bool), String> {
+fn limits(bytes: &[u8], at: &mut usize, subject: &str) -> Result<(u32, Option<u32>, bool), String> {
     let flags = unsigned(bytes, at)?;
     if flags & !0x03 != 0 {
-        return Err(format!(
-            "native/abi-type-unsupported: {subject}64 limits"
-        ));
+        return Err(format!("native/abi-type-unsupported: {subject}64 limits"));
     }
     let minimum = unsigned(bytes, at)?;
     let maximum = if flags & 1 != 0 {
@@ -459,7 +450,8 @@ mod tests {
     use super::{exports, inspect, DirectWasmImportKind};
 
     const ADD: &[u8] = b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7e\x7e\x01\x7e\x03\x02\x01\0\x07\x07\x01\x03add\0\0\x0a\x09\x01\x07\0\x20\0\x20\x01\x7c\x0b";
-    const IMPORT: &[u8] = b"\0asm\x01\0\0\0\x01\x05\x01\x60\x01\x7f\0\x02\x0b\x01\x03env\x03log\0\0";
+    const IMPORT: &[u8] =
+        b"\0asm\x01\0\0\0\x01\x05\x01\x60\x01\x7f\0\x02\x0b\x01\x03env\x03log\0\0";
 
     #[test]
     fn discovers_scalar_exports_without_a_host_engine() {
