@@ -210,10 +210,7 @@ fn project_document(interface: &WasmInterface, target: BindingTarget) -> Result<
     let extension = Form::Map(vec![
         (keyword_form("provider"), keyword_form("wasm")),
         (keyword_form("module"), string_form(&interface.module)),
-        (
-            keyword_form("abi"),
-            keyword_form(target.as_keyword()),
-        ),
+        (keyword_form("abi"), keyword_form(target.as_keyword())),
         (keyword_form("exports"), Form::Map(exports)),
         (keyword_form("capabilities"), Form::Vector(Vec::new())),
         (keyword_form("assets"), Form::Vector(assets)),
@@ -300,10 +297,7 @@ fn conformance_document(
             keyword_form("schema"),
             string_form(DIRECT_WASM_CONFORMANCE_SCHEMA),
         ),
-        (
-            keyword_form("target"),
-            keyword_form(target.as_keyword()),
-        ),
+        (keyword_form("target"), keyword_form(target.as_keyword())),
         (keyword_form("namespace"), symbol_form(&interface.namespace)),
         (keyword_form("module-digest"), string_form(module_digest)),
         (
