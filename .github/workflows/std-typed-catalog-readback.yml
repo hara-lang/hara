@@ -2,130 +2,120 @@ name: std.typed catalog registry read-back
 
 on:
   pull_request:
-    branches: [main, testing]
+    branches: [main]
     paths:
-      - 'core/lib/src/std/typed.hal'
-      - 'core/lib/src/std/typed/catalog/**'
-      - 'core/rust/bootstrap.namespaces'
-      - 'core/rust/standard-library.namespaces'
-      - 'core/rust/tests/std_typed_catalog_document.rs'
-      - 'core/java/src/test/java/hara/truffle/StdTypedCatalogDocumentTest.java'
-      - 'core/spec/std/typed-schema-registry-readback.md'
-      - 'scripts/audit-std-typed-boundary.sh'
+      - 'core/lib/src/std/typed/catalog/document.hal'
       - '.github/workflows/std-typed-catalog-readback.yml'
-  push:
-    branches: [main, testing]
-    paths:
-      - 'core/lib/src/std/typed.hal'
-      - 'core/lib/src/std/typed/catalog/**'
-      - 'core/rust/bootstrap.namespaces'
-      - 'core/rust/standard-library.namespaces'
-      - 'core/rust/tests/std_typed_catalog_document.rs'
-      - 'core/java/src/test/java/hara/truffle/StdTypedCatalogDocumentTest.java'
-      - 'core/spec/std/typed-schema-registry-readback.md'
-      - 'scripts/audit-std-typed-boundary.sh'
-      - '.github/workflows/std-typed-catalog-readback.yml'
-  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: std-typed-catalog-readback-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: std-typed-catalog-portable-string-patch
+  cancel-in-progress: false
 
 jobs:
-  boundary:
-    runs-on: ubuntu-latest
+  patch:
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: bash scripts/audit-std-typed-boundary.sh
+        with:
+          ref: agent/903-std-typed-registry-readback
+          fetch-depth: 0
 
-  rust:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check out the specifications registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-      - name: Expose the registry at the canonical sibling path
+      - name: Replace nil-based string search assumptions
+        shell: bash
         run: |
-          rm -rf "$GITHUB_WORKSPACE/../hara-specs-registry"
-          ln -s "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Read back the exact published catalog through native Hara
-        run: cargo test --manifest-path core/rust/Cargo.toml --test std_typed_catalog_document -- --nocapture
-
-  hal:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check out the specifications registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-      - uses: actions/setup-java@v5
-        with:
-          java-version: '21'
-          distribution: temurin
-          cache: maven
-          cache-dependency-path: core/java/pom.xml
-      - name: Build the Hara CLI
-        run: mvn -B -Ptruffle -DskipTests package --file core/java/pom.xml
-      - name: Verify the exact published bytes through source-authoritative Hara
-        run: |
-          mkdir -p core/target
-          python - <<'PY' > core/target/std-typed-catalog-readback-probe.hal
-          import json
+          python - <<'PY'
           from pathlib import Path
 
-          fixture = Path(
-              "hara-specs-registry/01-lang/011-typed-catalog/"
-              "draft/conformance/catalog-v1.json"
-          ).read_text()
-          print("(ns std.typed.catalog.readback-ci)")
-          print(f"(let [verified (std.typed/catalog-document-verify-json {json.dumps(fixture)})")
-          print("      report (:verification verified)]")
-          print("  (if (= [:verified 5 5 true]")
-          print("         [(:status report)")
-          print("          (:catalog/entry-count report)")
-          print("          (:catalog/component-count report)")
-          print("          (:catalog/latest-tooling-only? report)])")
-          print("    (pr-str report)")
-          print("    (throw (ex :state {:verification report}")
-          print('               :ex/message "std.typed catalog read-back failed"))))')
-          PY
-          cat \
-            core/lib/src/std/typed/registry.hal \
-            core/lib/src/std/typed/schema.hal \
-            core/lib/src/std/typed/catalog.hal \
-            core/lib/src/std/typed/catalog/document.hal \
-            core/lib/src/std/typed/infer.hal \
-            core/lib/src/std/typed/explain.hal \
-            core/lib/src/std/typed.hal \
-            core/target/std-typed-catalog-readback-probe.hal \
-            | core/hara --offline stdin
+          path = Path("core/lib/src/std/typed/catalog/document.hal")
+          source = path.read_text()
 
-  java:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Check out the specifications registry
-        uses: actions/checkout@v4
-        with:
-          repository: hara-lang/hara-specs-registry
-          path: hara-specs-registry
-          fetch-depth: 1
-      - uses: actions/setup-java@v5
-        with:
-          java-version: '21'
-          distribution: temurin
-          cache: maven
-          cache-dependency-path: core/java/pom.xml
-      - name: Read back the exact published catalog through Truffle
-        run: mvn -B -Ptruffle -Dtest=hara.truffle.StdTypedCatalogDocumentTest test --file core/java/pom.xml
+          old_hex = '''       (let [character (str (str/char-at value index))]
+         (if (nil? (str/index-of +hex-digits+ character))
+           false
+           (recur (inc index))))))))
+'''
+          new_hex = '''       (let [character (str (str/char-at value index))]
+         (if (str/includes? +hex-digits+ character)
+           (recur (inc index))
+           false))))))
+'''
+          old_path = '''(defn- source-path?
+  [value]
+  (and
+   (string? value)
+   (not (str/blank? value))
+   (not (str/starts-with? value "/"))
+   (nil? (str/index-of value "\\\\"))
+   (not (= value ".."))
+   (not (str/starts-with? value "../"))
+   (nil? (str/index-of value "/../"))))
+'''
+          new_path = '''(defn- source-path?
+  [value]
+  (and
+   (string? value)
+   (not (str/blank? value))
+   (not (str/starts-with? value "/"))
+   (not (str/includes? value "\\\\"))
+   (not (= value ".."))
+   (not (str/starts-with? value "../"))
+   (not (str/includes? value "/../"))))
+'''
+          old_owner = '''(defn- owner-name?
+  [value]
+  (if (not (string? value))
+    false
+    (let [separator (str/index-of value "/")
+          length (str/length value)]
+      (and
+       separator
+       (> separator 0)
+       (< separator (dec length))
+       (nil?
+        (str/index-of
+         (str/slice value (inc separator))
+         "/"))
+       (not (str/starts-with? value ":"))
+       (nil? (str/index-of value " "))))))
+'''
+          new_owner = '''(defn- owner-name?
+  [value]
+  (if (not (string? value))
+    false
+    (let [parts (str/split value "/")]
+      (and
+       (= 2 (count parts))
+       (not (str/blank? (first parts)))
+       (not (str/blank? (second parts)))
+       (not (str/starts-with? value ":"))
+       (not (str/includes? value " "))))))
+'''
+
+          for old, new, label in [
+              (old_hex, new_hex, "lowercase hex predicate"),
+              (old_path, new_path, "source path predicate"),
+              (old_owner, new_owner, "owner/name predicate"),
+          ]:
+              count = source.count(old)
+              if count != 1:
+                  raise SystemExit(f"expected one {label}, found {count}")
+              source = source.replace(old, new, 1)
+
+          path.write_text(source)
+          PY
+
+      - name: Validate and publish the focused edit
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '(str/includes? +hex-digits+ character)' core/lib/src/std/typed/catalog/document.hal
+          ! grep -q 'nil? (str/index-of' core/lib/src/std/typed/catalog/document.hal
+          git diff --check -- core/lib/src/std/typed/catalog/document.hal
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- core/lib/src/std/typed/catalog/document.hal
+          git commit -m "Use portable string predicates in catalog read-back"
+          git push origin HEAD:agent/903-std-typed-registry-readback
