@@ -44,7 +44,6 @@ pub fn eval(form: &Form, env: &mut HashMap<String, Value>) -> Result<Value, Stri
         Form::Character(value) => Ok(Value::Character(*value)),
         Form::Float(value) => Ok(Value::Float(*value)),
         Form::BigInteger(value) => Ok(Value::BigInteger(value.clone())),
-        Form::Decimal(value) => Ok(Value::Decimal(value.clone())),
         Form::Regex(value) => Ok(Value::Regex(value.clone())),
         Form::Tagged(tag, value) if tag == "ptr" => pointer_from_descriptor(literal_value(value)?),
         Form::Tagged(tag, value) => Ok(Value::Tagged(Box::new(PTaggedLiteral::new(

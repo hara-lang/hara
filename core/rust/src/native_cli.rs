@@ -446,9 +446,12 @@ fn runtime(
         runtime.install_native_process_provider();
     }
     if allow_postgres {
+        #[cfg(feature = "postgres")]
         runtime
             .install_native_module(hara_db_postgres::module())
             .expect("db.postgres native module must install once per runtime");
+        #[cfg(not(feature = "postgres"))]
+        panic!("postgres support is not enabled");
     }
     runtime
 }

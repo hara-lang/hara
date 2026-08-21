@@ -644,7 +644,6 @@ impl Compiler {
             Form::Keyword(value) => self.constant(Value::Keyword(value.clone().into()), span),
             Form::Character(value) => self.constant(Value::Character(*value), span),
             Form::BigInteger(value) => self.constant(Value::BigInteger(value.clone()), span),
-            Form::Decimal(value) => self.constant(Value::Decimal(value.clone()), span),
             Form::Regex(value) => self.constant(Value::Regex(value.clone()), span),
             // Collection identity is observable even when language equality
             // is structural across concrete sequential/map/set types.  Do
@@ -1306,7 +1305,6 @@ fn literal_collection_form(form: &Form) -> bool {
         | Form::Keyword(_)
         | Form::Character(_)
         | Form::BigInteger(_)
-        | Form::Decimal(_)
         | Form::Regex(_) => true,
         Form::Vector(values) | Form::Set(values) => values.iter().all(literal_collection_form),
         Form::Map(entries) => entries
@@ -1323,7 +1321,6 @@ fn constant_form(form: &Form) -> bool {
         | Form::Number(_)
         | Form::Float(_)
         | Form::BigInteger(_)
-        | Form::Decimal(_)
         | Form::Character(_)
         | Form::Regex(_)
         | Form::Keyword(_)

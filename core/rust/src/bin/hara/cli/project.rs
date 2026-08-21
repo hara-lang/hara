@@ -89,7 +89,10 @@ fn eval_runtime(options: &Options) -> Result<Runtime, String> {
         runtime.install_native_process_provider();
     }
     if options.allow_postgres {
+        #[cfg(feature = "postgres")]
         runtime.install_native_module(hara_db_postgres::module())?;
+        #[cfg(not(feature = "postgres"))]
+        return Err("postgres support is not enabled".into());
     }
     let broker = RuntimeBroker::start_with(
         options.root.clone().or_else(|| options.project.clone()),
@@ -551,7 +554,7 @@ fn manage_json_value(value: &Form) -> JsonValue {
         Form::Float(value) => JsonNumber::from_f64(*value)
             .map(JsonValue::Number)
             .unwrap_or_else(|| JsonValue::String(value.to_string())),
-        Form::BigInteger(value) | Form::Decimal(value) => JsonValue::String(value.clone()),
+        Form::BigInteger(value) => JsonValue::String(value.clone()),
         Form::Character(value) => JsonValue::String(value.to_string()),
         Form::Regex(value) => JsonValue::String(value.clone()),
         Form::Tagged(tag, value) => JsonValue::String(format!("#{tag}{}", value)),

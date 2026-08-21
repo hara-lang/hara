@@ -7,7 +7,6 @@ import static org.junit.Assert.assertTrue;
 
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
@@ -31,18 +30,12 @@ public class HaraNumericInteropTest {
   }
 
   @Test
-  public void exportsDecimalsAsCanonicalExactValueObjects() throws Exception {
+  public void exportsArbitraryBigDecimalsAsBoxedHostObjects() throws Exception {
     InteropLibrary interop = InteropLibrary.getUncached();
-    Object exported = HaraBox.export(new BigDecimal("1.2300"));
+    Object exported = HaraBox.export(new java.math.BigDecimal("1.2300"));
 
     assertFalse(interop.isNumber(exported));
-    assertTrue(interop.hasMembers(exported));
-    assertEquals("1.23", interop.readMember(exported, "value"));
-    assertEquals(2, interop.readMember(exported, "scale"));
-    assertEquals(3, interop.readMember(exported, "precision"));
-    Object unscaled = interop.readMember(exported, "unscaled");
-    assertEquals(BigInteger.valueOf(123), interop.asBigInteger(unscaled));
-    assertEquals("1.23", interop.toDisplayString(exported, false));
+    assertFalse(interop.hasMembers(exported));
   }
 
   @Test
@@ -52,18 +45,20 @@ public class HaraNumericInteropTest {
       assertTrue(integer.isNumber());
       assertEquals(Long.MAX_VALUE, integer.asLong());
 
-      Value large = context.eval(HaraLanguage.ID, LARGE_INTEGER.toString());
-      assertTrue(large.isNumber());
-      assertEquals(LARGE_INTEGER, large.as(BigInteger.class));
+      PolyglotException large =
+          assertThrows(
+              PolyglotException.class,
+              () -> context.eval(HaraLanguage.ID, LARGE_INTEGER.toString()));
+      assertTrue(large.getMessage().contains("Invalid number"));
 
-      Value decimal = context.eval(HaraLanguage.ID, "1.2300");
-      assertFalse(decimal.isNumber());
-      assertTrue(decimal.hasMembers());
-      assertEquals("1.23", decimal.getMember("value").asString());
+      Value floating = context.eval(HaraLanguage.ID, "1.2300");
+      assertTrue(floating.isNumber());
+      assertTrue(floating.fitsInDouble());
+      assertEquals(1.23, floating.asDouble(), 0.0);
 
       PolyglotException suffix =
           assertThrows(PolyglotException.class, () -> context.eval(HaraLanguage.ID, "1.2300M"));
-      assertTrue(suffix.getMessage().contains("Legacy numeric suffixes N and M"));
+      assertTrue(suffix.getMessage().contains("legacy numeric suffixes N and M"));
     }
   }
 }

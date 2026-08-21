@@ -472,7 +472,7 @@ impl<'a> Parser<'a> {
         }
         let numeric = body.chars().next().is_some_and(|ch| ch.is_ascii_digit());
         if numeric {
-            use crate::numeric::{parse_integer_digits, CanonicalInteger, ExactDecimal};
+            use crate::numeric::{parse_integer_digits, CanonicalInteger};
 
             if token.ends_with(['N', 'M']) {
                 return self.error(format!(
@@ -485,16 +485,11 @@ impl<'a> Parser<'a> {
                 CanonicalInteger::Big(value) => Form::BigInteger(value),
             };
             if body.contains(['.', 'e', 'E']) {
-                let decimal = ExactDecimal::parse(&token).map_err(|_| ParseError {
+                let float = token.parse::<f64>().map_err(|_| ParseError {
                     message: format!("Invalid number: {token}"),
                     position: self.reader.position(),
                 })?;
-                return Ok(Form::Decimal(decimal.to_storage_string().map_err(
-                    |_| ParseError {
-                        message: format!("Invalid number: {token}"),
-                        position: self.reader.position(),
-                    },
-                )?));
+                return Ok(Form::Float(float));
             }
             let parsed = if let Some(hex) =
                 body.strip_prefix("0x").or_else(|| body.strip_prefix("0X"))

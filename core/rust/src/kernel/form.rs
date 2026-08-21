@@ -5,7 +5,6 @@ pub enum Form {
     Number(i64),
     Float(f64),
     BigInteger(String),
-    Decimal(String),
     Character(char),
     Regex(String),
     Tagged(String, Box<Form>),
@@ -75,9 +74,6 @@ impl std::fmt::Display for Form {
             Self::Float(value) if value.fract() == 0.0 => format!("(double {value:.1})"),
             Self::Float(value) => format!("(double {value})"),
             Self::BigInteger(value) => value.clone(),
-            Self::Decimal(value) => {
-                crate::numeric::display_decimal(value).unwrap_or_else(|_| value.clone())
-            }
             Self::Character('\n') => "\\newline".into(),
             Self::Character(' ') => "\\space".into(),
             Self::Character('\t') => "\\tab".into(),

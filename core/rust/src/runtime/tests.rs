@@ -2802,7 +2802,7 @@ mod tests {
     fn reader_literals_are_first_class_runtime_values() {
         let mut runtime = Runtime::new();
         let cases = [
-            ("1.5", "1.5"),
+            ("1.5", "(double 1.5)"),
             ("\\newline", "\\newline"),
             ("#\"a+\"", "#\"a+\""),
             ("#demo {:a 1}", "#demo{:a 1}"),
@@ -2848,7 +2848,7 @@ mod tests {
         );
         assert_eq!(runtime.eval_text("(= (sqrt -1) ##NaN)").unwrap(), "true");
         assert_eq!(runtime.eval_text("(sqrt (long 9))").unwrap(), "(double 3)");
-        assert!(runtime.eval_text("(long 9.9)").is_err());
+        assert_eq!(runtime.eval_text("(long 9.9)").unwrap(), "9");
         assert_eq!(
             runtime.eval_text("(sqrt (double 9))").unwrap(),
             "(double 3)"
@@ -7795,7 +7795,7 @@ mod tests {
             runtime
                 .eval_text("(count code.migrate.rule/+ruleset+)")
                 .unwrap(),
-            "119"
+            "117"
         );
         for (native_type, _) in core::NATIVE_TYPES {
             let expression = format!(
@@ -8302,13 +8302,16 @@ mod tests {
     }
 
     #[test]
-    fn exact_decimals_and_explicit_doubles_have_distinct_syntax() {
+    fn decimal_literals_parse_as_floats() {
         let mut runtime = Runtime::new();
-        assert_eq!(runtime.eval_text("(+ 0.1 0.2)").unwrap(), "0.3");
-        assert_eq!(runtime.eval_text("(/ 1.0 8.0)").unwrap(), "0.125");
         assert_eq!(
-            runtime.eval_text("(/ 1.0 3.0)").unwrap_err(),
-            "non-terminating decimal division"
+            runtime.eval_text("(+ 0.1 0.2)").unwrap(),
+            "(double 0.30000000000000004)"
+        );
+        assert_eq!(runtime.eval_text("(/ 1.0 8.0)").unwrap(), "(double 0.125)");
+        assert_eq!(
+            runtime.eval_text("(/ 1.0 3.0)").unwrap(),
+            "(double 0.3333333333333333)"
         );
         assert_eq!(runtime.eval_text("(double 1.5)").unwrap(), "(double 1.5)");
     }

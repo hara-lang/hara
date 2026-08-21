@@ -41,13 +41,11 @@ public interface BuiltinCheck {
 
   @Module.Fn(name = "long?", complete = true)
   public static <TYPE> boolean isLong(TYPE x) {
-    if (!(x instanceof Number)) return false;
-    try {
-      NumUtils.toBigInteger(x).longValueExact();
-      return true;
-    } catch (ArithmeticException | IllegalArgumentException error) {
-      return false;
-    }
+    return x instanceof Byte
+        || x instanceof Short
+        || x instanceof Integer
+        || x instanceof Long
+        || x instanceof BigInteger;
   }
 
   @Module.Fn(name = "double?", complete = true)

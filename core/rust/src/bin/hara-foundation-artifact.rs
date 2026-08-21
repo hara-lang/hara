@@ -1,7 +1,16 @@
-use std::{env, fs, path::PathBuf, process};
+use std::{env, fs, path::PathBuf, process, thread};
+
+const COMPILER_STACK_SIZE: usize = 64 * 1024 * 1024;
 
 fn main() {
-    if let Err(error) = run() {
+    let result = thread::Builder::new()
+        .name("foundation-artifact-compiler".into())
+        .stack_size(COMPILER_STACK_SIZE)
+        .spawn(run)
+        .expect("spawn foundation artifact compiler")
+        .join()
+        .expect("foundation artifact compiler panicked");
+    if let Err(error) = result {
         eprintln!("hara-foundation-artifact: {error}");
         process::exit(1);
     }

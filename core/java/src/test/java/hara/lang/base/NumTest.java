@@ -1,7 +1,6 @@
 package hara.lang.base;
 
 import hara.lang.base.primitive.Num;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import org.junit.Test;
 
@@ -37,20 +36,10 @@ public class NumTest {
     assertEquals(2.0, (double) Num.divide(6.0, 3.0), 0.0);
     assertEquals(2L, Num.divide(5L, 2L));
     assertEquals(2L, Num.divide(BigInteger.valueOf(5), BigInteger.valueOf(2)));
-    assertEquals(new BigDecimal("0.125"), Num.divide(BigDecimal.ONE, BigDecimal.valueOf(8)));
-    ArithmeticException nonTerminating =
-        assertThrows(
-            ArithmeticException.class,
-            () -> Num.divide(BigDecimal.ONE, BigDecimal.valueOf(3)));
-    assertEquals("non-terminating decimal division", nonTerminating.getMessage());
   }
 
   @Test
-  public void testCanonicalDecimalsAndPromotion() {
-    BigDecimal first = Num.canonicalDecimal(new BigDecimal("1.0"));
-    BigDecimal second = Num.canonicalDecimal(new BigDecimal("1.00"));
-    assertEquals(first, second);
-    assertEquals(first.hashCode(), second.hashCode());
+  public void testPromotionToBigIntegerOnOverflow() {
     assertEquals(
         BigInteger.valueOf(Long.MAX_VALUE).add(BigInteger.ONE), Num.addP(Long.MAX_VALUE, 1L));
   }
@@ -58,19 +47,9 @@ public class NumTest {
   @Test
   public void testLanguageNumericHashNormalizesEqualRepresentations() {
     assertEquals(G.hashRapid(1L), G.hashRapid(BigInteger.ONE));
-    assertEquals(G.hashRapid(1L), G.hashRapid(new BigDecimal("1.00")));
+    assertEquals(G.hashRapid(1.0d), G.hashRapid(1L));
     assertEquals(G.hashRapid(0.0d), G.hashRapid(-0.0d));
     assertTrue(Num.eq(-0.0d, 0.0d));
-  }
-
-  @Test(expected = IllegalArgumentException.class)
-  public void testDecimalAndFloatingPointRequireExplicitConversion() {
-    Num.add(new BigDecimal("1.5"), 2.0);
-  }
-
-  @Test(expected = IllegalArgumentException.class)
-  public void testFloatingPointAndDecimalRequireExplicitConversion() {
-    Num.multiply(2.0, new BigDecimal("1.5"));
   }
 
   @Test

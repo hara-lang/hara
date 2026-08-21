@@ -192,9 +192,7 @@ abstract class JsonValue {
       }
       return new Object(values);
     }
-    if (value instanceof Float
-        || value instanceof Double
-        || value instanceof java.math.BigDecimal) {
+    if (value instanceof Float || value instanceof Double) {
       throw new IllegalArgumentException(
           "Provable JSON v1 supports signed 64-bit integers, not fractional numbers.");
     }

@@ -134,7 +134,6 @@ pub enum Value {
     Number(i64),
     Float(f64),
     BigInteger(String),
-    Decimal(String),
     Character(char),
     Regex(String),
     Tagged(Box<PTaggedLiteral<Value>>),
@@ -1528,7 +1527,6 @@ fn metadata_value_to_form(value: &MetadataValue) -> Form {
         MetadataValue::Number(value) => Form::Number(*value),
         MetadataValue::Float(value) => Form::Float(*value),
         MetadataValue::BigInteger(value) => Form::BigInteger(value.clone()),
-        MetadataValue::Decimal(value) => Form::Decimal(value.clone()),
         MetadataValue::Character(value) => Form::Character(*value),
         MetadataValue::Regex(value) => Form::Regex(value.clone()),
         MetadataValue::Tagged(tag, value) => {
@@ -1562,7 +1560,6 @@ pub(crate) fn value_to_form(value: &Value) -> Result<Form, String> {
         Value::Number(value) => Ok(Form::Number(*value)),
         Value::Float(value) => Ok(Form::Float(*value)),
         Value::BigInteger(value) => Ok(Form::BigInteger(value.clone())),
-        Value::Decimal(value) => Ok(Form::Decimal(value.clone())),
         Value::Character(value) => Ok(Form::Character(*value)),
         Value::Regex(value) => Ok(Form::Regex(value.clone())),
         Value::String(value) => Ok(Form::String(value.clone())),
@@ -2461,7 +2458,6 @@ pub(crate) fn session_transferable(value: &Value) -> bool {
         Value::Number(_)
         | Value::Float(_)
         | Value::BigInteger(_)
-        | Value::Decimal(_)
         | Value::Character(_)
         | Value::Regex(_)
         | Value::Tagged(_)
@@ -2710,7 +2706,6 @@ impl PartialEq for Value {
                 (a.is_nan() && b.is_nan()) || a.to_bits() == b.to_bits()
             }
             (Value::BigInteger(a), Value::BigInteger(b)) => a == b,
-            (Value::Decimal(a), Value::Decimal(b)) => a == b,
             (Value::Character(a), Value::Character(b)) => a == b,
             (Value::Regex(a), Value::Regex(b)) => a == b,
             (Value::Tagged(a), Value::Tagged(b)) => a == b,
@@ -2778,8 +2773,7 @@ impl Ord for Value {
             (Value::Bool(left), Value::Bool(right)) => return left.cmp(right),
             (Value::String(left), Value::String(right)) => return left.cmp(right),
             (Value::Keyword(left), Value::Keyword(right)) => return left.cmp(right),
-            (Value::BigInteger(left), Value::BigInteger(right))
-            | (Value::Decimal(left), Value::Decimal(right)) => return left.cmp(right),
+            (Value::BigInteger(left), Value::BigInteger(right)) => return left.cmp(right),
             _ => {}
         }
         fn rank(value: &Value) -> u8 {
@@ -2789,8 +2783,7 @@ impl Ord for Value {
                 Value::Number(_) => 2,
                 Value::Float(_) => 3,
                 Value::BigInteger(_) => 4,
-                Value::Decimal(_) => 5,
-                Value::Character(_) => 6,
+                Value::Character(_) => 5,
                 Value::String(_) => 7,
                 Value::Keyword(_) => 8,
                 Value::Symbol(_) => 9,
@@ -2883,7 +2876,7 @@ impl crate::lang::hash::JavaHash for Value {
             Self::Bool(v) => jh::hash_bool(*v) as i64,
             Self::Character(v) => jh::hash_char(*v) as i64,
             Self::String(v) => jh::java_string_hash(v) as i64,
-            Self::Number(_) | Self::Float(_) | Self::BigInteger(_) | Self::Decimal(_) => {
+            Self::Number(_) | Self::Float(_) | Self::BigInteger(_) => {
                 numeric::numeric_hash(self).expect("numeric value") as i64
             }
             // Java hashes java.util.regex.Pattern by identity; hash the
@@ -2974,7 +2967,6 @@ impl Value {
             Self::Float(v) if *v == f64::NEG_INFINITY => "##-Inf".into(),
             Self::Float(v) => format!("(double {v})"),
             Self::BigInteger(v) => numeric::canonical_big_integer(v).unwrap_or_else(|_| v.clone()),
-            Self::Decimal(v) => crate::numeric::display_decimal(v).unwrap_or_else(|_| v.clone()),
             Self::Character('\n') => "\\newline".into(),
             Self::Character(' ') => "\\space".into(),
             Self::Character('\t') => "\\tab".into(),

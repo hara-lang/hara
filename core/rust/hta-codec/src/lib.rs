@@ -35,7 +35,6 @@ const ARRAY: u8 = 17;
 const OBJECT: u8 = 18;
 const CHARACTER: u8 = 19;
 const BIG_INTEGER: u8 = 20;
-const DECIMAL: u8 = 21;
 const REGEX: u8 = 22;
 const TUPLE: u8 = 23;
 const CONS: u8 = 24;
@@ -137,7 +136,6 @@ fn abi_to_immutable(value: &AbiValue) -> Value {
         AbiValue::Integer(value) => Value::Integer(*value),
         AbiValue::BigInteger(value) => Value::BigInteger(value.clone()),
         AbiValue::Float(value) => Value::Float(*value),
-        AbiValue::Decimal(value) => Value::Decimal(value.clone()),
         AbiValue::Bytes(value) => Value::Bytes(value.clone()),
         AbiValue::Keyword(value) => Value::Keyword(value.clone()),
         AbiValue::Vector(values) => Value::Vector(values.iter().map(abi_to_immutable).collect()),
@@ -158,7 +156,6 @@ fn immutable_to_abi(value: Value) -> Result<AbiValue, String> {
         Value::Integer(value) => AbiValue::Integer(value),
         Value::BigInteger(value) => AbiValue::BigInteger(value),
         Value::Float(value) => AbiValue::Float(value),
-        Value::Decimal(value) => AbiValue::Decimal(value),
         Value::Bytes(value) => AbiValue::Bytes(value),
         Value::Keyword(value) => AbiValue::Keyword(value),
         Value::Vector(values) => AbiValue::Vector(
@@ -205,7 +202,6 @@ fn encode_value(value: &Value, depth: usize, output: &mut Vec<u8>) -> Result<(),
         Value::String(value) => write_sized(output, STRING, value.as_bytes()),
         Value::Bytes(value) => write_sized(output, BYTES, value),
         Value::Keyword(value) => write_sized(output, KEYWORD, value.as_bytes()),
-        Value::Decimal(value) => write_sized(output, DECIMAL, value.as_bytes()),
         Value::Regex(value) => write_sized(output, REGEX, value.as_bytes()),
         Value::Symbol(value) => write_sized(output, SYMBOL, value.as_bytes()),
         Value::List(values) => encode_sequence(LIST, values, depth, output),
@@ -425,7 +421,6 @@ impl Reader<'_> {
             KEYWORD => Ok(Value::Keyword(self.text()?)),
             SYMBOL => Ok(Value::Symbol(self.text()?)),
             BIG_INTEGER => Ok(Value::BigInteger(self.text()?)),
-            DECIMAL => Ok(Value::Decimal(self.text()?)),
             REGEX => Ok(Value::Regex(self.text()?)),
             LIST => self.sequence(depth).map(Value::List),
             VECTOR => self.vector(depth),
@@ -655,7 +650,6 @@ mod tests {
             ("b", Value::Integer(2)),
             ("big", Value::BigInteger("9223372036854775808".into())),
             ("bytes", Value::Bytes(vec![0, 1, 255])),
-            ("decimal", Value::Decimal("1.2500".into())),
             ("float", Value::Float(0.28)),
             ("keyword", Value::Keyword("profile.primary".into())),
         ]);

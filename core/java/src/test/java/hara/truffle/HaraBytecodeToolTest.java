@@ -56,7 +56,8 @@ public class HaraBytecodeToolTest {
     }
     assertEquals(errorBytes.toString(StandardCharsets.UTF_8), 0, status);
     assertTrue(outputBytes.toString(StandardCharsets.UTF_8).contains("module std.foundation\n"));
-    assertTrue(outputBytes.toString(StandardCharsets.UTF_8).contains("module lang.core\n"));
+    assertTrue(
+        outputBytes.toString(StandardCharsets.UTF_8).contains("module std.foundation.string\n"));
     assertEquals("", errorBytes.toString(StandardCharsets.UTF_8));
   }
 }

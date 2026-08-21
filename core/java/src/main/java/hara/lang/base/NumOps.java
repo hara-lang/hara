@@ -2,7 +2,6 @@ package hara.lang.base;
 
 import hara.lang.base.primitive.Num;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 
 public interface NumOps {
@@ -43,8 +42,6 @@ public interface NumOps {
   public Number negate(Number x);
 
   public Number negateP(Number x);
-
-  NumOps opsWith(BigDecimalOps x);
 
   NumOps opsWith(BigIntegerOps x);
 
@@ -115,124 +112,6 @@ public interface NumOps {
     @Override
     public Number unchecked_negate(Number x) {
       return negate(x);
-    }
-  }
-
-  public static class BigDecimalOps extends BaseOps {
-
-    // final static Var MATH_CONTEXT = Ut.MATH_CONTEXT;
-
-    @Override
-    public final Number add(Number x, Number y) {
-      return NumUtils.normalizeDecimal(NumUtils.toBigDecimal(x).add(NumUtils.toBigDecimal(y)));
-    }
-
-    @Override
-    public NumOps combine(NumOps y) {
-      return y.opsWith(this);
-    }
-
-    @Override
-    public Number dec(Number x) {
-      BigDecimal bx = NumUtils.toBigDecimal(x);
-      return NumUtils.normalizeDecimal(bx.subtract(BigDecimal.ONE));
-    }
-
-    @Override
-    public Number divide(Number x, Number y) {
-      BigDecimal divisor = NumUtils.toBigDecimal(y);
-      if (divisor.signum() == 0) throw new ArithmeticException("Divide by zero");
-      try {
-        return NumUtils.normalizeDecimal(NumUtils.toBigDecimal(x).divide(divisor));
-      } catch (ArithmeticException nonTerminating) {
-        throw new ArithmeticException("non-terminating decimal division");
-      }
-    }
-
-    @Override
-    public boolean eq(Number x, Number y) {
-      return NumUtils.toBigDecimal(x).compareTo(NumUtils.toBigDecimal(y)) == 0;
-    }
-
-    @Override
-    public boolean gte(Number x, Number y) {
-      return NumUtils.toBigDecimal(x).compareTo(NumUtils.toBigDecimal(y)) >= 0;
-    }
-
-    @Override
-    public Number inc(Number x) {
-      BigDecimal bx = NumUtils.toBigDecimal(x);
-      return NumUtils.normalizeDecimal(bx.add(BigDecimal.ONE));
-    }
-
-    @Override
-    public boolean isNeg(Number x) {
-      BigDecimal bx = NumUtils.toBigDecimal(x);
-      return bx.signum() < 0;
-    }
-
-    @Override
-    public boolean isPos(Number x) {
-      BigDecimal bx = NumUtils.toBigDecimal(x);
-      return bx.signum() > 0;
-    }
-
-    @Override
-    public boolean isZero(Number x) {
-      BigDecimal bx = NumUtils.toBigDecimal(x);
-      return bx.signum() == 0;
-    }
-
-    @Override
-    public boolean lt(Number x, Number y) {
-      return NumUtils.toBigDecimal(x).compareTo(NumUtils.toBigDecimal(y)) < 0;
-    }
-
-    @Override
-    public boolean lte(Number x, Number y) {
-      return NumUtils.toBigDecimal(x).compareTo(NumUtils.toBigDecimal(y)) <= 0;
-    }
-
-    @Override
-    public final Number multiply(Number x, Number y) {
-      return NumUtils.normalizeDecimal(NumUtils.toBigDecimal(x).multiply(NumUtils.toBigDecimal(y)));
-    }
-
-    @Override
-    public final Number negate(Number x) {
-      return NumUtils.normalizeDecimal(NumUtils.toBigDecimal(x).negate());
-    }
-
-    @Override
-    public final NumOps opsWith(BigDecimalOps x) {
-      return this;
-    }
-
-    @Override
-    public final NumOps opsWith(BigIntegerOps x) {
-      return this;
-    }
-
-    @Override
-    public final NumOps opsWith(DoubleOps x) {
-      return NumUtils.DOUBLE_OPS;
-    }
-
-    @Override
-    public final NumOps opsWith(LongOps x) {
-      return this;
-    }
-
-    @Override
-    public Number quotient(Number x, Number y) {
-      return NumUtils.normalizeDecimal(
-          NumUtils.toBigDecimal(x).divideToIntegralValue(NumUtils.toBigDecimal(y)));
-    }
-
-    @Override
-    public Number remainder(Number x, Number y) {
-      return NumUtils.normalizeDecimal(
-          NumUtils.toBigDecimal(x).remainder(NumUtils.toBigDecimal(y)));
     }
   }
 
@@ -315,11 +194,6 @@ public interface NumOps {
     }
 
     @Override
-    public final NumOps opsWith(BigDecimalOps x) {
-      return NumUtils.BIGDECIMAL_OPS;
-    }
-
-    @Override
     public final NumOps opsWith(BigIntegerOps x) {
       return this;
     }
@@ -348,32 +222,13 @@ public interface NumOps {
   }
 
   public static class DoubleOps extends BaseOps {
-    private static void requireNoDecimal(Number x, Number y) {
-      if (x instanceof BigDecimal || y instanceof BigDecimal) {
-        throw new IllegalArgumentException(
-            "BigDecimal and floating-point values require an explicit conversion");
-      }
-    }
-
     private static int compareExactly(Number x, Number y) {
-      requireNoDecimal(x, y);
       double left = x.doubleValue();
       double right = y.doubleValue();
-      if (Double.isNaN(left) || Double.isNaN(right)) {
-        return Double.compare(left, right);
+      if (left == 0.0d && right == 0.0d) {
+        return 0;
       }
-      if (!Double.isFinite(left) || !Double.isFinite(right)) {
-        return Double.compare(left, right);
-      }
-      return comparisonDecimal(x).compareTo(comparisonDecimal(y));
-    }
-
-    private static BigDecimal comparisonDecimal(Number value) {
-      if (value instanceof Double || value instanceof Float) {
-        return BigDecimal.valueOf(value.doubleValue());
-      }
-      if (value instanceof BigInteger) return new BigDecimal((BigInteger) value);
-      return BigDecimal.valueOf(value.longValue());
+      return Double.compare(left, right);
     }
 
     private static boolean ordered(Number x, Number y) {
@@ -382,7 +237,6 @@ public interface NumOps {
 
     @Override
     public final Number add(Number x, Number y) {
-      requireNoDecimal(x, y);
       return Double.valueOf(x.doubleValue() + y.doubleValue());
     }
 
@@ -398,13 +252,11 @@ public interface NumOps {
 
     @Override
     public Number divide(Number x, Number y) {
-      requireNoDecimal(x, y);
       return Double.valueOf(x.doubleValue() / y.doubleValue());
     }
 
     @Override
     public boolean eq(Number x, Number y) {
-      requireNoDecimal(x, y);
       double left = x.doubleValue();
       double right = y.doubleValue();
       return !Double.isNaN(left) && !Double.isNaN(right) && compareExactly(x, y) == 0;
@@ -447,18 +299,12 @@ public interface NumOps {
 
     @Override
     public final Number multiply(Number x, Number y) {
-      requireNoDecimal(x, y);
       return Double.valueOf(x.doubleValue() * y.doubleValue());
     }
 
     @Override
     public final Number negate(Number x) {
       return Double.valueOf(-x.doubleValue());
-    }
-
-    @Override
-    public final NumOps opsWith(BigDecimalOps x) {
-      return this;
     }
 
     @Override
@@ -478,13 +324,11 @@ public interface NumOps {
 
     @Override
     public Number quotient(Number x, Number y) {
-      requireNoDecimal(x, y);
       return Num.quotient(x.doubleValue(), y.doubleValue());
     }
 
     @Override
     public Number remainder(Number x, Number y) {
-      requireNoDecimal(x, y);
       return Num.remainder(x.doubleValue(), y.doubleValue());
     }
   }
@@ -605,11 +449,6 @@ public interface NumOps {
       long val = x.longValue();
       if (val > Long.MIN_VALUE) return Num.num(-val);
       return BigInteger.valueOf(val).negate();
-    }
-
-    @Override
-    public final NumOps opsWith(BigDecimalOps x) {
-      return NumUtils.BIGDECIMAL_OPS;
     }
 
     @Override

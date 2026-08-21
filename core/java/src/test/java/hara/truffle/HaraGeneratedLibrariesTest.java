@@ -137,7 +137,7 @@ public class HaraGeneratedLibrariesTest {
   public void portableTypeReturnsCanonicalAndNamedKeywords() {
     try (Context context = context()) {
       assertEquals(
-          "[:std.native.Nil :std.native.Integer :std.native.Decimal :std.native.String :std.native.Keyword "
+          "[:std.native.Nil :std.native.Integer :std.native.Float :std.native.String :std.native.Keyword "
               + ":std.native.Symbol :std.native.Tuple :std.native.Vector :std.native.HashMap "
               + ":std.native.OrderedSet :std.native.Pointer :std.native.Function :std.native.Atom :std.native.Tuple "
               + ":std.native.Tuple :std.native.Vector :std.native.RegExp]",

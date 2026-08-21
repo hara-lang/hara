@@ -22,7 +22,6 @@ import hara.lang.protocol.ILookup;
 import hara.lang.protocol.IDisplay;
 import hara.lang.protocol.IEquality;
 import java.lang.reflect.Array;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.Iterator;
 import java.util.List;
@@ -59,9 +58,6 @@ public final class HaraBox implements TruffleObject, IEquality {
     if (value instanceof BigInteger) {
       return exportBigInteger((BigInteger) value);
     }
-    if (value instanceof BigDecimal) {
-      return exportBigDecimal((BigDecimal) value);
-    }
     if (value instanceof Long
         || value instanceof Integer
         || value instanceof Short
@@ -84,11 +80,6 @@ public final class HaraBox implements TruffleObject, IEquality {
   @TruffleBoundary
   private static Object exportBigInteger(BigInteger value) {
     return new HaraBigInteger(value);
-  }
-
-  @TruffleBoundary
-  private static Object exportBigDecimal(BigDecimal value) {
-    return new HaraDecimal(value);
   }
 
   @ExportMessage

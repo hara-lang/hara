@@ -7,7 +7,6 @@ import hara.lang.base.G;
 import hara.lang.data.Keyword;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -234,7 +233,6 @@ final class HaraDifferentialRunner {
     if (value instanceof Character)
       return Outcome.value("character", Integer.toString((Character) value));
     if (isIntegral(value)) return Outcome.value("integer", value.toString());
-    if (value instanceof BigDecimal) return Outcome.value("decimal", value.toString());
     if (value instanceof Float || value instanceof Double) {
       return Outcome.value("floating", floatingValue(((Number) value).doubleValue()));
     }

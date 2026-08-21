@@ -17,12 +17,10 @@ final class HbxBundleLibrary {
   static final String RESOURCE = "std.foundation.hbx";
   private static final Set<String> SOURCE_OVERRIDES =
       Set.of(
-          "std.foundation",
           "code.test",
           "code.test.artifact",
           "code.test.base.context",
-          "code.test.base.executive",
-          "std.foundation.pretty");
+          "code.test.base.executive");
   private static final Set<String> REMOVED_MODULES =
       Set.of(
           "std.pretty",

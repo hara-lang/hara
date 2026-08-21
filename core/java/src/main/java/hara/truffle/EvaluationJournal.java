@@ -6,7 +6,6 @@ import hara.lang.data.Symbol;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
 import hara.lang.data.types.ISetType;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -237,7 +236,6 @@ public final class EvaluationJournal {
     if (value instanceof Boolean) return "boolean";
     if (value instanceof BigInteger) return "integer";
     if (value instanceof Byte || value instanceof Short || value instanceof Integer || value instanceof Long) return "integer";
-    if (value instanceof BigDecimal) return "decimal";
     if (value instanceof Float || value instanceof Double) return "float";
     if (value instanceof Character) return "character";
     if (value instanceof String) return "string";

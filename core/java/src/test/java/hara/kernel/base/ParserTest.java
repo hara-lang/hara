@@ -3,7 +3,6 @@ package hara.kernel.base;
 import hara.lang.data.*;
 import org.junit.Test;
 
-import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -14,7 +13,7 @@ public class ParserTest {
   @Test
   public void testReadStringNumber() {
     assertEquals(123L, Parser.LispReader.readString("123", null));
-    assertEquals(new BigDecimal("123.45"), Parser.LispReader.readString("123.45", null));
+    assertEquals(Double.valueOf(123.45), Parser.LispReader.readString("123.45", null));
     assertEquals(0xFFL, Parser.LispReader.readString("0xFF", null));
     RuntimeException integerSuffix =
         assertThrows(RuntimeException.class, () -> Parser.LispReader.readString("123N", null));
@@ -32,7 +31,7 @@ public class ParserTest {
     assertEquals("123", hara.lang.base.G.display(123L));
     assertEquals("(double 123.45)", hara.lang.base.G.display(123.45));
     assertEquals(123L, Parser.LispReader.readString("123", null));
-    assertEquals(new BigDecimal("123.45"), Parser.LispReader.readString("123.45", null));
+    assertEquals(Double.valueOf(123.45), Parser.LispReader.readString("123.45", null));
   }
 
   @Test

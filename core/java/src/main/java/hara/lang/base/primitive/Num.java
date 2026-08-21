@@ -3,16 +3,11 @@ package hara.lang.base.primitive;
 import hara.lang.base.NumOps;
 import hara.lang.base.NumUtils;
 
-import java.math.BigDecimal;
 import java.math.BigInteger;
 
 public interface Num {
 
   static double asDouble(Object value) {
-    if (value instanceof BigDecimal) {
-      throw new IllegalArgumentException(
-          "BigDecimal and floating-point values require an explicit conversion");
-    }
     return ((Number) value).doubleValue();
   }
 
@@ -139,7 +134,6 @@ public interface Num {
     else if (xc == Double.class) return NumUtils.Category.FLOATING;
     else if (xc == Long.class) return NumUtils.Category.INTEGER;
     else if (xc == Float.class) return NumUtils.Category.FLOATING;
-    else if (xc == BigDecimal.class) return NumUtils.Category.DECIMAL;
     else return NumUtils.Category.INTEGER;
   }
 
@@ -201,20 +195,8 @@ public interface Num {
     return NumUtils.normalizeInteger(n.divide(d));
   }
 
-  public static BigDecimal canonicalDecimal(BigDecimal value) {
-    return NumUtils.normalizeDecimal(value);
-  }
-
   public static BigInteger toBigInteger(Number value) {
     return NumUtils.toBigInteger(value);
-  }
-
-  public static BigDecimal toBigDecimal(Number value) {
-    if (value instanceof BigDecimal) return canonicalDecimal((BigDecimal) value);
-    if (value instanceof BigInteger) return canonicalDecimal(new BigDecimal((BigInteger) value));
-    if (value instanceof Double || value instanceof Float)
-      return canonicalDecimal(BigDecimal.valueOf(value.doubleValue()));
-    return canonicalDecimal(BigDecimal.valueOf(value.longValue()));
   }
 
   public static double divide(double x, double y) {
@@ -768,7 +750,6 @@ public interface Num {
       return NumUtils.LONG_OPS;
     else if (xc == Double.class || xc == Float.class) return NumUtils.DOUBLE_OPS;
     else if (xc == BigInteger.class) return NumUtils.BIGINT_OPS;
-    else if (xc == BigDecimal.class) return NumUtils.BIGDECIMAL_OPS;
     else return NumUtils.BIGINT_OPS;
   }
 
@@ -794,8 +775,8 @@ public interface Num {
     double q = n / d;
     if (q <= Long.MAX_VALUE && q >= Long.MIN_VALUE) {
       return (long) q;
-    } else { // bigint quotient
-      return new BigDecimal(q).toBigInteger().doubleValue();
+    } else {
+      return q;
     }
   }
 
@@ -836,22 +817,14 @@ public interface Num {
   }
 
   // @WarnBoxedMath(false)
-  public static Number rationalize(Number x) {
-    if (x instanceof Float || x instanceof Double)
-      return canonicalDecimal(BigDecimal.valueOf(x.doubleValue()));
-    else if (x instanceof BigDecimal) return canonicalDecimal((BigDecimal) x);
-    return x;
-  }
-
   public static double remainder(double n, double d) {
     if (d == 0) throw new ArithmeticException("Divide by zero");
 
     double q = n / d;
     if (q <= Long.MAX_VALUE && q >= Long.MIN_VALUE) {
       return (n - ((long) q) * d);
-    } else { // bigint quotient
-      Number bq = new BigDecimal(q).toBigInteger();
-      return (n - bq.doubleValue() * d);
+    } else {
+      return (n - ((long) q) * d);
     }
   }
 

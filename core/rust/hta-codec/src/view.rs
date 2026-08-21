@@ -5,10 +5,10 @@
 //! exact nested value spans for hashing, storage, or later composition.
 
 use super::{
-    encode_value, ARRAY, ATOM, BIG_INTEGER, BYTES, CHARACTER, CONS, DECIMAL, EXCEPTION_INFO, F64,
-    FALSE, HANDLE, I64, KEYWORD, LIST, MAGIC, MAP, MAX_FRAME_BYTES, MAX_NESTING_DEPTH, NAMESPACE,
-    NIL, OBJECT, ORDERED_MAP, ORDERED_SET, POINTER, QUEUE, REGEX, SET, SORTED_MAP, SORTED_SET,
-    STRING, STRUCT, SYMBOL, TAGGED, TRIE, TRUE, TUPLE, VAR, VAR_REF, VECTOR,
+    encode_value, ARRAY, ATOM, BIG_INTEGER, BYTES, CHARACTER, CONS, EXCEPTION_INFO, F64, FALSE,
+    HANDLE, I64, KEYWORD, LIST, MAGIC, MAP, MAX_FRAME_BYTES, MAX_NESTING_DEPTH, NAMESPACE, NIL,
+    OBJECT, ORDERED_MAP, ORDERED_SET, POINTER, QUEUE, REGEX, SET, SORTED_MAP, SORTED_SET, STRING,
+    STRUCT, SYMBOL, TAGGED, TRIE, TRUE, TUPLE, VAR, VAR_REF, VECTOR,
 };
 use hara_abi::ImmutableValue as PortableValue;
 use std::str;
@@ -35,7 +35,6 @@ pub enum Kind {
     Object,
     Character,
     BigInteger,
-    Decimal,
     Regex,
     Tuple,
     Cons,
@@ -129,7 +128,6 @@ impl<'a> ValueView<'a> {
             OBJECT => Kind::Object,
             CHARACTER => Kind::Character,
             BIG_INTEGER => Kind::BigInteger,
-            DECIMAL => Kind::Decimal,
             REGEX => Kind::Regex,
             TUPLE => Kind::Tuple,
             CONS => Kind::Cons,
@@ -188,7 +186,7 @@ impl<'a> ValueView<'a> {
 
     pub fn text(&self) -> Result<&'a str, String> {
         match self.bare[0] {
-            STRING | KEYWORD | SYMBOL | NAMESPACE | BIG_INTEGER | DECIMAL | REGEX => {
+            STRING | KEYWORD | SYMBOL | NAMESPACE | BIG_INTEGER | REGEX => {
                 str::from_utf8(sized_payload(self.bare)?)
                     .map_err(|_| "hta/value-malformed: text payload is not valid UTF-8".into())
             }
@@ -359,7 +357,7 @@ fn scan_value(bytes: &[u8], start: usize, depth: usize) -> Result<usize, String>
             }
             Ok(end)
         }
-        STRING | KEYWORD | SYMBOL | NAMESPACE | BIG_INTEGER | DECIMAL | REGEX => {
+        STRING | KEYWORD | SYMBOL | NAMESPACE | BIG_INTEGER | REGEX => {
             let (data_start, end) = sized_range(bytes, cursor)?;
             str::from_utf8(&bytes[data_start..end])
                 .map_err(|_| "hta/value-malformed: invalid UTF-8".to_string())?;
