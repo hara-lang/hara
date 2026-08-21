@@ -27,9 +27,7 @@ pub(super) fn read_archive(path: &Path) -> Result<PackageManifest, PackageManife
     Ok(manifest)
 }
 
-fn read_manifest_source(
-    archive: &mut ZipArchive<File>,
-) -> Result<String, PackageManifestError> {
+fn read_manifest_source(archive: &mut ZipArchive<File>) -> Result<String, PackageManifestError> {
     let mut seen = BTreeSet::new();
     let mut manifest = None;
     for index in 0..archive.len() {

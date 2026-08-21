@@ -214,9 +214,9 @@ fn extract_package_root(
             if canonical.is_empty()
                 || canonical.contains('\\')
                 || canonical.split('/').any(str::is_empty)
-                || relative
-                    .components()
-                    .any(|component| matches!(component, std::path::Component::CurDir))
+                || relative.components().any(|component| {
+                    matches!(component, std::path::Component::CurDir)
+                })
             {
                 return Err(format!(
                     "package/invalid-manifest: archive contains non-canonical path {raw}"
@@ -278,12 +278,13 @@ fn validate_installed_root(
     }
     let project = read_project(package_root)?;
     let coordinate = project::normalize_coordinate(&project.id)?;
-    let manifest_coordinate = project::normalize_coordinate(&manifest.identity).map_err(|error| {
-        format!(
-            "package/invalid-manifest: package identity {} is invalid: {error}",
-            manifest.identity
-        )
-    })?;
+    let manifest_coordinate =
+        project::normalize_coordinate(&manifest.identity).map_err(|error| {
+            format!(
+                "package/invalid-manifest: package identity {} is invalid: {error}",
+                manifest.identity
+            )
+        })?;
     if coordinate != manifest_coordinate {
         return Err(format!(
             "package/invalid-manifest: project identity {coordinate} does not match package identity {manifest_coordinate}"

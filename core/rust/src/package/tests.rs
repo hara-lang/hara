@@ -106,7 +106,10 @@ fn runtime_archive(
     ));
     let mut entries = vec![
         ("package.edn".to_owned(), package.into_bytes()),
-        ("artifacts/provider.hta".to_owned(), archived_artifact.to_vec()),
+        (
+            "artifacts/provider.hta".to_owned(),
+            archived_artifact.to_vec(),
+        ),
         ("project.edn".to_owned(), project.to_vec()),
     ];
     if extra_file {
@@ -118,9 +121,7 @@ fn runtime_archive(
 
 fn wasm_requirements() -> PackageRuntimeRequirements {
     PackageRuntimeRequirements {
-        supported_targets: ["wasm32-wasi-preview1".to_owned()]
-            .into_iter()
-            .collect(),
+        supported_targets: ["wasm32-wasi-preview1".to_owned()].into_iter().collect(),
         supported_abis: ["hta.v1".to_owned()].into_iter().collect(),
         available_capabilities: ["db/connect".to_owned()].into_iter().collect(),
         allowed_host_calls: ["db/socket".to_owned()].into_iter().collect(),
@@ -303,9 +304,7 @@ fn rejects_tampered_and_undeclared_archive_payloads_before_activation() {
     let install_error = install_archive_at(&tampered, &dist).unwrap_err();
     assert!(install_error.contains("package/digest-mismatch"));
     let archive_cache = dist.join("archives/sha256");
-    assert!(
-        !archive_cache.exists() || fs::read_dir(archive_cache).unwrap().next().is_none()
-    );
+    assert!(!archive_cache.exists() || fs::read_dir(archive_cache).unwrap().next().is_none());
     let roots = dist.join("roots/sha256");
     assert!(!roots.exists() || fs::read_dir(roots).unwrap().next().is_none());
 
@@ -329,9 +328,7 @@ fn rejects_tampering_in_an_existing_content_addressed_root() {
     let installed = install_archive_at(&archive, &dist).unwrap();
     fs::write(installed.join("artifacts/provider.hta"), b"evil").unwrap();
     let error = install_archive_at(&archive, &dist).unwrap_err();
-    assert!(
-        error.contains("package/digest-mismatch") || error.contains("package/size-mismatch")
-    );
+    assert!(error.contains("package/digest-mismatch") || error.contains("package/size-mismatch"));
     fs::remove_dir_all(root).unwrap();
 }
 
