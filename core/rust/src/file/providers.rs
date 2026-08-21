@@ -6,8 +6,8 @@
 //! never become part of a mounted descriptor.
 
 use crate::file::{
-    CopyOptions, DeleteOptions, FileEntry, FileError, FileProvider, FileType, MkdirOptions,
-    MoveOptions, WriteMode, WriteOptions,
+    CopyOptions, DeleteOptions, FileError, FileProvider, MkdirOptions, MoveOptions, WriteMode,
+    WriteOptions,
 };
 use crate::filesystem::{
     FilesystemCallContext, FilesystemCapabilities, FilesystemCapability, FilesystemDescriptor,
@@ -118,20 +118,21 @@ impl RemoteFilesystem {
         display: String,
         root: String,
         read_only: bool,
+        blocked_capabilities: impl IntoIterator<Item = FilesystemCapability>,
         extra_extensions: impl IntoIterator<Item = (&'static str, String)>,
     ) -> Result<Self, FileError> {
         if !client.authenticated() {
             return Err(FileError::PermissionDenied);
         }
-        let root = crate::file::logical_normalise(&root)?;
-        let capabilities = effective_capabilities(client.capabilities(), read_only);
+        let _root = crate::file::logical_normalise(&root)?;
+        let capabilities =
+            effective_capabilities(client.capabilities(), read_only, blocked_capabilities);
         let mut descriptor = FilesystemDescriptor::new(
             kind.as_str(),
             validate_display(display, kind.as_str())?,
             read_only,
             capabilities.clone(),
         )
-        .with_extension("provider/root", root)
         .with_extension("provider/root-scoped?", "true");
         for (key, value) in extra_extensions {
             descriptor = descriptor.with_extension(key, value);
@@ -147,37 +148,6 @@ impl RemoteFilesystem {
 
     fn descriptor(&self) -> FilesystemDescriptor {
         self.descriptor.clone()
-    }
-
-    fn check(
-        &self,
-        context: &FilesystemCallContext,
-        capability: FilesystemCapability,
-    ) -> Result<(), FileError> {
-        context.check()?;
-        if self.closed.get() {
-            return Err(FileError::Io("filesystem is closed".into()));
-        }
-        if !self.capabilities.contains(capability) {
-            return Err(FileError::Unsupported);
-        }
-        Ok(())
-    }
-
-    fn check_mutation(
-        &self,
-        context: &FilesystemCallContext,
-        capability: FilesystemCapability,
-        mutation: &FilesystemMutationContext,
-    ) -> Result<(), FileError> {
-        self.check(context, capability)?;
-        if self.read_only {
-            return Err(FileError::PermissionDenied);
-        }
-        if mutation.required() && !self.capabilities.contains(FilesystemCapability::RevisionCheck) {
-            return Err(FileError::Unsupported);
-        }
-        Ok(())
     }
 
     fn stat<'a>(
@@ -283,7 +253,9 @@ impl RemoteFilesystem {
                 }
             }
             if page.next_token.as_deref() == request.token.as_deref() {
-                return Err(FileError::Io("provider returned a repeated page token".into()));
+                return Err(FileError::Io(
+                    "provider returned a repeated page token".into(),
+                ));
             }
             Ok(page)
         })
@@ -404,8 +376,11 @@ impl RemoteFilesystem {
         operation: F,
     ) -> FilesystemFuture<'a, FilesystemMutation>
     where
-        F: FnOnce(Rc<dyn RemoteFilesystemClient>, String, FilesystemMutationContext)
-                -> Result<FilesystemMutation, FileError>
+        F: FnOnce(
+                Rc<dyn RemoteFilesystemClient>,
+                String,
+                FilesystemMutationContext,
+            ) -> Result<FilesystemMutation, FileError>
             + 'a,
     {
         let path = match crate::file::logical_normalise(&path) {
@@ -424,14 +399,13 @@ impl RemoteFilesystem {
         })
     }
 
-    fn close<'a>(&'a self, context: FilesystemCallContext) -> FilesystemFuture<'a, ()> {
+    fn close<'a>(&'a self, _context: FilesystemCallContext) -> FilesystemFuture<'a, ()> {
         let client = self.client.clone();
         let closed = self.closed.clone();
         Box::pin(async move {
             if closed.replace(true) {
                 return Ok(());
             }
-            context.check()?;
             client.close()
         })
     }
@@ -440,20 +414,24 @@ impl RemoteFilesystem {
 fn effective_capabilities(
     capabilities: FilesystemCapabilities,
     read_only: bool,
+    blocked_capabilities: impl IntoIterator<Item = FilesystemCapability>,
 ) -> FilesystemCapabilities {
+    let blocked_capabilities = blocked_capabilities
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
     if read_only {
+        FilesystemCapabilities::new(capabilities.iter().filter(|capability| {
+            matches!(
+                capability,
+                FilesystemCapability::Read | FilesystemCapability::Entries
+            ) && !blocked_capabilities.contains(capability)
+        }))
+    } else {
         FilesystemCapabilities::new(
             capabilities
                 .iter()
-                .filter(|capability| {
-                    matches!(
-                        capability,
-                        FilesystemCapability::Read | FilesystemCapability::Entries
-                    )
-                }),
+                .filter(|capability| !blocked_capabilities.contains(capability)),
         )
-    } else {
-        capabilities
     }
 }
 
@@ -490,10 +468,10 @@ fn ensure_mutation(
     capability: FilesystemCapability,
     mutation: &FilesystemMutationContext,
 ) -> Result<(), FileError> {
-    ensure_capability(capabilities, capability)?;
     if read_only {
         return Err(FileError::PermissionDenied);
     }
+    ensure_capability(capabilities, capability)?;
     if mutation.required() && !capabilities.contains(FilesystemCapability::RevisionCheck) {
         return Err(FileError::Unsupported);
     }
@@ -612,10 +590,7 @@ macro_rules! delegate_filesystem {
                     .move_entry(context, source, target, options, mutation)
             }
 
-            fn close<'a>(
-                &'a self,
-                context: FilesystemCallContext,
-            ) -> FilesystemFuture<'a, ()> {
+            fn close<'a>(&'a self, context: FilesystemCallContext) -> FilesystemFuture<'a, ()> {
                 self.core.close(context)
             }
         }
@@ -645,6 +620,7 @@ impl SftpFilesystem {
                 display.into(),
                 root.into(),
                 read_only,
+                [],
                 [("provider/host-key-verified?", "true".into())],
             )?,
         })
@@ -675,14 +651,19 @@ impl GoogleDriveFilesystem {
         display: impl Into<String>,
         read_only: bool,
     ) -> Result<Self, FileError> {
-        let root_id = require_text(root_id.into(), "Google Drive root id")?;
+        require_text(root_id.into(), "Google Drive root id")?;
         Ok(Self {
             core: RemoteFilesystem::new(
                 FilesystemProviderKind::GoogleDrive,
                 client,
                 display.into(),
-                root_id,
+                "/".into(),
                 read_only,
+                [
+                    FilesystemCapability::Append,
+                    FilesystemCapability::AtomicMove,
+                    FilesystemCapability::PreserveModified,
+                ],
                 [
                     ("provider/workspace-documents", "unsupported".into()),
                     ("provider/shared-drive?", "false".into()),
@@ -717,15 +698,20 @@ impl S3Filesystem {
         display: impl Into<String>,
         read_only: bool,
     ) -> Result<Self, FileError> {
-        let bucket = require_bucket(bucket.into())?;
-        let prefix = validate_prefix(prefix.into())?;
+        require_bucket(bucket.into())?;
+        validate_prefix(prefix.into())?;
         Ok(Self {
             core: RemoteFilesystem::new(
                 FilesystemProviderKind::S3,
                 client,
                 display.into(),
-                format!("/{bucket}/{prefix}"),
+                "/".into(),
                 read_only,
+                [
+                    FilesystemCapability::Mkdir,
+                    FilesystemCapability::Append,
+                    FilesystemCapability::AtomicMove,
+                ],
                 [
                     ("provider/virtual-directories?", "true".into()),
                     ("provider/atomic-move?", "false".into()),
@@ -776,16 +762,24 @@ impl GitHubFilesystem {
             ));
         }
         let read_only = matches!(mode, GitHubMountMode::ReadOnly);
+        let root = crate::file::logical_normalise(&root.into())?;
         Ok(Self {
             core: RemoteFilesystem::new(
                 FilesystemProviderKind::GitHub,
                 client,
                 display.into(),
-                root.into(),
+                root.clone(),
                 read_only,
+                [
+                    FilesystemCapability::Mkdir,
+                    FilesystemCapability::Append,
+                    FilesystemCapability::AtomicMove,
+                    FilesystemCapability::PreserveModified,
+                ],
                 [
                     ("provider/repository", repository),
                     ("provider/ref", reference),
+                    ("provider/root", root),
                     (
                         "provider/mode",
                         if read_only { "read-only" } else { "commit" }.into(),
@@ -803,14 +797,7 @@ impl GitHubFilesystem {
         mode: GitHubMountMode,
         display: impl Into<String>,
     ) -> Result<Self, FileError> {
-        Self::new(
-            Rc::new(client),
-            repository,
-            reference,
-            root,
-            mode,
-            display,
-        )
+        Self::new(Rc::new(client), repository, reference, root, mode, display)
     }
 }
 
@@ -838,7 +825,12 @@ impl WebdavFilesystem {
                 display.into(),
                 root.into(),
                 read_only,
-                [("provider/transport-verified?", "true".into())],
+                [
+                    FilesystemCapability::Append,
+                    FilesystemCapability::AtomicMove,
+                    FilesystemCapability::PreserveModified,
+                ],
+                [("provider/host-key-verified?", "true".into())],
             )?,
         })
     }
@@ -888,12 +880,12 @@ fn require_repository(value: String) -> Result<String, FileError> {
         (Some(owner), Some(name), None)
             if !owner.is_empty()
                 && !name.is_empty()
-                && owner
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || "_.-".contains(character))
-                && name
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || "_.-".contains(character)) =>
+                && owner.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "_.-".contains(character)
+                })
+                && name.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || "_.-".contains(character)
+                }) =>
         {
             Ok(value)
         }
@@ -998,7 +990,7 @@ impl RemoteFilesystemClient for MemoryRemoteClient {
     ) -> Result<FilesystemMutation, FileError> {
         self.check_open()?;
         Ok(Self::mutation(
-            self.provider.write_with_options(path, bytes, options)?,
+            self.provider.write_bytes(path, bytes, options)?,
         ))
     }
 
@@ -1021,7 +1013,9 @@ impl RemoteFilesystemClient for MemoryRemoteClient {
             .parse::<usize>()
             .map_err(|_| FileError::InvalidPath("invalid filesystem page token".into()))?;
         if offset > entries.len() {
-            return Err(FileError::InvalidPath("filesystem page token is out of range".into()));
+            return Err(FileError::InvalidPath(
+                "filesystem page token is out of range".into(),
+            ));
         }
         let limit = request.limit.max(1);
         let end = offset.saturating_add(limit).min(entries.len());
@@ -1039,9 +1033,7 @@ impl RemoteFilesystemClient for MemoryRemoteClient {
         _mutation: &FilesystemMutationContext,
     ) -> Result<FilesystemMutation, FileError> {
         self.check_open()?;
-        Ok(Self::mutation(
-            self.provider.mkdir_path(path, options)?,
-        ))
+        Ok(Self::mutation(self.provider.mkdir_path(path, options)?))
     }
 
     fn delete(
@@ -1051,9 +1043,7 @@ impl RemoteFilesystemClient for MemoryRemoteClient {
         _mutation: &FilesystemMutationContext,
     ) -> Result<FilesystemMutation, FileError> {
         self.check_open()?;
-        Ok(Self::mutation(
-            self.provider.delete_path(path, options)?,
-        ))
+        Ok(Self::mutation(self.provider.delete_path(path, options)?))
     }
 
     fn copy(
@@ -1091,8 +1081,8 @@ impl RemoteFilesystemClient for MemoryRemoteClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filesystem::{FilesystemCapability, FilesystemHandle};
     use crate::file::FileProvider;
+    use crate::filesystem::{FilesystemCapability, FilesystemHandle};
     use crate::filesystem_bridge::block_on_local;
 
     #[test]
@@ -1108,12 +1098,15 @@ mod tests {
         );
         assert_eq!(sftp.err().unwrap().code(), "permission-denied");
 
-        let drive =
-            GoogleDriveFilesystem::from_client(client.clone(), "drive-root", "Drive", true)
-                .unwrap();
+        let drive = GoogleDriveFilesystem::from_client(client.clone(), "drive-root", "Drive", true)
+            .unwrap();
         assert_eq!(drive.core.descriptor.kind(), "google-drive");
         assert_eq!(
-            drive.core.descriptor.extensions().get("provider/root-scoped?"),
+            drive
+                .core
+                .descriptor
+                .extensions()
+                .get("provider/root-scoped?"),
             Some(&"true".to_string())
         );
 
@@ -1139,8 +1132,7 @@ mod tests {
             Some(&"commit".to_string())
         );
 
-        let webdav =
-            WebdavFilesystem::from_client(client, "/remote", "WebDAV", true).unwrap();
+        let webdav = WebdavFilesystem::from_client(client, "/remote", "WebDAV", true).unwrap();
         assert_eq!(webdav.core.descriptor.kind(), "webdav");
     }
 
@@ -1148,24 +1140,19 @@ mod tests {
     fn provider_operations_are_async_and_confined_to_canonical_paths() {
         let client = MemoryRemoteClient::new();
         client.insert("/hello.txt", b"hello".to_vec()).unwrap();
-        let filesystem =
-            SftpFilesystem::from_client(client, "/", "SFTP", false).unwrap();
-        let entry = block_on_local(filesystem.stat(
-            FilesystemCallContext::default(),
-            "/./hello.txt".into(),
-        ))
+        let filesystem = SftpFilesystem::from_client(client, "/", "SFTP", false).unwrap();
+        let entry = block_on_local(
+            filesystem.stat(FilesystemCallContext::default(), "/./hello.txt".into()),
+        )
         .unwrap();
         assert_eq!(entry.path, "/hello.txt");
-        let bytes = block_on_local(filesystem.read(
-            FilesystemCallContext::default(),
-            "/hello.txt".into(),
-        ))
-        .unwrap();
+        let bytes =
+            block_on_local(filesystem.read(FilesystemCallContext::default(), "/hello.txt".into()))
+                .unwrap();
         assert_eq!(bytes, b"hello");
-        let error = block_on_local(filesystem.read(
-            FilesystemCallContext::default(),
-            "/../../secret".into(),
-        ))
+        let error = block_on_local(
+            filesystem.read(FilesystemCallContext::default(), "/../../secret".into()),
+        )
         .unwrap_err();
         assert_eq!(error.code(), "outside-root");
     }
@@ -1173,8 +1160,7 @@ mod tests {
     #[test]
     fn read_only_and_close_boundaries_are_deterministic() {
         let client = MemoryRemoteClient::new();
-        let filesystem =
-            WebdavFilesystem::from_client(client, "/", "WebDAV", true).unwrap();
+        let filesystem = WebdavFilesystem::from_client(client, "/", "WebDAV", true).unwrap();
         let write = block_on_local(filesystem.write(
             FilesystemCallContext::default(),
             "/new".into(),
@@ -1186,11 +1172,8 @@ mod tests {
         assert_eq!(write.code(), "permission-denied");
         block_on_local(filesystem.close(FilesystemCallContext::default())).unwrap();
         block_on_local(filesystem.close(FilesystemCallContext::default())).unwrap();
-        let closed = block_on_local(filesystem.read(
-            FilesystemCallContext::default(),
-            "/".into(),
-        ))
-        .unwrap_err();
+        let closed = block_on_local(filesystem.read(FilesystemCallContext::default(), "/".into()))
+            .unwrap_err();
         assert_eq!(closed.code(), "io");
     }
 
@@ -1202,8 +1185,6 @@ mod tests {
             WebdavFilesystem::from_client(client, "/", "WebDAV", true).unwrap(),
         );
         assert_eq!(handle.descriptor().kind(), "webdav");
-        assert!(handle
-            .capabilities()
-            .contains(FilesystemCapability::Read));
+        assert!(handle.capabilities().contains(FilesystemCapability::Read));
     }
 }
