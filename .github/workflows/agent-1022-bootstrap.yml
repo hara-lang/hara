@@ -4,20 +4,29 @@ on:
   push:
     branches:
       - agent/1022-remove-native-decimal-bootstrap
+  pull_request:
+    branches: [main]
+    paths:
+      - "core/**"
+      - ".github/workflows/agent-1022-bootstrap.yml"
 
 permissions:
   contents: write
 
 jobs:
   validate:
-    if: ${{ github.actor != 'github-actions[bot]' }}
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - uses: actions/setup-java@v4
         with:
@@ -25,13 +34,23 @@ jobs:
           java-version: '21'
           cache: maven
 
-      - name: Normalize reviewed insertions
+      - name: Complete the reviewed Decimal-free delivery slice
         shell: bash
         run: |
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
 
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{path}: expected one replacement, found {count}")
+              file.write_text(text.replace(old, new, 1))
+
+          # Normalize the bounded Java comparison insertion without formatting
+          # unrelated source files.
           path = Path("core/java/src/main/java/hara/lang/base/NumOps.java")
           text = path.read_text()
           start_marker = "    private static int compareIntegerToDouble(BigInteger integer, double floating) {"
@@ -39,7 +58,7 @@ jobs:
           start = text.find(start_marker)
           end = text.find(end_marker, start)
           if start < 0 or end < 0:
-              raise RuntimeError("NumOps generated comparison block was not found")
+              raise RuntimeError("NumOps comparison block was not found")
           replacement = """    private static int compareIntegerToDouble(BigInteger integer, double floating) {
               if (Double.isNaN(floating)) return -1;
               if (floating == Double.POSITIVE_INFINITY) return -1;
@@ -80,45 +99,81 @@ jobs:
               test.write_text(text[:-3] + "}\n")
           elif not text.endswith("\n}\n"):
               raise RuntimeError("NumTest ending was not recognized")
+
+          replace_once(
+              "core/rust/Cargo.toml",
+              "9418d5f5bf49b618f374aa663832f11b16f01815",
+              "c781d30c8c8dbbdc26cf91ad1f7e74152056cba0",
+          )
+          replace_once(
+              "core/rust/scripts/layout-baseline.txt",
+              "lines src/numeric.rs 857\n",
+              "",
+          )
           PY
 
-          cargo fmt --manifest-path core/rust/Cargo.toml -- --check
-          git diff --check
+          cargo update --manifest-path core/rust/Cargo.toml -p hara-db-postgres
 
-      - name: Regenerate the Foundation HBX with the Decimal-free codec
-        shell: bash
-        run: |
-          set -euo pipefail
+          mapfile -t changed_rust < <(
+            git diff --name-only 306b98de7ef036182c1af4e0c9bdbd2b4b67720b -- '*.rs'
+          )
+          if ((${#changed_rust[@]})); then
+            rustfmt --edition 2021 --config skip_children=true "${changed_rust[@]}"
+          fi
+
           cargo run --quiet --manifest-path core/rust/Cargo.toml \
             --features bytecode-vm \
             --bin hara-foundation-artifact -- generate
           cargo run --quiet --manifest-path core/rust/Cargo.toml \
             --features bytecode-vm \
             --bin hara-foundation-artifact -- check
+
+          ! git grep -n ':std.native.Decimal' -- core
+          ! git grep -n 'Value::Decimal' -- core
+          ! git grep -n 'Form::Decimal' -- core
+          ! git grep -n 'MetadataValue::Decimal' -- core
+          ! git grep -n 'HaraDecimal' -- core
           git diff --check
 
-      - name: Run focused Rust tests
+      - name: Run focused Rust validation
         shell: bash
         run: |
           set -euo pipefail
+          mapfile -t changed_rust < <(
+            git diff --name-only 306b98de7ef036182c1af4e0c9bdbd2b4b67720b -- '*.rs'
+          )
+          if ((${#changed_rust[@]})); then
+            rustfmt --edition 2021 --config skip_children=true --check "${changed_rust[@]}"
+          fi
+          cargo check --manifest-path core/rust/Cargo.toml
           cargo test --manifest-path core/rust/Cargo.toml compares_large_integers_to_floats_without_rounding
           cargo test --manifest-path core/rust/hta-codec/Cargo.toml retired_decimal_tag_fails_closed
+          bash core/rust/scripts/check-layout.sh || {
+            status=$?
+            # numeric.rs must no longer be reported. Other overages are current-main debt.
+            ! bash core/rust/scripts/check-layout.sh 2>&1 | grep -F 'src/numeric.rs'
+            exit "$status"
+          }
 
-      - name: Run focused Java tests
+      - name: Run focused JVM and library validation
         shell: bash
         run: |
           set -euo pipefail
           mvn -B -f core/java/pom.xml -Ptruffle \
             -Dtest=NumTest,HaraNumericInteropTest,ParserTest,SessionKernelTest test
+          ./scripts/runtime/run-lib-tests
+          test "$(./core/hara eval '(type 1.5)')" = ':std.native.Float'
 
-      - name: Commit validated implementation
+      - name: Commit the verified implementation tree
         shell: bash
         run: |
           set -euo pipefail
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add core/java/src/main/java/hara/lang/base/NumOps.java \
-                  core/java/src/test/java/hara/lang/base/NumTest.java \
-                  core/rust/assets/std.foundation.hbx
-          git commit -m 'test(runtime): validate native Decimal removal (#1022)'
+          git add -A
+          git reset .github/workflows/agent-1022-bootstrap.yml
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m 'fix(runtime): complete native Decimal removal (#1022)'
           git push origin HEAD:agent/1022-remove-native-decimal-bootstrap
