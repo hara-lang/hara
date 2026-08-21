@@ -29,17 +29,15 @@ jobs:
           set -euo pipefail
           python3 <<'PY'
           from pathlib import Path
-          import re
 
           path = Path("core/java/src/main/java/hara/lang/base/NumOps.java")
           text = path.read_text()
-          pattern = re.compile(
-              r"    private static int compareIntegerToDouble\(BigInteger integer, double floating\) \{.*?"
-              r"    private static boolean ordered\(Number x, Number y\) \{\n"
-              r"      return !Double\.isNaN\(x\.doubleValue\(\)\) && !Double\.isNaN\(y\.doubleValue\(\)\);\n"
-              r"    \}",
-              re.S,
-          )
+          start_marker = "    private static int compareIntegerToDouble(BigInteger integer, double floating) {"
+          end_marker = "\n\n    @Override\n    public final Number add(Number x, Number y) {"
+          start = text.find(start_marker)
+          end = text.find(end_marker, start)
+          if start < 0 or end < 0:
+              raise RuntimeError("NumOps generated comparison block was not found")
           replacement = """    private static int compareIntegerToDouble(BigInteger integer, double floating) {
               if (Double.isNaN(floating)) return -1;
               if (floating == Double.POSITIVE_INFINITY) return -1;
@@ -72,16 +70,14 @@ jobs:
             private static boolean ordered(Number x, Number y) {
               return !Double.isNaN(x.doubleValue()) && !Double.isNaN(y.doubleValue());
             }"""
-          text, count = pattern.subn(replacement, text, count=1)
-          if count != 1:
-              raise RuntimeError(f"NumOps normalization expected one match, found {count}")
-          path.write_text(text)
+          path.write_text(text[:start] + replacement + text[end:])
 
           test = Path("core/java/src/test/java/hara/lang/base/NumTest.java")
           text = test.read_text()
-          if not text.endswith("\n\n}\n"):
-              raise RuntimeError("NumTest ending did not match the generated form")
-          test.write_text(text[:-3] + "}\n")
+          if text.endswith("\n\n}\n"):
+              test.write_text(text[:-3] + "}\n")
+          elif not text.endswith("\n}\n"):
+              raise RuntimeError("NumTest ending was not recognized")
           PY
 
           cargo fmt --manifest-path core/rust/Cargo.toml -- --check
