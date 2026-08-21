@@ -1,10 +1,55 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+usage() {
+  echo 'usage: run-connector-rust-validation <base-commit> <head-commit>' >&2
+  exit 64
+}
+
+[[ "$#" -eq 2 ]] || usage
+base="$1"
+head="$2"
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
-cargo fmt --manifest-path core/rust/Cargo.toml --all -- --check
+git rev-parse --verify "${base}^{commit}" >/dev/null
+git rev-parse --verify "${head}^{commit}" >/dev/null
+
+path_file="$(mktemp)"
+trap 'rm -f "$path_file"' EXIT
+git diff --name-only -z "$base" "$head" -- core/rust >"$path_file"
+
+formatted=0
+format_failed=false
+while IFS= read -r -d '' path; do
+  case "$path" in
+    *.rs)
+      [[ -f "$path" ]] || continue
+      echo "Checking rustfmt for $path"
+      formatted_file="$(mktemp)"
+      if ! rustfmt --edition 2021 --emit stdout <"$path" >"$formatted_file"; then
+        rm -f "$formatted_file"
+        exit 1
+      fi
+      if ! cmp -s "$path" "$formatted_file"; then
+        printf '::error file=%s::Rust source is not formatted\n' "$path"
+        diff -u "$path" "$formatted_file" || true
+        format_failed=true
+      fi
+      rm -f "$formatted_file"
+      formatted=$((formatted + 1))
+      ;;
+  esac
+done <"$path_file"
+
+if [[ "$formatted" -eq 0 ]]; then
+  echo 'No changed Rust source files require a focused rustfmt check.'
+fi
+if [[ "$format_failed" == true ]]; then
+  exit 1
+fi
+
 cargo clippy --manifest-path core/rust/Cargo.toml --all-targets
 cargo test --manifest-path core/rust/Cargo.toml
 cargo test --manifest-path core/rust/raw/Cargo.toml

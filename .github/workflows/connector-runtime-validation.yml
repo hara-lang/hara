@@ -43,12 +43,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      base: ${{ steps.range.outputs.base }}
+      head: ${{ steps.range.outputs.head }}
       rust: ${{ steps.detect.outputs.rust }}
       java: ${{ steps.detect.outputs.java }}
       contract: ${{ steps.detect.outputs.contract }}
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
 
       - name: Resolve comparison range
@@ -56,11 +59,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          head='${{ github.sha }}'
+          head='${{ github.event.pull_request.head.sha || github.sha }}'
 
           if [[ '${{ github.event_name }}' == 'pull_request' ]]; then
             base='${{ github.event.pull_request.base.sha }}'
-            head='${{ github.event.pull_request.head.sha }}'
           else
             base='${{ github.event.before }}'
             if [[ -z "$base" || "$base" =~ ^0+$ ]] || \
@@ -86,6 +88,9 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
       - name: Validate scripts, scope selection, workflow, and project instructions
         run: bash scripts/runtime/test-connector-runtime-workflow
 
@@ -97,6 +102,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
 
       - name: Checkout hara-specs-registry
         uses: actions/checkout@v4
@@ -130,7 +138,9 @@ jobs:
           components: rustfmt, clippy
 
       - name: Run committed Rust validation
-        run: bash scripts/runtime/run-connector-rust-validation
+        run: |
+          bash scripts/runtime/run-connector-rust-validation \
+            '${{ needs.scope.outputs.base }}' '${{ needs.scope.outputs.head }}'
 
   java:
     name: Java committed-code execution
@@ -140,6 +150,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Checkout hara-specs-registry
         uses: actions/checkout@v4
