@@ -11,6 +11,7 @@ mod clock;
 pub mod core;
 mod direct_wasm;
 pub mod extension;
+pub mod wasm_binding;
 pub mod file;
 #[path = "file/interface.rs"]
 pub mod filesystem;

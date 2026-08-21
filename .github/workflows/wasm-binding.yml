@@ -1,0 +1,101 @@
+name: Wasm binding contract
+
+on:
+  pull_request:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/Cargo.lock'
+      - 'core/rust/src/lib.rs'
+      - 'core/rust/src/direct_wasm.rs'
+      - 'core/rust/src/extension.rs'
+      - 'core/rust/src/wasm_binding.rs'
+      - 'core/rust/src/wasm_binding/**'
+      - '.github/workflows/wasm-binding.yml'
+  push:
+    branches: [main, testing]
+    paths:
+      - 'core/rust/Cargo.toml'
+      - 'core/rust/Cargo.lock'
+      - 'core/rust/src/lib.rs'
+      - 'core/rust/src/direct_wasm.rs'
+      - 'core/rust/src/extension.rs'
+      - 'core/rust/src/wasm_binding.rs'
+      - 'core/rust/src/wasm_binding/**'
+      - '.github/workflows/wasm-binding.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wasm-binding-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check out hara-specs-registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Expose specs registry at the runtime fixture path
+        run: ln -sfn "$GITHUB_WORKSPACE/hara-specs-registry" "$GITHUB_WORKSPACE/../hara-specs-registry"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
+
+      - name: Check touched Rust formatting
+        run: |
+          rustfmt --edition 2021 --check \
+            core/rust/src/wasm_binding.rs \
+            core/rust/src/wasm_binding/canonical.rs \
+            core/rust/src/wasm_binding/parser.rs \
+            core/rust/src/wasm_binding/syntax.rs \
+            core/rust/src/wasm_binding/tests.rs
+
+      - name: Enforce bounded binding modules
+        run: |
+          files=(
+            core/rust/src/wasm_binding.rs
+            core/rust/src/wasm_binding/canonical.rs
+            core/rust/src/wasm_binding/parser.rs
+            core/rust/src/wasm_binding/syntax.rs
+            core/rust/src/wasm_binding/tests.rs
+          )
+          for file in "${files[@]}"; do
+            lines=$(wc -l < "$file")
+            echo "$file: $lines"
+            test "$lines" -lt 700
+          done
+
+      - name: Test the restricted interface contract
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --lib wasm_binding
+
+      - name: Preserve direct Wasm discovery
+        run: |
+          cargo test --locked --manifest-path core/rust/Cargo.toml \
+            --lib direct_wasm
+
+      - name: Check feature-minimal library
+        run: |
+          cargo check --locked --manifest-path core/rust/Cargo.toml \
+            --no-default-features --lib
+
+      - name: Check portable browser library
+        run: |
+          cargo check --locked --manifest-path core/rust/Cargo.toml \
+            --target wasm32-unknown-unknown --lib
