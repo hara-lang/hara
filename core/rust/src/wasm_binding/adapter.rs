@@ -43,8 +43,9 @@ pub fn generate_adapter(
         return Err("wasm-adapter/start-denied: wrapped module declares a start function".into());
     }
     interface.verify_direct(&inspection)?;
+    let exports = ordered_exports(interface)?;
 
-    let bytes = emit_forwarder(&interface.exports)?;
+    let bytes = emit_forwarder(&exports)?;
     let module_digest = digest(module_bytes);
     let interface_digest = interface.digest();
     let adapter_digest = digest(&bytes);
@@ -53,6 +54,7 @@ pub fn generate_adapter(
         &module_digest,
         &interface_digest,
         &adapter_digest,
+        &exports,
     );
 
     Ok(AdapterArtifact {
@@ -62,6 +64,20 @@ pub fn generate_adapter(
         interface_digest,
         adapter_digest,
     })
+}
+
+fn ordered_exports(interface: &WasmInterface) -> Result<Vec<BindingFunction>, String> {
+    let mut exports = interface.exports.clone();
+    exports.sort_by(|left, right| left.name.cmp(&right.name));
+    for pair in exports.windows(2) {
+        if pair[0].name == pair[1].name {
+            return Err(format!(
+                "wasm-adapter/export-ambiguous: duplicate Hara export {}",
+                pair[0].name
+            ));
+        }
+    }
+    Ok(exports)
 }
 
 fn emit_forwarder(exports: &[BindingFunction]) -> Result<Vec<u8>, String> {
@@ -131,9 +147,9 @@ fn adapter_manifest(
     module_digest: &str,
     interface_digest: &str,
     adapter_digest: &str,
+    exports: &[BindingFunction],
 ) -> String {
-    let exports = interface
-        .exports
+    let exports = exports
         .iter()
         .map(|export| {
             Form::Map(vec![
@@ -257,6 +273,36 @@ mod tests {
             vec!["i64", "i64"]
         );
         assert_eq!(inspection.exports[0].signature.returns, "i64");
+    }
+
+    #[test]
+    fn adapter_forwards_calls_when_composed_with_the_wrapped_library() {
+        let artifact = generate_adapter(ADD, &interface()).unwrap();
+        let engine = wasmtime::Engine::default();
+        let library = wasmtime::Module::new(&engine, ADD).unwrap();
+        let adapter = wasmtime::Module::new(&engine, &artifact.bytes).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let library_instance =
+            wasmtime::Instance::new(&mut store, &library, &[]).unwrap();
+        let add = library_instance.get_func(&mut store, "add").unwrap();
+        let adapter_instance =
+            wasmtime::Instance::new(&mut store, &adapter, &[add.into()]).unwrap();
+        let sum = adapter_instance
+            .get_typed_func::<(i64, i64), i64>(&mut store, "sum")
+            .unwrap();
+
+        assert_eq!(sum.call(&mut store, (19, 23)).unwrap(), 42);
+    }
+
+    #[test]
+    fn adapter_output_order_is_canonical_for_constructed_interfaces() {
+        let mut interface = interface();
+        interface.exports.reverse();
+        let first = generate_adapter(ADD, &interface).unwrap();
+        interface.exports.reverse();
+        let second = generate_adapter(ADD, &interface).unwrap();
+
+        assert_eq!(first, second);
     }
 
     #[test]
