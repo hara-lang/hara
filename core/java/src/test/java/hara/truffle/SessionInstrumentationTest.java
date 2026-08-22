@@ -322,7 +322,23 @@ public class SessionInstrumentationTest {
                       Capability.EVENT_LIFECYCLE,
                       Capability.INSPECT_SOURCE_LOCATION),
                   new ProjectionRequest(true, null, null, null, null, null, null)));
+      NativeInstrumentHandle withoutLocation =
+          service.register(
+              passive(
+                  "hbc-without-location",
+                  sessionId.value(),
+                  Set.of(
+                      EventKind.INSTRUCTION_EXECUTE,
+                      EventKind.CALL_ENTER,
+                      EventKind.CALL_RETURN,
+                      EventKind.EXECUTION_TERMINAL),
+                  Set.of(
+                      Capability.EVENT_INSTRUCTION,
+                      Capability.EVENT_CALL,
+                      Capability.EVENT_LIFECYCLE),
+                  ProjectionRequest.none()));
       var attachment = service.attach(trace, target);
+      var withoutLocationAttachment = service.attach(withoutLocation, target);
 
       HbcProgram program =
           new HbcProgram(
@@ -363,8 +379,12 @@ public class SessionInstrumentationTest {
                       event.location() != null
                           && event.location().instructionPointer() != null
                           && event.location().formPath().isEmpty()));
+      var without = service.drainEvents(withoutLocation).events();
+      assertFalse(without.isEmpty());
+      assertTrue(without.stream().allMatch(event -> event.location() == null));
 
       service.detach(attachment);
+      service.detach(withoutLocationAttachment);
       assertEquals(42L, session.executeHbc(program));
       assertTrue(service.drainEvents(trace).events().isEmpty());
     }
