@@ -4208,6 +4208,7 @@ public final class HaraContext {
               "std.native.Document/" + method,
               values -> NativeDocument.operation("std.native.Document/" + method, values)));
     }
+
     HaraNamespace test = namespace("std.native.Test");
     test.define("catalog", new VariadicBuiltin("std.native.Test/catalog", this::nativeTestCatalog));
     test.define("config", new VariadicBuiltin("std.native.Test/config", this::nativeTestConfig));
