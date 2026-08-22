@@ -8,6 +8,7 @@ import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.instrumentation.TruffleInstrument;
 import com.oracle.truffle.api.source.SourceSection;
 import hara.truffle.InstrumentationModel.EventKind;
+import hara.truffle.node.HaraNodes;
 import java.util.Map;
 
 @TruffleInstrument.Registration(
@@ -44,7 +45,7 @@ public final class HaraInstrumentation extends TruffleInstrument {
             new ExecutionEventListener() {
               @Override
               public void onEnter(EventContext context, VirtualFrame frame) {
-                publish(event, context, null);
+                publish(actualEvent(event, context), context, null);
               }
 
               @Override
@@ -62,7 +63,29 @@ public final class HaraInstrumentation extends TruffleInstrument {
                   publish(EventKind.EXCEPTION_RAISE, context, exception);
                 }
               }
+
+              @Override
+              public void onYield(EventContext context, VirtualFrame frame, Object value) {
+                if (reportExceptions) {
+                  publish(EventKind.PROMISE_SUSPEND, context, null);
+                }
+              }
+
+              @Override
+              public void onResume(EventContext context, VirtualFrame frame) {
+                if (reportExceptions) {
+                  publish(EventKind.PROMISE_RESUME, context, null);
+                }
+              }
             });
+  }
+
+  private static EventKind actualEvent(EventKind event, EventContext context) {
+    if (event == EventKind.VAR_SET
+        && context.getInstrumentedNode() instanceof HaraNodes.SetField) {
+      return EventKind.FIELD_SET;
+    }
+    return event;
   }
 
   private static void publish(EventKind event, EventContext eventContext, Throwable exception) {
