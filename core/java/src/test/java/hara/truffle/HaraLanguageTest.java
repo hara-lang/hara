@@ -49,7 +49,7 @@ public class HaraLanguageTest {
           context
               .eval(
                   HaraLanguage.ID,
-                  "(do (require 'std.context.registry) "
+                  "(do (require 'std.lib.context.registry) "
                       + " (let [result (deref #ptr {:context :null :id \"ROOT\"})] "
                       + "  [(first result) (pointer? (second result)) (get (second result) :id)]))")
               .toString());

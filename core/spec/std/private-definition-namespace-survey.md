@@ -12,13 +12,13 @@ The migration classes are normative and are defined in
 
 ## Bootstrap and generator ledger (`:bootstrap-ledger`, 4)
 
-`code.migrate.script`, `lang.core`, `std.foundation`, `std.foundation.bootstrap`
+`tool.migrate.script`, `lang.core`, `std.foundation`, `std.foundation.bootstrap`
 
 ## Approved cross-namespace extraction (`:extract-symbols`, 18)
 
 `std.block.layout`, `std.codec.base64`, `std.codec.form`, `std.codec.hex`, `std.codec.url`
 `std.dom.diff`, `std.dom.item`, `std.dom.mock`, `std.dom.update`, `std.format.table`
-`std.format.terminal`, `std.lib.collection`, `std.lib.component`, `std.lib.fs`, `std.lib.time`
+`std.format.terminal`, `std.lib.collection`, `std.lib.component`, `std.fs`, `std.lib.time`
 `std.logic.datalog`, `std.text.diff`, `workspace.core`
 
 ## Publication-only facade conversion (`:facade-conversion`, 17)
@@ -42,8 +42,8 @@ The migration classes are normative and are defined in
 
 ## Standard owner requiring placement review (`:owner-review`, 20)
 
-`code.deploy`, `code.framework`, `code.manage`, `code.migrate.project`, `code.migrate.clojure`
-`std.foundation.pretty`, `std.foundation.string`, `std.lib.fs.path`, `std.lib.fs.walk`
+`code.project.deploy`, `code.framework`, `code.manage`, `tool.migrate.project`, `tool.migrate.clojure`
+`std.foundation.pretty`, `std.foundation.string`, `std.fs.path`, `std.fs.walk`
 `std.sandbox`, `std.substrate`, `tool.inrepl`, `tool.package`, `tool.project`, `tool.runtime`
 `tool.sh`, `tool.sh.docker`, `tool.sh.git`, `tool.sh.tmux`, `tool.vm`
 

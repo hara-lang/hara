@@ -52,7 +52,7 @@ public class CodeTestLibraryTest {
                       + "\"portable\" 1 1 nil nil (fn [] 42) {})] "
                       + "[(common/succeeded? "
                       + "  (common/verify (common/exactly 1) 1)) "
-                      + " (:pass (test/check "
+                      + " (test/comparison-passed? (test/check "
                       + "         (fn [] {:a 1 :b 2}) "
                       + "         (collection/contains-map {:a 1}))) "
                       + " (types/fact? fact) "

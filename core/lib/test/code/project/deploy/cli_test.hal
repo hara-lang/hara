@@ -1,0 +1,152 @@
+(ns code.project.deploy.cli-test
+  (:use code.test)
+  (:require [code.project.deploy.cli :as deploy-cli]
+            [tool.cli.deploy-manifest :as deploy-manifest]
+            [tool.cli.template :as template]))
+
+(defn request
+  [arguments options]
+  {:request/route :tool.cli.route/deploy
+   :request/arguments arguments
+   :request/options options
+   :request/cwd "."
+   :request/project nil})
+
+(fact "deploy parsing preserves selector cardinality"
+  (let [none (deploy-cli/parse-request
+              (request ["check"] {}))
+        one (deploy-cli/parse-request
+             (request ["check" ":alpha"] {}))
+        many (deploy-cli/parse-request
+              (request ["check" ":alpha" ":beta"] {}))]
+    [(:deploy/selector none)
+     (:deploy/selector one)
+     (:deploy/selector many)])
+  => [:all :alpha [:alpha :beta]])
+
+(fact "publish options are restricted to publish"
+  (try
+    (do
+      (deploy-cli/parse-request
+       (request ["check" "--dry-run"] {}))
+      false)
+    (catch Throwable error
+      (str/includes?
+       (ex-message error)
+       "only available")))
+  => true)
+
+(fact "injected catalogs normalize paths and retain dependency order"
+  (let [calls (atom [])
+        loader
+        (fn [request]
+          {:project/root "/workspace"
+           :packages
+           {:alpha {:path "alpha"}
+            :beta {:root "beta"
+                   :depends [:alpha]}}})
+        parsed
+        (deploy-cli/parse-request
+         (request
+          ["publish" "--tap" "preview" "--dry-run"]
+          {}))
+        result
+        (deploy-cli/execute
+         loader
+         parsed
+         {:process/run
+          (fn [argv options]
+            (swap! calls conj argv)
+            {:exit 0
+             :stdout "ok"})})]
+    [(:result/outcome result)
+     (map last (deref calls))
+     (get-in result [:result/data :summary :errors])
+     (get-in result [:result/data :records 0 :package])
+     (get-in result [:result/data :records 1 :package])
+     (str/includes?
+      (str (first (deref calls)))
+      "--dry-run")])
+  => [:tool.cli.outcome/success
+      ["/workspace/alpha" "/workspace/beta"]
+      0
+      :alpha
+      :beta
+      true])
+
+(fact "partial package failure returns exit one with the complete summary"
+  (let [loader
+        (fn [request]
+          {:project/root "/workspace"
+           :packages
+           {:alpha {:path "alpha"}
+            :beta {:path "beta"
+                   :depends [:alpha]}}})
+        parsed
+        (deploy-cli/parse-request
+         (request ["install"] {}))
+        result
+        (deploy-cli/execute
+         loader
+         parsed
+         {:process/run
+          (fn [argv options]
+            (if (str/ends-with? (last argv) "/beta")
+              {:exit 1 :stderr "failed"}
+              {:exit 0 :stdout "ok"}))})]
+    [(:result/outcome result)
+     (:result/exit result)
+     (count (get-in result [:result/data :records]))
+     (count (get-in result [:result/data :errors]))])
+  => [:tool.cli.outcome/failed 1 2 1])
+
+(fact "malformed package catalogs remain command errors"
+  (let [parsed
+        (deploy-cli/parse-request
+         (request ["check"] {}))]
+    (try
+      (do
+        (deploy-cli/execute
+         (fn [request] {:packages []})
+         parsed
+         {})
+        false)
+      (catch Throwable error
+        (str/includes?
+         (ex-message error)
+         ":packages must be a map"))))
+  => true)
+
+(fact "deploy declarations extend the effective app manifest idempotently"
+  (let [base {:cli/apps []
+              :cli/routes []
+              :cli/options []
+              :cli/handlers []}
+        once (deploy-manifest/extend base)
+        twice (deploy-manifest/extend once)]
+    [[(get-in once [:cli/apps 0 :app/id])
+      (get-in once [:cli/routes 0 :route/id])
+      (get-in once [:cli/options 0 :option/id])
+      (get-in once [:cli/handlers 0 :handler/id])]
+     (= once twice)])
+  => [[:tool.cli/deployment
+       :tool.cli.route/deploy
+       :tool.cli.option/config
+       :tool.cli.handler/deploy]
+      true])
+
+(fact "handler-for returns an ordinary template handler"
+  (template/handler?
+   (deploy-cli/handler-for
+    (fn [request]
+      {:project/root "."
+       :packages {}})))
+  => true)
+
+(fact "the exported handler is an ordinary one-argument function"
+  [(fn? deploy-cli/handler)
+   (template/handler? deploy-cli/handler)]
+  => [true false])
+
+(pr-str
+ (run {:namespace "code.project.deploy.cli-test"}))

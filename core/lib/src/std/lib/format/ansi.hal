@@ -1,0 +1,122 @@
+(ns std.lib.format.ansi)
+
+(def ^{:dynamic true} *custom*
+  {:warn :yellow
+   :info :blue
+   :error :red
+   :critical :magenta
+   :highlight :green})
+
+(def +colors+
+  {30 :grey
+   31 :red
+   32 :green
+   33 :yellow
+   34 :blue
+   35 :magenta
+   36 :cyan
+   37 :white
+   90 :bright-grey
+   91 :bright-red
+   92 :bright-green
+   93 :bright-yellow
+   94 :bright-blue
+   95 :bright-magenta
+   96 :bright-cyan
+   97 :bright-white})
+
+(def +highlights+
+  {40 :on-grey
+   41 :on-red
+   42 :on-green
+   43 :on-yellow
+   44 :on-blue
+   45 :on-magenta
+   46 :on-cyan
+   47 :on-white})
+
+(def +attributes+
+  {0 :reset
+   1 :bold
+   2 :dark
+   3 :italic
+   4 :underline
+   5 :blink
+   7 :reverse-color
+   8 :concealed
+   22 :normal})
+
+(def +lookup+
+  (reduce-kv (fn [output code modifier]
+               (assoc output modifier code))
+             {}
+             (merge +colors+ +highlights+ +attributes+)))
+
+(defn encode-raw
+  "Encodes raw ANSI modifier codes as an escape sequence."
+  [codes]
+  (str "\u001b[" (str/join ";" (map str codes)) "m"))
+
+(defn encode
+  "Encodes named ANSI modifiers, including configured custom modifiers."
+  [& modifiers]
+  (encode-raw
+   (mapv
+    (fn [modifier]
+      (or (get +lookup+ modifier)
+          (get +lookup+ (get *custom* modifier))
+          (throw (ex-info "Modifier not available." {:input modifier}))))
+    modifiers)))
+
+(defn style
+  "Wraps text in ANSI modifiers and a reset sequence."
+  [text modifiers]
+  (str (apply encode modifiers) text (encode :reset)))
+
+(defn style-remove
+  "Removes a string consisting only of ANSI control sequences."
+  [text]
+  (if (re-matches #"^((\x1b\x5b|\x9b)[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e])*$" text)
+    ""
+    text))
+
+(defn style-values
+  "Applies one modifier independently to each value and resets at the end."
+  [modifier values]
+  (str (str/join "" (map (fn [value]
+                            (str (encode modifier) value))
+                          values))
+       (encode :reset)))
+
+(defn grey [& values] (style-values :grey values))
+(defn red [& values] (style-values :red values))
+(defn green [& values] (style-values :green values))
+(defn yellow [& values] (style-values :yellow values))
+(defn blue [& values] (style-values :blue values))
+(defn magenta [& values] (style-values :magenta values))
+(defn cyan [& values] (style-values :cyan values))
+(defn white [& values] (style-values :white values))
+(defn bright-grey [& values] (style-values :bright-grey values))
+(defn bright-red [& values] (style-values :bright-red values))
+(defn bright-green [& values] (style-values :bright-green values))
+(defn bright-yellow [& values] (style-values :bright-yellow values))
+(defn bright-blue [& values] (style-values :bright-blue values))
+(defn bright-magenta [& values] (style-values :bright-magenta values))
+(defn bright-cyan [& values] (style-values :bright-cyan values))
+(defn bright-white [& values] (style-values :bright-white values))
+(defn on-grey [& values] (style-values :on-grey values))
+(defn on-red [& values] (style-values :on-red values))
+(defn on-green [& values] (style-values :on-green values))
+(defn on-yellow [& values] (style-values :on-yellow values))
+(defn on-blue [& values] (style-values :on-blue values))
+(defn on-cyan [& values] (style-values :on-cyan values))
+(defn on-magenta [& values] (style-values :on-magenta values))
+(defn on-white [& values] (style-values :on-white values))
+(defn blink [& values] (style-values :blink values))
+(defn bold [& values] (style-values :bold values))
+(defn concealed [& values] (style-values :concealed values))
+(defn dark [& values] (style-values :dark values))
+(defn italic [& values] (style-values :italic values))
+(defn reverse-color [& values] (style-values :reverse-color values))
+(defn underline [& values] (style-values :underline values))
+(defn normal [& values] (style-values :normal values))

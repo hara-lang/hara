@@ -1,0 +1,70 @@
+;; ============================================================================
+;; std.lib.encode.url — one RFC 3986 UTF-8 component.
+;; ============================================================================
+(ns std.lib.encode.url)
+
+(def +hex+ "0123456789ABCDEF")
+
+(defn- unreserved?
+  [value]
+  (or (and (>= value 65) (<= value 90))
+      (and (>= value 97) (<= value 122))
+      (and (>= value 48) (<= value 57))
+      (= value 45)
+      (= value 46)
+      (= value 95)
+      (= value 126)))
+
+(defn encode
+  [value]
+  (if (not (string? value))
+    (throw (ex :dependency {:value value} :ex/message "URL component encode expects a string")))
+  (let [source (str/encode-utf8 value)
+        length (bytes/count source)]
+    (loop [index 0 output ""]
+      (if (= index length)
+        output
+        (let [byte (bytes/get source index)]
+          (recur (inc index)
+                 (if (unreserved? byte)
+                   (str output (str/decode-utf8 (bytes byte)))
+                   (str output "%"
+                        (str/char-at +hex+ (Bits/shift-right byte 4))
+                        (str/char-at +hex+ (Bits/and byte 15))))))))))
+
+(defn- hex-value
+  [character index]
+  (let [value (str/index-of +hex+ (str/upper-case character))]
+    (if (neg? value)
+      (throw (ex :serialization {:character character :index index} :ex/message "Invalid URL percent escape"))
+      value)))
+
+(defn- append-character
+  [output character]
+  (let [encoded (str/encode-utf8 character)]
+    (loop [index 0 result output]
+      (if (= index (bytes/count encoded))
+        result
+        (recur (inc index)
+               (conj result (bytes/get encoded index)))))))
+
+(defn decode
+  [source]
+  (if (not (string? source))
+    (throw (ex :dependency {:value source} :ex/message "URL component decode expects a string")))
+  (let [length (str/length source)]
+    (loop [index 0 output []]
+      (if (= index length)
+        (str/decode-utf8 (apply bytes output))
+        (let [character (str/char-at source index)]
+          (if (= character "%")
+            (if (> (+ index 3) length)
+              (throw (ex :serialization {:value source :index index} :ex/message "Incomplete URL percent escape"))
+              (let [high (hex-value (str/char-at source (inc index))
+                                    (inc index))
+                    low (hex-value (str/char-at source (+ index 2))
+                                   (+ index 2))]
+                (recur (+ index 3)
+                       (conj output (+ (* high 16) low)))))
+            (recur (inc index)
+                   (append-character output character))))))))

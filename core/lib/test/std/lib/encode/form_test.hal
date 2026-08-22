@@ -1,0 +1,52 @@
+(ns std.lib.encode.form-test
+  (:require [std.lib.encode.form :as form]))
+
+(def +pairs+
+  [["a" "1"]
+   ["a" "2"]
+   ["" ""]
+   ["space key" "a+b c"]])
+
+(def +encoded+
+  "a=1&a=2&=&space+key=a%2Bb+c")
+
+(def results
+  [(test-check "form components use plus for space and %2B for literal plus"
+               [(form/encode-component "a+b c")
+                (form/decode-component "a%2Bb+c")]
+               ["a%2Bb+c" "a+b c"])
+
+   (test-check "forms preserve ordered pairs, repeated keys, and empty values"
+               [(form/encode +pairs+)
+                (form/decode +encoded+)
+                (form/decode "a+b=c+d")]
+               [+encoded+
+                +pairs+
+                [["a b" "c d"]]])
+
+   (test-check "empty forms round trip without inventing an empty pair"
+               [(form/encode [])
+                (form/decode "")]
+               ["" []])
+
+   (test-check "forms reject maps and malformed encode pairs"
+               [(try (form/encode {"a" "1"}) false
+                     (catch Throwable error true))
+                (try (form/encode [["a"]]) false
+                     (catch Throwable error true))
+                (try (form/encode [["a" 1]]) false
+                     (catch Throwable error true))]
+               [true true true])
+
+   (test-check "forms reject malformed pair text, escapes, and invalid UTF-8"
+               [(try (form/decode "a") false
+                     (catch Throwable error true))
+                (try (form/decode "a=1&") false
+                     (catch Throwable error true))
+                (try (form/decode "a=%GG") false
+                     (catch Throwable error true))
+                (try (form/decode "%FF=x") false
+                     (catch Throwable error true))]
+               [true true true true])])
+
+results

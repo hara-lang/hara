@@ -1,0 +1,131 @@
+(ns std.lib.format.plural)
+
+(def ^{:dynamic true} *uncountable* (atom #{}))
+(def ^{:dynamic true} *singular-irregular* (atom {}))
+(def ^{:dynamic true} *plural-irregular* (atom {}))
+(def ^{:dynamic true} *plural-rules* (atom []))
+(def ^{:dynamic true} *singular-rules* (atom []))
+
+(def +base-uncountable+
+  ["air" "alcohol" "art" "blood" "butter" "cheese" "chewing" "coffee"
+   "confusion" "cotton" "education" "electricity" "entertainment" "equipment"
+   "experience" "fiction" "fish" "food" "forgiveness" "fresh" "gold" "gossip" "grass"
+   "ground" "gum" "happiness" "history" "homework" "honey" "ice" "information" "jam"
+   "knowledge" "lightning" "liquid" "literature" "love" "luck" "luggage" "meat" "milk"
+   "mist" "moose" "money" "music" "news" "oil" "oxygen" "paper" "patience" "peanut" "pepper"
+   "petrol" "pork" "power" "pressure" "research" "rice" "sadness" "series" "sheep"
+   "shopping" "silver" "snow" "space" "species" "speed" "steam" "sugar" "sunshine" "tea"
+   "tennis" "thunder" "time" "toothpaste" "traffic" "up" "vinegar" "washing" "wine"
+   "wood" "wool"])
+
+(def +base-irregular+
+  [["amenity" "amenities"]
+   ["child" "children"]
+   ["cow" "kine"]
+   ["foot" "feet"]
+   ["goose" "geese"]
+   ["louse" "lice"]
+   ["mailman" "mailmen"]
+   ["man" "men"]
+   ["mouse" "mice"]
+   ["move" "moves"]
+   ["ox" "oxen"]
+   ["person" "people"]
+   ["sex" "sexes"]
+   ["tooth" "teeth"]
+   ["woman" "women"]])
+
+(def +base-plural+
+  [[#"(?i)$" "s"]
+   [#"(?i)s$" "s"]
+   [#"(?i)(ax|test)is$" "$1es"]
+   [#"(?i)(octop|vir)us$" "$1i"]
+   [#"(?i)(alias|status)$" "$1es"]
+   [#"(?i)(bu)s$" "$1ses"]
+   [#"(?i)(buffal|tomat)o$" "$1oes"]
+   [#"(?i)([ti])um$" "$1a"]
+   [#"(?i)sis$" "ses"]
+   [#"(?i)(?:([^f])fe|([lr])f)$" "$1$2ves"]
+   [#"(?i)(hive)$" "$1s"]
+   [#"(?i)([^aeiouy]|qu)y$" "$1ies"]
+   [#"(?i)(x|ch|ss|sh)$" "$1es"]
+   [#"(?i)(matr|vert|ind)(?:ix|ex)$" "$1ices"]
+   [#"(?i)([m|l])ouse$" "$1ice"]
+   [#"(?i)^(ox)$" "$1en"]
+   [#"(?i)(quiz)$" "$1zes"]])
+
+(def +base-singular+
+  [[#"(?i)s$" ""]
+   [#"(?i)(ss)$" "$1"]
+   [#"(?i)(n)ews$" "$1ews"]
+   [#"(?i)([ti])a$" "$1um"]
+   [#"(?i)((a)naly|(b)a|(d)iagno|(p)arenthe|(p)rogno|(s)ynop|(t)he)(sis|ses)$" "$1$2sis"]
+   [#"(?i)(^analy)(sis|ses)$" "$1sis"]
+   [#"(?i)([^f])ves$" "$1fe"]
+   [#"(?i)(hive)s$" "$1"]
+   [#"(?i)(tive)s$" "$1"]
+   [#"(?i)([lr])ves$" "$1f"]
+   [#"(?i)([^aeiouy]|qu)ies$" "$1y"]
+   [#"(?i)(s)eries$" "$1eries"]
+   [#"(?i)(m)ovies$" "$1ovie"]
+   [#"(?i)(x|ch|ss|sh)es$" "$1"]
+   [#"(?i)([m|l])ice$" "$1ouse"]
+   [#"(?i)(bus)(es)?$" "$1"]
+   [#"(?i)(o)es$" "$1"]
+   [#"(?i)(shoe)s$" "$1"]
+   [#"(?i)(cris|ax|test)(is|es)$" "$1is"]
+   [#"(?i)(octop|vir)(us|i)$" "$1us"]
+   [#"(?i)(alias|status)(es)?$" "$1"]
+   [#"(?i)^(ox)en" "$1"]
+   [#"(?i)(vert|ind)ices$" "$1ex"]
+   [#"(?i)(matr)ices$" "$1ix"]
+   [#"(?i)(quiz)zes$" "$1"]
+   [#"(?i)(database)s$" "$1"]])
+
+(defn uncountable? [word]
+  (has? @*uncountable* (str/lower word)))
+
+(defn irregular? [word]
+  (or (has? @*singular-irregular* (str/lower word))
+      (has? @*plural-irregular* (str/lower word))))
+
+(defn resolve-rules [rules word]
+  (first
+   (keep
+    (fn [entry]
+      (let [pattern (first entry)
+            replacement (second entry)]
+        (if (string? pattern)
+          (if (= pattern word) replacement nil)
+          (if (re-find pattern word)
+            (re-replace pattern word replacement)
+            nil))))
+    rules)))
+
+(defn singular [word]
+  (if (uncountable? word)
+    word
+    (or (std.foundation/get @*singular-irregular* (str/lower word))
+        (resolve-rules @*singular-rules* word)
+        word)))
+
+(defn plural [word]
+  (if (uncountable? word)
+    word
+    (or (std.foundation/get @*plural-irregular* (str/lower word))
+        (resolve-rules @*plural-rules* word)
+        word)))
+
+(def ^{:dynamic true} *initialized*
+  (do
+    (swap! *uncountable* into +base-uncountable+)
+    (swap! *plural-irregular* into +base-irregular+)
+    (swap! *singular-irregular*
+           (fn [output]
+             (reduce (fn [result pair]
+                       (assoc result (second pair) (first pair)))
+                     output
+                     +base-irregular+)))
+    (swap! *plural-rules* into (reverse +base-plural+))
+    (swap! *singular-rules* into (reverse +base-singular+))
+    true))
