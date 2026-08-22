@@ -14,8 +14,6 @@ public final class CoroutineLibraryProvider implements HaraLibraryProvider {
 
   @Override
   public void install(HaraContext context) {
-    context.collectBuiltins("std.foundation.coroutine", () -> {
-      StdFoundationCoroutine.install(context, "std.foundation.coroutine");
-    });
+    context.installCoroutineLibrary();
   }
 }

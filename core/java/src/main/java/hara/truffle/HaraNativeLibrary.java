@@ -21,7 +21,7 @@ final class HaraNativeLibrary {
       NativeFunction implementation,
       String doc,
       String... arglists) {
-    context.defineLibraryFunction(
+    context.defineNativeFunction(
         namespace,
         name,
         arguments ->

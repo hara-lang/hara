@@ -119,9 +119,8 @@ fn specs_owned_direct_callable_bootstrap_fixture_runs_before_foundation_source_l
                 .join("..")
                 .join("hara-specs-registry")
         });
-    let path = registry.join(
-        "01-lang/004-foundation/draft/conformance/fixtures/direct_callable_bootstrap.hal",
-    );
+    let path = registry
+        .join("01-lang/004-foundation/draft/conformance/fixtures/direct_callable_bootstrap.hal");
     let source = std::fs::read_to_string(&path).unwrap_or_else(|error| {
         panic!(
             "authoritative direct-callable bootstrap fixture is required at {}: {error}",
