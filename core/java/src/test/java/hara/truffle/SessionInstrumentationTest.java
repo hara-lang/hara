@@ -235,7 +235,6 @@ public class SessionInstrumentationTest {
               Capability.EVENT_SUSPENSION,
               Capability.EVENT_LIFECYCLE,
               Capability.INSPECT_SOURCE_LOCATION,
-              Capability.INSPECT_SOURCE_LOCATION,
               Capability.CONTROL_PAUSE,
               Capability.CONTROL_SINGLE_STEP,
               Capability.CONTROL_RESUME,
@@ -266,6 +265,7 @@ public class SessionInstrumentationTest {
       session.eval("(do (defn inner [] 1) (inner))");
       var success = service.drainEvents(trace).events();
       assertEquals(
+          "success terminals " + success,
           1,
           success.stream()
               .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
@@ -491,6 +491,7 @@ public class SessionInstrumentationTest {
             Capability.EVENT_EXCEPTION,
             Capability.EVENT_SUSPENSION,
             Capability.EVENT_LIFECYCLE,
+            Capability.INSPECT_SOURCE_LOCATION,
             Capability.CONTROL_PAUSE,
             Capability.CONTROL_SINGLE_STEP,
             Capability.CONTROL_RESUME,
