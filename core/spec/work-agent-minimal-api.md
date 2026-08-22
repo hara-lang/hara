@@ -3,6 +3,13 @@
 Status: implementation contract for #861, #862, #863, with dynamic Work
 continuation under #880.
 
+Disposition: #861 is implemented by the four-protocol boundary and its
+behavioral corpus. #862 and #863 are intentionally retired as standalone
+execution tracks: their accepted behavior is represented by Work-lowering
+helpers and ephemeral capability providers, not by additional agent lifecycle
+abstractions. The corresponding closure decisions remain subject to the
+cross-runtime evidence gates recorded in the owning issues.
+
 ## Model
 
 ```text
@@ -69,6 +76,11 @@ evaluator algebra.
 operations lower immediately to existing Work forms such as `:step`, `:chain`,
 `:all`, `:bind`, graph, and managed Work. No `:agent/*` structural evaluator
 operation is introduced.
+
+The disposition is therefore a hard boundary: no compatibility alias for an
+agent host, run, store, status, event, cancellation, or evaluator family is
+retained while the four `IAgent*` protocols remain the only agent-specific
+surface.
 
 Live identity, status, results, cancellation, events, checkpoints, retries,
 persistence, and execution remain owned by the existing Work family:
