@@ -1,0 +1,128 @@
+(ns code.query.conformance
+  (:require [tool.sh :as sh]
+            [std.lib.fs :as fs]
+            [std.foundation.string :as str]
+            [code.query.common]
+            [code.query.compile]
+            [code.query.match.impl]
+            [code.query.match.optional]
+            [code.query.match.pattern]))
+
+(def +fixture-path+ "spec/fixtures/code-query/conformance.edn")
+(def +foundation-fixture-path+ "../../technology/hara/core/spec/fixtures/code-query/conformance.edn")
+(def +foundation-root+ "../../../reference/foundation-base")
+(def +foundation-runner+
+  ["./lein" "run" "-m" "clojure.main/main" "scripts/code_query_conformance.clj"])
+
+(defn load-fixtures
+  "Reads the shared EDN fixture corpus."
+  ([]
+   (load-fixtures +fixture-path+))
+  ([path]
+   (Edn/read (str/decode-utf8 (fs/read-bytes path)))))
+
+(def +query-namespaces+
+  ['code.query.common
+   'code.query.compile
+   'code.query.match.impl
+   'code.query.match.optional
+   'code.query.match.pattern])
+
+(defn function-symbol
+  "Returns the qualified symbol for a function value if it matches a public
+   var in one of the code.query namespaces, otherwise returns the value
+   unchanged."
+  [value]
+  (or (some (fn [ns-sym]
+              (some (fn [[sym var]]
+                      (if (= value (deref var))
+                        (symbol (str ns-sym) (str sym))))
+                    (ns-publics ns-sym)))
+            +query-namespaces+)
+      value))
+
+(defn normalize-result
+  "Walks a result value and replaces function objects with their qualified
+   symbols so Hara output is comparable to Foundation EDN."
+  [value]
+  (cond
+    (map? value)
+    (reduce (fn [output entry]
+              (assoc output (normalize-result (nth entry 0))
+                     (normalize-result (nth entry 1))))
+            {} value)
+
+    (vector? value)
+    (mapv normalize-result value)
+
+    (list? value)
+    (apply list (map normalize-result value))
+
+    (seq? value)
+    (map normalize-result value)
+
+    (function? value)
+    (function-symbol value)
+
+    :else value))
+
+(defn evaluate-in-hara
+  "Evaluates one fixture expression in the Hara runtime."
+  [fixture]
+  (let [ns-sym (:ns fixture)
+        temp-ns (symbol (str ns-sym "-conformance"))]
+    (require ns-sym)
+    (normalize-result
+     (load-string (str "(ns " temp-ns " (:require (" ns-sym " :refer :all))) " (:expr fixture))))))
+
+(defn run-foundation
+  "Invokes the Foundation Clojure runner and returns an EDN result map."
+  [fixture-path foundation-root]
+  (let [result (sh/run (vec (concat +foundation-runner+ [fixture-path]))
+                       {:cwd foundation-root})]
+    (if (not= 0 (:exit result))
+      (throw (ex :dependency result :ex/message "Foundation conformance runner failed")))
+    (Edn/read (:stdout result))))
+
+(defn compare-results
+  "Returns a comparison entry for one fixture."
+  [id expected hara-actual foundation-actual]
+  {:id id
+   :expected expected
+   :hara hara-actual
+   :foundation foundation-actual
+   :match (= hara-actual foundation-actual)})
+
+(defn run-corpus
+  "Runs every fixture through Hara and Foundation and returns a report."
+  ([]
+   (run-corpus +fixture-path+ +foundation-fixture-path+ +foundation-root+))
+  ([fixture-path foundation-fixture-path foundation-root]
+   (let [fixtures (load-fixtures fixture-path)
+         foundation-results (run-foundation foundation-fixture-path foundation-root)
+         entries (mapv (fn [fixture]
+                         (let [id (:id fixture)
+                               expected (:expected fixture)
+                               hara-actual (try
+                                             (evaluate-in-hara fixture)
+                                             (catch Throwable error
+                                               {:error (str error)}))
+                               foundation-actual (get-in foundation-results [id :actual])
+                               foundation-error (get-in foundation-results [id :error])]
+                           (compare-results id expected hara-actual
+                                            (if foundation-error
+                                              {:error foundation-error}
+                                              foundation-actual))))
+                       fixtures)
+         mismatches (filterv (fn [entry] (not (:match entry))) entries)
+         errors (filterv (fn [entry]
+                           (or (and (map? (:hara entry)) (:error (:hara entry)))
+                               (and (map? (:foundation entry)) (:error (:foundation entry)))))
+                         entries)]
+     {:conformant? (and (empty? mismatches) (empty? errors))
+      :total (count fixtures)
+      :mismatched (count mismatches)
+      :errors (count errors)
+      :entries entries
+      :mismatches mismatches
+      :errors-detail errors})))
