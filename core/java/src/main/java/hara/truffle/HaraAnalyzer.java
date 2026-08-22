@@ -313,7 +313,9 @@ final class HaraAnalyzer {
 
   @SuppressWarnings("rawtypes")
   private void attachSourceSection(HaraExpressionNode node, Object form) {
-    if (!(form instanceof IObjType) || sourceSection == null) return;
+    if (sourceSection == null) return;
+    node.setHaraSourceSection(sourceSection);
+    if (!(form instanceof IObjType)) return;
     Object metadata = ((IObjType) form).meta();
     if (!(metadata instanceof IMapType)) return;
     IMapType span = (IMapType) metadata;

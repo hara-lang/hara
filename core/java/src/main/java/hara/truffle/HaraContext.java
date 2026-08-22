@@ -302,6 +302,8 @@ public final class HaraContext {
   private final Set<String> preparedNamespaceReloads = ConcurrentHashMap.newKeySet();
   private final Set<String> blankNamespaces = ConcurrentHashMap.newKeySet();
   private final Deque<String> loadingStack = new ArrayDeque<>();
+  private final ThreadLocal<Integer> interpreterRootDepth = ThreadLocal.withInitial(() -> 0);
+  private volatile boolean instrumentationReady;
   private boolean preparingNamespace;
   private volatile HaraNamespace currentNamespace;
   private final Map<String, Map<String, BuiltinExport>> builtinCatalogs = new ConcurrentHashMap<>();
@@ -377,6 +379,7 @@ public final class HaraContext {
       InstrumentationModel.EventKind event,
       com.oracle.truffle.api.source.SourceSection source,
       java.util.Map<String, String> data) {
+    if (!instrumentationReady) return;
     InstrumentationModel.TargetHandle target = instrumentationInterpreterTarget();
     if (target == null
         || !sessionKernel
@@ -439,11 +442,13 @@ public final class HaraContext {
   }
 
   boolean hbcInstrumentationEnabled(InstrumentationModel.EventKind event) {
+    if (!instrumentationReady) return false;
     InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
     return target != null && sessionKernel.instrumentationHub().hasSubscribers(target, event);
   }
 
   InstrumentationModel.InstrumentDirective pollHbcDirective() {
+    if (!instrumentationReady) return InstrumentationModel.InstrumentDirective.CONTINUE;
     InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
     if (target == null) return InstrumentationModel.InstrumentDirective.CONTINUE;
     InstrumentationModel.InstrumentDirective directive =
@@ -463,6 +468,25 @@ public final class HaraContext {
 
   synchronized void retainHbcExecution(HbcMachine.ExecutionState execution) {
     retainedHbcExecution = java.util.Objects.requireNonNull(execution, "execution");
+  }
+
+  boolean enterInterpreterRoot() {
+    int depth = interpreterRootDepth.get();
+    interpreterRootDepth.set(depth + 1);
+    return depth == 0;
+  }
+
+  void exitInterpreterRoot() {
+    int depth = interpreterRootDepth.get();
+    if (depth <= 1) {
+      interpreterRootDepth.remove();
+    } else {
+      interpreterRootDepth.set(depth - 1);
+    }
+  }
+
+  void markInstrumentationReady() {
+    instrumentationReady = true;
   }
 
   private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {

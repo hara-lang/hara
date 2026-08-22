@@ -80,6 +80,7 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
   @Override
   protected void initializeContext(HaraContext context) {
     context.ensureEagerFallbacks();
+    context.markInstrumentationReady();
   }
 
   @Override
