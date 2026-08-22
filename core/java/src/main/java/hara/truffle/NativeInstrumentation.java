@@ -193,8 +193,12 @@ final class NativeInstrumentation {
 
   void releaseControlLease(NativeControlLease lease) {
     InstrumentationHub current = requireActive();
-    current.releaseControlLease(requireLease(lease));
-    kernel.get().clearHbcExecution(sessionId);
+    ControlLease checkedLease = requireLease(lease);
+    current.releaseControlLease(checkedLease);
+    if (current.descriptor(checkedLease.target()).kind()
+        == InstrumentationModel.TargetKind.HBC) {
+      kernel.get().clearHbcExecution(sessionId);
+    }
   }
 
   void issueDirective(
