@@ -113,9 +113,20 @@ public class JvmPackageLoaderTest {
         new JarOutputStream(
             Files.newOutputStream(
                 jar, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING))) {
-      output.putNextEntry(new JarEntry("fixture/Provider.class"));
-      output.write(Files.readAllBytes(classes.resolve("fixture/Provider.class")));
-      output.closeEntry();
+      Files.walk(classes)
+          .filter(path -> path.toString().endsWith(".class"))
+          .sorted()
+          .forEach(
+              path -> {
+                String entryName = classes.relativize(path).toString().replace('\\', '/');
+                try {
+                  output.putNextEntry(new JarEntry(entryName));
+                  output.write(Files.readAllBytes(path));
+                  output.closeEntry();
+                } catch (IOException error) {
+                  throw new RuntimeException(error);
+                }
+              });
     }
     return jar;
   }
