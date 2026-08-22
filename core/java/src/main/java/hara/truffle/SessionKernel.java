@@ -1013,27 +1013,29 @@ final class SessionKernel implements AutoCloseable {
           return context.eval(contextualSource);
         }
 
-        Object executeHbc(hara.truffle.bytecode.HbcProgram program) {
-          activeEvaluations.incrementAndGet();
-          try {
-            synchronized (this) {
-              requireActive();
-              context.enter();
-              try {
-                return HbcMachine.execute(program, HaraLanguage.currentContext());
-              } finally {
-                context.leave();
-              }
-            }
-          } finally {
-            activeEvaluations.decrementAndGet();
-          }
-        }
       } catch (IOException error) {
         throw new IllegalArgumentException(
             "Unable to construct Hara source: " + error.getMessage(), error);
       } catch (PolyglotException error) {
         throw new IllegalArgumentException(error.getMessage(), error);
+      } finally {
+        activeEvaluations.decrementAndGet();
+      }
+    }
+
+    Object executeHbc(hara.truffle.bytecode.HbcProgram program) {
+      activeEvaluations.incrementAndGet();
+      try {
+        synchronized (this) {
+          requireActive();
+          context.eval(HaraLanguage.ID, "nil");
+          context.enter();
+          try {
+            return HbcMachine.execute(program, HaraLanguage.currentContext());
+          } finally {
+            context.leave();
+          }
+        }
       } finally {
         activeEvaluations.decrementAndGet();
       }

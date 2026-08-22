@@ -25,6 +25,7 @@ import hara.truffle.bytecode.HbcProgram;
 import hara.truffle.bytecode.HbcProgram.Function;
 import hara.truffle.bytecode.HbcProgram.Instruction;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.Test;
@@ -323,27 +324,27 @@ public class SessionInstrumentationTest {
                   new ProjectionRequest(true, null, null, null, null, null, null)));
       service.attach(trace, target);
 
-      assertEquals(
-          42L,
-          session.executeHbc(
-              new HbcProgram(
-                  "demo.main",
-                  List.of(42L),
-                  List.of(),
-                  Map.of(),
-                  Map.of(),
-                  Map.of(),
-                  List.of(
-                      function(
-                          "entry",
-                          new Instruction(HbcProgram.Opcode.CLOSURE, 1, 0, 0),
-                          new Instruction(HbcProgram.Opcode.CALL, 0, 0, 0),
-                          Instruction.of(HbcProgram.Opcode.RETURN)),
-                      function(
-                          "answer",
-                          new Instruction(HbcProgram.Opcode.CONSTANT, 0, 0, 0),
-                          Instruction.of(HbcProgram.Opcode.RETURN))),
-                  0));
+      HbcProgram program =
+          new HbcProgram(
+              "demo.main",
+              List.of(42L),
+              List.of(),
+              Map.of(),
+              Map.of(),
+              Map.of(),
+              List.of(
+                  function(
+                      "entry",
+                      new Instruction(HbcProgram.Opcode.CLOSURE, 1, 0, 0),
+                      new Instruction(HbcProgram.Opcode.CALL, 0, 0, 0),
+                      Instruction.of(HbcProgram.Opcode.RETURN)),
+                  function(
+                      "answer",
+                      new Instruction(HbcProgram.Opcode.CONSTANT, 0, 0, 0),
+                      Instruction.of(HbcProgram.Opcode.RETURN))
+              ),
+              0);
+      assertEquals(42L, session.executeHbc(program));
 
       var events = service.drainEvents(trace).events();
       assertTrue(events.stream().anyMatch(event -> event.event() == EventKind.INSTRUCTION_EXECUTE));
