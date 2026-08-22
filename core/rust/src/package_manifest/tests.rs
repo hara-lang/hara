@@ -221,7 +221,8 @@ fn rejects_duplicate_variants_digest_drift_and_descriptor_authority() {
      :variant/required-capabilities #{{}}}}}}}}"#
     ))
     .unwrap_err();
-    assert_eq!(duplicate.code, "package/duplicate-variant");
+    assert_eq!(duplicate.code, "package/invalid-manifest");
+    assert!(duplicate.detail.contains("Duplicate key"));
 
     let drift = dual_runtime_manifest().replacen(JVM_SHA, WASM_SHA, 1);
     let drift = PackageManifest::parse(&drift).unwrap_err();
