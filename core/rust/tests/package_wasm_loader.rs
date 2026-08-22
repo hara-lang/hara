@@ -11,7 +11,7 @@ const ADD: &[u8] =
 
 const PACKAGE_MANIFEST: &str = r#"
 {:harp/format "0.0.0-alpha"
- :package {:identity "hara:example/provider"
+ :package {:identity "example/provider"
            :version "1.0.0"
            :provenance {:repository "https://github.com/example/provider"
                         :commit "0123456789abcdef0123456789abcdef01234567"}}
@@ -24,12 +24,12 @@ const PACKAGE_MANIFEST: &str = r#"
                                        :artifact/abi "core.v1"
                                        :artifact/entry-point "add"}
                     :variant/required-capabilities #{}
-                    :variant/exports #{"add"}}}}}
+                    :variant/exports #{"add"}}}}
 "#;
 
 const EXTENSION_MANIFEST: &str = r#"
 {:namespace "fixture.package"
- :identity "hara:example/provider"
+ :identity "example/provider"
  :version "1.0.0"
  :provider :wasm
  :module "provider.wasm"
@@ -81,7 +81,9 @@ fn loads_verified_core_wasm_package_artifact() {
 
 #[test]
 fn rejects_tampered_wasm_package_artifact_before_loading() {
-    let (manifest, root) = write_artifact("tampered", b"not wasm");
+    let mut tampered = ADD.to_vec();
+    tampered[10] ^= 1;
+    let (manifest, root) = write_artifact("tampered", &tampered);
     let error = match load_wasm_package(&manifest, &root, &requirements(), EXTENSION_MANIFEST) {
         Ok(_) => panic!("tampered package artifact was loaded"),
         Err(error) => error,
@@ -94,7 +96,7 @@ fn rejects_tampered_wasm_package_artifact_before_loading() {
 fn rejects_package_extension_identity_mismatch() {
     let (manifest, root) = write_artifact("identity", ADD);
     let extension_manifest =
-        EXTENSION_MANIFEST.replace("hara:example/provider", "hara:other/provider");
+        EXTENSION_MANIFEST.replace("example/provider", "other/provider");
     let error = match load_wasm_package(&manifest, &root, &requirements(), &extension_manifest) {
         Ok(_) => panic!("mismatched extension identity was loaded"),
         Err(error) => error,
