@@ -260,7 +260,7 @@ fn extract_package_root(
     Ok(())
 }
 
-fn validate_installed_root(
+pub(crate) fn validate_installed_root(
     package_root: &Path,
     manifest: &PackageManifest,
 ) -> Result<Project, String> {

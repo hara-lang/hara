@@ -1,5 +1,7 @@
 use crate::kernel::{parse, Form};
-use crate::project::{normalize_coordinate, read, Project};
+use crate::package::validate_installed_root;
+use crate::package_manifest::PackageManifest;
+use crate::project::{normalize_coordinate, Project};
 use semver::{Version, VersionReq};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
@@ -203,10 +205,13 @@ fn read_registration(
             path.display()
         ));
     }
-    let project = read(&package_root)?;
-    if normalize_coordinate(&project.id)? != coordinate || project.version != *version {
+    let manifest = PackageManifest::read(&package_root.join("package.edn"))
+        .map_err(|error| format!("{} has an invalid package manifest: {error}", path.display()))?;
+    let project = validate_installed_root(&package_root, &manifest)
+        .map_err(|error| format!("{} has an invalid installed package: {error}", path.display()))?;
+    if normalize_coordinate(&manifest.identity)? != coordinate || manifest.version != *version {
         return Err(format!(
-            "{} disagrees with the installed project manifest",
+            "{} disagrees with the installed package manifest",
             path.display()
         ));
     }
