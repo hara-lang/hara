@@ -105,11 +105,7 @@ fn emit_forwarder(exports: &[BindingFunction]) -> Result<Vec<u8>, String> {
     let mut exports_section = ExportSection::new();
     let import_count = exports.len() as u32;
     for (index, export) in exports.iter().enumerate() {
-        exports_section.export(
-            &export.name,
-            ExportKind::Func,
-            import_count + index as u32,
-        );
+        exports_section.export(&export.name, ExportKind::Func, import_count + index as u32);
     }
     module.section(&exports_section);
 
@@ -144,10 +140,7 @@ fn adapter_manifest(
         })
         .collect();
     Form::Map(vec![
-        (
-            keyword("schema"),
-            string(ADAPTER_MANIFEST_SCHEMA),
-        ),
+        (keyword("schema"), string(ADAPTER_MANIFEST_SCHEMA)),
         (keyword("target"), keyword(ADAPTER_TARGET)),
         (keyword("namespace"), symbol(&interface.namespace)),
         (
@@ -169,10 +162,7 @@ fn adapter_manifest(
             keyword("tool"),
             Form::Map(vec![
                 (keyword("name"), string("hara-wasm-bindgen")),
-                (
-                    keyword("version"),
-                    string(env!("CARGO_PKG_VERSION")),
-                ),
+                (keyword("version"), string(env!("CARGO_PKG_VERSION"))),
             ]),
         ),
         (keyword("exports"), Form::Vector(exports)),
@@ -258,7 +248,10 @@ mod tests {
         assert_eq!(inspection.imports[0].module, "hara/library");
         assert_eq!(inspection.imports[0].name, "add");
         assert_eq!(inspection.exports[0].name, "sum");
-        assert_eq!(inspection.exports[0].signature.arguments, vec!["i64", "i64"]);
+        assert_eq!(
+            inspection.exports[0].signature.arguments,
+            vec!["i64", "i64"]
+        );
         assert_eq!(inspection.exports[0].signature.returns, "i64");
     }
 
