@@ -8,6 +8,7 @@ import com.oracle.truffle.api.nodes.RootNode;
 import com.oracle.truffle.api.source.SourceSection;
 import hara.kernel.builtin.BuiltinStruct;
 import hara.truffle.HaraBox;
+import hara.truffle.HaraContext;
 import hara.truffle.HaraException;
 import hara.truffle.HaraLanguage;
 import hara.truffle.EvaluationJournal;
@@ -80,7 +81,9 @@ public final class HaraRootNode extends RootNode {
     int argumentOffset = exportResult ? 0 : 1;
     int actualArity = arguments.length - argumentOffset;
     if (actualArity < minimumArity || (!variadic && actualArity != minimumArity)) {
-      throw arityError(minimumArity, actualArity, variadic);
+      HaraException error = arityError(minimumArity, actualArity, variadic);
+      if (exportResult) publishTopLevelFailure(error);
+      throw error;
     }
 
     if (!exportResult) {
@@ -109,12 +112,20 @@ public final class HaraRootNode extends RootNode {
     try {
       Object result = body.execute(frame);
       EvaluationJournal.returned(journalOperation, result);
+      if (exportResult) {
+        HaraLanguage.currentContext(this).publishInterpreterTerminal(sourceSection, "return");
+      }
       return exportResult ? HaraBox.export(result) : result;
     } catch (RuntimeException error) {
       EvaluationJournal.failed(journalOperation, error);
+      if (exportResult) publishTopLevelFailure(error);
       if (!HaraException.tracingEnabled()) throw error;
       throw HaraException.withFrame(error, this, frameLabel());
     }
+  }
+
+  private void publishTopLevelFailure(RuntimeException error) {
+    HaraLanguage.currentContext(this).publishInterpreterTopLevelFailure(sourceSection, error);
   }
 
   @TruffleBoundary

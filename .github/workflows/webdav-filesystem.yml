@@ -1,0 +1,53 @@
+name: WebDAV Filesystem CI
+
+on:
+  push:
+    paths:
+      - ".github/workflows/webdav-filesystem.yml"
+      - "core/java/src/main/java/hara/truffle/Filesystem*.java"
+      - "core/java/src/main/java/hara/truffle/IFilesystem*.java"
+      - "core/java/src/main/java/hara/truffle/Webdav*.java"
+      - "core/java/src/test/java/hara/truffle/Webdav*.java"
+  pull_request:
+    paths:
+      - ".github/workflows/webdav-filesystem.yml"
+      - "core/java/src/main/java/hara/truffle/Filesystem*.java"
+      - "core/java/src/main/java/hara/truffle/IFilesystem*.java"
+      - "core/java/src/main/java/hara/truffle/Webdav*.java"
+      - "core/java/src/test/java/hara/truffle/Webdav*.java"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webdav-filesystem-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  java-conformance:
+    name: Java DAV protocol and filesystem conformance
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: core/java/pom.xml
+
+      - name: Compile runtime and run focused WebDAV tests
+        run: >-
+          mvn -B -f core/java/pom.xml -Ptruffle
+          -Dtest=WebdavFilesystemTest,WebdavHttpClientTest,WebdavFilesystemSessionKernelTest test

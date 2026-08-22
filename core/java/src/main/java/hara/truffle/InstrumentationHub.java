@@ -215,6 +215,8 @@ final class InstrumentationHub implements AutoCloseable {
       InstrumentRegistration registration = instrumentState.registration;
       if (!registration.events().contains(event)) continue;
       if (!registration.filter().matches(targetState.descriptor)) continue;
+      EventLocation projectedLocation =
+          registration.projection().sourceLocation() ? location : null;
       EventEnvelope envelope =
           new EventEnvelope(
               InstrumentationModel.EVENT_SCHEMA,
@@ -228,7 +230,7 @@ final class InstrumentationHub implements AutoCloseable {
               sequence,
               phase,
               event,
-              location,
+              projectedLocation,
               data);
       enqueue(instrumentState, envelope);
       delivered++;
@@ -378,6 +380,61 @@ final class InstrumentationHub implements AutoCloseable {
   synchronized int attachmentCount() {
     requireOpen();
     return attachments.size();
+  }
+
+  synchronized boolean hasSubscribers(TargetHandle target, EventKind event) {
+    requireOpen();
+    TargetState targetState = requireTarget(target);
+    for (InstrumentState instrumentState : instruments.values()) {
+      AttachmentKey key = new AttachmentKey(instrumentState.handle, targetState.handle);
+      InstrumentRegistration registration = instrumentState.registration;
+      if (attachments.containsKey(key)
+          && registration.events().contains(event)
+          && registration.filter().matches(targetState.descriptor)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  synchronized boolean hasSourceLocationSubscribers(TargetHandle target, EventKind event) {
+    requireOpen();
+    TargetState targetState = requireTarget(target);
+    for (InstrumentState instrumentState : instruments.values()) {
+      AttachmentKey key = new AttachmentKey(instrumentState.handle, targetState.handle);
+      InstrumentRegistration registration = instrumentState.registration;
+      if (attachments.containsKey(key)
+          && registration.events().contains(event)
+          && registration.projection().sourceLocation()
+          && registration.filter().matches(targetState.descriptor)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  synchronized boolean hasAttachments(TargetHandle target) {
+    requireOpen();
+    TargetState targetState = requireTarget(target);
+    return attachments.keySet().stream().anyMatch(key -> key.target().equals(targetState.handle));
+  }
+
+  synchronized TargetHandle targetFor(String targetId) {
+    requireOpen();
+    TargetState state = targets.get(targetId);
+    if (state == null) {
+      throw failure(
+          Code.TARGET_NOT_FOUND,
+          "TARGET_NOT_FOUND " + targetId,
+          Map.of("target", targetId));
+    }
+    return state.handle;
+  }
+
+  synchronized TargetHandle targetIfPresent(String targetId) {
+    requireOpen();
+    TargetState state = targets.get(targetId);
+    return state == null ? null : state.handle;
   }
 
   synchronized boolean isClosed() {
