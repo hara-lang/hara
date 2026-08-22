@@ -74,24 +74,55 @@
 (defn attach-positions
   "Annotates a parsed block tree from a precomputed offset-position index."
   [block positions]
-  (let [props (:props block)
-        start (or (:start-offset props) 0)
-        end (or (:end-offset props) start)
-        start-position (indexed-position positions start)
-        end-position (indexed-position positions end)]
-    (assoc
-     (assoc block :children
-            (vec
-             (map
-              (fn [child]
-                (attach-positions child positions))
-              (:children block))))
-     :props
-     (merge props
-            {:row (:row start-position)
-             :col (:col start-position)
-             :end-row (:row end-position)
-             :end-col (:col end-position)}))))
+  (loop [pending [{:kind :enter :block block}]
+         values []]
+    (if (empty? pending)
+      (first values)
+      (let [pending-count (count pending)
+            task (nth pending (dec pending-count))
+            pending (subvec pending 0 (dec pending-count))]
+        (if (= :enter (:kind task))
+          (let [current (:block task)
+                children (vec (or (:children current) []))
+                exit {:kind :exit
+                      :block current
+                      :child-count (count children)}
+                child-tasks (reduce
+                             (fn [output child-index]
+                               (conj output
+                                     {:kind :enter
+                                      :block (nth children child-index)}))
+                             [exit]
+                             (loop [child-index (dec (count children))
+                                    output []]
+                               (if (< child-index 0)
+                                 output
+                                 (recur (dec child-index)
+                                        (conj output child-index)))))]
+            (recur (into pending child-tasks) values))
+          (let [current (:block task)
+                child-count (:child-count task)
+                value-count (count values)
+                child-values (if (= child-count 0)
+                               []
+                               (subvec values (- value-count child-count) value-count))
+                prior-values (if (= child-count 0)
+                               values
+                               (subvec values 0 (- value-count child-count)))
+                props (:props current)
+                start (or (:start-offset props) 0)
+                end (or (:end-offset props) start)
+                start-position (indexed-position positions start)
+                end-position (indexed-position positions end)
+                annotated (assoc
+                           (assoc current :children (vec child-values))
+                           :props
+                           (merge props
+                                  {:row (:row start-position)
+                                   :col (:col start-position)
+                                   :end-row (:row end-position)
+                                   :end-col (:col end-position)}))]
+            (recur pending (conj prior-values annotated))))))))
 
 (defn whitespace?
   [character]
@@ -309,10 +340,80 @@
                                                 text (str/slice source index end)]
                                             [(token-block text) end]))))))))))))))))))))))
 
+(defn parse-container-iterative
+  "Parses nested ordinary collections with an explicit frame stack."
+  [source index]
+  (let [character (source-char source index)
+        frame (cond
+                (= character "(") {:tag :list :expected ")" :start index :children []}
+                (= character "[") {:tag :vector :expected "]" :start index :children []}
+                (= character "{") {:tag :map :expected "}" :start index :children []}
+                :else (throw (str "Not a collection opener: " character)))]
+    (loop [current (inc index)
+           frames [frame]]
+      (let [character (source-char source current)]
+        (if (nil? character)
+          (throw (str "EOF while reading collection, expected "
+                      (:expected (last frames))))
+          (if (closing-delimiter? character)
+            (let [frame (last frames)
+                  frame-count (count frames)]
+              (if (not= character (:expected frame))
+                (throw (str "Mismatched delimiter: expected "
+                            (:expected frame) " but found " character))
+                (let [end-index (inc current)
+                      block (with-range
+                              (construct/container (:tag frame)
+                                                   (:children frame))
+                              source
+                              (:start frame)
+                              end-index)
+                      remaining (if (= frame-count 1)
+                                  []
+                                  (subvec frames 0 (dec frame-count)))]
+                  (if (= frame-count 1)
+                    [block end-index]
+                    (let [parent (last remaining)
+                          parent-count (count remaining)
+                          updated-parent
+                          (assoc parent
+                                 :children
+                                 (conj (:children parent) block))]
+                      (recur end-index
+                             (assoc remaining
+                                    (dec parent-count)
+                                    updated-parent)))))))
+            (if (or (= character "(")
+                    (= character "[")
+                    (= character "{"))
+              (let [child-frame
+                    (cond
+                      (= character "(") {:tag :list :expected ")" :start current :children []}
+                      (= character "[") {:tag :vector :expected "]" :start current :children []}
+                      :else {:tag :map :expected "}" :start current :children []})]
+                (recur (inc current) (conj frames child-frame)))
+              (let [[child next-index] (parse-at-raw source current)
+                    frame (last frames)
+                    frame-count (count frames)
+                    updated-frame
+                    (assoc frame
+                           :children
+                           (conj (:children frame)
+                                 (with-range child source current next-index)))]
+                (recur next-index
+                       (assoc frames
+                              (dec frame-count)
+                              updated-frame))))))))))
+
 (defn parse-at
   [source index]
-  (let [[block end] (parse-at-raw source index)]
-    [(with-range block source index end) end]))
+  (let [character (source-char source index)]
+    (if (or (= character "(")
+            (= character "[")
+            (= character "{"))
+      (parse-container-iterative source index)
+      (let [[block end] (parse-at-raw source index)]
+        [(with-range block source index end) end]))))
 
 (defn parse-root-children
   [source index children]
@@ -392,11 +493,46 @@
 
 (defn attach-file
   [block file]
-  (let [children (:children block)]
-    (assoc (assoc block :children
-                  (vec (map (fn [child] (attach-file child file)) children)))
-           :props
-           (assoc (:props block) :file file))))
+  (loop [pending [{:kind :enter :block block}]
+         values []]
+    (if (empty? pending)
+      (first values)
+      (let [pending-count (count pending)
+            task (nth pending (dec pending-count))
+            pending (subvec pending 0 (dec pending-count))]
+        (if (= :enter (:kind task))
+          (let [current (:block task)
+                children (vec (or (:children current) []))
+                exit {:kind :exit
+                      :block current
+                      :child-count (count children)}
+                child-tasks (reduce
+                             (fn [output child-index]
+                               (conj output
+                                     {:kind :enter
+                                      :block (nth children child-index)}))
+                             [exit]
+                             (loop [child-index (dec (count children))
+                                    output []]
+                               (if (< child-index 0)
+                                 output
+                                 (recur (dec child-index)
+                                        (conj output child-index)))))]
+            (recur (into pending child-tasks) values))
+          (let [current (:block task)
+                child-count (:child-count task)
+                value-count (count values)
+                child-values (if (= child-count 0)
+                               []
+                               (subvec values (- value-count child-count) value-count))
+                prior-values (if (= child-count 0)
+                               values
+                               (subvec values 0 (- value-count child-count)))
+                annotated (assoc
+                           (assoc current :children (vec child-values))
+                           :props
+                           (assoc (:props current) :file file))]
+            (recur pending (conj prior-values annotated))))))))
 
 (defn parse-source
   ([source] (parse-source source {}))

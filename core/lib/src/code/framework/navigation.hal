@@ -44,17 +44,20 @@
 (defn path
   "Returns the stable child-index path of a location, including void blocks."
   [input]
-  (let [loc (location input)
-        parent (:parent loc)]
-    (if (nil? parent)
-      []
-      (conj (path parent) (count (:left loc))))))
+  (loop [loc (location input)
+         output []]
+    (let [parent (:parent loc)]
+      (if (nil? parent)
+        (vec (reverse output))
+        (recur parent (conj output (count (:left loc))))))))
 
 (defn step-right-n
   [loc amount]
-  (if (= amount 0)
-    loc
-    (step-right-n (zip/step-right loc) (dec amount))))
+  (loop [current loc
+         remaining amount]
+    (if (= remaining 0)
+      current
+      (recur (zip/step-right current) (dec remaining)))))
 
 (defn location-at
   "Resolves a child-index path against a source or block."
@@ -269,11 +272,23 @@
 
 (defn walk-location
   [loc]
-  (reduce
-   (fn [output child]
-     (into output (walk-location child)))
-   [loc]
-   (direct-child-locations loc)))
+  (loop [pending [loc]
+         output []]
+    (if (empty? pending)
+      output
+      (let [pending-count (count pending)
+            current-index (dec pending-count)
+            current (nth pending current-index)
+            remaining (subvec pending 0 current-index)
+            children (direct-child-locations current)
+            next-pending
+            (loop [child-index (dec (count children))
+                   result remaining]
+              (if (< child-index 0)
+                result
+                (recur (dec child-index)
+                       (conj result (nth children child-index)))))]
+        (recur next-pending (conj output current))))))
 
 (defn walk-locations
   "Returns a deterministic pre-order walk including void and comment blocks."

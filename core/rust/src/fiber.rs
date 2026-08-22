@@ -741,7 +741,7 @@ fn and_cps(
         forms[index].clone(),
         env,
         Box::new(move |result| match result {
-            Ok(value) => and_cps(next, index + 1, value, e, k),
+            Ok(value) => Step::Continue(Box::new(move || and_cps(next, index + 1, value, e, k))),
             Err(error) => k(Err(error)),
         }),
     )
@@ -764,7 +764,7 @@ fn or_cps(
         env,
         Box::new(move |result| match result {
             Ok(value) if value.truthy() => k(Ok(value)),
-            Ok(value) => or_cps(next, index + 1, value, e, k),
+            Ok(value) => Step::Continue(Box::new(move || or_cps(next, index + 1, value, e, k))),
             Err(error) => k(Err(error)),
         }),
     )
@@ -786,7 +786,7 @@ fn cond_cps(
         env,
         Box::new(move |result| match result {
             Ok(value) if value.truthy() => one(next[index + 1].clone(), e, k),
-            Ok(_) => cond_cps(next, index + 2, e, k),
+            Ok(_) => Step::Continue(Box::new(move || cond_cps(next, index + 2, e, k))),
             Err(error) => k(Err(error)),
         }),
     )
@@ -834,7 +834,7 @@ fn bind_values(
                 for name in names {
                     old.push((name.clone(), before.get(&name).cloned()));
                 }
-                bind_values(vv, i + 2, old, e, k)
+                Step::Continue(Box::new(move || bind_values(vv, i + 2, old, e, k)))
             }
             Err(x) => k(Err(x), e),
         }),
@@ -922,7 +922,7 @@ fn loop_body(
                         return k(Err(format!("loop destructuring failed: {error}")));
                     }
                 }
-                loop_body(pp, bb, oo, ee, k)
+                Step::Continue(Box::new(move || loop_body(pp, bb, oo, ee, k)))
             }
             r => {
                 restore(&mut ee.borrow_mut(), oo);
@@ -1771,5 +1771,15 @@ mod tests {
             let fiber = EvalFiber::start(source, HashMap::new()).unwrap();
             assert_eq!(fiber.state(), EvalFiberState::Completed(expected));
         }
+    }
+
+    #[test]
+    fn loop_recur_trampolines_large_iteration_counts() {
+        let mut fiber = EvalFiber::start(
+            "(loop [i 0] (if (< i 50000) (recur (inc i)) i))",
+            HashMap::new(),
+        )
+        .unwrap();
+        assert_eq!(fiber.drive_sync(), Ok(Value::Number(50000)));
     }
 }
