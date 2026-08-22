@@ -260,10 +260,7 @@ final class SessionKernel implements AutoCloseable {
             truffleBackend,
             java.util.Set.of(
                 Capability.EVENT_SEMANTIC_BOUNDARY,
-                Capability.EVENT_CALL,
                 Capability.EVENT_EXCEPTION,
-                Capability.EVENT_EFFECT,
-                Capability.EVENT_SUSPENSION,
                 Capability.EVENT_LIFECYCLE,
                 Capability.INSPECT_SOURCE_LOCATION)));
     RuntimeBackend hbcBackend = new RuntimeBackend("java-hbc");
@@ -719,7 +716,7 @@ final class SessionKernel implements AutoCloseable {
     private String contextFilesystemBindingToken;
     private volatile AttachedFilesystem filesystem;
     private final AtomicInteger activeEvaluations = new AtomicInteger();
-    private HaraInstrumentation truffleInstrumentation;
+    private HaraInstrumentation.Service truffleInstrumentation;
     private final AtomicReference<SessionModel.SessionState> state =
         new AtomicReference<>(SessionModel.SessionState.NEW);
 
@@ -1178,12 +1175,16 @@ final class SessionKernel implements AutoCloseable {
           if (instrument == null) {
             throw new IllegalStateException("HARA_EXECUTION_INSTRUMENT_UNAVAILABLE");
           }
-          truffleInstrumentation = instrument.lookup(HaraInstrumentation.class);
+          truffleInstrumentation = instrument.lookup(HaraInstrumentation.Service.class);
           if (truffleInstrumentation == null) {
             throw new IllegalStateException("HARA_EXECUTION_INSTRUMENT_SERVICE_UNAVAILABLE");
           }
         }
         truffleInstrumentation.activate();
+    }
+
+    synchronized boolean truffleInstrumentationActive() {
+        return truffleInstrumentation != null && truffleInstrumentation.isActive();
     }
   }
 }

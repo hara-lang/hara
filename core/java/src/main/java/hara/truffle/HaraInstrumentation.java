@@ -9,20 +9,40 @@ import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.instrumentation.TruffleInstrument;
 import com.oracle.truffle.api.source.SourceSection;
 import hara.truffle.InstrumentationModel.EventKind;
-import java.util.Map;
 
 @TruffleInstrument.Registration(
     id = "hara-execution",
     name = "Hara execution instrumentation",
-    version = "0.1")
+    version = "0.1",
+    services = HaraInstrumentation.Service.class)
 public final class HaraInstrumentation extends TruffleInstrument {
+  public static final class Service {
+    private final HaraInstrumentation owner;
+
+    private Service(HaraInstrumentation owner) {
+      this.owner = owner;
+    }
+
+    public void activate() {
+      owner.activate();
+    }
+
+    public void deactivate() {
+      owner.deactivate();
+    }
+
+    public boolean isActive() {
+      return owner.isActive();
+    }
+  }
+
   private Env environment;
   private EventBinding<ExecutionEventListener> binding;
 
   @Override
   protected void onCreate(Env env) {
     environment = env;
-    env.registerService(this);
+    env.registerService(new Service(this));
   }
 
   synchronized void activate() {
@@ -37,7 +57,7 @@ public final class HaraInstrumentation extends TruffleInstrument {
                 new ExecutionEventListener() {
                   @Override
                   public void onEnter(EventContext context, VirtualFrame frame) {
-                    publish(EventKind.SEMANTIC_BOUNDARY, context, null);
+                    publish(EventKind.SEMANTIC_BOUNDARY, context);
                   }
 
                   @Override
@@ -56,23 +76,22 @@ public final class HaraInstrumentation extends TruffleInstrument {
     binding = null;
   }
 
+  synchronized boolean isActive() {
+    return binding != null && binding.isAttached();
+  }
+
   @Override
   protected synchronized void onDispose(Env env) {
     deactivate();
     environment = null;
   }
 
-  private static void publish(EventKind event, EventContext eventContext, Throwable exception) {
+  private static void publish(EventKind event, EventContext eventContext) {
     try {
       HaraContext context =
           HaraLanguage.currentContext(eventContext.getInstrumentedNode());
       SourceSection source = eventContext.getInstrumentedSourceSection();
-      context.publishInterpreterEvent(
-          event,
-          source,
-          exception == null
-              ? Map.of()
-              : Map.of("type", exception.getClass().getName()));
+      context.publishInterpreterEvent(event, source, java.util.Map.of());
     } catch (IllegalStateException ignored) {
       // Instrumentation callbacks outside an entered Hara context are irrelevant.
     }
