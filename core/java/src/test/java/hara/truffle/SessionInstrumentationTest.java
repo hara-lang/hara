@@ -235,6 +235,7 @@ public class SessionInstrumentationTest {
               Capability.EVENT_SUSPENSION,
               Capability.EVENT_LIFECYCLE,
               Capability.INSPECT_SOURCE_LOCATION,
+              Capability.INSPECT_SOURCE_LOCATION,
               Capability.CONTROL_PAUSE,
               Capability.CONTROL_SINGLE_STEP,
               Capability.CONTROL_RESUME,
@@ -504,7 +505,7 @@ public class SessionInstrumentationTest {
             EventKind.MACHINE_RESUME,
             EventKind.EXECUTION_TERMINAL),
         new InstrumentFilter(session, Set.of(), Set.of(TargetKind.HBC), Set.of(new RuntimeBackend("java-hbc"))),
-        ProjectionRequest.none(),
+        new ProjectionRequest(true, null, null, null, null, null, null),
         EventDelivery.queue(256));
   }
 

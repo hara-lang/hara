@@ -269,6 +269,14 @@ public final class HbcMachine {
         }
         case CALL_STATIC -> {
           Object[] args = popArguments(stack, index(instruction.second()));
+          if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.CALL_ENTER)) {
+            context.publishHbcEvent(
+                InstrumentationModel.EventKind.CALL_ENTER,
+                ip,
+                function.name(),
+                program.namespace(),
+                java.util.Map.of("arity", Integer.toString(args.length)));
+          }
           Function target = program.functions().get(index(instruction.first()));
           int currentCaptureBase = function.arity() + (function.variadic() ? 1 : 0);
           Object[] inherited =

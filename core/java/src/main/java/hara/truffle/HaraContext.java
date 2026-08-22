@@ -266,6 +266,7 @@ public final class HaraContext {
   private final IFilesystem ownedFilesystem;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
   private HbcMachine.ExecutionState retainedHbcExecution;
+  private final ThreadLocal<Integer> interpreterRootDepth = ThreadLocal.withInitial(() -> 0);
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
   private final Map<String, Map<String, String>> aliases = new ConcurrentHashMap<>();
@@ -443,6 +444,23 @@ public final class HaraContext {
     return target != null && sessionKernel.instrumentationHub().hasSubscribers(target, event);
   }
 
+  public void enterInterpreterRoot() {
+    interpreterRootDepth.set(interpreterRootDepth.get() + 1);
+  }
+
+  public void exitInterpreterRoot() {
+    int depth = interpreterRootDepth.get() - 1;
+    if (depth == 0) {
+      interpreterRootDepth.remove();
+    } else {
+      interpreterRootDepth.set(depth);
+    }
+  }
+
+  public boolean isTopLevelInterpreterRoot() {
+    return interpreterRootDepth.get() == 1;
+  }
+
   InstrumentationModel.InstrumentDirective pollHbcDirective() {
     InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
     if (target == null) return InstrumentationModel.InstrumentDirective.CONTINUE;
@@ -487,6 +505,7 @@ public final class HaraContext {
 
   public void publishInterpreterTerminal(
       com.oracle.truffle.api.source.SourceSection source, String status) {
+    if (!isTopLevelInterpreterRoot()) return;
     publishInterpreterEvent(
         InstrumentationModel.EventKind.EXECUTION_TERMINAL,
         source,
@@ -495,6 +514,7 @@ public final class HaraContext {
 
   public void publishInterpreterTopLevelFailure(
       com.oracle.truffle.api.source.SourceSection source, RuntimeException error) {
+    if (!isTopLevelInterpreterRoot()) return;
     publishInterpreterEvent(
         InstrumentationModel.EventKind.EXCEPTION_RAISE,
         source,
