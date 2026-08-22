@@ -1,0 +1,268 @@
+(ns std.lib.context.resource
+  (:require [std.lib.component :as component]))
+
+(def ^{:dynamic true} *resource-namespace* nil)
+(def ^{:dynamic true} *resource-aliases* (atom {}))
+(def ^{:dynamic true} *resource-registry* (atom {}))
+(def ^{:dynamic true} *resource-active*
+  (atom {:global {} :namespace {} :shared {}}))
+
+(def +resource-type+
+  {:mode {:key :id
+          :allow #{:global :namespace :shared}
+          :default :global}
+   :config {}
+   :instance {:create identity
+              :setup component/start
+              :teardown component/stop}
+   :variant {:default {:hook {:pre-setup nil
+                              :post-setup nil
+                              :pre-teardown nil
+                              :post-teardown nil}
+                       :config {}}}})
+
+(defn resource-merge-config [base override]
+  (let [output (merge base override)]
+    (assoc output
+           :mode (merge (:mode base) (:mode override))
+           :config (merge (:config base) (:config override))
+           :instance (merge (:instance base) (:instance override))
+           :hook (merge (:hook base) (:hook override)))))
+
+(defn spec-list []
+  (keys (deref *resource-registry*)))
+
+(defn spec-add [spec]
+  (let [type (:type spec)
+        base-variant (get (:variant +resource-type+) :default)
+        variants (map-vals (fn [variant]
+                             (resource-merge-config base-variant variant))
+                           (:variant spec))
+        variants (assoc variants
+                        :default
+                        (resource-merge-config
+                         base-variant
+                         (get (:variant spec) :default {})))
+        entry (resource-merge-config +resource-type+ spec)
+        entry (assoc entry :variant variants)]
+    (swap! *resource-registry* assoc type entry)
+    [:changed entry]))
+
+(defn spec-remove [type]
+  (swap-return!
+   *resource-registry*
+   (fn [registry]
+     [(get registry type) (dissoc registry type)])))
+
+(defn spec-get [type]
+  (or (get (deref *resource-registry*) type)
+      (throw (ex :generic {:type type :options (spec-list)} :ex/message "No resource spec available"))))
+
+(defn variant-list
+  ([] (map-vals (fn [spec] (keys (:variant spec)))
+                (deref *resource-registry*)))
+  ([type] (keys (:variant (spec-get type)))))
+
+(defn variant-add [type spec]
+  (let [id (:id spec)
+        alias (:alias spec)]
+    (if alias (swap! *resource-aliases* assoc alias [type id]))
+    (swap! *resource-registry* assoc-in [type :variant id] spec)
+    [:changed spec]))
+
+(defn variant-remove [type id]
+  (let [spec (get-in (deref *resource-registry*) [type :variant id])
+        alias (:alias spec)]
+    (if alias (swap! *resource-aliases* dissoc alias))
+    (swap! *resource-registry* update-in [type :variant] dissoc id)
+    spec))
+
+(defn variant-get
+  ([type] (variant-get type :default))
+  ([type id]
+   (let [spec (spec-get type)
+         variant (get-in spec [:variant id])]
+     (if variant
+       (resource-merge-config (dissoc spec :variant) variant)
+       (throw (ex :generic {:type type :variant id
+                        :options (keys (:variant spec))} :ex/message "No resource variant available"))))))
+
+(defn resource-mode
+  ([type] (resource-mode type :default))
+  ([type variant]
+   (let [spec (spec-get type)]
+     (or (get (get (get (:variant spec) variant {}) :mode {}) :default)
+         (get (:mode spec) :default)))))
+
+(defn resource-active
+  ([] (deref *resource-active*))
+  ([type] (resource-active type nil))
+  ([type variant]
+   (reduce
+    (fn [output mode-entry]
+      (let [mode (key mode-entry)
+            entries (val mode-entry)
+            selected
+            (reduce
+             (fn [found entry]
+               (let [path-key (key entry)
+                     coordinate (if (= mode :namespace)
+                                  (first (keys (val entry)))
+                                  path-key)]
+                 (if (and (or (nil? type) (= type (first coordinate)))
+                          (or (nil? variant) (= variant (second coordinate))))
+                   (assoc found path-key (val entry))
+                   found)))
+             {}
+             entries)]
+        (if (empty? selected) output (assoc output mode selected))))
+    {}
+    (deref *resource-active*))))
+
+(defn resource-setup [type variant config]
+  (let [spec (variant-get type variant)
+        instance (:instance spec)
+        hook (:hook spec)
+        create (:create instance)
+        setup (:setup instance)
+        prepared (create (merge (:config spec) config))
+        prepared (if (:pre-setup hook) ((:pre-setup hook) prepared) prepared)
+        started (if setup (setup prepared) prepared)]
+    (if (:post-setup hook) ((:post-setup hook) started) started)))
+
+(defn resource-teardown [type variant value]
+  (let [spec (variant-get type variant)
+        teardown (get-in spec [:instance :teardown])
+        hook (:hook spec)]
+    (try
+      (let [prepared (if (:pre-teardown hook)
+                       ((:pre-teardown hook) value)
+                       value)
+            stopped (if teardown (teardown prepared) prepared)]
+        (if (:post-teardown hook)
+          ((:post-teardown hook) stopped)
+          stopped))
+      (catch Throwable error nil))))
+
+(defn resource-key [mode type variant input & arguments]
+  (let [input (or (last arguments) input)]
+    (case mode
+      :global nil
+      :namespace (or (if (map? input) (:namespace input) input)
+                     *resource-namespace*
+                     :default)
+      :shared (if (map? input)
+                (let [key-function (get-in (variant-get type variant)
+                                           [:mode :key])]
+                  (key-function input))
+                input)
+      (throw (ex :generic {:mode mode} :ex/message "Unsupported resource mode")))))
+
+(defn resource-active-path [mode type variant input]
+  (let [resource-key (resource-key mode type variant input)]
+    (if resource-key
+      [mode [type variant] resource-key]
+      [mode [type variant]])))
+
+(defn resource-active-get [mode type variant key]
+  (get-in (deref *resource-active*)
+          (resource-active-path mode type variant key)))
+
+(defn resource-active-set [mode type variant key entry]
+  (swap! *resource-active*
+         assoc-in
+         (resource-active-path mode type variant key)
+         entry)
+  [:changed entry])
+
+(defn resource-active-start [mode type variant key config]
+  (if (resource-active-get mode type variant key)
+    (throw (ex :generic {:type type :variant variant :key key} :ex/message "Resource already started"))
+    (let [instance (resource-setup type variant config)]
+      (resource-active-set mode type variant key
+                           {:key key :config config :instance instance})
+      instance)))
+
+(defn resource-active-stop [mode type variant key]
+  (let [path (resource-active-path mode type variant key)]
+    (swap-return!
+     *resource-active*
+     (fn [active]
+       (let [entry (get-in active path)]
+         [(if entry
+            (resource-teardown type variant (:instance entry))
+            nil)
+          (dissoc-in active path)])))))
+
+(defn resource-active-restart [mode type variant key]
+  (let [entry (resource-active-get mode type variant key)]
+    (if entry
+      (do (resource-active-stop mode type variant key)
+          (resource-active-start mode type variant key (:config entry)))
+      nil)))
+
+(defn resource-active-get-or-start [mode type variant key config]
+  (let [spec (variant-get type variant)
+        allowed (get-in spec [:mode :allow])]
+    (if (not (has? allowed mode))
+      (throw (ex :generic {:mode mode :options allowed} :ex/message "Resource mode not allowed")))
+    (or (:instance (resource-active-get mode type variant key))
+        (resource-active-start mode type variant key config))))
+
+(defn resource-input [input]
+  (cond
+    (keyword? input) [input {}]
+    (map? input) [:default input]
+    (symbol? input) [:default input]
+    (string? input) [:default input]
+    :else (throw (ex :argument {:input input} :ex/message "Invalid resource input"))))
+
+(defn resource-call-fn [function]
+  (fn
+    ([type arguments]
+     (let [alias (get (deref *resource-aliases*) type)]
+       (let [type (if alias (first alias) type)
+             variant (if alias (second alias) :default)
+             mode (resource-mode type variant)
+             key (resource-key mode type variant arguments arguments)]
+         (apply function mode type variant key arguments))))
+    ([type input arguments]
+     (let [normalized (resource-input input)
+           variant (first normalized)
+           input (second normalized)
+           mode (resource-mode type variant)
+           key (resource-key mode type variant input arguments)]
+       (apply function mode type variant key arguments)))
+    ([type variant input arguments]
+     (let [mode (resource-mode type variant)
+           key (resource-key mode type variant input arguments)]
+       (apply function mode type variant key arguments)))
+    ([mode type variant key arguments]
+     (apply function mode type variant key arguments))))
+
+(defn resource-api-fn [function extra post default]
+  (let [call-function (resource-call-fn function)]
+    (fn [& arguments]
+      (let [arguments (if (and default (= 1 (count arguments)))
+                        (conj arguments default)
+                        arguments)
+            split (- (count arguments) extra)
+            start (take split arguments)
+            trailing (drop split arguments)
+            output (apply call-function (conj (vec start) trailing))]
+        (if post (post output) output)))))
+
+(defn resource-exists? [& arguments]
+  (apply (resource-api-fn resource-active-get 0 boolean nil) arguments))
+(defn resource-set [& arguments]
+  (apply (resource-api-fn resource-active-set 1 nil nil) arguments))
+(defn resource-stop [& arguments]
+  (apply (resource-api-fn resource-active-stop 0 nil nil) arguments))
+(defn resource-path [& arguments]
+  (apply (resource-api-fn resource-active-path 0 nil nil) arguments))
+(defn resource-start [& arguments]
+  (apply (resource-api-fn resource-active-start 1 nil {}) arguments))
+(defn resource-restart [& arguments]
+  (apply (resource-api-fn resource-active-restart 0 nil nil) arguments))
+(defn resource-get [& arguments]
+  (apply (resource-api-fn resource-active-get-or-start 1 nil {}) arguments))

@@ -169,7 +169,7 @@ Kind: `function`. Reason: `:domain-owner`.
 - `merged-options`
 - `run-hooks`
 
-### `std.lib.fs` → `std.lib.fs.copy`
+### `std.fs` → `std.fs.copy`
 
 Kind: `function`. Reason: `:domain-owner`.
 
@@ -178,7 +178,7 @@ Kind: `function`. Reason: `:domain-owner`.
 - `map-merge`
 - `prepare-directory-target`
 
-### `std.lib.fs` → `std.lib.fs.delete`
+### `std.fs` → `std.fs.delete`
 
 Kind: `function`. Reason: `:domain-owner`.
 

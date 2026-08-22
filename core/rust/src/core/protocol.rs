@@ -283,7 +283,7 @@ fn protocol_pointer_context(arguments: &[Value]) -> Result<Value, String> {
 }
 
 fn pointer_default(pointer: &PPointer) -> Result<Value, String> {
-    let resolver = vm_resolve_global("std.context.space/space:rt-current")?.deref_value();
+    let resolver = vm_resolve_global("std.lib.context.space/space:rt-current")?.deref_value();
     call_value(resolver, vec![Value::Keyword(pointer.context().clone())])
         .map_err(|error| format!("pointer/runtime-unavailable: {error}"))
 }

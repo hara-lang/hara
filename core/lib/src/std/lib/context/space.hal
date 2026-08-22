@@ -1,0 +1,202 @@
+(ns std.lib.context.space
+  (:require [std.lib.context.registry :as registry]
+            [std.lib.component :as component]))
+
+(def ^{:dynamic true} *namespace* nil)
+(def ^{:dynamic true} *spaces* (atom {}))
+
+(defstruct Space [namespace state])
+
+(defn space-merge-config [base override]
+  (reduce
+   (fn [output pair]
+     (let [entry-key (key pair)
+           entry-value (val pair)
+           current (get output entry-key)]
+       (assoc output
+              entry-key
+              (if (and (map? current) (map? entry-value))
+                (space-merge-config current entry-value)
+                entry-value))))
+   base
+   override))
+
+(defn space-context-set [space context key config]
+  (let [runtime (registry/registry-rt context key)
+        entry (assoc runtime
+                     :variant (or key :default)
+                     :config (space-merge-config (:config runtime) config))]
+    (swap! (:state space) assoc context entry)
+    entry))
+
+(defn space-context-unset [space context]
+  (let [entry (get (deref (:state space)) context)]
+    (if (:instance entry) (space-rt-stop space context))
+    (swap! (:state space) dissoc context)
+    entry))
+
+(defn space-context-get [space context]
+  (let [entry (get (deref (:state space)) context)]
+    (if entry
+      (assoc entry :variant (or (:variant entry) :default))
+      (throw (ex :not-found {:input context :options (keys (deref (:state space)))} :ex/message "Context not found")))))
+
+(defn space-rt-create [space context]
+  (let [entry (space-context-get space context)
+        create (:create entry)]
+    (if create
+      (create (:config entry))
+      (throw (ex :host {:context context :runtime entry} :ex/message "Runtime has no create function")))))
+
+(defn space-rt-start [space context]
+  (or (:instance (get (deref (:state space)) context))
+      (let [runtime (component/start (space-rt-create space context))]
+        (swap! (:state space) assoc-in [context :instance] runtime)
+        runtime)))
+
+(defn space-rt-stop [space context]
+  (let [entry (space-context-get space context)
+        runtime (:instance entry)]
+    (if runtime
+      (do
+        (component/stop runtime)
+        (swap! (:state space) update-in [context] dissoc :instance)
+        nil))))
+
+(defn space-stop [space]
+  (reduce
+   (fn [output context]
+     (if (:instance (get (deref (:state space)) context))
+       (space-rt-stop space context))
+     output)
+   space
+   (keys (deref (:state space)))))
+
+(extend-type Space ISpace
+  (context-set [space context key options]
+    (space-context-set space context key options))
+  (context-unset [space context]
+    (space-context-unset space context))
+  (context-list [space]
+    (vec (keys (deref (:state space)))))
+  (context-get [space context]
+    (space-context-get space context))
+  (rt-active [space]
+    (vec
+     (reduce
+      (fn [output pair]
+        (if (:instance (val pair))
+          (conj output (key pair))
+          output))
+      []
+      (deref (:state space)))))
+  (rt-get [space context]
+    (:instance (get (deref (:state space)) context)))
+  (rt-start [space context]
+    (space-rt-start space context))
+  (rt-started? [space context]
+    (not (nil? (:instance (get (deref (:state space)) context)))))
+  (rt-stopped? [space context]
+    (nil? (:instance (get (deref (:state space)) context))))
+  (rt-stop [space context]
+    (space-rt-stop space context)))
+
+(extend-type Space IComponent
+  (props [space] {})
+  (status [space] :started)
+  (started? [space] true)
+  (stopped? [space] false)
+  (start [space] space)
+  (stop [space] (space-stop space))
+  (kill [space] (space-stop space))
+  (remote? [space] false))
+
+(defn space? [value]
+  (instance? Space value))
+
+(defn space-create [options]
+  (std.lib.context.space/Space
+   (or (:namespace options) *namespace* :default)
+   (atom {})))
+
+(defn space
+  ([] (space *namespace*))
+  ([namespace]
+   (let [key (or namespace :default)
+         existing (get (deref *spaces*) key)]
+     (or existing
+         (let [created (space-create {:namespace key})]
+           (swap! *spaces* assoc key created)
+           created)))))
+
+(defn space-resolve [value]
+  (if (or (nil? value) (symbol? value))
+    (space value)
+    value))
+
+(defn protocol-tmpl [options]
+  (fn [signature]
+    {:name (symbol (str (:prefix options) (:name signature)))
+     :arglists (:arglists signature)
+     :protocol (:protocol options)
+     :instance (:instance options)
+     :resolve (:resolve options)
+     :default (:default options)}))
+
+(defn space:context-set
+  ([context key options]
+   (space:context-set *namespace* context key options))
+  ([space-or-namespace context key options]
+   (space-context-set (space-resolve space-or-namespace) context key options)))
+
+(defn space:context-unset
+  ([context] (space:context-unset *namespace* context))
+  ([space-or-namespace context]
+   (space-context-unset (space-resolve space-or-namespace) context)))
+
+(defn space:context-list
+  ([] (space:context-list *namespace*))
+  ([space-or-namespace]
+   (ISpace/context-list (space-resolve space-or-namespace))))
+
+(defn space:context-get
+  ([context] (space:context-get *namespace* context))
+  ([space-or-namespace context]
+   (space-context-get (space-resolve space-or-namespace) context)))
+
+(defn space:rt-active
+  ([] (space:rt-active *namespace*))
+  ([space-or-namespace]
+   (ISpace/rt-active (space-resolve space-or-namespace))))
+
+(defn space:rt-get
+  ([context] (space:rt-get *namespace* context))
+  ([space-or-namespace context]
+   (ISpace/rt-get (space-resolve space-or-namespace) context)))
+
+(defn space:rt-start
+  ([context] (space:rt-start *namespace* context))
+  ([space-or-namespace context]
+   (space-rt-start (space-resolve space-or-namespace) context)))
+
+(defn space:rt-started?
+  ([context] (space:rt-started? *namespace* context))
+  ([space-or-namespace context]
+   (ISpace/rt-started? (space-resolve space-or-namespace) context)))
+
+(defn space:rt-stopped?
+  ([context] (space:rt-stopped? *namespace* context))
+  ([space-or-namespace context]
+   (ISpace/rt-stopped? (space-resolve space-or-namespace) context)))
+
+(defn space:rt-stop
+  ([context] (space:rt-stop *namespace* context))
+  ([space-or-namespace context]
+   (space-rt-stop (space-resolve space-or-namespace) context)))
+
+(defn space:rt-current
+  ([context] (space:rt-current *namespace* context))
+  ([namespace context]
+   (or (space:rt-get namespace context)
+       (registry/registry-scratch context)
+       registry/+rt-null+)))

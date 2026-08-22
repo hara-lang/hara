@@ -1,0 +1,54 @@
+(ns code.project.package
+  (:config {:override [find]}))
+
+(defn ^{:inline true :schema [:fn [] :map]}
+  catalog
+  "Returns the exact locked package catalog with lifecycle state."
+  []
+  (Package/catalog))
+
+(defn ^{:inline true :schema [:fn [:any] [:maybe :map]]}
+  find
+  "Finds a locked package by coordinate, namespace, or exact descriptor."
+  [target]
+  (Package/find target))
+
+(defn ^{:inline true :schema [:fn [:any] :promise]}
+  ensure
+  "Activates the exact locked package closure without evaluating a namespace."
+  [target]
+  (Package/ensure target))
+
+(defn ensure-all
+  "Activates every target and resolves descriptors in input order."
+  [targets]
+  (promise/all (map ensure targets)))
+
+(defn ^{:inline true :schema [:fn [:any] [:maybe :keyword]]}
+  state
+  "Returns the package lifecycle state or nil when target is not locked."
+  [target]
+  (Package/state target))
+
+(defn locked?
+  "Returns true when target belongs to the exact lock."
+  [target]
+  (not (nil? (find target))))
+
+(defn available? [target] (= :available (state target)))
+(defn ensuring? [target] (= :ensuring (state target)))
+(defn ready? [target] (= :ready (state target)))
+(defn unloading? [target] (= :unloading (state target)))
+(defn failed? [target] (= :failed (state target)))
+
+(defn load
+  "Ensures the owning package and then evaluates the requested locked namespace."
+  [namespace]
+  (promise/then
+    (ensure namespace)
+    (fn [descriptor] (Package/load namespace))))
+
+(defn unload
+  "Detaches a package activation. Cascade mode also unloads active dependents."
+  ([target] (Package/unload target))
+  ([target options] (Package/unload target options)))

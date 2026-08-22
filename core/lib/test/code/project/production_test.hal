@@ -1,0 +1,185 @@
+(ns code.project.production-test
+  (:require [code.project.production :as production]))
+
+(def production-project
+  {:hara/type :project
+   :hara/version "1.0.0"
+   :project/id 'demo-app
+   :project/version "0.1.0"
+   :project/source-paths ["src"]
+   :project/test-paths ["test"]
+   :project/extension-paths []
+   :project/capabilities #{}
+   :project/main 'app.fallback
+   :project/profiles
+   {:production
+    {:profile/language :hara
+     :profile/main 'app.main
+     :profile/build
+     {:build/tree-shake true
+      :build/entrypoints #{'app.main/worker 'app.main/start}
+      :build/default-entrypoint 'app.main/start
+      :build/keep-vars #{'app.dynamic/handler}
+      :build/keep-namespaces #{'app.plugins}}}}})
+
+(def production-plan
+  (production/build-plan production-project :production))
+
+[(test-check
+   "production roots remain qualified Vars while profile main remains a namespace"
+   [(:profile/main production-plan)
+    (:build/entrypoints production-plan)
+    (:build/default-entrypoint production-plan)]
+   ['app.main ['app.main/start 'app.main/worker] 'app.main/start])
+  (test-check
+   "production artifact defaults are exact and deterministic"
+   [(:build/output-bundle production-plan)
+    (:build/output-report production-plan)]
+   ["target/demo-app-production.hbx"
+    "target/demo-app-production.shake.edn"])
+  (test-check
+   "keep declarations normalize to deterministic vectors"
+   [(:build/keep-vars production-plan)
+    (:build/keep-namespaces production-plan)]
+   [['app.dynamic/handler] ['app.plugins]])
+  (test-check
+   "the pending shake report covers every production reporting category"
+   (let [report (production/shake-report production-plan)]
+     [(:shake/format report)
+      (:shake/status report)
+      (:shake/retained report)
+      (:shake/removed report)
+      (:shake/retention-reasons report)
+      (:shake/dynamic-access-diagnostics report)
+      (:shake/native-roots report)
+      (:shake/sizes report)
+      (:shake/digests report)])
+   ["hara.production-shake/0-alpha"
+    :pending-analysis
+    {:vars [] :namespaces []}
+    {:vars [] :namespaces []}
+    []
+    []
+    {:primitives [] :types [] :protocols []}
+    {:input-bytes nil :output-bytes nil}
+    {:algorithm :sha-256 :input nil :output nil}])
+  (test-check
+   "shake report serialization is byte-stable and round-trips through EDN"
+   (let [report (production/shake-report production-plan)
+         first-source (production/shake-report-source report)
+         second-source (production/shake-report-source report)]
+     [(= first-source second-source)
+      (= report (Edn/read first-source))])
+   [true true])
+  (test-check
+   "a single production entrypoint becomes the default"
+   (get-in
+    (production/normalize-project
+     {:project/id 'single
+      :project/profiles
+      {:production
+       {:profile/language :hara
+        :profile/main 'app.main
+        :profile/build
+        {:build/tree-shake true
+         :build/entrypoints #{'app.main/start}}}}})
+    [:project/profiles :production :profile/build
+     :build/default-entrypoint])
+   'app.main/start)
+  (test-check
+   "multiple production entrypoints require an explicit default"
+   (try
+     (production/normalize-project
+      {:project/id 'ambiguous
+       :project/profiles
+       {:production
+        {:profile/language :hara
+         :profile/main 'app.main
+         :profile/build
+         {:build/tree-shake true
+          :build/entrypoints #{'app.main/start 'app.main/worker}}}}})
+     false
+     (catch Throwable error
+       (str/includes? (ex-message error) "default-entrypoint is required")))
+   true)
+  (test-check
+   "the default entrypoint must be retained as an entrypoint"
+   (try
+     (production/normalize-project
+      {:project/id 'invalid-default
+       :project/profiles
+       {:production
+        {:profile/language :hara
+         :profile/main 'app.main
+         :profile/build
+         {:build/tree-shake true
+          :build/entrypoints #{'app.main/start}
+          :build/default-entrypoint 'app.main/missing}}}})
+     false
+     (catch Throwable error
+       (str/includes? (ex-message error) "must name one of")))
+   true)
+  (test-check
+   "unqualified entrypoints are rejected before production analysis"
+   (try
+     (production/normalize-project
+      {:project/id 'invalid
+       :project/profiles
+       {:production
+        {:profile/language :hara
+         :profile/main 'app.main
+         :profile/build
+         {:build/tree-shake true
+          :build/entrypoints #{'start}}}}})
+     false
+     (catch Throwable error
+       (str/includes? (ex-message error) "qualified Var")))
+   true)
+  (test-check
+   "profile main cannot be repurposed as a Var entrypoint"
+   (try
+     (production/normalize-project
+      {:project/id 'invalid
+       :project/profiles
+       {:production
+        {:profile/language :hara
+         :profile/main 'app.main/start
+         :profile/build
+         {:build/tree-shake true
+          :build/entrypoints #{'app.main/start}}}}})
+     false
+     (catch Throwable error
+       (str/includes? (ex-message error) "namespace symbol")))
+   true)
+  (test-check
+   "namespaced profile identifiers are rejected instead of silently shortened"
+   (try
+     (production/normalize-project
+      {:project/id 'invalid
+       :project/profiles
+       {:release/production
+        {:profile/language :hara
+         :profile/main 'app.main
+         :profile/build
+         {:build/tree-shake true
+          :build/entrypoints #{'app.main/start}}}}})
+     false
+     (catch Throwable error
+       (str/includes? (ex-message error) "invalid project profile name")))
+   true)
+  (test-check
+   "namespaced language identifiers are rejected"
+   (try
+     (production/normalize-project
+      {:project/id 'invalid
+       :project/profiles
+       {:production
+        {:profile/language :language/hara
+         :profile/main 'app.main
+         :profile/build
+         {:build/tree-shake true
+          :build/entrypoints #{'app.main/start}}}}})
+     false
+     (catch Throwable error
+       (str/includes? (ex-message error) "unqualified identifier")))
+   true)]

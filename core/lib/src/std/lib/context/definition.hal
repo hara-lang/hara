@@ -1,0 +1,111 @@
+(ns std.lib.context.definition
+  (:require [std.lib.context.resource :as resource]))
+
+(def +resource-type+ :definition/family)
+
+(def +resource-spec+
+  {:type +resource-type+
+   :mode {:default :global}
+   :config {:registry (atom {})}
+   :variant {}
+   :instance
+   {:create (fn [config] (atom {}))
+    :setup nil
+    :teardown nil}})
+
+(defn ensure-resource
+  []
+  (if (has? (set (resource/spec-list)) +resource-type+)
+    (resource/spec-get +resource-type+)
+    (second (resource/spec-add +resource-spec+))))
+
+(def +init+ (ensure-resource))
+
+(defn registry
+  []
+  (get-in (ensure-resource) [:config :registry]))
+
+(defn normalize-text-set
+  [values]
+  (set (map str (or values #{}))))
+
+(defn normalize-family
+  [family]
+  (let [id (:id family)]
+    (if (nil? id)
+      (throw (ex :dependency {:family family} :ex/message "Definition family requires :id"))
+      (assoc family
+             :exact (normalize-text-set (:exact family))
+             :prefix (normalize-text-set (:prefix family))
+             :generated (vec (or (:generated family) []))))))
+
+(defn register-family
+  [family]
+  (let [family (normalize-family family)]
+    (swap! (registry) assoc (:id family) family)
+    family))
+
+(defn unregister-family
+  [id]
+  (let [current (get (deref (registry)) id)]
+    (swap! (registry) dissoc id)
+    current))
+
+(defn families
+  []
+  (let [current (deref (registry))]
+    (vec (map (fn [id] (get current id))
+              (sort-by str (keys current))))))
+
+(defn sync-origin
+  [origin entries]
+  (let [prepared (vec (map (fn [entry]
+                             (normalize-family (assoc entry :origin origin)))
+                           entries))]
+    (swap!
+     (registry)
+     (fn [current]
+       (let [retained
+             (reduce (fn [output entry]
+                       (if (= origin (:origin (second entry)))
+                         output
+                         (assoc output (first entry) (second entry))))
+                     {}
+                     current)]
+         (reduce (fn [output family]
+                   (assoc output (:id family) family))
+                 retained
+                 prepared))))
+    prepared))
+
+(defn exact-family
+  [head entries]
+  (first (filter (fn [family] (has? (:exact family) head)) entries)))
+
+(defn prefix-family
+  [head entries]
+  (:family
+   (reduce
+    (fn [selected family]
+      (reduce
+       (fn [selected prefix]
+         (if (and (str/starts-with? head prefix)
+                  (> (str/length prefix) (:length selected)))
+           {:length (str/length prefix) :family family}
+           selected))
+       selected
+       (:prefix family)))
+    {:length -1 :family nil}
+    entries)))
+
+(defn match-family
+  [head]
+  (let [head (str head)
+        entries (families)]
+    (or (exact-family head entries)
+        (prefix-family head entries))))
+
+(defn clear
+  []
+  (reset! (registry) {})
+  {})
