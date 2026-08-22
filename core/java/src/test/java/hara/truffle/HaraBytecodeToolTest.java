@@ -1,6 +1,7 @@
 package hara.truffle;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import java.io.ByteArrayOutputStream;
@@ -57,6 +58,7 @@ public class HaraBytecodeToolTest {
     assertEquals(errorBytes.toString(StandardCharsets.UTF_8), 0, status);
     assertTrue(outputBytes.toString(StandardCharsets.UTF_8).contains("module std.foundation\n"));
     assertTrue(outputBytes.toString(StandardCharsets.UTF_8).contains("module std.typed\n"));
+    assertFalse(outputBytes.toString(StandardCharsets.UTF_8).contains("module lang.core\n"));
     assertEquals("", errorBytes.toString(StandardCharsets.UTF_8));
   }
 }

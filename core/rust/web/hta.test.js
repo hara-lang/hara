@@ -3,6 +3,7 @@ import test from "node:test";
 import { BrowserPromiseProvider, decodeHta, encodeHta, HtaContext, HtaDeque, HtaHandle, HtaKeyword, HtaPriorityMap, HtaQueue, HtaSortedMap, HtaTagged, HtaSymbol, loadHtaExtension, parseHtaManifest } from "./packages/hta/index.js";
 
 const tensorDescriptor='{:namespace "math.tensor" :version "1" :provider :wasm :module "tensor.wasm" :abi :hta.v1 :exports {"open" {:args [] :returns :value :async true}} :handles {"tensor" {:tag math}} :capabilities []}';
+const hostDescriptor='{:namespace "host.demo" :version "1" :provider :wasm :module "demo.wasm" :abi :hta.v1 :exports {"open" {}} :host-calls {"store" ["get"]} :capabilities []}';
 
 test("repository compatibility shim re-exports the package API",async()=>{
   const shim=await import("./hta.js");
@@ -18,12 +19,37 @@ test("canonical maps ignore insertion order",()=>{const a=new Map([[new HtaKeywo
 test("HTA v3 preserves immutable Hara collection and tagged identities",()=>{const values=[new HtaQueue([1,2]),new HtaDeque([1,2]),new HtaSortedMap([["a",1],["b",2]]),new HtaPriorityMap([["b",1],["a",2]]),new HtaTagged(new HtaSymbol("demo/tag"),42)];for(const value of values){const decoded=decodeHta(encodeHta(value));assert.equal(decoded.constructor,value.constructor);assert.deepEqual(decoded,value);}});
 test("context applies registered public handle tags",async()=>{const worker=new FakeWorker();const context=new HtaContext({worker,moduleUrl:"runtime.wasm",handleTags:{tensor:"math"}});worker.emit({type:"ready"});const result=context.call("open",[]);await Promise.resolve();const call=worker.sent.find(message=>message.type==="call");worker.emit({type:"result",id:call.id,ok:true,frame:encodeHta(new HtaHandle("math.tensor","tensor",42n))});assert.equal(String(await result),"#math[:tensor 42]");context.close();});
 test("manifest parser validates compact public tags",()=>{const manifest=parseHtaManifest(tensorDescriptor);assert.equal(manifest.namespace,"math.tensor");assert.equal(manifest.module,"tensor.wasm");assert.deepEqual(manifest.handleTags,{tensor:"math"});assert.throws(()=>parseHtaManifest(tensorDescriptor.replace(":tag math",":tag Math")),/invalid handle tag/);});
+test("manifest parser preserves export and host-call policy",()=>{const manifest=parseHtaManifest(hostDescriptor);assert.deepEqual(manifest.exports,["open"]);assert.deepEqual(manifest.hostCalls,{store:["get"]});assert.throws(()=>parseHtaManifest(hostDescriptor.replace("[\"get\"]","[\"get/x\"]")),/invalid host-call/);});
 test("descriptor loader resolves wasm and applies handle tags",async()=>{const worker=new FakeWorker();const context=await loadHtaExtension({worker,descriptor:tensorDescriptor,packageUrl:"https://example.test/extensions/math/"});assert.equal(worker.sent[0].moduleUrl,"https://example.test/extensions/math/tensor.wasm");worker.emit({type:"ready"});const result=context.call("open",[]);await Promise.resolve();const call=worker.sent.find(message=>message.type==="call");worker.emit({type:"result",id:call.id,ok:true,frame:encodeHta(new HtaHandle("math.tensor","tensor",42n))});assert.equal(String(await result),"#math[:tensor 42]");context.close();});
 test("descriptor loader fetches EDN when given its URL",async()=>{const worker=new FakeWorker(),descriptorUrl=`data:text/plain,${encodeURIComponent(tensorDescriptor)}`;const context=await loadHtaExtension({worker,descriptorUrl,moduleBytes:new Uint8Array()});assert.deepEqual(context.manifest.handleTags,{tensor:"math"});assert.ok(worker.sent[0].moduleBytes instanceof Uint8Array);context.close();});
 test("context releases bound handles once and rejects later use",async()=>{const worker=new FakeWorker();const context=new HtaContext({worker,moduleUrl:"runtime.wasm"});worker.emit({type:"ready"});const result=context.call("open",[]);await Promise.resolve();const call=worker.sent.find(message=>message.type==="call");worker.emit({type:"result",id:call.id,ok:true,frame:encodeHta(new HtaHandle("runtime","cursor",42n))});const handle=await result;handle.release();handle.release();const releases=worker.sent.filter(message=>message.type==="release");assert.equal(releases.length,1);const released=decodeHta(releases[0].frame);assert.equal(released.id,42n);await assert.rejects(context.call("use",[handle]),/hta\/handle-released/);context.close();});
 test("context exposes worker results as promises",async()=>{const worker=new FakeWorker();const context=new HtaContext({worker,moduleUrl:"runtime.wasm"});worker.emit({type:"ready"});const result=context.call("eval",["(+ 1 2)"]);await Promise.resolve();const call=worker.sent.find(message=>message.type==="call");worker.emit({type:"result",id:call.id,ok:true,frame:encodeHta(3)});assert.equal(await result,3);context.close();});
 test("context cancellation does not leak pre-dispatch requests",async()=>{const worker=new FakeWorker();const context=new HtaContext({worker,moduleUrl:"runtime.wasm"});worker.emit({type:"ready"});const result=context.call("eval",["slow"]);const rejection=assert.rejects(result,/cancelled/);result.cancel();await Promise.resolve();await Promise.resolve();assert.equal(worker.sent.some(message=>message.type==="call"),false);assert.equal(context.pending.size,0);await rejection;context.close();});
 test("context cancellation is forwarded after dispatch",async()=>{const worker=new FakeWorker();const context=new HtaContext({worker,moduleUrl:"runtime.wasm"});worker.emit({type:"ready"});const result=context.call("eval",["slow"]);const rejection=assert.rejects(result,/cancelled/);await Promise.resolve();await Promise.resolve();result.cancel();assert.equal(worker.sent.at(-1).type,"cancel");await rejection;context.close();});
+test("context enforces manifest export and host-call policy",async()=>{
+  const worker=new FakeWorker(),calls={"store/get":async()=>42,"store/put":async()=>false};
+  const context=new HtaContext({worker,moduleUrl:"runtime.wasm",hostCalls:calls,manifest:parseHtaManifest(hostDescriptor)});
+  worker.emit({type:"ready"});
+  await assert.rejects(context.call("missing"),/hta\/export-denied/);
+  worker.emit({type:"host-call",service:"store",method:"put",call:1,frame:encodeHta([])});
+  const denied=decodeHta(worker.sent.at(-1).frame);
+  assert.equal([...denied].find(([key])=>key instanceof HtaKeyword && key.name==="message")[1],"hta/host-call-denied: store/put");
+  worker.emit({type:"host-call",service:"store",method:"get",call:2,frame:encodeHta([])});
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.equal(worker.sent.at(-1).ok,true);
+  await context.close();
+});
+test("context close rejects pending calls and is idempotent",async()=>{
+  const worker=new FakeWorker(),context=new HtaContext({worker,moduleUrl:"runtime.wasm"});
+  worker.emit({type:"ready"});
+  const pending=context.call("slow");
+  await Promise.resolve();await Promise.resolve();
+  const first=context.close(),second=context.close();
+  await assert.rejects(pending,/hta\/context-closed/);
+  await Promise.all([first,second]);
+  assert.equal(worker.terminated,true);
+  assert.equal(context.pending.size,0);
+});
 test("context registers kernel-issued mounts and sessions attach numeric ids",async()=>{
   const worker=new FakeWorker(),events=[];
   const filesystemHost={register:async(_context,id,descriptor)=>events.push(["register",id,descriptor]),close:async(_context,id)=>events.push(["close",id])};

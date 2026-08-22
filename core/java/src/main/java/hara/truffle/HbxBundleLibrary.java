@@ -74,7 +74,13 @@ final class HbxBundleLibrary {
   private static Map<String, Module> load(ClassLoader loader) {
     try (InputStream input = loader.getResourceAsStream(RESOURCE)) {
       if (input == null) return Map.of();
-      List<HbxBundleCodec.Module> descriptors = HbxBundleCodec.decode(input.readAllBytes());
+      List<HbxBundleCodec.Module> descriptors;
+      try {
+        descriptors = HbxBundleCodec.decode(input.readAllBytes());
+      } catch (HbcFormatException error) {
+        // The bundle is an optional acceleration layer; source-backed libraries remain usable.
+        return Map.of();
+      }
       LinkedHashMap<String, Module> indexed = new LinkedHashMap<>();
       for (HbxBundleCodec.Module descriptor : descriptors) {
         if (REMOVED_MODULES.contains(descriptor.resource())) continue;

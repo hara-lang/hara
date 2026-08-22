@@ -68,4 +68,53 @@
               [:tool.cli.route/repl
                :tool.cli.route/run-file
                :tool.cli.route/project-run
-               :tool.cli.route/project-check])]
+               :tool.cli.route/project-check])
+  (test-check "route lookup and entries preserve canonical and alias paths"
+              [(-> (route/route-by-id routes :tool.cli.route/run-file)
+                  :route/path)
+              (vec
+               (map
+                (fn [entry] [(:match/path entry) (:match/alias entry)])
+                (route/route-entries
+                 (filter
+                  (fn [item] (= :tool.cli.route/project-check
+                                 (:route/id item)))
+                  routes))))]
+              [["run"]
+              [[["check"] true] [["project" "check"] false]]])
+  (test-check "request normalization carries route and runtime context"
+              (route/normalize-request
+              {:cli/routes routes}
+              ["project" "check" "--strict"]
+              {:strict true}
+              {:runtime/id :native
+               :runtime/cwd "/workspace"
+               :runtime/project "demo"
+               :runtime/capabilities #{:filesystem}})
+              {:request/route :tool.cli.route/project-check
+              :request/arguments ["--strict"]
+              :request/options {:strict true}
+              :request/runtime :native
+              :request/cwd "/workspace"
+              :request/project "demo"
+              :request/capabilities [:filesystem]})
+  (test-check "unknown routes normalize to a stable usage error"
+              (route/normalize-request
+              {:cli/routes routes}
+              ["missing"]
+              {}
+              {})
+              {:result/outcome :tool.cli.outcome/usage-error
+              :result/exit 2
+              :result/data {:error/type :tool.cli/unknown-route
+                            :error/argv ["missing"]}
+              :result/messages []})
+  (test-check "help text lists only public canonical routes"
+              (route/help-text
+              {:document/version "0.1.0"
+               :cli/routes routes})
+              (str "Hara CLI\n\nUsage: hara [OPTIONS] COMMAND\n\nCommands:\n"
+                  "  repl\tREPL\n"
+                  "  run\tRun file\n"
+                  "  project run\tRun project\n"
+                  "  project check\tCheck project\n"))]
