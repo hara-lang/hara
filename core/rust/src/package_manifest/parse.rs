@@ -505,7 +505,6 @@ fn canonical_form(value: &Form) -> Form {
         Form::Number(value) => Form::Number(*value),
         Form::Float(value) => Form::Float(*value),
         Form::BigInteger(value) => Form::BigInteger(value.clone()),
-        Form::Decimal(value) => Form::Decimal(value.clone()),
         Form::Character(value) => Form::Character(*value),
         Form::Regex(value) => Form::Regex(value.clone()),
         Form::Tagged(tag, value) => Form::Tagged(tag.clone(), Box::new(canonical_form(value))),
