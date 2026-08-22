@@ -1,0 +1,75 @@
+name: Filesystem Provider Packages
+
+on:
+  push:
+    paths:
+      - ".github/workflows/filesystem-provider-packages.yml"
+      - "providers/**"
+      - "core/java/src/main/java/hara/truffle/FilesystemException.java"
+      - "core/java/src/main/java/hara/truffle/HaraLogicalPath.java"
+      - "core/java/src/main/java/hara/truffle/IFilesystem.java"
+      - "core/java/src/main/java/hara/truffle/IFilesystemFactory.java"
+      - "core/java/src/main/java/hara/truffle/JvmPackageLoader.java"
+      - "core/java/src/main/java/hara/truffle/JvmPackageProvider.java"
+      - "core/java/src/main/java/hara/truffle/WebdavFilesystem.java"
+      - "core/java/src/test/java/hara/provider/spi/**"
+      - "core/java/src/test/java/hara/truffle/WebdavPackagePilotTest.java"
+  pull_request:
+    paths:
+      - ".github/workflows/filesystem-provider-packages.yml"
+      - "providers/**"
+      - "core/java/src/main/java/hara/truffle/FilesystemException.java"
+      - "core/java/src/main/java/hara/truffle/HaraLogicalPath.java"
+      - "core/java/src/main/java/hara/truffle/IFilesystem.java"
+      - "core/java/src/main/java/hara/truffle/IFilesystemFactory.java"
+      - "core/java/src/main/java/hara/truffle/JvmPackageLoader.java"
+      - "core/java/src/main/java/hara/truffle/JvmPackageProvider.java"
+      - "core/java/src/main/java/hara/truffle/WebdavFilesystem.java"
+      - "core/java/src/test/java/hara/provider/spi/**"
+      - "core/java/src/test/java/hara/truffle/WebdavPackagePilotTest.java"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: filesystem-provider-packages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  webdav-jvm:
+    name: Prebuilt WebDAV JVM package
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out Hara
+        uses: actions/checkout@v4
+
+      - name: Check out specifications registry
+        uses: actions/checkout@v4
+        with:
+          repository: hara-lang/hara-specs-registry
+          path: hara-specs-registry
+          fetch-depth: 1
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: |
+            core/java/pom.xml
+            providers/webdav/jvm/pom.xml
+
+      - name: Install trusted runtime SPI without running tests
+        run: mvn -B -f core/java/pom.xml -Ptruffle -DskipTests install
+
+      - name: Build precompiled WebDAV provider JAR
+        run: mvn -B -f providers/webdav/jvm/pom.xml package
+
+      - name: Prove cross-package SPI and trusted JAR loading
+        run: >-
+          mvn -B -f core/java/pom.xml -Ptruffle
+          -Dtest=FilesystemSpiVisibilityTest,WebdavPackagePilotTest
+          -Dhara.webdav.provider.jar=${{ github.workspace }}/providers/webdav/jvm/target/hara-filesystem-webdav-0.0.1-SNAPSHOT.jar
+          test
