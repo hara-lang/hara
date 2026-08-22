@@ -24,6 +24,38 @@
    (lowering/closure-value? {:value 1})]
   => [true false false])
 
+^{:refer work.compile.hara/reset-closures :added "0.1"}
+(fact "closure references have an explicit reset boundary"
+  [(lowering/reset-closures)
+   (try
+     (do
+       (lowering/resolve-closure 1)
+       :available)
+     (catch Throwable error
+       (:closure/token (ex-data error))))]
+  => [nil 1])
+
+^{:refer work.compile.hara/register-closure :added "0.1"}
+(fact "register-closure assigns fresh process-local tokens"
+  (lowering/reset-closures)
+  (let [first-token (lowering/register-closure captured-continuation)
+        second-token (lowering/register-closure captured-continuation)]
+    [first-token
+     second-token
+     (= (lowering/resolve-closure first-token)
+        captured-continuation)
+     (= (lowering/resolve-closure second-token)
+        captured-continuation)])
+  => [1 2 true true])
+
+^{:refer work.compile.hara/resolve-closure :added "0.1"}
+(fact "resolve-closure returns the registered executable value"
+  (lowering/reset-closures)
+  (let [token (lowering/register-closure captured-continuation)]
+    (= (lowering/resolve-closure token)
+       captured-continuation))
+  => true)
+
 ^{:refer work.compile.hara/ir-value :added "0.1"}
 (fact "Work IR makes nested Work and captured closures explicit"
   (let [definition
@@ -39,7 +71,7 @@
      (get-in representation [:ir/value :source :ir/kind])
      (get-in representation [:ir/value :continuation :ir/value :fn :ir/kind])
      ((:fn (work/work-spec produced)) 0 {})])
-  => [:work :work :closure 10])
+  => [:work :work :closure 7])
 
 ^{:refer work.compile.hara/ir :added "0.1"}
 (fact "Work IR carries a version and preserves bind structure"
@@ -51,12 +83,13 @@
         representation (lowering/ir definition)]
     [(get-in representation [:ir/version])
      (get-in representation [:ir/work :ir/value :op])
-     (get-in representation [:ir/work :ir/value :ir/value :source :ir/value :op])
-     (get-in representation [:ir/work :ir/value :ir/value :continuation :ir/value :fn :ir/kind])]
+    (get-in representation [:ir/work :ir/value :source :ir/value :op])
+    (get-in representation [:ir/work :ir/value :continuation :ir/value :fn :ir/kind])])
   => [1 :bind :pure :closure])
 
 ^{:refer work.compile.hara/form-value :added "0.1"}
 (fact "form-value recursively retains closure leaves and lowers Work children"
+  (lowering/reset-closures)
   (let [definition
         (work/bind
          {:id :form-value-bind}
@@ -66,8 +99,10 @@
                                       :closure captured-continuation})]
     [(first (get-in lowered [:work]))
      (first (get-in lowered [:closure]))
-     (second (get-in lowered [:closure]))])
-  => ['work.base/definition 'quote captured-continuation])
+     (integer? (second (get-in lowered [:closure])))
+     (= (lowering/resolve-closure (second (get-in lowered [:closure])))
+        captured-continuation)])
+  => ['work.base/definition 'work.compile.hara/resolve-closure true true])
 
 ^{:refer work.compile.hara/form :added "0.1"}
 (fact "generated ordinary forms execute bind with captured closures"
@@ -83,6 +118,6 @@
      (get-in (second generated) [:op])
      (work/run definition 3)
      (work/run rebuilt 3)])
-  => [true 'work.base/definition :bind 10 10])
+  => [true 'work.base/definition :bind 11 11])
 
 (pr-str (run '[work.compile.hara-test]))

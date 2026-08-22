@@ -4,13 +4,17 @@
 
 (def lowering-version 1)
 
+(def closure-state
+  (atom {:next 0
+         :values {}}))
+
 (defn work-value?
   [value]
   (satisfies? IWork value))
 
 (defn closure-value?
   [value]
-  (and (fn? value)
+  (and (function? value)
        (not (work-value? value))))
 
 (declare form)
@@ -27,11 +31,11 @@
      :ir/value value}
 
     (map? value)
-    (reduce-kv
-     (fn [output key item]
-       (assoc output key (ir-value item)))
+    (reduce
+     (fn [output key]
+       (assoc output key (ir-value (get value key))))
      {}
-     value)
+     (sort-by str (keys value)))
 
     (vector? value)
     (vec (map ir-value value))
@@ -59,6 +63,33 @@
   {:ir/version lowering-version
    :ir/work (ir-value work-value)})
 
+(defn reset-closures
+  "Clears process-local closure references used by generated forms."
+  []
+  (reset! closure-state {:next 0
+                         :values {}})
+  nil)
+
+(defn register-closure
+  [value]
+  (let [state (deref closure-state)
+        token (inc (:next state))]
+    (swap! closure-state
+           (fn [current]
+             (assoc current
+                    :next token
+                    :values (assoc (:values current) token value))))
+    token))
+
+(defn resolve-closure
+  [token]
+  (let [value (get-in (deref closure-state) [:values token])]
+    (if (nil? value)
+      (throw
+       (ex :not-found {:closure/token token}
+           :ex/message "Work lowering closure reference is not available")))
+    value))
+
 (defn form-value
   [value]
   (cond
@@ -66,14 +97,15 @@
     (form value)
 
     (closure-value? value)
-    (list 'quote value)
+    (list 'work.compile.hara/resolve-closure
+          (register-closure value))
 
     (map? value)
-    (reduce-kv
-     (fn [output key item]
-       (assoc output key (form-value item)))
+    (reduce
+     (fn [output key]
+       (assoc output key (form-value (get value key))))
      {}
-     value)
+     (sort-by str (keys value)))
 
     (vector? value)
     (vec (map form-value value))
