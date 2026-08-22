@@ -113,6 +113,9 @@ public final class HaraRootNode extends RootNode {
 
       long journalOperation = EvaluationJournal.enter(frameLabel(), arguments, argumentOffset);
       try {
+        if (exportResult && outermostRoot) {
+          context.publishInterpreterSemanticBoundary(sourceSection);
+        }
         Object result = body.execute(frame);
         EvaluationJournal.returned(journalOperation, result);
         if (exportResult && outermostRoot) {

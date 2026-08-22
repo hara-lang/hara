@@ -411,6 +411,12 @@ public final class HaraContext {
             data);
   }
 
+  public void publishInterpreterSemanticBoundary(
+      com.oracle.truffle.api.source.SourceSection source) {
+    publishInterpreterEvent(
+            InstrumentationModel.EventKind.SEMANTIC_BOUNDARY, source, java.util.Map.of());
+  }
+
   void publishHbcEvent(
       InstrumentationModel.EventKind event,
       int instructionPointer,
@@ -470,13 +476,13 @@ public final class HaraContext {
     retainedHbcExecution = java.util.Objects.requireNonNull(execution, "execution");
   }
 
-  boolean enterInterpreterRoot() {
+  public boolean enterInterpreterRoot() {
     int depth = interpreterRootDepth.get();
     interpreterRootDepth.set(depth + 1);
     return depth == 0;
   }
 
-  void exitInterpreterRoot() {
+  public void exitInterpreterRoot() {
     int depth = interpreterRootDepth.get();
     if (depth <= 1) {
       interpreterRootDepth.remove();
