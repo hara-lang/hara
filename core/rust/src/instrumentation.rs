@@ -34,6 +34,8 @@ pub use native::{
 };
 
 #[cfg(test)]
+mod conformance_tests;
+#[cfg(test)]
 mod delivery_tests;
 #[cfg(test)]
 mod tests;

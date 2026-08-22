@@ -243,6 +243,11 @@ final class SessionKernel implements AutoCloseable {
     return instrumentationHub.targetIfPresent(instrumentationTargetId(sessionId, kind));
   }
 
+  void clearHbcExecution(String sessionId) {
+    Session session = require(SessionModel.SessionId.parse(sessionId));
+    session.clearHbcExecution();
+  }
+
   private static String instrumentationTargetId(String sessionId, TargetKind kind) {
     return sessionId + "/" + kind;
   }
@@ -281,7 +286,6 @@ final class SessionKernel implements AutoCloseable {
                 Capability.CONTROL_PAUSE,
                 Capability.CONTROL_SINGLE_STEP,
                 Capability.CONTROL_RESUME,
-                Capability.CONTROL_SETTLE,
                 Capability.CONTROL_TERMINATE)));
   }
 
@@ -1045,11 +1049,32 @@ final class SessionKernel implements AutoCloseable {
               Source.newBuilder(HaraLanguage.ID, contextual.toString(), file).build();
           return context.eval(contextualSource);
         }
+
       } catch (IOException error) {
         throw new IllegalArgumentException(
             "Unable to construct Hara source: " + error.getMessage(), error);
       } catch (PolyglotException error) {
         throw new IllegalArgumentException(error.getMessage(), error);
+      } finally {
+        activeEvaluations.decrementAndGet();
+      }
+    }
+
+    Object executeHbc(hara.truffle.bytecode.HbcProgram program) {
+      activeEvaluations.incrementAndGet();
+      try {
+        synchronized (this) {
+          requireActive();
+          context.initialize(HaraLanguage.ID);
+          context.enter();
+          try {
+            return hara.truffle.bytecode.HbcBytecodeRootNode.compile(
+                    HaraLanguage.currentLanguage(), program)
+                .call();
+          } finally {
+            context.leave();
+          }
+        }
       } finally {
         activeEvaluations.decrementAndGet();
       }
@@ -1213,6 +1238,16 @@ final class SessionKernel implements AutoCloseable {
 
     synchronized boolean truffleInstrumentationActive() {
         return truffleInstrumentation != null && truffleInstrumentation.isActive();
+    }
+
+    synchronized void clearHbcExecution() {
+        if (context == null) return;
+        context.enter();
+        try {
+          HaraLanguage.currentContext().clearHbcContinuation();
+        } finally {
+          context.leave();
+        }
     }
   }
 }

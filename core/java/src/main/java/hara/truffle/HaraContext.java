@@ -265,7 +265,6 @@ public final class HaraContext {
   private final FilesystemRuntimeBinding filesystemRuntime;
   private final IFilesystem ownedFilesystem;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
-  private HbcMachine.ExecutionState retainedHbcExecution;
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
   private final Map<String, Map<String, String>> aliases = new ConcurrentHashMap<>();
@@ -311,6 +310,7 @@ public final class HaraContext {
   private String collectingBuiltinNamespace;
   private final HaraProtocol ifnProtocol;
   private final AtomicLong gensymCounter = new AtomicLong();
+  private HbcMachine.HbcContinuation hbcContinuation;
   HaraContext(TruffleLanguage.Env environment) {
     this.environment = environment;
     this.evaluator = new Evaluator(source -> environment.parsePublic(source).call());
@@ -375,6 +375,10 @@ public final class HaraContext {
     initializeUserNamespace(currentNamespace);
   }
 
+  void markInstrumentationReady() {
+    instrumentationReady = true;
+  }
+
   void publishInterpreterEvent(
       InstrumentationModel.EventKind event,
       com.oracle.truffle.api.source.SourceSection source,
@@ -411,12 +415,6 @@ public final class HaraContext {
             data);
   }
 
-  public void publishInterpreterSemanticBoundary(
-      com.oracle.truffle.api.source.SourceSection source) {
-    publishInterpreterEvent(
-            InstrumentationModel.EventKind.SEMANTIC_BOUNDARY, source, java.util.Map.of());
-  }
-
   void publishHbcEvent(
       InstrumentationModel.EventKind event,
       int instructionPointer,
@@ -430,13 +428,16 @@ public final class HaraContext {
             .hasSubscribers(target, event)) {
       return;
     }
-    InstrumentationModel.EventLocation location =
-        new InstrumentationModel.EventLocation(
-            sourceId,
-            java.util.List.of(),
-            null,
-            function,
-            instructionPointer);
+    InstrumentationModel.EventLocation location = null;
+    if (sessionKernel.instrumentationHub().hasSourceLocationSubscribers(target, event)) {
+      location =
+          new InstrumentationModel.EventLocation(
+              sourceId,
+              java.util.List.of(),
+              null,
+              function,
+              instructionPointer);
+    }
     sessionKernel
         .instrumentationHub()
         .publish(
@@ -454,26 +455,30 @@ public final class HaraContext {
   }
 
   InstrumentationModel.InstrumentDirective pollHbcDirective() {
-    if (!instrumentationReady) return InstrumentationModel.InstrumentDirective.CONTINUE;
+    if (!instrumentationReady) return null;
     InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
-    if (target == null) return InstrumentationModel.InstrumentDirective.CONTINUE;
-    InstrumentationModel.InstrumentDirective directive =
-        sessionKernel.instrumentationHub().pollDirective(target);
-    return directive == null ? InstrumentationModel.InstrumentDirective.CONTINUE : directive;
+    if (target == null) return null;
+    return sessionKernel.instrumentationHub().pollDirective(target);
   }
 
-  synchronized HbcMachine.ExecutionState takeHbcExecution(hara.truffle.bytecode.HbcProgram program) {
-    HbcMachine.ExecutionState retained = retainedHbcExecution;
-    if (retained == null) return null;
-    if (!retained.program().equals(program)) {
+  synchronized HbcMachine.HbcContinuation hbcContinuation(HbcProgram program) {
+    if (hbcContinuation == null) return null;
+    if (hbcContinuation.program != program) {
       throw new HaraException("HBC execution is suspended for another program");
     }
-    retainedHbcExecution = null;
-    return retained;
+    return hbcContinuation;
   }
 
-  synchronized void retainHbcExecution(HbcMachine.ExecutionState execution) {
-    retainedHbcExecution = java.util.Objects.requireNonNull(execution, "execution");
+  synchronized void retainHbcContinuation(HbcMachine.HbcContinuation continuation) {
+    hbcContinuation = continuation;
+  }
+
+  synchronized void clearHbcContinuation(HbcMachine.HbcContinuation continuation) {
+    if (hbcContinuation == continuation) hbcContinuation = null;
+  }
+
+  synchronized void clearHbcContinuation() {
+    hbcContinuation = null;
   }
 
   public boolean enterInterpreterRoot() {
@@ -489,10 +494,6 @@ public final class HaraContext {
     } else {
       interpreterRootDepth.set(depth - 1);
     }
-  }
-
-  void markInstrumentationReady() {
-    instrumentationReady = true;
   }
 
   private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {
@@ -521,6 +522,12 @@ public final class HaraContext {
         InstrumentationModel.EventKind.EXECUTION_TERMINAL,
         source,
         java.util.Map.of("status", status));
+  }
+
+  public void publishInterpreterSemanticBoundary(
+      com.oracle.truffle.api.source.SourceSection source) {
+    publishInterpreterEvent(
+        InstrumentationModel.EventKind.SEMANTIC_BOUNDARY, source, java.util.Map.of());
   }
 
   public void publishInterpreterTopLevelFailure(
@@ -590,6 +597,7 @@ public final class HaraContext {
   }
 
   void closeContext() {
+    clearHbcContinuation();
     closeExtensions();
     if (ownedFilesystem == null) return;
     filesystemRuntime.close();
@@ -6796,8 +6804,6 @@ public final class HaraContext {
     ContextSnapshot snapshot = snapshot();
     try {
       return HbcMachine.execute(program, this);
-    } catch (HbcMachine.SuspendedExecution suspension) {
-      throw suspension;
     } catch (RuntimeException error) {
       restore(snapshot);
       throw error;
