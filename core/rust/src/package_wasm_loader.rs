@@ -11,7 +11,8 @@ use std::path::Path;
 
 use crate::extension::{ExtensionManifest, WasmAbi, WasmExtension};
 use crate::package_manifest::{
-    PackageArtifactType, PackageManifest, PackageRuntime, PackageRuntimeRequirements, PackageSelection,
+    PackageArtifactType, PackageManifest, PackageRuntime, PackageRuntimeRequirements,
+    PackageSelection,
 };
 use crate::wasmtime_provider::WasmtimeExtensionProvider;
 
@@ -67,10 +68,14 @@ pub fn load_wasm_package(
         _ => unreachable!(),
     };
     if extension_manifest.abi != expected_abi {
-        return Err("package/abi-mismatch: extension manifest differs from selected variant".into());
+        return Err(
+            "package/abi-mismatch: extension manifest differs from selected variant".into(),
+        );
     }
     if extension_manifest.provider != "wasm" {
-        return Err("package/provider-mismatch: direct Wasm artifact requires :provider :wasm".into());
+        return Err(
+            "package/provider-mismatch: direct Wasm artifact requires :provider :wasm".into(),
+        );
     }
     if !variant.required_capabilities.iter().all(|capability| {
         extension_manifest
@@ -78,10 +83,14 @@ pub fn load_wasm_package(
             .iter()
             .any(|declared| declared == capability)
     }) {
-        return Err("package/manifest-mismatch: required capabilities differ from extension".into());
+        return Err(
+            "package/manifest-mismatch: required capabilities differ from extension".into(),
+        );
     }
     if !variant.host_calls.is_empty() || !extension_manifest.host_calls.is_empty() {
-        return Err("package/host-call-denied: direct Wasm packages cannot request host calls".into());
+        return Err(
+            "package/host-call-denied: direct Wasm packages cannot request host calls".into(),
+        );
     }
     if !variant.exports.iter().all(|export| {
         extension_manifest
@@ -89,13 +98,13 @@ pub fn load_wasm_package(
             .iter()
             .any(|(declared, _)| declared == export)
     }) {
-        return Err("package/manifest-mismatch: selected exports are not declared by extension".into());
+        return Err(
+            "package/manifest-mismatch: selected exports are not declared by extension".into(),
+        );
     }
-    if !extension_manifest
-        .exports
-        .iter()
-        .any(|(name, spec)| name == &variant.artifact.entry_point || spec.raw_name(name) == variant.artifact.entry_point)
-    {
+    if !extension_manifest.exports.iter().any(|(name, spec)| {
+        name == &variant.artifact.entry_point || spec.raw_name(name) == variant.artifact.entry_point
+    }) {
         return Err("package/entry-point-mismatch: selected entry point is not exported".into());
     }
 
