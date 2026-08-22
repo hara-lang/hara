@@ -56,6 +56,13 @@ public final class HaraLanguage extends TruffleLanguage<HaraContext> {
   static final OptionKey<String> KERNEL_TOKEN = new OptionKey<>("");
 
   @Option(
+      name = "SessionId",
+      help = "Internal Session identity used to bind runtime-owned instrumentation targets.",
+      category = OptionCategory.INTERNAL,
+      stability = OptionStability.STABLE)
+  static final OptionKey<String> SESSION_ID = new OptionKey<>("");
+
+  @Option(
       name = "FilesystemBindingToken",
       help = "Internal one-use token for an exact Session filesystem binding.",
       category = OptionCategory.INTERNAL,

@@ -109,9 +109,11 @@ public final class HaraRootNode extends RootNode {
     try {
       Object result = body.execute(frame);
       EvaluationJournal.returned(journalOperation, result);
+      HaraLanguage.currentContext(this).publishInterpreterTerminal(sourceSection, "return");
       return exportResult ? HaraBox.export(result) : result;
     } catch (RuntimeException error) {
       EvaluationJournal.failed(journalOperation, error);
+      HaraLanguage.currentContext(this).publishInterpreterTerminal(sourceSection, "failure");
       if (!HaraException.tracingEnabled()) throw error;
       throw HaraException.withFrame(error, this, frameLabel());
     }

@@ -380,6 +380,33 @@ final class InstrumentationHub implements AutoCloseable {
     return attachments.size();
   }
 
+  synchronized boolean hasSubscribers(TargetHandle target, EventKind event) {
+    requireOpen();
+    TargetState targetState = requireTarget(target);
+    for (InstrumentState instrumentState : instruments.values()) {
+      AttachmentKey key = new AttachmentKey(instrumentState.handle, targetState.handle);
+      InstrumentRegistration registration = instrumentState.registration;
+      if (attachments.containsKey(key)
+          && registration.events().contains(event)
+          && registration.filter().matches(targetState.descriptor)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  synchronized TargetHandle targetFor(String targetId) {
+    requireOpen();
+    TargetState state = targets.get(targetId);
+    if (state == null) {
+      throw failure(
+          Code.TARGET_NOT_FOUND,
+          "TARGET_NOT_FOUND " + targetId,
+          Map.of("target", targetId));
+    }
+    return state.handle;
+  }
+
   synchronized boolean isClosed() {
     return closed;
   }

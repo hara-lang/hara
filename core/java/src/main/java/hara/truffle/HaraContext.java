@@ -261,6 +261,9 @@ public final class HaraContext {
   private final Keyword testRunner;
   private final boolean sandboxRestricted;
   private final SessionKernel sessionKernel;
+  private final String instrumentationSessionId;
+  private final TargetHandle instrumentationInterpreterTarget;
+  private final TargetHandle instrumentationHbcTarget;
   private final FilesystemRuntimeBinding filesystemRuntime;
   private final IFilesystem ownedFilesystem;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
@@ -316,6 +319,18 @@ public final class HaraContext {
         sandboxRestricted
             ? null
             : SessionKernel.embedding(environment.getOptions().get(HaraLanguage.KERNEL_TOKEN));
+    this.instrumentationSessionId =
+        sessionKernel == null ? null : environment.getOptions().get(HaraLanguage.SESSION_ID);
+    this.instrumentationInterpreterTarget =
+        sessionKernel == null || instrumentationSessionId.isBlank()
+            ? null
+            : sessionKernel.instrumentationTarget(
+                instrumentationSessionId, InstrumentationModel.TargetKind.INTERPRETER);
+    this.instrumentationHbcTarget =
+        sessionKernel == null || instrumentationSessionId.isBlank()
+            ? null
+            : sessionKernel.instrumentationTarget(
+                instrumentationSessionId, InstrumentationModel.TargetKind.HBC);
     FilesystemRuntimeBinding attachedFilesystem =
         FilesystemContextBindings.claim(
             environment.getOptions().get(HaraLanguage.FILESYSTEM_BINDING_TOKEN));
@@ -333,6 +348,7 @@ public final class HaraContext {
       this.filesystemRuntime = null;
       this.ownedFilesystem = null;
     }
+
     currentNamespace = namespace(INTRINSIC_NAMESPACE);
     Map<String, Integer> ifnMethods = new LinkedHashMap<>();
     ifnMethods.put("invoke", -1);
@@ -353,6 +369,66 @@ public final class HaraContext {
           installFoundationBootstrapSeeds();
         });
     installProjectMacro();
+  }
+
+  void publishInterpreterEvent(
+      InstrumentationModel.EventKind event,
+      com.oracle.truffle.api.source.SourceSection source,
+      java.util.Map<String, String> data) {
+    if (instrumentationInterpreterTarget == null
+        || !sessionKernel
+            .instrumentationHub()
+            .hasSubscribers(instrumentationInterpreterTarget, event)) {
+      return;
+    }
+    InstrumentationModel.EventLocation location =
+        source == null || !source.isAvailable()
+            ? null
+            : new InstrumentationModel.EventLocation(
+                source.getSource().getName(),
+                java.util.List.of(),
+                new InstrumentationModel.SourceSpan(
+                    Math.max(0, source.getCharIndex()),
+                    Math.max(0, source.getCharIndex() + source.getCharLength())),
+                null,
+                null);
+    sessionKernel
+        .instrumentationHub()
+        .publish(
+            instrumentationInterpreterTarget,
+            event,
+            InstrumentationModel.EventPhase.LIVE,
+            location,
+            data);
+  }
+
+  void publishHbcEvent(
+      InstrumentationModel.EventKind event,
+      int instructionPointer,
+      String function,
+      String sourceId,
+      java.util.Map<String, String> data) {
+    if (instrumentationHbcTarget == null
+        || !sessionKernel
+            .instrumentationHub()
+            .hasSubscribers(instrumentationHbcTarget, event)) {
+      return;
+    }
+    InstrumentationModel.EventLocation location =
+        new InstrumentationModel.EventLocation(
+            sourceId,
+            java.util.List.of(),
+            null,
+            function,
+            instructionPointer);
+    sessionKernel
+        .instrumentationHub()
+        .publish(
+            instrumentationHbcTarget,
+            event,
+            InstrumentationModel.EventPhase.LIVE,
+            location,
+            data);
     installNativeLibraries();
     installEnvironmentLibraries();
     libraryLoader.installEagerJava(this);
@@ -3831,6 +3907,26 @@ public final class HaraContext {
     context = (IMapType<Object, Object>) context.assoc(Keyword.create("test"), test);
     if (metadata != null) {
       context = (IMapType<Object, Object>) context.assoc(Keyword.create("meta"), metadata);
+    }
+
+    boolean hbcInstrumentationEnabled(InstrumentationModel.EventKind event) {
+      return instrumentationHbcTarget != null
+          && sessionKernel.instrumentationHub().hasSubscribers(instrumentationHbcTarget, event);
+    }
+
+    InstrumentationModel.InstrumentDirective pollHbcDirective() {
+      if (instrumentationHbcTarget == null) return InstrumentationModel.InstrumentDirective.CONTINUE;
+      InstrumentationModel.InstrumentDirective directive =
+          sessionKernel.instrumentationHub().pollDirective(instrumentationHbcTarget);
+      return directive == null ? InstrumentationModel.InstrumentDirective.CONTINUE : directive;
+    }
+
+    void publishInterpreterTerminal(
+        com.oracle.truffle.api.source.SourceSection source, String status) {
+      publishInterpreterEvent(
+          InstrumentationModel.EventKind.EXECUTION_TERMINAL,
+          source,
+          java.util.Map.of("status", status));
     }
     return result.withContext(context);
   }

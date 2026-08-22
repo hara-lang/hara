@@ -24,6 +24,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
+import hara.truffle.InstrumentationModel.Capability;
+import hara.truffle.InstrumentationModel.RuntimeBackend;
+import hara.truffle.InstrumentationModel.TargetDescriptor;
+import hara.truffle.InstrumentationModel.TargetHandle;
+import hara.truffle.InstrumentationModel.TargetKind;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.HostAccess;
 import org.graalvm.polyglot.PolyglotException;
@@ -190,6 +195,7 @@ final class SessionKernel implements AutoCloseable {
     registerSandboxProvider(InProcessSandboxProvider.INSTANCE);
     SessionAuthorityPolicy rootAuthority =
         SessionAuthorityPolicy.root(allowFile, allowNetwork, allowProcess, project);
+    registerInstrumentationTargets(ROOT_ID.value());
     sessionRegistry.entries.put(
         ROOT_ID.value(),
         new Session(
@@ -225,6 +231,59 @@ final class SessionKernel implements AutoCloseable {
     return new NativeInstrumentation(this, session, instrumentationHub);
   }
 
+  TargetHandle instrumentationTarget(String sessionId, TargetKind kind) {
+    return instrumentationHub.targetFor(instrumentationTargetId(sessionId, kind));
+  }
+
+  private static String instrumentationTargetId(String sessionId, TargetKind kind) {
+    return sessionId + "/" + kind;
+  }
+
+  private void registerInstrumentationTargets(String sessionId) {
+    RuntimeBackend backend = new RuntimeBackend("java");
+    registerInstrumentationTarget(
+        new TargetDescriptor(
+            instrumentationTargetId(sessionId, TargetKind.INTERPRETER),
+            sessionId,
+            TargetKind.INTERPRETER,
+            backend,
+            java.util.Set.of(
+                Capability.EVENT_SEMANTIC_BOUNDARY,
+                Capability.EVENT_CALL,
+                Capability.EVENT_EXCEPTION,
+                Capability.EVENT_EFFECT,
+                Capability.EVENT_SUSPENSION,
+                Capability.EVENT_LIFECYCLE,
+                Capability.INSPECT_SOURCE_LOCATION,
+                Capability.CONTROL_PAUSE,
+                Capability.CONTROL_SINGLE_STEP,
+                Capability.CONTROL_RESUME,
+                Capability.CONTROL_SETTLE,
+                Capability.CONTROL_TERMINATE)));
+    registerInstrumentationTarget(
+        new TargetDescriptor(
+            instrumentationTargetId(sessionId, TargetKind.HBC),
+            sessionId,
+            TargetKind.HBC,
+            backend,
+            java.util.Set.of(
+                Capability.EVENT_INSTRUCTION,
+                Capability.EVENT_CALL,
+                Capability.EVENT_EXCEPTION,
+                Capability.EVENT_SUSPENSION,
+                Capability.EVENT_LIFECYCLE,
+                Capability.INSPECT_SOURCE_LOCATION,
+                Capability.CONTROL_PAUSE,
+                Capability.CONTROL_SINGLE_STEP,
+                Capability.CONTROL_RESUME,
+                Capability.CONTROL_SETTLE,
+                Capability.CONTROL_TERMINATE)));
+  }
+
+  private void registerInstrumentationTarget(TargetDescriptor descriptor) {
+    instrumentationHub.registerTarget(descriptor);
+  }
+
   InstrumentationHub instrumentationHub() {
     return instrumentationHub;
   }
@@ -232,6 +291,7 @@ final class SessionKernel implements AutoCloseable {
   synchronized Session create(SessionModel.SessionId id) {
     if (sessionRegistry.entries.containsKey(id.value()))
       throw new IllegalArgumentException("SESSION_EXISTS " + id);
+    registerInstrumentationTargets(id.value());
     Session session =
         new Session(
             SessionModel.SessionSpec.zeroAuthority(id),
@@ -709,6 +769,7 @@ final class SessionKernel implements AutoCloseable {
                 .allowCreateProcess(authority.hostProcess)
                 .allowIO(io.build());
         if (kernelToken != null) builder.option("hara.KernelToken", kernelToken);
+        if (kernelToken != null) builder.option("hara.SessionId", spec.id().value());
         if (filesystemBindingToken != null) {
           builder.option("hara.FilesystemBindingToken", filesystemBindingToken);
         }

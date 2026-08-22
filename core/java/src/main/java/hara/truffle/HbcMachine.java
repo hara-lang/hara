@@ -29,6 +29,14 @@ public final class HbcMachine {
   private HbcMachine() {}
 
   public static Object execute(HbcProgram program, HaraContext context) {
+    if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.MACHINE_RESUME)) {
+      context.publishHbcEvent(
+          InstrumentationModel.EventKind.MACHINE_RESUME,
+          0,
+          null,
+          program.namespace(),
+          java.util.Map.of());
+    }
     return HaraBox.export(call(program, context, program.entry(), new Object[0], new Object[0]));
   }
 
@@ -41,6 +49,30 @@ public final class HbcMachine {
     int ip = 0;
     while (true) {
       Instruction instruction = function.code().get(ip);
+      InstrumentationModel.InstrumentDirective directive = context.pollHbcDirective();
+      if (directive == InstrumentationModel.InstrumentDirective.SUSPEND) {
+        if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.MACHINE_SUSPEND)) {
+          context.publishHbcEvent(
+              InstrumentationModel.EventKind.MACHINE_SUSPEND,
+              ip,
+              function.name(),
+              program.namespace(),
+              java.util.Map.of());
+        }
+        throw new HaraException("HBC execution suspended by instrumentation");
+      }
+      if (directive == InstrumentationModel.InstrumentDirective.TERMINATE) {
+        throw new HaraException("HBC execution terminated by instrumentation");
+      }
+      if (context.hbcInstrumentationEnabled(
+          InstrumentationModel.EventKind.INSTRUCTION_EXECUTE)) {
+        context.publishHbcEvent(
+            InstrumentationModel.EventKind.INSTRUCTION_EXECUTE,
+            ip,
+            function.name(),
+            program.namespace(),
+            java.util.Map.of("opcode", instruction.opcode().name()));
+      }
       try {
         switch (instruction.opcode()) {
         case CONSTANT -> stack.add(program.constants().get(index(instruction.first())));
@@ -105,6 +137,14 @@ public final class HbcMachine {
           Object[] args = popArguments(stack, index(instruction.first()));
           Object callee = HaraBox.unwrap(pop(stack));
           HbcClosure closure = selectClosure(callee, args.length);
+          if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.CALL_ENTER)) {
+            context.publishHbcEvent(
+                InstrumentationModel.EventKind.CALL_ENTER,
+                ip,
+                function.name(),
+                program.namespace(),
+                java.util.Map.of("arity", Integer.toString(args.length)));
+          }
           if (closure != null
               && closure.program == program
               && closure.context == context
@@ -119,6 +159,14 @@ public final class HbcMachine {
           }
           try {
             stack.add(context.invokeCallable(callee, args));
+            if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.CALL_RETURN)) {
+              context.publishHbcEvent(
+                  InstrumentationModel.EventKind.CALL_RETURN,
+                  ip,
+                  function.name(),
+                  program.namespace(),
+                  java.util.Map.of());
+            }
           } catch (RuntimeException failure) {
             if (Boolean.getBoolean("hara.hbc.trace")) {
               System.err.println(
@@ -340,7 +388,26 @@ public final class HbcMachine {
                     context, "std.foundation.coroutine/yield", new Object[] {pop(stack)}));
         case RETURN -> {
           Object result = pop(stack);
-          if (calls.isEmpty()) return result;
+          if (calls.isEmpty()) {
+            if (context.hbcInstrumentationEnabled(
+                InstrumentationModel.EventKind.EXECUTION_TERMINAL)) {
+              context.publishHbcEvent(
+                  InstrumentationModel.EventKind.EXECUTION_TERMINAL,
+                  ip,
+                  function.name(),
+                  program.namespace(),
+                  java.util.Map.of("status", "return"));
+            }
+            return result;
+          }
+          if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.CALL_RETURN)) {
+            context.publishHbcEvent(
+                InstrumentationModel.EventKind.CALL_RETURN,
+                ip,
+                function.name(),
+                program.namespace(),
+                java.util.Map.of());
+          }
           CallFrame caller = calls.pop();
           functionIndex = caller.functionIndex;
           function = caller.function;
@@ -374,6 +441,25 @@ public final class HbcMachine {
           locals = caller.locals;
           stack = caller.stack;
           target = routeFailure(function, caller.returnIp - 1, failure, locals, stack);
+        }
+        if (context.hbcInstrumentationEnabled(
+            InstrumentationModel.EventKind.EXCEPTION_UNWIND)) {
+          context.publishHbcEvent(
+              InstrumentationModel.EventKind.EXCEPTION_UNWIND,
+              ip,
+              function.name(),
+              program.namespace(),
+              java.util.Map.of("type", failure.getClass().getName()));
+        }
+        if (target == null
+            && context.hbcInstrumentationEnabled(
+                InstrumentationModel.EventKind.EXECUTION_TERMINAL)) {
+          context.publishHbcEvent(
+              InstrumentationModel.EventKind.EXECUTION_TERMINAL,
+              ip,
+              function.name(),
+              program.namespace(),
+              java.util.Map.of("status", "failure"));
         }
         if (target == null) throw failure;
         ip = target;
