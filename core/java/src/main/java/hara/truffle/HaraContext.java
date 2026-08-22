@@ -70,210 +70,23 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 
 public final class HaraContext {
-  /** Closed accounting inventory for forms; this is not a std.native type. */
-  private static final Map<String, java.util.List<String>> LANGUAGE_BUILTINS =
-      Map.of(
-          "evaluation",
-          java.util.List.of(
-              "quote", "syntax-quote", "do", "if", "let", "letfn", "binding", "loop",
-              "recur", "throw", "try", "fn"),
-          "definitions",
-          java.util.List.of(
-              "def", "declare", "var", "set!", "defmacro", "defstruct", "defmutable",
-              "defprotocol", "extend-type", "defmulti", "defmethod"),
-          "namespaces", java.util.List.of("ns", "ns+", "require", "alias"),
-          "interop", java.util.List.of("new", "field", "."));
-  private static final Set<String> SPECIAL_SYMBOLS =
-      Set.of(
-          "quote",
-          "comment",
-          "do",
-          "if",
-          "when",
-          "when-not",
-          "cond",
-          "and",
-          "or",
-          "let",
-          "letfn",
-          "binding",
-          "loop",
-          "recur",
-          "throw",
-          "try",
-          "fn",
-          "defn",
-          "defn-",
-          "declare",
-          "defmulti",
-          "defmethod",
-          "def",
-          "var",
-          "deref",
-          "set!",
-          "defstruct",
-          "defmutable",
-          "defprotocol",
-          "extend-type",
-          "defmacro",
-          "new",
-          "ns",
-          "ns+");
   private static final String INTRINSIC_NAMESPACE = "hara.lang.intrinsic";
   private static final String FOUNDATION_NAMESPACE = "std.foundation";
   private static final String PROTOCOL_NAMESPACE_PREFIX = "std.protocol.";
-  private static final Map<String, String> GENERATED_LIBRARIES =
-      Map.ofEntries(
-          Map.entry("string", "std.foundation.string"),
-          Map.entry("coroutine", "std.foundation.coroutine"),
-          Map.entry("promise", "std.foundation.promise"),
-          Map.entry("bytes", "std.foundation.bytes"),
-          Map.entry("pretty", "std.foundation.pretty"));
-  private static final Map<String, String> DEFAULT_LIBRARY_ALIASES =
-      Map.ofEntries(
-          Map.entry("string", "str"),
-          Map.entry("coroutine", "co"),
-          Map.entry("promise", "promise"),
-          Map.entry("bytes", "bytes"),
-          Map.entry("pretty", "pretty"));
-  private static final Set<String> MARKER_METHOD_NAMES =
-      Set.of(
-          "get",
-          "set",
-          "push-first",
-          "push-last",
-          "pop-first",
-          "pop-last",
-          "insert",
-          "remove",
-          "clone",
-          "slice",
-          "map",
-          "filter",
-          "fold-left",
-          "fold-right",
-          "has?",
-          "delete",
-          "assign",
-          "keys",
-          "vals",
-          "pairs");
-  private static final Map<String, java.util.List<String>> NATIVE_TYPES =
-      Map.ofEntries(
-          Map.entry("Maths", java.util.List.of("abs", "acos", "acosh", "asin", "asinh", "atan", "atan2", "atanh", "ceil", "cos", "cosh", "exp", "floor", "pow", "sin", "sinh", "sqrt", "tan", "tanh")),
-          Map.entry("Num", java.util.List.of("long", "double", "parse-long", "parse-double")),
-          Map.entry("Bits", java.util.List.of("and", "or", "xor", "not", "shift-left", "shift-right")),
-          Map.entry("Kernel", java.util.List.of("session-create", "session-close", "session-list", "session-info", "session-eval", "session-namespace", "session-complete", "resource-register", "resource-remove", "resource-list", "filesystem-create", "filesystem-attach", "filesystem-detach", "filesystem-info", "filesystem-close", "capabilities")),
-          Map.entry("Sandbox", java.util.List.of("open", "eval", "call", "cancel", "status", "close")),
-          Map.entry("Package", java.util.List.of("catalog", "find", "ensure", "load", "unload", "state")),
-          Map.entry("String", java.util.List.of("length", "blank?", "includes?", "starts-with?", "ends-with?", "char-at", "slice", "index-of", "last-index-of", "join", "split", "split-lines", "repeat", "replace", "replace-first", "trim", "trim-left", "trim-right", "upper", "lower", "capitalize", "decapitalize", "pad-left", "pad-right", "reverse", "encode-utf8", "decode-utf8", "to-fixed")),
-          Map.entry("Bytes", java.util.List.of("new", "instance?", "count", "get", "set", "copy", "slice", "u8", "s8")),
-          Map.entry(
-              "Crypto",
-              java.util.List.of(
-                  "sha256", "sha512", "hmac-sha256", "hmac-sha512", "random-bytes",
-                  "secure-equal?", "ed25519-keypair", "ed25519-public", "ed25519-sign",
-                  "ed25519-verify", "x25519-keypair", "x25519-public", "x25519-shared",
-                  "p256-keypair", "p256-public", "p256-sign", "p256-verify", "p256-shared")),
-          Map.entry("OS", java.util.List.of("platform", "arch", "cwd", "env", "getenv", "time-ms", "time-ns")),
-          Map.entry("Process", java.util.List.of("spawn", "instance?", "alive?", "write", "close-input", "stdout", "stderr", "stdout-stream", "stderr-stream", "wait", "kill")),
-          Map.entry(
-              "File",
-              java.util.List.of(
-                  "parent", "join", "resolve", "read", "write", "exists?", "stat",
-                  "entries", "list", "walk", "mkdir", "delete", "copy", "move",
-                  "temp-file", "temp-directory")),
-          Map.entry("Socket", java.util.List.of("connect", "listen", "endpoint", "events", "next", "send", "close", "receive-stream")),
-          Map.entry("Promise", java.util.List.of("run", "new", "from", "all", "delay", "instance?")),
-          Map.entry("Coroutine", java.util.List.of("create", "yield", "await", "instance?")),
-          Map.entry("Stream", java.util.List.of("create", "generate", "next", "instance?")),
-          Map.entry("Arr", java.util.List.of("new", "instance?", "get", "set", "push-first", "push-last", "pop-first", "pop-last", "insert", "remove", "clone", "slice", "map", "filter", "fold-left", "fold-right")),
-          Map.entry("Obj", java.util.List.of("new", "instance?", "get", "set", "has?", "delete", "clone", "assign", "keys", "vals", "pairs")),
-          Map.entry(
-              "Runtime",
-              java.util.List.of(
-                  "load-string", "macroexpand-1", "gensym", "var-sym", "current", "snapshot",
-                  "vars", "namespaces", "namespace", "module", "resolve", "alias-state",
-                  "intern-var", "eval-in", "eval")),
-          Map.entry("Printer", java.util.List.of("p", "println", "capture")),
-          Map.entry("Document", java.util.List.of("element", "text", "fragment", "annotate", "pass", "escaped", "group", "line", "break", "nest", "align", "normalize", "valid?", "render")),
-          Map.entry("Edn", java.util.List.of("read", "read-forms", "write", "pretty")),
-          Map.entry("Json", java.util.List.of("read", "write", "pretty")),
-          Map.entry("Host", java.util.List.of("call", "describe", "capabilities", "capability?")),
-          Map.entry(
-              "Test",
-              java.util.List.of(
-                  "catalog", "config", "context", "events", "compare", "run", "result",
-                  "passed?", "actual", "expected", "failures", "failure-seq", "failure-count",
-                  "failure", "failure?")),
-          Map.entry(
-              "RegExp",
-              java.util.List.of(
-                  "instance?", "compile", "pattern", "find?", "find", "matches", "replace",
-                  "split")),
-          Map.entry("UUID", java.util.List.of("instance?")),
-          Map.entry(
-              "Result",
-              java.util.List.of(
-                  "create", "synchronize", "instance?", "success?", "error?", "status",
-                  "data", "error-value", "context", "with-context")),
-          Map.entry(
-              "Schema",
-              java.util.List.of("compile", "of", "instance?", "kind", "form", "ast", "origin")),
-          Map.entry("Error", java.util.List.of("new", "message", "class")),
-          Map.entry(
-              "Base",
-              java.util.List.of(
-                  "list", "vector", "vec", "set", "tuple", "hash-map", "hash-set", "atom",
-                  "pointer", "symbol", "keyword", "reduced", "unreduced", "apply", "not", "boolean", "compare",
-                  "reduced?", "nil?", "boolean?", "string?", "char?", "number?", "integer?",
-                  "long?", "double?", "keyword?", "symbol?", "pointer?",
-                  "atom?", "function?", "bytes?", "array?", "object?", "list?", "cons?", "vector?",
-                  "tuple?", "map?", "set?", "sequential?", "coll?", "satisfies?", "type", "instance?")),
-          Map.entry(
-              "Algo",
-              java.util.List.of(
-                  "deque", "ordered-map", "ordered-set", "priority-map", "queue",
-                  "sorted-map", "sorted-set", "trie", "deque?", "ordered-map?",
-                  "ordered-set?", "priority-map?", "queue?", "sorted-map?",
-                  "sorted-set?", "trie?")),
-          Map.entry(
-              "Iter",
-              java.util.List.of(
-                  "iter", "iter?", "iter-finite?", "iter-materialize",
-                  "iter-next?", "iter-next", "iter-close", "iter-concat",
-                  "iter-map", "iter-filter", "iter-take-while", "iter-drop-while",
-                  "iter-mapcat", "iter-keep", "iter-interpose", "iter-interleave",
-                  "iter-every?", "iter-any?", "iter-take", "iter-drop", "iter-zip",
-                  "iter-cycle", "iter-partition-pair", "iter-partition-all",
-                  "iter-partition", "iter-range", "iter-constantly",
-                  "iter-repeatedly", "iter-iterate")));
-  private static final Map<String, String> NATIVE_LIBRARY_SOURCES =
-      Map.ofEntries(
-          Map.entry("std.native.String", "std.native.String"),
-          Map.entry("std.native.Bytes", "std.native.Bytes"),
-          Map.entry("std.native.Promise", "std.native.Promise"),
-          Map.entry("std.native.Coroutine", "std.native.Coroutine"));
   private final TruffleLanguage.Env environment;
   private final ThreadLocal<Deque<OutputStream>> printerOutputs =
       ThreadLocal.withInitial(ArrayDeque::new);
-  private final Evaluator evaluator;
+  private final HaraEvaluationRuntime evaluationRuntime;
   private final Keyword testRunner;
   private final boolean sandboxRestricted;
   private final SessionKernel sessionKernel;
-  private final String instrumentationSessionId;
+  private final HaraInstrumentationRuntime instrumentationRuntime;
   private final FilesystemRuntimeBinding filesystemRuntime;
   private final IFilesystem ownedFilesystem;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
   private final Map<String, Map<String, String>> aliases = new ConcurrentHashMap<>();
-  private final Map<String, Object> halcSchemaDefinitions = new ConcurrentHashMap<>();
-  private final Map<String, Object> halcFunctionSchemas = new ConcurrentHashMap<>();
-  private final Map<String, HalcSchema.Type> halcSchemaTypes = new ConcurrentHashMap<>();
-  private final Map<String, HalcSchema.Type> halcFunctionTypes = new ConcurrentHashMap<>();
-  private final Map<String, HalcSchema.Type> halcInferredFunctionTypes = new ConcurrentHashMap<>();
-  private final Map<HaraVar, ArrayList<HaraVar>> pendingSchemaContracts = new ConcurrentHashMap<>();
   private final Map<String, NamespaceLoadState> namespaceStates = new ConcurrentHashMap<>();
   private final Map<String, String> namespaceFailures = new ConcurrentHashMap<>();
   private final Map<String, String> nativeFlavors = new ConcurrentHashMap<>();
@@ -301,8 +114,6 @@ public final class HaraContext {
   private final Set<String> preparedNamespaceReloads = ConcurrentHashMap.newKeySet();
   private final Set<String> blankNamespaces = ConcurrentHashMap.newKeySet();
   private final Deque<String> loadingStack = new ArrayDeque<>();
-  private final ThreadLocal<Integer> interpreterRootDepth = ThreadLocal.withInitial(() -> 0);
-  private volatile boolean instrumentationReady;
   private boolean preparingNamespace;
   private volatile HaraNamespace currentNamespace;
   private final Map<String, Map<String, BuiltinExport>> builtinCatalogs = new ConcurrentHashMap<>();
@@ -310,18 +121,20 @@ public final class HaraContext {
   private String collectingBuiltinNamespace;
   private final HaraProtocol ifnProtocol;
   private final AtomicLong gensymCounter = new AtomicLong();
-  private HbcMachine.HbcContinuation hbcContinuation;
   HaraContext(TruffleLanguage.Env environment) {
     this.environment = environment;
-    this.evaluator = new Evaluator(source -> environment.parsePublic(source).call());
+    this.evaluationRuntime =
+        new HaraEvaluationRuntime(source -> environment.parsePublic(source).call());
     this.testRunner = runtimeTestRunner(environment.getOptions().get(HaraLanguage.TEST_RUNNER));
     this.sandboxRestricted = environment.getOptions().get(HaraLanguage.SANDBOX_RESTRICTED);
     this.sessionKernel =
         sandboxRestricted
             ? null
             : SessionKernel.embedding(environment.getOptions().get(HaraLanguage.KERNEL_TOKEN));
-    this.instrumentationSessionId =
+    String instrumentationSessionId =
         sessionKernel == null ? null : environment.getOptions().get(HaraLanguage.SESSION_ID);
+    this.instrumentationRuntime =
+        new HaraInstrumentationRuntime(sessionKernel, instrumentationSessionId);
     FilesystemRuntimeBinding attachedFilesystem =
         FilesystemContextBindings.claim(
             environment.getOptions().get(HaraLanguage.FILESYSTEM_BINDING_TOKEN));
@@ -365,7 +178,7 @@ public final class HaraContext {
     libraryLoader.installEagerJava(this);
     hideIteratorImplementationBindings();
     namespaceStates.put(FOUNDATION_NAMESPACE, NamespaceLoadState.UNLOADED);
-    for (String namespace : GENERATED_LIBRARIES.values()) {
+    for (String namespace : HaraBuiltinCatalog.GENERATED_LIBRARIES.values()) {
       namespaceStates.put(namespace, NamespaceLoadState.UNLOADED);
     }
     for (String namespace : bytecodeLibrary.namespaces()) {
@@ -376,43 +189,14 @@ public final class HaraContext {
   }
 
   void markInstrumentationReady() {
-    instrumentationReady = true;
+    instrumentationRuntime.markReady();
   }
 
   void publishInterpreterEvent(
       InstrumentationModel.EventKind event,
       com.oracle.truffle.api.source.SourceSection source,
       java.util.Map<String, String> data) {
-    if (!instrumentationReady) return;
-    InstrumentationModel.TargetHandle target = instrumentationInterpreterTarget();
-    if (target == null
-        || !sessionKernel
-            .instrumentationHub()
-            .hasSubscribers(target, event)) {
-      return;
-    }
-    InstrumentationModel.EventLocation location = null;
-    if (sessionKernel.instrumentationHub().hasSourceLocationSubscribers(target, event)
-        && source != null
-        && source.isAvailable()) {
-      location =
-          new InstrumentationModel.EventLocation(
-              source.getSource().getName(),
-              java.util.List.of(),
-              new InstrumentationModel.SourceSpan(
-                  Math.max(0, source.getCharIndex()),
-                  Math.max(0, source.getCharIndex() + source.getCharLength())),
-              null,
-              null);
-    }
-    sessionKernel
-        .instrumentationHub()
-        .publish(
-            target,
-            event,
-            InstrumentationModel.EventPhase.LIVE,
-            location,
-            data);
+    instrumentationRuntime.publishInterpreterEvent(event, source, data);
   }
 
   void publishHbcEvent(
@@ -421,154 +205,79 @@ public final class HaraContext {
       String function,
       String sourceId,
       java.util.Map<String, String> data) {
-    InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
-    if (target == null
-        || !sessionKernel
-            .instrumentationHub()
-            .hasSubscribers(target, event)) {
-      return;
-    }
-    InstrumentationModel.EventLocation location = null;
-    if (sessionKernel.instrumentationHub().hasSourceLocationSubscribers(target, event)) {
-      location =
-          new InstrumentationModel.EventLocation(
-              sourceId,
-              java.util.List.of(),
-              null,
-              function,
-              instructionPointer);
-    }
-    sessionKernel
-        .instrumentationHub()
-        .publish(
-            target,
-            event,
-            InstrumentationModel.EventPhase.LIVE,
-            location,
-            data);
+    instrumentationRuntime.publishHbcEvent(
+        event, instructionPointer, function, sourceId, data);
   }
 
   boolean hbcInstrumentationEnabled(InstrumentationModel.EventKind event) {
-    if (!instrumentationReady) return false;
-    InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
-    return target != null && sessionKernel.instrumentationHub().hasSubscribers(target, event);
+    return instrumentationRuntime.hbcInstrumentationEnabled(event);
   }
 
   InstrumentationModel.InstrumentDirective pollHbcDirective() {
-    if (!instrumentationReady) return null;
-    InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
-    if (target == null) return null;
-    return sessionKernel.instrumentationHub().pollDirective(target);
+    return instrumentationRuntime.pollHbcDirective();
   }
 
   synchronized HbcMachine.HbcContinuation hbcContinuation(HbcProgram program) {
-    if (hbcContinuation == null) return null;
-    if (hbcContinuation.program != program) {
-      throw new HaraException("HBC execution is suspended for another program");
-    }
-    return hbcContinuation;
+    return instrumentationRuntime.hbcContinuation(program);
   }
 
   synchronized void retainHbcContinuation(HbcMachine.HbcContinuation continuation) {
-    hbcContinuation = continuation;
+    instrumentationRuntime.retainHbcContinuation(continuation);
   }
 
   synchronized void clearHbcContinuation(HbcMachine.HbcContinuation continuation) {
-    if (hbcContinuation == continuation) hbcContinuation = null;
+    instrumentationRuntime.clearHbcContinuation(continuation);
   }
 
   synchronized void clearHbcContinuation() {
-    hbcContinuation = null;
+    instrumentationRuntime.clearHbcContinuation();
   }
 
   public boolean enterInterpreterRoot() {
-    int depth = interpreterRootDepth.get();
-    interpreterRootDepth.set(depth + 1);
-    return depth == 0;
+    return instrumentationRuntime.enterInterpreterRoot();
   }
 
   public void exitInterpreterRoot() {
-    int depth = interpreterRootDepth.get();
-    if (depth <= 1) {
-      interpreterRootDepth.remove();
-    } else {
-      interpreterRootDepth.set(depth - 1);
-    }
-  }
-
-  private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {
-    return sessionKernel == null
-            || !sessionKernel.instrumentationActive()
-            || instrumentationSessionId == null
-            || instrumentationSessionId.isBlank()
-        ? null
-        : sessionKernel.instrumentationTarget(
-            instrumentationSessionId, InstrumentationModel.TargetKind.INTERPRETER);
-  }
-
-  private InstrumentationModel.TargetHandle instrumentationHbcTarget() {
-    return sessionKernel == null
-            || !sessionKernel.instrumentationActive()
-            || instrumentationSessionId == null
-            || instrumentationSessionId.isBlank()
-        ? null
-        : sessionKernel.instrumentationTarget(
-            instrumentationSessionId, InstrumentationModel.TargetKind.HBC);
+    instrumentationRuntime.exitInterpreterRoot();
   }
 
   public void publishInterpreterTerminal(
       com.oracle.truffle.api.source.SourceSection source, String status) {
-    publishInterpreterEvent(
-        InstrumentationModel.EventKind.EXECUTION_TERMINAL,
-        source,
-        java.util.Map.of("status", status));
+    instrumentationRuntime.publishInterpreterTerminal(source, status);
   }
 
   public void publishInterpreterSemanticBoundary(
       com.oracle.truffle.api.source.SourceSection source) {
-    publishInterpreterEvent(
-        InstrumentationModel.EventKind.SEMANTIC_BOUNDARY, source, java.util.Map.of());
+    instrumentationRuntime.publishInterpreterSemanticBoundary(source);
   }
 
   public void publishInterpreterTopLevelFailure(
       com.oracle.truffle.api.source.SourceSection source, RuntimeException error) {
-    publishInterpreterEvent(
-        InstrumentationModel.EventKind.EXCEPTION_RAISE,
-        source,
-        java.util.Map.of("type", error.getClass().getName()));
-    publishInterpreterTerminal(source, "failure");
+    instrumentationRuntime.publishInterpreterTopLevelFailure(source, error);
   }
 
   void installHalcSchemas(HalcArtifact.SchemaIndex schemas) {
-    halcSchemaDefinitions.putAll(schemas.definitions);
-    halcFunctionSchemas.putAll(schemas.functions);
-    halcSchemaTypes.putAll(schemas.definitionTypes);
-    halcFunctionTypes.putAll(schemas.functionTypes);
-    halcInferredFunctionTypes.putAll(schemas.inferredFunctionTypes);
+    evaluationRuntime.installHalcSchemas(schemas);
   }
 
   Object halcSchema(String qualifiedVar) {
-    return halcSchemaDefinitions.get(qualifiedVar);
+    return evaluationRuntime.halcSchema(qualifiedVar);
   }
 
   Object halcFunctionSchema(String qualifiedVar) {
-    return halcFunctionSchemas.get(qualifiedVar);
+    return evaluationRuntime.halcFunctionSchema(qualifiedVar);
   }
 
   HalcSchema.Type halcSchemaType(String qualifiedVar) {
-    return halcSchemaTypes.get(qualifiedVar);
+    return evaluationRuntime.halcSchemaType(qualifiedVar);
   }
 
   HalcSchema.Type halcFunctionType(String qualifiedVar) {
-    HalcSchema.Type schema = halcFunctionTypes.get(qualifiedVar);
-    if (schema instanceof HalcSchema.Reference reference) {
-      return halcSchemaTypes.getOrDefault(reference.name(), schema);
-    }
-    return schema;
+    return evaluationRuntime.halcFunctionType(qualifiedVar);
   }
 
   HalcSchema.Type halcInferredFunctionType(String qualifiedVar) {
-    return halcInferredFunctionTypes.get(qualifiedVar);
+    return evaluationRuntime.halcInferredFunctionType(qualifiedVar);
   }
 
   HalcSchema.Type halcBestFunctionType(String qualifiedVar) {
@@ -580,9 +289,7 @@ public final class HaraContext {
       Map<String, HalcSchema.Type> schemaTypes,
       Map<String, HalcSchema.Type> functionTypes,
       Map<String, HalcSchema.Type> inferredFunctionTypes) {
-    halcSchemaTypes.putAll(schemaTypes);
-    halcFunctionTypes.putAll(functionTypes);
-    halcInferredFunctionTypes.putAll(inferredFunctionTypes);
+    evaluationRuntime.installHbcTypes(schemaTypes, functionTypes, inferredFunctionTypes);
   }
 
   TruffleLanguage.Env environment() {
@@ -597,7 +304,8 @@ public final class HaraContext {
   }
 
   void closeContext() {
-    clearHbcContinuation();
+    instrumentationRuntime.close();
+    evaluationRuntime.close();
     closeExtensions();
     if (ownedFilesystem == null) return;
     filesystemRuntime.close();
@@ -641,7 +349,7 @@ public final class HaraContext {
         }
       } else {
         requiredNamespace(FOUNDATION_NAMESPACE);
-        for (String namespace : GENERATED_LIBRARIES.values()) {
+        for (String namespace : HaraBuiltinCatalog.GENERATED_LIBRARIES.values()) {
           requiredNamespace(namespace);
         }
       }
@@ -676,7 +384,7 @@ public final class HaraContext {
     namespace("std.native");
     HaraNamespace intrinsic = namespace(INTRINSIC_NAMESPACE);
     HaraNamespace foundation = namespace(FOUNDATION_NAMESPACE);
-    NATIVE_TYPES.forEach(
+    HaraBuiltinCatalog.NATIVE_TYPES.forEach(
         (name, methods) -> {
           if (sandboxRestricted && sandboxForbiddenNamespace("std.native." + name)) return;
           String canonicalName = "std.native." + name;
@@ -691,12 +399,12 @@ public final class HaraContext {
     Map<String, BuiltinExport> exports = builtinCatalogs.getOrDefault(sourceNamespace, Map.of());
     if (exports.isEmpty()) return;
     if (FOUNDATION_NAMESPACE.equals(sourceNamespace)) {
-      installNativeExportGroup("Maths", exports, NATIVE_TYPES.get("Maths"), Map.of());
-      installNativeExportGroup("Num", exports, NATIVE_TYPES.get("Num"), Map.of());
+      installNativeExportGroup("Maths", exports, HaraBuiltinCatalog.NATIVE_TYPES.get("Maths"), Map.of());
+      installNativeExportGroup("Num", exports, HaraBuiltinCatalog.NATIVE_TYPES.get("Num"), Map.of());
       installNativeExportGroup(
           "Bits",
           exports,
-          NATIVE_TYPES.get("Bits"),
+          HaraBuiltinCatalog.NATIVE_TYPES.get("Bits"),
           Map.of(
               "and", "bit-and",
               "or", "bit-or",
@@ -704,7 +412,7 @@ public final class HaraContext {
               "not", "bit-not",
               "shift-left", "bit-shift-left",
               "shift-right", "bit-shift-right"));
-      installNativeExportGroup("Crypto", exports, NATIVE_TYPES.get("Crypto"), Map.of());
+      installNativeExportGroup("Crypto", exports, HaraBuiltinCatalog.NATIVE_TYPES.get("Crypto"), Map.of());
       installNativeExportGroup(
           "Arr", exports, java.util.List.of("new", "instance?"),
           Map.of("new", "array", "instance?", "array?"));
@@ -717,11 +425,11 @@ public final class HaraContext {
           java.util.List.of("load-string", "macroexpand-1", "gensym"),
           Map.of());
       installNativeExportGroup(
-          "Printer", exports, NATIVE_TYPES.get("Printer"), Map.of());
+          "Printer", exports, HaraBuiltinCatalog.NATIVE_TYPES.get("Printer"), Map.of());
       installNativeExportGroup(
           "RegExp",
           exports,
-          NATIVE_TYPES.get("RegExp"),
+          HaraBuiltinCatalog.NATIVE_TYPES.get("RegExp"),
           Map.of(
               "instance?", "regexp?",
               "compile", "regexp",
@@ -731,11 +439,11 @@ public final class HaraContext {
               "replace", "re-replace",
               "split", "re-split"));
       installNativeExportGroup(
-          "UUID", exports, NATIVE_TYPES.get("UUID"), Map.of("instance?", "uuid?"));
+          "UUID", exports, HaraBuiltinCatalog.NATIVE_TYPES.get("UUID"), Map.of("instance?", "uuid?"));
       installNativeExportGroup(
           "Error",
           exports,
-          NATIVE_TYPES.get("Error"),
+          HaraBuiltinCatalog.NATIVE_TYPES.get("Error"),
           Map.of(
               "new", "ex-info",
               "message", "ex-message"));
@@ -745,8 +453,8 @@ public final class HaraContext {
               new UnaryBuiltin(
                   "std.native.Error/class", value -> portableType(value).getName()));
       installNativeExportGroup(
-          "Base", exports, NATIVE_TYPES.get("Base"), Map.of("tuple", "tup"));
-      installNativeExportGroup("Iter", exports, NATIVE_TYPES.get("Iter"), Map.of());
+          "Base", exports, HaraBuiltinCatalog.NATIVE_TYPES.get("Base"), Map.of("tuple", "tup"));
+      installNativeExportGroup("Iter", exports, HaraBuiltinCatalog.NATIVE_TYPES.get("Iter"), Map.of());
       return;
     }
     String type =
@@ -760,7 +468,7 @@ public final class HaraContext {
     if (type != null) {
       Map<String, String> sourceNames =
           "Coroutine".equals(type) ? Map.of("instance?", "coroutine?") : Map.of();
-      installNativeExportGroup(type, exports, NATIVE_TYPES.get(type), sourceNames);
+      installNativeExportGroup(type, exports, HaraBuiltinCatalog.NATIVE_TYPES.get(type), sourceNames);
     }
   }
 
@@ -1135,12 +843,12 @@ public final class HaraContext {
         aliases.computeIfAbsent(currentNamespace.name(), ignored -> new ConcurrentHashMap<>());
     namespaceAliases
         .entrySet()
-        .removeIf(entry -> GENERATED_LIBRARIES.containsValue(entry.getValue()));
-    for (Map.Entry<String, String> library : GENERATED_LIBRARIES.entrySet()) {
+        .removeIf(entry -> HaraBuiltinCatalog.GENERATED_LIBRARIES.containsValue(entry.getValue()));
+    for (Map.Entry<String, String> library : HaraBuiltinCatalog.GENERATED_LIBRARIES.entrySet()) {
       if (declaration.excludedIntrinsics.contains(library.getKey())) continue;
       String alias =
           declaration.intrinsicAliases.getOrDefault(
-              library.getKey(), DEFAULT_LIBRARY_ALIASES.get(library.getKey()));
+              library.getKey(), HaraBuiltinCatalog.DEFAULT_LIBRARY_ALIASES.get(library.getKey()));
       putAlias(namespaceAliases, alias, library.getValue());
     }
   }
@@ -1160,7 +868,7 @@ public final class HaraContext {
   private void configureNativeAliases(HaraNamespace target) {
     Map<String, String> namespaceAliases =
         aliases.computeIfAbsent(target.name(), ignored -> new ConcurrentHashMap<>());
-    NATIVE_TYPES.keySet().forEach(
+    HaraBuiltinCatalog.NATIVE_TYPES.keySet().forEach(
         name -> {
           if (!sandboxRestricted || !sandboxForbiddenNamespace("std.native." + name)) {
             putAlias(namespaceAliases, name, "std.native." + name);
@@ -1170,7 +878,7 @@ public final class HaraContext {
 
   private void referNativeTypeDescriptors(HaraNamespace target) {
     HaraNamespace intrinsic = namespace(INTRINSIC_NAMESPACE);
-    for (String name : NATIVE_TYPES.keySet()) {
+    for (String name : HaraBuiltinCatalog.NATIVE_TYPES.keySet()) {
       if (sandboxRestricted && sandboxForbiddenNamespace("std.native." + name)) continue;
       HaraVar descriptor = intrinsic.lookup(name);
       if (descriptor == null) continue;
@@ -1304,8 +1012,9 @@ public final class HaraContext {
     configureProtocolAliases(target);
     Map<String, String> namespaceAliases =
         aliases.computeIfAbsent(target.name(), ignored -> new ConcurrentHashMap<>());
-    for (Map.Entry<String, String> entry : DEFAULT_LIBRARY_ALIASES.entrySet()) {
-      namespaceAliases.putIfAbsent(entry.getValue(), GENERATED_LIBRARIES.get(entry.getKey()));
+    for (Map.Entry<String, String> entry : HaraBuiltinCatalog.DEFAULT_LIBRARY_ALIASES.entrySet()) {
+      namespaceAliases.putIfAbsent(
+          entry.getValue(), HaraBuiltinCatalog.GENERATED_LIBRARIES.get(entry.getKey()));
     }
   }
 
@@ -1761,7 +1470,7 @@ public final class HaraContext {
           aliases.getOrDefault(currentNamespace.name(), Map.of());
       boolean alias = currentAliases.containsKey(namespaceName);
       namespaceName = currentAliases.getOrDefault(namespaceName, namespaceName);
-      String nativeSource = NATIVE_LIBRARY_SOURCES.get(namespaceName);
+      String nativeSource = HaraBuiltinCatalog.NATIVE_LIBRARY_SOURCES.get(namespaceName);
       if (nativeSource != null) libraryLoader.ensure(this, nativeSource);
       if (alias) {
         HaraNamespace required = requiredNamespace(namespaceName);
@@ -1865,7 +1574,7 @@ public final class HaraContext {
   /** Names visible in the current namespace, used by interactive tooling. */
   public java.util.List<String> currentSymbolNames() {
     LinkedHashSet<String> names = new LinkedHashSet<>(currentNamespace.symbolNames());
-    names.addAll(MARKER_METHOD_NAMES);
+    names.addAll(HaraBuiltinCatalog.MARKER_METHOD_NAMES);
     nativeImports
         .getOrDefault(currentNamespace.name(), Map.of())
         .forEach(
@@ -1898,7 +1607,8 @@ public final class HaraContext {
   }
 
   boolean isSpecialSymbol(Symbol symbol) {
-    return symbol.getNamespace() == null && SPECIAL_SYMBOLS.contains(symbol.getName());
+    return symbol.getNamespace() == null
+        && HaraBuiltinCatalog.SPECIAL_SYMBOLS.contains(symbol.getName());
   }
 
   @TruffleBoundary
@@ -3590,9 +3300,7 @@ public final class HaraContext {
       }
       Object schemaValue = schemaVar.deref();
       if (schemaValue == null) {
-        pendingSchemaContracts
-            .computeIfAbsent(schemaVar, ignored -> new ArrayList<>())
-            .add(variable);
+        evaluationRuntime.deferSchemaContract(schemaVar, variable);
         return null;
       }
       try {
@@ -3620,7 +3328,7 @@ public final class HaraContext {
 
   private void resolvePendingSchemaContracts(HaraVar schemaVariable) {
     if (schemaVariable.deref() == null) return;
-    ArrayList<HaraVar> dependents = pendingSchemaContracts.remove(schemaVariable);
+    ArrayList<HaraVar> dependents = evaluationRuntime.takePendingSchemaContracts(schemaVariable);
     if (dependents == null) return;
     for (HaraVar dependent : dependents) refreshSchemaContract(dependent);
   }
@@ -4209,7 +3917,7 @@ public final class HaraContext {
   private void installNativeLibraries() {
     NativeCrypto.install(this, "std.native.Crypto");
     HaraNamespace document = namespace("std.native.Document");
-    for (String method : NATIVE_TYPES.get("Document")) {
+    for (String method : HaraBuiltinCatalog.NATIVE_TYPES.get("Document")) {
       document.define(
           method,
           new VariadicBuiltin(
@@ -4345,7 +4053,7 @@ public final class HaraContext {
               return hara.lang.data.Vector.Standard.from(null, (Object[]) parts);
             }));
     HaraNamespace kernel = namespace("std.native.Kernel");
-    for (String method : NATIVE_TYPES.get("Kernel")) {
+    for (String method : HaraBuiltinCatalog.NATIVE_TYPES.get("Kernel")) {
       kernel.define(
           method,
           new VariadicBuiltin(
@@ -4425,7 +4133,7 @@ public final class HaraContext {
   private void installNativeSandboxBuiltins() {
     HaraNamespace sandbox = namespace("std.native.Sandbox");
     if (sessionKernel == null) {
-      for (String method : NATIVE_TYPES.get("Sandbox")) {
+      for (String method : HaraBuiltinCatalog.NATIVE_TYPES.get("Sandbox")) {
         sandbox.define(
             method,
             new VariadicBuiltin(
@@ -6787,7 +6495,7 @@ public final class HaraContext {
   }
 
   private Object evalForm(Object value) {
-    return evaluator.evalForm(value, "<eval>");
+    return evaluationRuntime.evalForm(value, "<eval>");
   }
 
   Object executeToolVmHalc(HalcArtifact.Module module) {
@@ -6980,7 +6688,7 @@ public final class HaraContext {
       currentNamespace = namespaces.get(target);
       Object result = null;
       for (Object form : (ILinearType<?>) forms) {
-        result = evaluator.evalForm(form, "<with-ns>");
+        result = evaluationRuntime.evalForm(form, "<with-ns>");
       }
       return result;
     } finally {
@@ -8339,7 +8047,7 @@ public final class HaraContext {
 
   @TruffleBoundary
   private Object parseAndExecute(String sourceText, String name) {
-    return evaluator.evalSource(sourceText, name);
+    return evaluationRuntime.evalSource(sourceText, name);
   }
 
   private static final class HaraArray extends ArrayList<Object>

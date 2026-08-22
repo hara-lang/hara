@@ -23,11 +23,14 @@ public class HaraEvaluatorBoundaryTest {
   }
 
   @Test
-  public void evaluatorHasNoKernelSessionMountOrNamespaceRegistryField() {
+  public void evaluationRuntimeOwnsEvaluatorWithoutKernelOrNamespaceState() {
     assertTrue(
         Arrays.stream(HaraContext.class.getDeclaredFields())
+            .anyMatch(field -> field.getType() == HaraEvaluationRuntime.class));
+    assertTrue(
+        Arrays.stream(HaraEvaluationRuntime.class.getDeclaredFields())
             .anyMatch(field -> field.getType() == Evaluator.class));
-    for (Field field : Evaluator.class.getDeclaredFields()) {
+    for (Field field : HaraEvaluationRuntime.class.getDeclaredFields()) {
       String type = field.getType().getName();
       assertFalse(type, type.contains("Kernel"));
       assertFalse(type, type.contains("Session"));

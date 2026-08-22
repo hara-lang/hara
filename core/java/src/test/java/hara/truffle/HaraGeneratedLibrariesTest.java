@@ -8,7 +8,6 @@ import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.io.IOAccess;
 import org.junit.Test;
-import java.lang.reflect.Field;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -30,11 +29,8 @@ public class HaraGeneratedLibrariesTest {
   }
 
   @Test
-  @SuppressWarnings("unchecked")
-  public void foundationBootstrapFamilyIsExactlySixNamespaces() throws Exception {
-    Field field = HaraContext.class.getDeclaredField("GENERATED_LIBRARIES");
-    field.setAccessible(true);
-    Map<String, String> libraries = (Map<String, String>) field.get(null);
+  public void foundationBootstrapFamilyIsExactlySixNamespaces() {
+    Map<String, String> libraries = HaraBuiltinCatalog.GENERATED_LIBRARIES;
     assertEquals(
         "production Foundation family is the root plus exactly five libraries",
         Set.of(

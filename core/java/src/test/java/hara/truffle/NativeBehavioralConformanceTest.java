@@ -4,7 +4,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.LinkedHashSet;
@@ -109,11 +108,8 @@ public class NativeBehavioralConformanceTest {
     return methods;
   }
 
-  private static Set<String> liveMethods() throws Exception {
-    Field field = HaraContext.class.getDeclaredField("NATIVE_TYPES");
-    field.setAccessible(true);
-    @SuppressWarnings("unchecked")
-    Map<String, List<String>> runtimeTypes = (Map<String, List<String>>) field.get(null);
+  private static Set<String> liveMethods() {
+    Map<String, List<String>> runtimeTypes = HaraBuiltinCatalog.NATIVE_TYPES;
     Set<String> methods = new LinkedHashSet<>();
     for (Map.Entry<String, List<String>> type : runtimeTypes.entrySet()) {
       for (String method : type.getValue()) {

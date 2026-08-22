@@ -9,7 +9,6 @@ import hara.lang.data.Keyword;
 import hara.lang.data.Symbol;
 import hara.lang.data.types.ILinearType;
 import hara.lang.data.types.IMapType;
-import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -42,10 +41,7 @@ public class NativeMethodParityTest {
     assertEquals("Native method count must be derived", null, inventory.lookup(keyword("method-count")));
     assertNotNull("Native count derivation policy is required", inventory.lookup(keyword("counting")));
 
-    Field field = HaraContext.class.getDeclaredField("NATIVE_TYPES");
-    field.setAccessible(true);
-    @SuppressWarnings("unchecked")
-    Map<String, List<String>> runtimeTypes = (Map<String, List<String>>) field.get(null);
+    Map<String, List<String>> runtimeTypes = HaraBuiltinCatalog.NATIVE_TYPES;
     Map<String, List<String>> specifiedTypes = new LinkedHashMap<>();
     types.forEach((name, type) -> specifiedTypes.put(name, type.methods));
     assertEquals("Truffle native inventory differs from native.edn", specifiedTypes, runtimeTypes);
@@ -82,10 +78,7 @@ public class NativeMethodParityTest {
   @Test
   public void languageBuiltinAccountingMatchesTheSharedContract() throws Exception {
     IMapType builtins = map(readMap(CONTRACT), "language-builtins");
-    Field field = HaraContext.class.getDeclaredField("LANGUAGE_BUILTINS");
-    field.setAccessible(true);
-    @SuppressWarnings("unchecked")
-    Map<String, List<String>> runtime = (Map<String, List<String>>) field.get(null);
+    Map<String, List<String>> runtime = HaraBuiltinCatalog.LANGUAGE_BUILTINS;
     Map<String, List<String>> specified = new LinkedHashMap<>();
     for (String category : List.of("evaluation", "definitions", "namespaces", "interop")) {
       specified.put(category, symbols(builtins.lookup(keyword(category)), category));
