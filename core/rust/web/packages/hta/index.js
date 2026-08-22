@@ -128,8 +128,8 @@ export function parseHtaManifest(source) {
   if (hostCallsValue !== undefined) {
     if (!(hostCallsValue instanceof Map)) throw new Error("hta/manifest-malformed: host-calls must be a map");
     for (const [service,methods] of hostCallsValue) {
-      if (typeof service !== "string" || !service.length || !Array.isArray(methods) ||
-          methods.some(method => typeof method !== "string" || !method.length || method.includes("/"))) {
+      if (typeof service !== "string" || !/^[a-z][a-z0-9.-]*$/.test(service) || !Array.isArray(methods) ||
+          methods.some(method => typeof method !== "string" || !/^[a-z][a-z0-9-]*$/.test(method))) {
         throw new Error("hta/manifest-malformed: invalid host-call");
       }
       hostCalls[service] = Object.freeze([...methods]);
