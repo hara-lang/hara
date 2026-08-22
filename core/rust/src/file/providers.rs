@@ -6,8 +6,8 @@
 //! never become part of a mounted descriptor.
 
 use crate::file::{
-    CopyOptions, DeleteOptions, FileError, FileProvider, MkdirOptions, MoveOptions, WriteMode,
-    WriteOptions,
+    CopyOptions, DeleteOptions, FileError, FileProvider, FileType, MkdirOptions, MoveOptions,
+    WriteMode, WriteOptions,
 };
 use crate::filesystem::{
     FilesystemCallContext, FilesystemCapabilities, FilesystemCapability, FilesystemDescriptor,
@@ -600,7 +600,290 @@ macro_rules! delegate_filesystem {
     };
 }
 
-/// SFTP filesystem projection.  Opening requires authentication and verified
+/// A root-scoped, no-follow view over a host-owned SFTP capability.
+///
+/// SFTP paths are remote POSIX paths, so the generic remote projection cannot
+/// be used directly: it would pass logical paths to the transport and would
+/// not inspect ancestors before following them.  This adapter keeps the
+/// configured root private while enforcing the same confinement rules as the
+/// JVM provider.
+struct ScopedSftpClient {
+    client: Rc<dyn RemoteFilesystemClient>,
+    root: String,
+}
+
+impl ScopedSftpClient {
+    fn new(client: Rc<dyn RemoteFilesystemClient>, root: String) -> Self {
+        Self { client, root }
+    }
+
+    fn remote_path(&self, path: &str) -> Result<String, FileError> {
+        crate::file::logical_join(&self.root, path)
+    }
+
+    fn guard_ancestors(&self, path: &str) -> Result<(), FileError> {
+        let path = crate::file::logical_normalise(path)?;
+        let segments = path
+            .strip_prefix('/')
+            .unwrap_or_default()
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
+        let mut current = "/".to_owned();
+        for segment in segments.iter().take(segments.len().saturating_sub(1)) {
+            current = crate::file::logical_join(&current, segment)?;
+            let entry = match self.client.stat(&self.remote_path(&current)?) {
+                Ok(entry) => entry,
+                Err(FileError::NotFound) => return Ok(()),
+                Err(error) => return Err(error),
+            };
+            if entry.kind == FileType::Symlink {
+                return Err(FileError::OutsideRoot);
+            }
+            if entry.kind != FileType::Directory {
+                return Err(FileError::NotDirectory);
+            }
+        }
+        Ok(())
+    }
+
+    fn rewrite_entry(
+        &self,
+        logical: &str,
+        mut entry: FilesystemEntry,
+    ) -> Result<FilesystemEntry, FileError> {
+        let logical = crate::file::logical_normalise(logical)?;
+        entry.path = logical.clone();
+        entry.name = crate::file::logical_name(&logical)?;
+        Ok(entry)
+    }
+
+    fn reject_symlink(entry: &FilesystemEntry) -> Result<(), FileError> {
+        if entry.kind == FileType::Symlink {
+            Err(FileError::Unsupported)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn stat_remote(&self, logical: &str) -> Result<FilesystemEntry, FileError> {
+        self.guard_ancestors(logical)?;
+        let remote = self.remote_path(logical)?;
+        let entry = self.client.stat(&remote)?;
+        self.rewrite_entry(logical, entry)
+    }
+
+    fn optional_stat(&self, logical: &str) -> Result<Option<FilesystemEntry>, FileError> {
+        match self.client.stat(&self.remote_path(logical)?) {
+            Ok(entry) => self.rewrite_entry(logical, entry).map(Some),
+            Err(FileError::NotFound) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl RemoteFilesystemClient for ScopedSftpClient {
+    fn authenticated(&self) -> bool {
+        self.client.authenticated()
+    }
+
+    fn host_key_verified(&self) -> bool {
+        self.client.host_key_verified()
+    }
+
+    fn capabilities(&self) -> FilesystemCapabilities {
+        self.client.capabilities()
+    }
+
+    fn stat(&self, path: &str) -> Result<FilesystemEntry, FileError> {
+        self.stat_remote(path)
+    }
+
+    fn read(&self, path: &str) -> Result<Vec<u8>, FileError> {
+        let entry = self.stat_remote(path)?;
+        Self::reject_symlink(&entry)?;
+        if entry.kind == FileType::Directory {
+            return Err(FileError::IsDirectory);
+        }
+        if entry.kind != FileType::File {
+            return Err(FileError::Unsupported);
+        }
+        self.client.read(&self.remote_path(path)?)
+    }
+
+    fn write(
+        &self,
+        path: &str,
+        bytes: Vec<u8>,
+        options: WriteOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        self.guard_ancestors(path)?;
+        if let Some(entry) = self.optional_stat(path)? {
+            Self::reject_symlink(&entry)?;
+            if entry.kind == FileType::Directory {
+                return Err(FileError::IsDirectory);
+            }
+        }
+        let mutation = self
+            .client
+            .write(&self.remote_path(path)?, bytes, options, mutation)?;
+        Ok(FilesystemMutation {
+            path: crate::file::logical_normalise(path)?,
+            ..mutation
+        })
+    }
+
+    fn entries_page(
+        &self,
+        path: &str,
+        request: &FilesystemPageRequest,
+    ) -> Result<FilesystemEntryPage, FileError> {
+        let directory = self.stat_remote(path)?;
+        if directory.kind == FileType::Symlink {
+            return Err(FileError::Unsupported);
+        }
+        if directory.kind != FileType::Directory {
+            return Err(FileError::NotDirectory);
+        }
+        let logical = crate::file::logical_normalise(path)?;
+        let page = self
+            .client
+            .entries_page(&self.remote_path(&logical)?, request)?;
+        let entries = page
+            .entries
+            .into_iter()
+            .map(|entry| {
+                let child = crate::file::logical_join(&logical, &entry.name)?;
+                self.rewrite_entry(&child, entry)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(FilesystemEntryPage {
+            entries,
+            next_token: page.next_token,
+        })
+    }
+
+    fn mkdir(
+        &self,
+        path: &str,
+        options: MkdirOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        self.guard_ancestors(path)?;
+        let mutation = self
+            .client
+            .mkdir(&self.remote_path(path)?, options, mutation)?;
+        Ok(FilesystemMutation {
+            path: crate::file::logical_normalise(path)?,
+            ..mutation
+        })
+    }
+
+    fn delete(
+        &self,
+        path: &str,
+        options: DeleteOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        let logical = crate::file::logical_normalise(path)?;
+        if logical == "/" {
+            return Err(FileError::Denied);
+        }
+        self.guard_ancestors(&logical)?;
+        let entry = match self.client.stat(&self.remote_path(&logical)?) {
+            Ok(entry) => entry,
+            Err(FileError::NotFound) if options.missing_ok => {
+                return Ok(FilesystemMutation::path(logical));
+            }
+            Err(error) => return Err(error),
+        };
+        Self::reject_symlink(&entry)?;
+        let mutation = self
+            .client
+            .delete(&self.remote_path(&logical)?, options, mutation)?;
+        Ok(FilesystemMutation {
+            path: logical,
+            ..mutation
+        })
+    }
+
+    fn copy(
+        &self,
+        source: &str,
+        target: &str,
+        options: CopyOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        let source = crate::file::logical_normalise(source)?;
+        let target = crate::file::logical_normalise(target)?;
+        if source == target {
+            return Err(FileError::AlreadyExists);
+        }
+        self.guard_ancestors(&source)?;
+        self.guard_ancestors(&target)?;
+        let source_entry = self.stat_remote(&source)?;
+        Self::reject_symlink(&source_entry)?;
+        if source_entry.kind != FileType::File {
+            return Err(FileError::Unsupported);
+        }
+        if let Some(target_entry) = self.optional_stat(&target)? {
+            Self::reject_symlink(&target_entry)?;
+        }
+        let mutation = self.client.copy(
+            &self.remote_path(&source)?,
+            &self.remote_path(&target)?,
+            options,
+            mutation,
+        )?;
+        Ok(FilesystemMutation {
+            path: target,
+            ..mutation
+        })
+    }
+
+    fn move_entry(
+        &self,
+        source: &str,
+        target: &str,
+        options: MoveOptions,
+        mutation: &FilesystemMutationContext,
+    ) -> Result<FilesystemMutation, FileError> {
+        let source = crate::file::logical_normalise(source)?;
+        let target = crate::file::logical_normalise(target)?;
+        if source == "/" || target == "/" {
+            return Err(FileError::Denied);
+        }
+        if target.starts_with(&(source.clone() + "/")) {
+            return Err(FileError::InvalidPath(
+                "cannot move an entry beneath itself".into(),
+            ));
+        }
+        self.guard_ancestors(&source)?;
+        self.guard_ancestors(&target)?;
+        let source_entry = self.stat_remote(&source)?;
+        Self::reject_symlink(&source_entry)?;
+        if let Some(target_entry) = self.optional_stat(&target)? {
+            Self::reject_symlink(&target_entry)?;
+        }
+        let mutation = self.client.move_entry(
+            &self.remote_path(&source)?,
+            &self.remote_path(&target)?,
+            options,
+            mutation,
+        )?;
+        Ok(FilesystemMutation {
+            path: target,
+            ..mutation
+        })
+    }
+
+    fn close(&self) -> Result<(), FileError> {
+        self.client.close()
+    }
+}
+
+/// SFTP filesystem projection. Opening requires authentication and verified
 /// host keys in addition to the normal provider capability checks.
 pub struct SftpFilesystem {
     core: RemoteFilesystem,
@@ -613,15 +896,27 @@ impl SftpFilesystem {
         display: impl Into<String>,
         read_only: bool,
     ) -> Result<Self, FileError> {
+        let root = sftp_root(root.into())?;
         if !client.host_key_verified() {
             return Err(FileError::PermissionDenied);
         }
+        if !client.authenticated() {
+            return Err(FileError::PermissionDenied);
+        }
+        let root_entry = client.stat(&root)?;
+        if root_entry.kind == FileType::Symlink {
+            return Err(FileError::OutsideRoot);
+        }
+        if root_entry.kind != FileType::Directory {
+            return Err(FileError::NotDirectory);
+        }
+        let client = Rc::new(ScopedSftpClient::new(client, root));
         Ok(Self {
             core: RemoteFilesystem::new(
                 FilesystemProviderKind::Sftp,
                 client,
                 display.into(),
-                root.into(),
+                "/".into(),
                 read_only,
                 [],
                 [("provider/host-key-verified?", "true".into())],
@@ -640,6 +935,28 @@ impl SftpFilesystem {
 }
 
 delegate_filesystem!(SftpFilesystem);
+
+fn sftp_root(value: String) -> Result<String, FileError> {
+    if value.trim().is_empty() || !value.starts_with('/') {
+        return Err(FileError::InvalidPath(
+            "SFTP root must be an absolute POSIX path".into(),
+        ));
+    }
+    if value.contains('\0') || value.contains('\\') {
+        return Err(FileError::InvalidPath(
+            "SFTP root contains an invalid character".into(),
+        ));
+    }
+    if value
+        .split('/')
+        .any(|segment| segment == "." || segment == "..")
+    {
+        return Err(FileError::InvalidPath(
+            "SFTP root cannot contain dot segments".into(),
+        ));
+    }
+    crate::file::logical_normalise(&value)
+}
 
 /// Google Drive folder projection.  The root is a provider-owned stable ID,
 /// not a user-visible URL or credential.
@@ -1189,6 +1506,52 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "outside-root");
+    }
+
+    #[test]
+    fn sftp_mount_maps_logical_paths_to_the_private_remote_root() {
+        let client = MemoryRemoteClient::new();
+        client
+            .insert("/srv/application/hello.txt", b"hello".to_vec())
+            .unwrap();
+        let filesystem =
+            SftpFilesystem::from_client(client.clone(), "/srv/application", "SFTP", false).unwrap();
+
+        let entry =
+            block_on_local(filesystem.stat(FilesystemCallContext::default(), "/hello.txt".into()))
+                .unwrap();
+        assert_eq!(entry.path, "/hello.txt");
+        assert_eq!(entry.name, "hello.txt");
+        let bytes =
+            block_on_local(filesystem.read(FilesystemCallContext::default(), "/hello.txt".into()))
+                .unwrap();
+        assert_eq!(bytes, b"hello");
+
+        block_on_local(filesystem.write(
+            FilesystemCallContext::default(),
+            "/new.txt".into(),
+            b"new".to_vec(),
+            WriteOptions::default(),
+            FilesystemMutationContext::default(),
+        ))
+        .unwrap();
+        assert_eq!(
+            client
+                .provider()
+                .read_bytes("/srv/application/new.txt")
+                .unwrap(),
+            b"new"
+        );
+
+        let invalid_root = SftpFilesystem::from_client(
+            MemoryRemoteClient::new(),
+            "/srv/../application",
+            "SFTP",
+            false,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(invalid_root.code(), "invalid-path");
     }
 
     #[test]
