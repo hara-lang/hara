@@ -11,7 +11,7 @@ use crate::kernel::Form;
 use super::{inspect_direct, BindingFunction, WasmInterface, WasmValueType};
 
 pub const ADAPTER_MANIFEST_SCHEMA: &str = "hara.wasm-adapter/0-alpha";
-const ADAPTER_TARGET: &str = "hta.v1";
+const ADAPTER_TARGET: &str = "core.v1-forward";
 const LIBRARY_IMPORT_MODULE: &str = "hara/library";
 
 /// A deterministic adapter module and the manifest describing its composition.
@@ -39,6 +39,9 @@ pub fn generate_adapter(
     interface: &WasmInterface,
 ) -> Result<AdapterArtifact, String> {
     let inspection = inspect_direct(module_bytes)?;
+    if inspection.start.is_some() {
+        return Err("wasm-adapter/start-denied: wrapped module declares a start function".into());
+    }
     interface.verify_direct(&inspection)?;
 
     let bytes = emit_forwarder(&interface.exports)?;
@@ -210,6 +213,7 @@ mod tests {
 
     const ADD: &[u8] =
         b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7e\x7e\x01\x7e\x03\x02\x01\0\x07\x07\x01\x03add\0\0\x0a\x09\x01\x07\0\x20\0\x20\x01\x7c\x0b";
+    const START: &[u8] = b"\0asm\x01\0\0\0\x08\x01\0";
 
     fn interface() -> WasmInterface {
         WasmInterface::parse(
@@ -275,5 +279,11 @@ mod tests {
         .unwrap();
         let error = generate_adapter(ADD, &interface).unwrap_err();
         assert!(error.contains("memory requires"));
+    }
+
+    #[test]
+    fn start_functions_are_rejected_during_static_validation() {
+        let error = generate_adapter(START, &interface()).unwrap_err();
+        assert!(error.starts_with("wasm-adapter/start-denied"));
     }
 }
