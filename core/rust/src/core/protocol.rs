@@ -901,7 +901,9 @@ fn native_schema_values(method: &str, values: &[Value]) -> Result<Value, String>
             }
             _ => Err("Schema/origin expects a schema".into()),
         },
-        _ => Err(format!("unknown Schema operation: std.native.Schema/{method}")),
+        _ => Err(format!(
+            "unknown Schema operation: std.native.Schema/{method}"
+        )),
     }
 }
 
