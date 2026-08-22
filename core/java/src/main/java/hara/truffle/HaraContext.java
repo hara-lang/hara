@@ -696,13 +696,7 @@ public final class HaraContext {
               "not", "bit-not",
               "shift-left", "bit-shift-left",
               "shift-right", "bit-shift-right"));
-      installNativeExportGroup(
-          "Bytes", exports, java.util.List.of("new", "instance?"),
-          Map.of("new", "bytes", "instance?", "bytes?"));
       installNativeExportGroup("Crypto", exports, NATIVE_TYPES.get("Crypto"), Map.of());
-      installNativeExportGroup(
-          "Promise", exports, java.util.List.of("run", "instance?"),
-          Map.of("run", "promise", "instance?", "promise?"));
       installNativeExportGroup(
           "Arr", exports, java.util.List.of("new", "instance?"),
           Map.of("new", "array", "instance?", "array?"));
@@ -980,6 +974,19 @@ public final class HaraContext {
             new VariadicBuiltin(namespaceName + "/" + symbolName, implementation),
             metadata,
             HaraVar.Origin.JAVA_LIBRARY);
+  }
+
+  void defineNativeFunction(
+      String namespaceName,
+      String symbolName,
+      Function<Object[], Object> implementation,
+      IMetadata metadata) {
+    namespace(namespaceName)
+        .define(
+            symbolName,
+            new VariadicBuiltin(namespaceName + "/" + symbolName, implementation),
+            metadata,
+            HaraVar.Origin.RUNTIME_PRIMITIVE);
   }
 
   void defineLibraryValue(
@@ -4192,12 +4199,6 @@ public final class HaraContext {
   }
 
   private void installNativeLibraries() {
-    StdFoundationCoroutine.install(this, "std.native.Coroutine");
-    namespace("std.native.Coroutine").define(
-        "instance?",
-        new UnaryBuiltin(
-            "std.native.Coroutine/instance?",
-            value -> HaraBox.unwrap(value) instanceof StdFoundationCoroutine.HaraCoroutine));
     NativeCrypto.install(this, "std.native.Crypto");
     HaraNamespace document = namespace("std.native.Document");
     for (String method : NATIVE_TYPES.get("Document")) {
@@ -4854,17 +4855,26 @@ public final class HaraContext {
   }
 
   void installStringLibrary() {
-    withDefinitionOrigin(HaraVar.Origin.JAVA_LIBRARY, this::defineStringLibrary);
+    withDefinitionOrigin(HaraVar.Origin.RUNTIME_PRIMITIVE, this::defineStringLibrary);
   }
 
-  void installStringLikeFacade() {
-    withDefinitionOrigin(HaraVar.Origin.JAVA_LIBRARY, this::defineStringLikeFacade);
+  void installCoroutineLibrary() {
+    withDefinitionOrigin(
+        HaraVar.Origin.RUNTIME_PRIMITIVE,
+        () -> {
+          StdFoundationCoroutine.install(this, "std.native.Coroutine");
+          namespace("std.native.Coroutine")
+              .define(
+                  "instance?",
+                  new UnaryBuiltin(
+                      "std.native.Coroutine/instance?",
+                      value ->
+                          HaraBox.unwrap(value) instanceof StdFoundationCoroutine.HaraCoroutine));
+        });
   }
 
   private void defineStringLibrary() {
-    defineStringLikeFacade();
-
-    HaraNamespace string = namespace("std.foundation.string");
+    HaraNamespace string = namespace("std.native.String");
 
     // Spec-named symbols.
     string.define(
@@ -4957,98 +4967,17 @@ public final class HaraContext {
     string.define("to-fixed", new VariadicBuiltin("str/to-fixed", this::stringToFixed));
   }
 
-  private void defineStringLikeFacade() {
-    HaraNamespace string = namespace("std.foundation.string");
-    HaraVar stringLike = namespace("std.protocol.istringlike").lookup("IStringLike");
-    string.define("IStringLike", stringLike.get());
-    string.define(
-        "string-like?",
-        new UnaryBuiltin(
-            "str/string-like?",
-            value -> ((HaraProtocol) stringLike.get()).satisfies(HaraBox.unwrap(value))));
-    string.define(
-        "to-string",
-        new UnaryBuiltin(
-            "str/to-string",
-            value -> protocolCall("IStringLike", "to-string", new Object[] {value})));
-    string.define(
-        "from-string",
-        new VariadicBuiltin(
-            "str/from-string",
-            values -> {
-              requireMethodArity("str/from-string", values, 2);
-              return protocolCall("IStringLike", "from-string", values);
-            }));
-    string.define("wrap", new VariadicBuiltin("str/wrap", this::stringWrap));
-    string.define(
-        "wrap-compare", new UnaryBuiltin("str/wrap-compare", this::stringWrapCompare));
-  }
-
-  private Object stringWrap(Object[] values) {
-    if (values.length < 1 || values.length > 2) {
-      throw new HaraException("str/wrap expects a function and optional return-value flag");
-    }
-    Object function = values[0];
-    boolean returnValue = values.length == 2 && Boolean.TRUE.equals(HaraBox.unwrap(values[1]));
-    return new VariadicBuiltin(
-        "str/wrapped",
-        arguments -> {
-          if (arguments.length == 0) throw new HaraException("str/wrapped expects an input");
-          Object input = HaraBox.unwrap(arguments[0]);
-          boolean inputSequence = input instanceof hara.lang.data.types.ISequentialType<?>;
-          Iterator<?> sampleIterator = inputSequence ? (Iterator<?>) iterValue(input) : null;
-          Object sample = inputSequence && sampleIterator.hasNext() ? sampleIterator.next() : input;
-          Object stringInput;
-          if (inputSequence) {
-            ArrayList<Object> converted = new ArrayList<>();
-            Iterator<?> iterator = (Iterator<?>) iterValue(input);
-            while (iterator.hasNext()) {
-              converted.add(protocolCall("IStringLike", "to-string", new Object[] {iterator.next()}));
-            }
-            stringInput = hara.lang.data.Vector.Standard.from(null, converted.toArray());
-          } else {
-            stringInput = protocolCall("IStringLike", "to-string", new Object[] {input});
-          }
-          Object[] call = new Object[arguments.length];
-          call[0] = stringInput;
-          System.arraycopy(arguments, 1, call, 1, arguments.length - 1);
-          Object output = HaraBox.unwrap(invokeCallable(function, call));
-          if (returnValue || sample instanceof String) return output;
-          if (output instanceof hara.lang.data.types.ISequentialType<?>) {
-            ArrayList<Object> converted = new ArrayList<>();
-            Iterator<?> iterator = (Iterator<?>) iterValue(output);
-            while (iterator.hasNext()) {
-              converted.add(
-                  protocolCall(
-                      "IStringLike", "from-string", new Object[] {sample, iterator.next()}));
-            }
-            return hara.lang.data.Vector.Standard.from(null, converted.toArray());
-          }
-          return protocolCall("IStringLike", "from-string", new Object[] {sample, output});
-        });
-  }
-
-  private Object stringWrapCompare(Object function) {
-    return new VariadicBuiltin(
-        "str/wrapped-compare",
-        arguments -> {
-          if (arguments.length < 2) {
-            throw new HaraException("str/wrapped-compare expects two operands");
-          }
-          Object[] call = new Object[arguments.length];
-          call[0] = protocolCall("IStringLike", "to-string", new Object[] {arguments[0]});
-          call[1] = protocolCall("IStringLike", "to-string", new Object[] {arguments[1]});
-          System.arraycopy(arguments, 2, call, 2, arguments.length - 2);
-          return invokeCallable(function, call);
-        });
-  }
-
   void installBytesLibrary() {
-    withDefinitionOrigin(HaraVar.Origin.JAVA_LIBRARY, this::defineBytesLibrary);
+    withDefinitionOrigin(HaraVar.Origin.RUNTIME_PRIMITIVE, this::defineBytesLibrary);
   }
 
   private void defineBytesLibrary() {
-    HaraNamespace bytes = namespace("std.foundation.bytes");
+    HaraNamespace bytes = namespace("std.native.Bytes");
+    bytes.define("new", new VariadicBuiltin("std.native.Bytes/new", this::createBytes));
+    bytes.define(
+        "instance?",
+        new UnaryBuiltin(
+            "std.native.Bytes/instance?", value -> HaraBox.unwrap(value) instanceof byte[]));
     bytes.define(
         "count",
         new UnaryBuiltin("bytes/count", value -> (long) bytesValue(value, "bytes/count").length));
@@ -5064,11 +4993,16 @@ public final class HaraContext {
   }
 
   void installPromiseLibrary() {
-    withDefinitionOrigin(HaraVar.Origin.JAVA_LIBRARY, this::definePromiseLibrary);
+    withDefinitionOrigin(HaraVar.Origin.RUNTIME_PRIMITIVE, this::definePromiseLibrary);
   }
 
   private void definePromiseLibrary() {
-    HaraNamespace promise = namespace("std.foundation.promise");
+    HaraNamespace promise = namespace("std.native.Promise");
+    promise.define("run", new UnaryBuiltin("std.native.Promise/run", this::promiseRun));
+    promise.define(
+        "instance?",
+        new UnaryBuiltin(
+            "std.native.Promise/instance?", value -> HaraBox.unwrap(value) instanceof HaraPromise));
     promise.define("new", new UnaryBuiltin("promise/new", this::promiseNew));
     promise.define("from", new UnaryBuiltin("promise/from", this::promiseFrom));
     promise.define("all", new UnaryBuiltin("promise/all", this::promiseAll));
