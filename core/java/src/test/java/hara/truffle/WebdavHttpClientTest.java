@@ -148,8 +148,12 @@ public class WebdavHttpClientTest {
   }
 
   private static final class Fixture implements AutoCloseable {
-    final HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    final HttpServer server;
     private boolean started;
+
+    Fixture() throws IOException {
+      server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    }
 
     void start() {
       server.start();
