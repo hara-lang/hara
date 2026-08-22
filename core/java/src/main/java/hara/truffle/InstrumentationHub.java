@@ -407,6 +407,12 @@ final class InstrumentationHub implements AutoCloseable {
     return state.handle;
   }
 
+  synchronized TargetHandle targetIfPresent(String targetId) {
+    requireOpen();
+    TargetState state = targets.get(targetId);
+    return state == null ? null : state.handle;
+  }
+
   synchronized boolean isClosed() {
     return closed;
   }

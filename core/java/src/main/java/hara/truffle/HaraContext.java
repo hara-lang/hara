@@ -262,8 +262,6 @@ public final class HaraContext {
   private final boolean sandboxRestricted;
   private final SessionKernel sessionKernel;
   private final String instrumentationSessionId;
-  private final TargetHandle instrumentationInterpreterTarget;
-  private final TargetHandle instrumentationHbcTarget;
   private final FilesystemRuntimeBinding filesystemRuntime;
   private final IFilesystem ownedFilesystem;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
@@ -321,16 +319,6 @@ public final class HaraContext {
             : SessionKernel.embedding(environment.getOptions().get(HaraLanguage.KERNEL_TOKEN));
     this.instrumentationSessionId =
         sessionKernel == null ? null : environment.getOptions().get(HaraLanguage.SESSION_ID);
-    this.instrumentationInterpreterTarget =
-        sessionKernel == null || instrumentationSessionId.isBlank()
-            ? null
-            : sessionKernel.instrumentationTarget(
-                instrumentationSessionId, InstrumentationModel.TargetKind.INTERPRETER);
-    this.instrumentationHbcTarget =
-        sessionKernel == null || instrumentationSessionId.isBlank()
-            ? null
-            : sessionKernel.instrumentationTarget(
-                instrumentationSessionId, InstrumentationModel.TargetKind.HBC);
     FilesystemRuntimeBinding attachedFilesystem =
         FilesystemContextBindings.claim(
             environment.getOptions().get(HaraLanguage.FILESYSTEM_BINDING_TOKEN));
@@ -369,16 +357,30 @@ public final class HaraContext {
           installFoundationBootstrapSeeds();
         });
     installProjectMacro();
+    installNativeLibraries();
+    installEnvironmentLibraries();
+    libraryLoader.installEagerJava(this);
+    hideIteratorImplementationBindings();
+    namespaceStates.put(FOUNDATION_NAMESPACE, NamespaceLoadState.UNLOADED);
+    for (String namespace : GENERATED_LIBRARIES.values()) {
+      namespaceStates.put(namespace, NamespaceLoadState.UNLOADED);
+    }
+    for (String namespace : bytecodeLibrary.namespaces()) {
+      namespaceStates.put(namespace, NamespaceLoadState.UNLOADED);
+    }
+    currentNamespace = namespace("user");
+    initializeUserNamespace(currentNamespace);
   }
 
   void publishInterpreterEvent(
       InstrumentationModel.EventKind event,
       com.oracle.truffle.api.source.SourceSection source,
       java.util.Map<String, String> data) {
-    if (instrumentationInterpreterTarget == null
+    InstrumentationModel.TargetHandle target = instrumentationInterpreterTarget();
+    if (target == null
         || !sessionKernel
             .instrumentationHub()
-            .hasSubscribers(instrumentationInterpreterTarget, event)) {
+            .hasSubscribers(target, event)) {
       return;
     }
     InstrumentationModel.EventLocation location =
@@ -395,7 +397,7 @@ public final class HaraContext {
     sessionKernel
         .instrumentationHub()
         .publish(
-            instrumentationInterpreterTarget,
+            target,
             event,
             InstrumentationModel.EventPhase.LIVE,
             location,
@@ -408,10 +410,11 @@ public final class HaraContext {
       String function,
       String sourceId,
       java.util.Map<String, String> data) {
-    if (instrumentationHbcTarget == null
+    InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
+    if (target == null
         || !sessionKernel
             .instrumentationHub()
-            .hasSubscribers(instrumentationHbcTarget, event)) {
+            .hasSubscribers(target, event)) {
       return;
     }
     InstrumentationModel.EventLocation location =
@@ -424,24 +427,46 @@ public final class HaraContext {
     sessionKernel
         .instrumentationHub()
         .publish(
-            instrumentationHbcTarget,
+            target,
             event,
             InstrumentationModel.EventPhase.LIVE,
             location,
             data);
-    installNativeLibraries();
-    installEnvironmentLibraries();
-    libraryLoader.installEagerJava(this);
-    hideIteratorImplementationBindings();
-    namespaceStates.put(FOUNDATION_NAMESPACE, NamespaceLoadState.UNLOADED);
-    for (String namespace : GENERATED_LIBRARIES.values()) {
-      namespaceStates.put(namespace, NamespaceLoadState.UNLOADED);
-    }
-    for (String namespace : bytecodeLibrary.namespaces()) {
-      namespaceStates.put(namespace, NamespaceLoadState.UNLOADED);
-    }
-    currentNamespace = namespace("user");
-    initializeUserNamespace(currentNamespace);
+  }
+
+  boolean hbcInstrumentationEnabled(InstrumentationModel.EventKind event) {
+    InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
+    return target != null && sessionKernel.instrumentationHub().hasSubscribers(target, event);
+  }
+
+  InstrumentationModel.InstrumentDirective pollHbcDirective() {
+    InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
+    if (target == null) return InstrumentationModel.InstrumentDirective.CONTINUE;
+    InstrumentationModel.InstrumentDirective directive =
+        sessionKernel.instrumentationHub().pollDirective(target);
+    return directive == null ? InstrumentationModel.InstrumentDirective.CONTINUE : directive;
+  }
+
+  private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {
+    return sessionKernel == null || instrumentationSessionId == null || instrumentationSessionId.isBlank()
+        ? null
+        : sessionKernel.instrumentationTarget(
+            instrumentationSessionId, InstrumentationModel.TargetKind.INTERPRETER);
+  }
+
+  private InstrumentationModel.TargetHandle instrumentationHbcTarget() {
+    return sessionKernel == null || instrumentationSessionId == null || instrumentationSessionId.isBlank()
+        ? null
+        : sessionKernel.instrumentationTarget(
+            instrumentationSessionId, InstrumentationModel.TargetKind.HBC);
+  }
+
+  public void publishInterpreterTerminal(
+      com.oracle.truffle.api.source.SourceSection source, String status) {
+    publishInterpreterEvent(
+        InstrumentationModel.EventKind.EXECUTION_TERMINAL,
+        source,
+        java.util.Map.of("status", status));
   }
 
   void installHalcSchemas(HalcArtifact.SchemaIndex schemas) {
@@ -3909,25 +3934,6 @@ public final class HaraContext {
       context = (IMapType<Object, Object>) context.assoc(Keyword.create("meta"), metadata);
     }
 
-    boolean hbcInstrumentationEnabled(InstrumentationModel.EventKind event) {
-      return instrumentationHbcTarget != null
-          && sessionKernel.instrumentationHub().hasSubscribers(instrumentationHbcTarget, event);
-    }
-
-    InstrumentationModel.InstrumentDirective pollHbcDirective() {
-      if (instrumentationHbcTarget == null) return InstrumentationModel.InstrumentDirective.CONTINUE;
-      InstrumentationModel.InstrumentDirective directive =
-          sessionKernel.instrumentationHub().pollDirective(instrumentationHbcTarget);
-      return directive == null ? InstrumentationModel.InstrumentDirective.CONTINUE : directive;
-    }
-
-    void publishInterpreterTerminal(
-        com.oracle.truffle.api.source.SourceSection source, String status) {
-      publishInterpreterEvent(
-          InstrumentationModel.EventKind.EXECUTION_TERMINAL,
-          source,
-          java.util.Map.of("status", status));
-    }
     return result.withContext(context);
   }
 

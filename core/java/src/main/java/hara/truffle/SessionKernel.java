@@ -195,7 +195,6 @@ final class SessionKernel implements AutoCloseable {
     registerSandboxProvider(InProcessSandboxProvider.INSTANCE);
     SessionAuthorityPolicy rootAuthority =
         SessionAuthorityPolicy.root(allowFile, allowNetwork, allowProcess, project);
-    registerInstrumentationTargets(ROOT_ID.value());
     sessionRegistry.entries.put(
         ROOT_ID.value(),
         new Session(
@@ -228,18 +227,23 @@ final class SessionKernel implements AutoCloseable {
 
   NativeInstrumentation instrumentation(SessionModel.SessionId id) {
     Session session = require(id);
+    registerInstrumentationTargets(id.value());
     return new NativeInstrumentation(this, session, instrumentationHub);
   }
 
   TargetHandle instrumentationTarget(String sessionId, TargetKind kind) {
-    return instrumentationHub.targetFor(instrumentationTargetId(sessionId, kind));
+    return instrumentationHub.targetIfPresent(instrumentationTargetId(sessionId, kind));
   }
 
   private static String instrumentationTargetId(String sessionId, TargetKind kind) {
     return sessionId + "/" + kind;
   }
 
-  private void registerInstrumentationTargets(String sessionId) {
+  private synchronized void registerInstrumentationTargets(String sessionId) {
+    if (instrumentationHub.targetIfPresent(instrumentationTargetId(sessionId, TargetKind.INTERPRETER))
+        != null) {
+      return;
+    }
     RuntimeBackend backend = new RuntimeBackend("java");
     registerInstrumentationTarget(
         new TargetDescriptor(
@@ -291,7 +295,6 @@ final class SessionKernel implements AutoCloseable {
   synchronized Session create(SessionModel.SessionId id) {
     if (sessionRegistry.entries.containsKey(id.value()))
       throw new IllegalArgumentException("SESSION_EXISTS " + id);
-    registerInstrumentationTargets(id.value());
     Session session =
         new Session(
             SessionModel.SessionSpec.zeroAuthority(id),

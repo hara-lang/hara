@@ -13,8 +13,7 @@ import java.util.Map;
 @TruffleInstrument.Registration(
     id = "hara-execution",
     name = "Hara execution instrumentation",
-    version = "0.1",
-    services = Object.class)
+    version = "0.1")
 public final class HaraInstrumentation extends TruffleInstrument {
   @Override
   protected void onCreate(Env env) {
@@ -23,18 +22,22 @@ public final class HaraInstrumentation extends TruffleInstrument {
         SourceSectionFilter.newBuilder()
             .tagIs(StandardTags.ExpressionTag.class)
             .build(),
-        EventKind.SEMANTIC_BOUNDARY);
+        EventKind.SEMANTIC_BOUNDARY,
+        true);
     attach(
         env,
         SourceSectionFilter.newBuilder().tagIs(StandardTags.CallTag.class).build(),
-        EventKind.CALL_ENTER);
+        EventKind.CALL_ENTER,
+        false);
     attach(
         env,
         SourceSectionFilter.newBuilder().tagIs(StandardTags.WriteVariableTag.class).build(),
-        EventKind.VAR_SET);
+        EventKind.VAR_SET,
+        false);
   }
 
-  private static void attach(Env env, SourceSectionFilter filter, EventKind event) {
+  private static void attach(
+      Env env, SourceSectionFilter filter, EventKind event, boolean reportExceptions) {
     env.getInstrumenter()
         .attachExecutionEventListener(
             filter,
@@ -55,7 +58,9 @@ public final class HaraInstrumentation extends TruffleInstrument {
               @Override
               public void onReturnExceptional(
                   EventContext context, VirtualFrame frame, Throwable exception) {
-                publish(EventKind.EXCEPTION_RAISE, context, exception);
+                if (reportExceptions) {
+                  publish(EventKind.EXCEPTION_RAISE, context, exception);
+                }
               }
             });
   }
