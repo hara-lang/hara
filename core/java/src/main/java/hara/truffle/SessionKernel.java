@@ -112,6 +112,7 @@ final class SessionKernel implements AutoCloseable {
   private final ScheduledExecutorService filesystemScheduler;
   private final FilesystemMountTable filesystemMounts;
   private final InstrumentationHub instrumentationHub = new InstrumentationHub();
+  private volatile boolean instrumentationActive;
 
   private static final class SessionRegistry {
     final ConcurrentHashMap<String, Session> entries = new ConcurrentHashMap<>();
@@ -228,7 +229,12 @@ final class SessionKernel implements AutoCloseable {
   NativeInstrumentation instrumentation(SessionModel.SessionId id) {
     Session session = require(id);
     registerInstrumentationTargets(id.value());
+    instrumentationActive = true;
     return new NativeInstrumentation(this, session, instrumentationHub);
+  }
+
+  boolean instrumentationActive() {
+    return instrumentationActive;
   }
 
   TargetHandle instrumentationTarget(String sessionId, TargetKind kind) {

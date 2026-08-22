@@ -448,14 +448,20 @@ public final class HaraContext {
   }
 
   private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {
-    return sessionKernel == null || instrumentationSessionId == null || instrumentationSessionId.isBlank()
+    return sessionKernel == null
+            || !sessionKernel.instrumentationActive()
+            || instrumentationSessionId == null
+            || instrumentationSessionId.isBlank()
         ? null
         : sessionKernel.instrumentationTarget(
             instrumentationSessionId, InstrumentationModel.TargetKind.INTERPRETER);
   }
 
   private InstrumentationModel.TargetHandle instrumentationHbcTarget() {
-    return sessionKernel == null || instrumentationSessionId == null || instrumentationSessionId.isBlank()
+    return sessionKernel == null
+            || !sessionKernel.instrumentationActive()
+            || instrumentationSessionId == null
+            || instrumentationSessionId.isBlank()
         ? null
         : sessionKernel.instrumentationTarget(
             instrumentationSessionId, InstrumentationModel.TargetKind.HBC);
