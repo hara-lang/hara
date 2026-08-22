@@ -922,6 +922,8 @@ final class SessionKernel implements AutoCloseable {
         }
       } catch (PolyglotException error) {
         throw new IllegalArgumentException(error.getMessage(), error);
+      } catch (IOException error) {
+        throw new IllegalArgumentException("Unable to construct Hara bytecode source", error);
       } finally {
         activeEvaluations.decrementAndGet();
       }
