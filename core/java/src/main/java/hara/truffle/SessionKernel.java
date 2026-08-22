@@ -263,7 +263,7 @@ final class SessionKernel implements AutoCloseable {
                 Capability.EVENT_EXCEPTION,
                 Capability.EVENT_LIFECYCLE,
                 Capability.INSPECT_SOURCE_LOCATION)));
-    RuntimeBackend hbcBackend = new RuntimeBackend("java-hbc");
+    RuntimeBackend hbcBackend = new RuntimeBackend("java");
     registerInstrumentationTarget(
         new TargetDescriptor(
             instrumentationTargetId(sessionId, TargetKind.HBC),
