@@ -21,6 +21,10 @@ import hara.truffle.InstrumentationModel.TargetHandle;
 import hara.truffle.InstrumentationModel.TargetKind;
 import hara.truffle.NativeInstrumentation.NativeInstrumentHandle;
 import hara.truffle.NativeInstrumentation.NativeTargetHandle;
+import hara.truffle.bytecode.HbcProgram;
+import hara.truffle.bytecode.HbcProgram.Function;
+import hara.truffle.bytecode.HbcProgram.Instruction;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
 import org.junit.Test;
@@ -288,6 +292,91 @@ public class SessionInstrumentationTest {
       assertTrue(with.stream().allMatch(event -> event.location() != null));
       assertTrue(without.stream().allMatch(event -> event.location() == null));
     }
+  }
+
+  @Test
+  public void hbcProducerUsesProductionLoopBoundariesAndNativeLocations() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("hbc");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      SessionKernel.Session session = kernel.create(sessionId);
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/hbc", 0);
+      TargetDescriptor descriptor = service.targetDescriptor(target);
+      assertEquals(new RuntimeBackend("java-hbc"), descriptor.backend());
+      assertFalse(descriptor.capabilities().contains(Capability.CONTROL_PAUSE));
+      NativeInstrumentHandle trace =
+          service.register(
+              passive(
+                  "hbc-trace",
+                  sessionId.value(),
+                  Set.of(
+                      EventKind.INSTRUCTION_EXECUTE,
+                      EventKind.CALL_ENTER,
+                      EventKind.CALL_RETURN,
+                      EventKind.EXECUTION_TERMINAL),
+                  Set.of(
+                      Capability.EVENT_INSTRUCTION,
+                      Capability.EVENT_CALL,
+                      Capability.EVENT_LIFECYCLE,
+                      Capability.INSPECT_SOURCE_LOCATION),
+                  new ProjectionRequest(true, null, null, null, null, null, null)));
+      service.attach(trace, target);
+
+      assertEquals(
+          42L,
+          session.executeHbc(
+              new HbcProgram(
+                  "demo.main",
+                  List.of(42L),
+                  List.of(),
+                  Map.of(),
+                  Map.of(),
+                  Map.of(),
+                  List.of(
+                      function(
+                          "entry",
+                          new Instruction(HbcProgram.Opcode.CLOSURE, 1, 0, 0),
+                          new Instruction(HbcProgram.Opcode.CALL, 0, 0, 0),
+                          Instruction.of(HbcProgram.Opcode.RETURN)),
+                      function(
+                          "answer",
+                          new Instruction(HbcProgram.Opcode.CONSTANT, 0, 0, 0),
+                          Instruction.of(HbcProgram.Opcode.RETURN))),
+                  0));
+
+      var events = service.drainEvents(trace).events();
+      assertTrue(events.stream().anyMatch(event -> event.event() == EventKind.INSTRUCTION_EXECUTE));
+      assertTrue(events.stream().anyMatch(event -> event.event() == EventKind.CALL_ENTER));
+      assertTrue(events.stream().anyMatch(event -> event.event() == EventKind.CALL_RETURN));
+      assertEquals(
+          1,
+          events.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .count());
+      assertTrue(
+          events.stream()
+              .filter(event -> event.event() == EventKind.INSTRUCTION_EXECUTE)
+              .allMatch(
+                  event ->
+                      event.location() != null
+                          && event.location().instructionPointer() != null
+                          && event.location().formPath().isEmpty()));
+    }
+  }
+
+  private static Function function(String name, Instruction... instructions) {
+    return new Function(
+        name,
+        false,
+        0,
+        false,
+        0,
+        0,
+        2,
+        List.of(instructions),
+        Arrays.asList(new HbcProgram.Position[instructions.length]),
+        List.of());
   }
 
   private static TargetDescriptor interpreterTarget(String id, String session) {

@@ -420,13 +420,16 @@ public final class HaraContext {
             .hasSubscribers(target, event)) {
       return;
     }
-    InstrumentationModel.EventLocation location =
-        new InstrumentationModel.EventLocation(
-            sourceId,
-            java.util.List.of(),
-            null,
-            function,
-            instructionPointer);
+    InstrumentationModel.EventLocation location = null;
+    if (sessionKernel.instrumentationHub().hasSourceLocationSubscribers(target, event)) {
+      location =
+          new InstrumentationModel.EventLocation(
+              sourceId,
+              java.util.List.of(),
+              null,
+              function,
+              instructionPointer);
+    }
     sessionKernel
         .instrumentationHub()
         .publish(
