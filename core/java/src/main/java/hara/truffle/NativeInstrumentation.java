@@ -172,6 +172,8 @@ final class NativeInstrumentation {
     if (current.descriptor(attachment.target.handle).kind()
         == InstrumentationModel.TargetKind.INTERPRETER) {
       kernel.get().refreshTruffleInstrumentation(sessionId);
+    } else if (!current.hasAttachments(attachment.target.handle)) {
+      kernel.get().clearHbcExecution(sessionId);
     }
   }
 
@@ -192,6 +194,7 @@ final class NativeInstrumentation {
   void releaseControlLease(NativeControlLease lease) {
     InstrumentationHub current = requireActive();
     current.releaseControlLease(requireLease(lease));
+    kernel.get().clearHbcExecution(sessionId);
   }
 
   void issueDirective(

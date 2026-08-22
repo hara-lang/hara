@@ -402,7 +402,7 @@ public class SessionInstrumentationTest {
           service.bindTargetIdentity(sessionId.value() + "/hbc", 0);
       NativeInstrumentHandle controller =
           service.register(control("hbc-controller", sessionId.value()));
-      service.attach(controller, target);
+      var controllerAttachment = service.attach(controller, target);
       NativeControlLease lease = service.acquireControlLease(controller, target);
       HbcProgram program =
           new HbcProgram(
@@ -422,6 +422,8 @@ public class SessionInstrumentationTest {
       Object suspended = session.executeHbc(program);
       assertTrue(suspended instanceof HbcMachine.HbcSuspension);
       assertEquals(0, ((HbcMachine.HbcSuspension) suspended).instructionPointer());
+      Object retained = session.executeHbc(program);
+      assertEquals(suspended, retained);
 
       service.issueDirective(lease, InstrumentationModel.InstrumentDirective.STEP_NEXT);
       suspended = session.executeHbc(program);
@@ -443,14 +445,24 @@ public class SessionInstrumentationTest {
       assertTrue(session.executeHbc(program) instanceof HbcMachine.HbcSuspension);
       service.issueDirective(lease, InstrumentationModel.InstrumentDirective.TERMINATE);
       assertThrows(HaraException.class, () -> session.executeHbc(program));
+      List<EventEnvelope> terminalEvents = service.drainEvents(controller).events();
       assertEquals(
           1,
-          service
-              .drainEvents(controller)
-              .events()
-              .stream()
+          terminalEvents.stream()
               .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
               .count());
+      assertEquals(
+          "cancelled",
+          terminalEvents.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .findFirst()
+              .orElseThrow()
+              .data()
+              .get("status"));
+      assertEquals(42L, session.executeHbc(program));
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.SUSPEND);
+      assertTrue(session.executeHbc(program) instanceof HbcMachine.HbcSuspension);
+      service.detach(controllerAttachment);
       assertEquals(42L, session.executeHbc(program));
     }
   }

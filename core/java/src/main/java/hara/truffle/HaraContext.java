@@ -468,6 +468,10 @@ public final class HaraContext {
     if (hbcContinuation == continuation) hbcContinuation = null;
   }
 
+  synchronized void clearHbcContinuation() {
+    hbcContinuation = null;
+  }
+
   private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {
     return sessionKernel == null
             || !sessionKernel.instrumentationActive()
@@ -563,7 +567,7 @@ public final class HaraContext {
   }
 
   void closeContext() {
-    hbcContinuation = null;
+    clearHbcContinuation();
     closeExtensions();
     if (ownedFilesystem == null) return;
     filesystemRuntime.close();

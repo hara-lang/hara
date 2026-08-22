@@ -242,6 +242,11 @@ final class SessionKernel implements AutoCloseable {
     return instrumentationHub.targetIfPresent(instrumentationTargetId(sessionId, kind));
   }
 
+  void clearHbcExecution(String sessionId) {
+    Session session = require(SessionModel.SessionId.parse(sessionId));
+    session.clearHbcExecution();
+  }
+
   private static String instrumentationTargetId(String sessionId, TargetKind kind) {
     return sessionId + "/" + kind;
   }
@@ -1205,6 +1210,16 @@ final class SessionKernel implements AutoCloseable {
 
     synchronized boolean truffleInstrumentationActive() {
         return truffleInstrumentation != null && truffleInstrumentation.isActive();
+    }
+
+    synchronized void clearHbcExecution() {
+        if (context == null) return;
+        context.enter();
+        try {
+          HaraLanguage.currentContext().clearHbcContinuation();
+        } finally {
+          context.leave();
+        }
     }
   }
 }

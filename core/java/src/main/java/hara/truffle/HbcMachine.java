@@ -1080,7 +1080,6 @@ public final class HbcMachine {
         new java.util.concurrent.atomic.AtomicLong();
     final long id = IDS.incrementAndGet();
     final HbcProgram program;
-    final int argumentsFunctionIndex;
     final Object[] arguments;
     final Object[] captures;
     HaraContext context;
@@ -1100,7 +1099,6 @@ public final class HbcMachine {
 
     HbcContinuation(HbcProgram program, int functionIndex, Object[] arguments, Object[] captures) {
       this.program = program;
-      this.argumentsFunctionIndex = functionIndex;
       this.arguments = arguments;
       this.captures = captures;
       this.functionIndex = functionIndex;
