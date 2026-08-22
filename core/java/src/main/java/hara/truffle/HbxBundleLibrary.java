@@ -96,6 +96,10 @@ final class HbxBundleLibrary {
         }
       }
       return Map.copyOf(indexed);
+    } catch (HbcFormatException error) {
+      // The bundle is an optional acceleration layer; source-backed libraries remain
+      // authoritative when an artifact was produced by an incompatible HBC version.
+      return Map.of();
     } catch (IOException error) {
       throw new HaraException("Unable to read " + RESOURCE + ": " + error.getMessage());
     }

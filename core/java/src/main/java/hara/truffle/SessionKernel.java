@@ -1028,10 +1028,12 @@ final class SessionKernel implements AutoCloseable {
       try {
         synchronized (this) {
           requireActive();
-          context.eval(HaraLanguage.ID, "nil");
+          context.initialize(HaraLanguage.ID);
           context.enter();
           try {
-            return HbcMachine.execute(program, HaraLanguage.currentContext());
+            return hara.truffle.bytecode.HbcBytecodeRootNode.compile(
+                    HaraLanguage.currentLanguage(), program)
+                .call();
           } finally {
             context.leave();
           }

@@ -322,7 +322,7 @@ public class SessionInstrumentationTest {
                       Capability.EVENT_LIFECYCLE,
                       Capability.INSPECT_SOURCE_LOCATION),
                   new ProjectionRequest(true, null, null, null, null, null, null)));
-      service.attach(trace, target);
+      var attachment = service.attach(trace, target);
 
       HbcProgram program =
           new HbcProgram(
@@ -363,6 +363,81 @@ public class SessionInstrumentationTest {
                       event.location() != null
                           && event.location().instructionPointer() != null
                           && event.location().formPath().isEmpty()));
+
+      service.detach(attachment);
+      assertEquals(42L, session.executeHbc(program));
+      assertTrue(service.drainEvents(trace).events().isEmpty());
+    }
+  }
+
+  @Test
+  public void hbcProducerPublishesHandledUnwindAndTerminalOrdering() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("hbc-unwind");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      SessionKernel.Session session = kernel.create(sessionId);
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/hbc", 0);
+      NativeInstrumentHandle trace =
+          service.register(
+              passive(
+                  "hbc-unwind-trace",
+                  sessionId.value(),
+                  Set.of(EventKind.EXCEPTION_UNWIND, EventKind.EXECUTION_TERMINAL),
+                  Set.of(
+                      Capability.EVENT_EXCEPTION,
+                      Capability.EVENT_LIFECYCLE,
+                      Capability.INSPECT_SOURCE_LOCATION),
+                  new ProjectionRequest(true, null, null, null, null, null, null)));
+      service.attach(trace, target);
+
+      HbcProgram program =
+          new HbcProgram(
+              "demo.unwind",
+              List.of("caught"),
+              List.of(),
+              Map.of(),
+              Map.of(),
+              Map.of(),
+              List.of(
+                  new Function(
+                      "entry",
+                      false,
+                      0,
+                      false,
+                      0,
+                      1,
+                      1,
+                      List.of(
+                          new Instruction(HbcProgram.Opcode.CONSTANT, 0, 0, 0),
+                          Instruction.of(HbcProgram.Opcode.THROW),
+                          Instruction.of(HbcProgram.Opcode.RETURN),
+                          new Instruction(HbcProgram.Opcode.LOAD_LOCAL, 0, 0, 0),
+                          Instruction.of(HbcProgram.Opcode.RETURN)),
+                      List.of(
+                          new HbcProgram.Position(0, 1, 1),
+                          new HbcProgram.Position(1, 1, 2),
+                          new HbcProgram.Position(2, 1, 3),
+                          new HbcProgram.Position(3, 1, 4),
+                          new HbcProgram.Position(4, 1, 5)),
+                      List.of(
+                          new HbcProgram.TryEntry(
+                              0,
+                              2,
+                              0,
+                              List.of(new HbcProgram.CatchEntry("Exception", 0, 3)),
+                              null,
+                              null,
+                              null)))),
+                  0);
+      assertEquals("caught", session.executeHbc(program));
+
+      List<EventEnvelope> events = service.drainEvents(trace).events();
+      assertEquals(2, events.size());
+      assertEquals(EventKind.EXCEPTION_UNWIND, events.get(0).event());
+      assertEquals(EventKind.EXECUTION_TERMINAL, events.get(1).event());
+      assertEquals("1", Integer.toString(events.get(0).location().instructionPointer()));
+      assertEquals("return", events.get(1).data().get("status"));
     }
   }
 
