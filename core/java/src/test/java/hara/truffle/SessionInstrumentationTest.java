@@ -440,7 +440,7 @@ public class SessionInstrumentationTest {
       var without = service.drainEvents(withoutLocation).events();
       var with = service.drainEvents(withLocation).events();
       assertFalse(without.isEmpty());
-      assertTrue(with.stream().allMatch(event -> event.location() != null));
+      assertTrue("with-location events " + with, with.stream().allMatch(event -> event.location() != null));
       assertTrue(without.stream().allMatch(event -> event.location() == null));
     }
   }
