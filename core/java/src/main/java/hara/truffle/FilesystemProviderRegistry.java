@@ -26,7 +26,7 @@ final class FilesystemProviderRegistry {
 
   boolean unregister(IFilesystemFactory factory) {
     Objects.requireNonNull(factory, "filesystem factory");
-    return factories.remove(requireKind(factory.kind()), factory);
+    return factories.entrySet().removeIf(entry -> entry.getValue() == factory);
   }
 
   boolean contains(String kind) {
