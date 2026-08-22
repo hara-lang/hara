@@ -21,6 +21,13 @@ import hara.truffle.InstrumentationModel.TargetHandle;
 import hara.truffle.InstrumentationModel.TargetKind;
 import hara.truffle.NativeInstrumentation.NativeInstrumentHandle;
 import hara.truffle.NativeInstrumentation.NativeTargetHandle;
+import hara.truffle.NativeInstrumentation.NativeControlLease;
+import hara.truffle.bytecode.HbcProgram;
+import hara.truffle.bytecode.HbcProgram.Function;
+import hara.truffle.bytecode.HbcProgram.Instruction;
+import hara.truffle.bytecode.HbcProgram.Opcode;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import org.junit.Test;
@@ -210,6 +217,34 @@ public class SessionInstrumentationTest {
   }
 
   @Test
+  public void hbcTargetUsesExplicitBackendProvenanceAndAdvertisesImplementedControls() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("hbc");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      kernel.create(sessionId);
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/hbc", 0);
+      TargetDescriptor descriptor = service.targetDescriptor(target);
+
+      assertEquals(new RuntimeBackend("java-hbc"), descriptor.backend());
+      assertEquals(
+          Set.of(
+              Capability.EVENT_INSTRUCTION,
+              Capability.EVENT_CALL,
+              Capability.EVENT_EXCEPTION,
+              Capability.EVENT_SUSPENSION,
+              Capability.EVENT_LIFECYCLE,
+              Capability.INSPECT_SOURCE_LOCATION,
+              Capability.CONTROL_PAUSE,
+              Capability.CONTROL_SINGLE_STEP,
+              Capability.CONTROL_RESUME,
+              Capability.CONTROL_SETTLE,
+              Capability.CONTROL_TERMINATE),
+          descriptor.capabilities());
+    }
+  }
+
+  @Test
   public void topLevelFailureIsReportedOnceAndNestedRootsAreNotTerminal() {
     SessionModel.SessionId sessionId = SessionModel.SessionId.parse("failure");
     try (SessionKernel kernel = new SessionKernel(false, false)) {
@@ -251,6 +286,125 @@ public class SessionInstrumentationTest {
               .findFirst()
               .orElseThrow();
       assertEquals("failure", terminal.data().get("status"));
+    }
+  }
+
+  @Test
+  public void hbcProductionLoopRetainsStateAcrossSuspendStepResumeSettleAndTerminate() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("hbc-control");
+    HbcProgram program = arithmeticHbcProgram();
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      SessionKernel.Session session = kernel.create(sessionId);
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/hbc", 0);
+      NativeInstrumentHandle controller =
+          service.register(hbcController("controller", sessionId.value()));
+      service.attach(controller, target);
+      NativeControlLease lease = service.acquireControlLease(controller, target);
+
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.SUSPEND);
+      assertThrows(IllegalArgumentException.class, () -> session.evalHbc(program));
+      assertEquals(
+          List.of(EventKind.MACHINE_SUSPEND),
+          service.drainEvents(controller).events().stream().map(EventEnvelope::event).toList());
+
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.STEP_NEXT);
+      assertThrows(IllegalArgumentException.class, () -> session.evalHbc(program));
+      List<EventEnvelope> stepped = service.drainEvents(controller).events();
+      assertEquals(
+          List.of(
+              EventKind.MACHINE_RESUME,
+              EventKind.INSTRUCTION_EXECUTE,
+              EventKind.MACHINE_SUSPEND),
+          stepped.stream().map(EventEnvelope::event).toList());
+      assertEquals(Integer.valueOf(0), stepped.get(1).location().instructionPointer());
+
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.SETTLE);
+      assertEquals(42L, session.evalHbc(program).asLong());
+      List<EventEnvelope> settled = service.drainEvents(controller).events();
+      assertEquals(
+          1,
+          settled.stream()
+              .filter(event -> event.event() == EventKind.MACHINE_RESUME)
+              .count());
+      assertEquals(
+          1,
+          settled.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .count());
+      assertEquals(
+          "return",
+          settled.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .findFirst()
+              .orElseThrow()
+              .data()
+              .get("status"));
+
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.SUSPEND);
+      assertThrows(IllegalArgumentException.class, () -> session.evalHbc(program));
+      service.drainEvents(controller);
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.TERMINATE);
+      assertThrows(IllegalArgumentException.class, () -> session.evalHbc(program));
+      List<EventEnvelope> terminated = service.drainEvents(controller).events();
+      assertEquals(
+          1,
+          terminated.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .count());
+      assertEquals(
+          "terminated",
+          terminated.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .findFirst()
+              .orElseThrow()
+              .data()
+              .get("status"));
+    }
+  }
+
+  @Test
+  public void hbcProductionLoopEmitsCallsUnwindAndOneTerminalOutcome() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("hbc-boundaries");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      SessionKernel.Session session = kernel.create(sessionId);
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/hbc", 0);
+      NativeInstrumentHandle trace =
+          service.register(hbcController("trace", sessionId.value()));
+      service.attach(trace, target);
+
+      assertEquals(7L, session.evalHbc(hbcCallProgram()).asLong());
+      List<EventEnvelope> calls = service.drainEvents(trace).events();
+      assertEquals(
+          1, calls.stream().filter(event -> event.event() == EventKind.CALL_ENTER).count());
+      assertEquals(
+          1, calls.stream().filter(event -> event.event() == EventKind.CALL_RETURN).count());
+      assertEquals(
+          1, calls.stream().filter(event -> event.event() == EventKind.EXECUTION_TERMINAL).count());
+
+      assertThrows(IllegalArgumentException.class, () -> session.evalHbc(hbcThrowProgram()));
+      List<EventEnvelope> failure = service.drainEvents(trace).events();
+      assertEquals(
+          1,
+          failure.stream()
+              .filter(event -> event.event() == EventKind.EXCEPTION_UNWIND)
+              .count());
+      assertEquals(
+          1,
+          failure.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .count());
+      assertEquals(
+          "failure",
+          failure.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .findFirst()
+              .orElseThrow()
+              .data()
+              .get("status"));
     }
   }
 
@@ -323,5 +477,101 @@ public class SessionInstrumentationTest {
         new InstrumentFilter(session, Set.of(), Set.of(), Set.of()),
         projection,
         EventDelivery.queue(8));
+  }
+
+  private static InstrumentRegistration hbcController(String id, String session) {
+    return new InstrumentRegistration(
+        id,
+        session,
+        InstrumentMode.CONTROL,
+        Set.of(
+            Capability.EVENT_INSTRUCTION,
+            Capability.EVENT_CALL,
+            Capability.EVENT_EXCEPTION,
+            Capability.EVENT_SUSPENSION,
+            Capability.EVENT_LIFECYCLE,
+            Capability.INSPECT_SOURCE_LOCATION,
+            Capability.CONTROL_PAUSE,
+            Capability.CONTROL_SINGLE_STEP,
+            Capability.CONTROL_RESUME,
+            Capability.CONTROL_SETTLE,
+            Capability.CONTROL_TERMINATE),
+        Set.of(
+            EventKind.INSTRUCTION_EXECUTE,
+            EventKind.CALL_ENTER,
+            EventKind.CALL_RETURN,
+            EventKind.EXCEPTION_UNWIND,
+            EventKind.MACHINE_SUSPEND,
+            EventKind.MACHINE_RESUME,
+            EventKind.EXECUTION_TERMINAL),
+        new InstrumentFilter(session, Set.of(), Set.of(TargetKind.HBC), Set.of(new RuntimeBackend("java-hbc"))),
+        new ProjectionRequest(true, null, null, null, null, null, null),
+        EventDelivery.queue(256));
+  }
+
+  private static HbcProgram arithmeticHbcProgram() {
+    Function entry =
+        new Function(
+            "entry",
+            false,
+            0,
+            false,
+            0,
+            0,
+            2,
+            List.of(
+                new Instruction(Opcode.CONSTANT, 0, 0, 0),
+                new Instruction(Opcode.CONSTANT, 1, 0, 0),
+                new Instruction(Opcode.PRIMITIVE, HbcProgram.Primitive.ADD.id(), 2, 0),
+                Instruction.of(Opcode.RETURN)),
+            Arrays.asList(null, null, null, null),
+            List.of());
+    return new HbcProgram(List.of(41L, 1L), List.of(), List.of(entry), 0);
+  }
+
+  private static HbcProgram hbcCallProgram() {
+    Function entry =
+        new Function(
+            "entry",
+            false,
+            0,
+            false,
+            0,
+            0,
+            1,
+            List.of(
+                new Instruction(Opcode.CALL_STATIC, 1, 0, 0),
+                Instruction.of(Opcode.RETURN)),
+            Arrays.asList(null, null),
+            List.of());
+    Function callee =
+        new Function(
+            "callee",
+            false,
+            0,
+            false,
+            0,
+            0,
+            1,
+            List.of(new Instruction(Opcode.CONSTANT, 0, 0, 0), Instruction.of(Opcode.RETURN)),
+            Arrays.asList(null, null),
+            List.of());
+    return new HbcProgram(List.of(7L), List.of(), List.of(entry, callee), 0);
+  }
+
+  private static HbcProgram hbcThrowProgram() {
+    Function entry =
+        new Function(
+            "thrower",
+            false,
+            0,
+            false,
+            0,
+            0,
+            1,
+            List.of(new Instruction(Opcode.CONSTANT, 0, 0, 0), Instruction.of(Opcode.THROW)),
+            Arrays.asList(null, null),
+            List.of());
+    return new HbcProgram(List.of("boom"), List.of(), List.of(entry), 0);
   }
 }

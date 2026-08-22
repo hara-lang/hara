@@ -265,6 +265,7 @@ public final class HaraContext {
   private final FilesystemRuntimeBinding filesystemRuntime;
   private final IFilesystem ownedFilesystem;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
+  private HbcMachine.ExecutionState retainedHbcExecution;
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
   private final Map<String, Map<String, String>> aliases = new ConcurrentHashMap<>();
@@ -301,6 +302,8 @@ public final class HaraContext {
   private final Set<String> preparedNamespaceReloads = ConcurrentHashMap.newKeySet();
   private final Set<String> blankNamespaces = ConcurrentHashMap.newKeySet();
   private final Deque<String> loadingStack = new ArrayDeque<>();
+  private final ThreadLocal<Integer> interpreterRootDepth = ThreadLocal.withInitial(() -> 0);
+  private volatile boolean instrumentationReady;
   private boolean preparingNamespace;
   private volatile HaraNamespace currentNamespace;
   private final Map<String, Map<String, BuiltinExport>> builtinCatalogs = new ConcurrentHashMap<>();
@@ -376,6 +379,7 @@ public final class HaraContext {
       InstrumentationModel.EventKind event,
       com.oracle.truffle.api.source.SourceSection source,
       java.util.Map<String, String> data) {
+    if (!instrumentationReady) return;
     InstrumentationModel.TargetHandle target = instrumentationInterpreterTarget();
     if (target == null
         || !sessionKernel
@@ -405,6 +409,12 @@ public final class HaraContext {
             InstrumentationModel.EventPhase.LIVE,
             location,
             data);
+  }
+
+  public void publishInterpreterSemanticBoundary(
+      com.oracle.truffle.api.source.SourceSection source) {
+    publishInterpreterEvent(
+            InstrumentationModel.EventKind.SEMANTIC_BOUNDARY, source, java.util.Map.of());
   }
 
   void publishHbcEvent(
@@ -438,16 +448,51 @@ public final class HaraContext {
   }
 
   boolean hbcInstrumentationEnabled(InstrumentationModel.EventKind event) {
+    if (!instrumentationReady) return false;
     InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
     return target != null && sessionKernel.instrumentationHub().hasSubscribers(target, event);
   }
 
   InstrumentationModel.InstrumentDirective pollHbcDirective() {
+    if (!instrumentationReady) return InstrumentationModel.InstrumentDirective.CONTINUE;
     InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
     if (target == null) return InstrumentationModel.InstrumentDirective.CONTINUE;
     InstrumentationModel.InstrumentDirective directive =
         sessionKernel.instrumentationHub().pollDirective(target);
     return directive == null ? InstrumentationModel.InstrumentDirective.CONTINUE : directive;
+  }
+
+  synchronized HbcMachine.ExecutionState takeHbcExecution(hara.truffle.bytecode.HbcProgram program) {
+    HbcMachine.ExecutionState retained = retainedHbcExecution;
+    if (retained == null) return null;
+    if (!retained.program().equals(program)) {
+      throw new HaraException("HBC execution is suspended for another program");
+    }
+    retainedHbcExecution = null;
+    return retained;
+  }
+
+  synchronized void retainHbcExecution(HbcMachine.ExecutionState execution) {
+    retainedHbcExecution = java.util.Objects.requireNonNull(execution, "execution");
+  }
+
+  public boolean enterInterpreterRoot() {
+    int depth = interpreterRootDepth.get();
+    interpreterRootDepth.set(depth + 1);
+    return depth == 0;
+  }
+
+  public void exitInterpreterRoot() {
+    int depth = interpreterRootDepth.get();
+    if (depth <= 1) {
+      interpreterRootDepth.remove();
+    } else {
+      interpreterRootDepth.set(depth - 1);
+    }
+  }
+
+  void markInstrumentationReady() {
+    instrumentationReady = true;
   }
 
   private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {
@@ -6816,6 +6861,8 @@ public final class HaraContext {
     ContextSnapshot snapshot = snapshot();
     try {
       return HbcMachine.execute(program, this);
+    } catch (HbcMachine.SuspendedExecution suspension) {
+      throw suspension;
     } catch (RuntimeException error) {
       restore(snapshot);
       throw error;
