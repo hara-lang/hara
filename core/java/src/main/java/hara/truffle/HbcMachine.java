@@ -92,7 +92,6 @@ public final class HbcMachine {
       calls = continuation.calls;
       ip = continuation.instructionPointer;
       stepAfterInstruction = continuation.stepAfterInstruction;
-      continuation.paused = false;
     }
     while (true) {
       if (stepAfterInstruction) {
@@ -604,7 +603,7 @@ public final class HbcMachine {
           instructionPointer,
           function.name(),
           program.namespace(),
-          java.util.Map.of("status", "terminated"));
+          java.util.Map.of("status", "cancelled"));
     }
     throw new HaraException("HBC execution terminated by instrumentation");
   }

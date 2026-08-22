@@ -20,6 +20,7 @@ import hara.truffle.InstrumentationModel.TargetDescriptor;
 import hara.truffle.InstrumentationModel.TargetHandle;
 import hara.truffle.InstrumentationModel.TargetKind;
 import hara.truffle.NativeInstrumentation.NativeInstrumentHandle;
+import hara.truffle.NativeInstrumentation.NativeControlLease;
 import hara.truffle.NativeInstrumentation.NativeTargetHandle;
 import hara.truffle.bytecode.HbcProgram;
 import hara.truffle.bytecode.HbcProgram.Function;
@@ -305,7 +306,7 @@ public class SessionInstrumentationTest {
           service.bindTargetIdentity(sessionId.value() + "/hbc", 0);
       TargetDescriptor descriptor = service.targetDescriptor(target);
       assertEquals(new RuntimeBackend("java-hbc"), descriptor.backend());
-      assertFalse(descriptor.capabilities().contains(Capability.CONTROL_PAUSE));
+      assertTrue(descriptor.capabilities().contains(Capability.CONTROL_PAUSE));
       NativeInstrumentHandle trace =
           service.register(
               passive(
@@ -387,6 +388,70 @@ public class SessionInstrumentationTest {
       service.detach(withoutLocationAttachment);
       assertEquals(42L, session.executeHbc(program));
       assertTrue(service.drainEvents(trace).events().isEmpty());
+    }
+  }
+
+  @Test
+  public void hbcControlRetainsStateAcrossPauseStepResumeAndTerminate() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("hbc-control");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      SessionKernel.Session session = kernel.create(sessionId);
+      session.eval("nil");
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/hbc", 0);
+      NativeInstrumentHandle controller =
+          service.register(control("hbc-controller", sessionId.value()));
+      service.attach(controller, target);
+      NativeControlLease lease = service.acquireControlLease(controller, target);
+      HbcProgram program =
+          new HbcProgram(
+              "hbc-control",
+              List.of(42L),
+              List.of(),
+              Map.of(),
+              Map.of(),
+              Map.of(),
+              List.of(function(
+                  "entry",
+                  new Instruction(HbcProgram.Opcode.CONSTANT, 0, 0, 0),
+                  Instruction.of(HbcProgram.Opcode.RETURN))),
+              0);
+
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.SUSPEND);
+      Object suspended = session.executeHbc(program);
+      assertTrue(suspended instanceof HbcMachine.HbcSuspension);
+      assertEquals(0, ((HbcMachine.HbcSuspension) suspended).instructionPointer());
+
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.STEP_NEXT);
+      suspended = session.executeHbc(program);
+      assertTrue(suspended instanceof HbcMachine.HbcSuspension);
+      assertEquals(1, ((HbcMachine.HbcSuspension) suspended).instructionPointer());
+
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.CONTINUE);
+      assertEquals(42L, session.executeHbc(program));
+      assertEquals(
+          1,
+          service
+              .drainEvents(controller)
+              .events()
+              .stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .count());
+
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.SUSPEND);
+      assertTrue(session.executeHbc(program) instanceof HbcMachine.HbcSuspension);
+      service.issueDirective(lease, InstrumentationModel.InstrumentDirective.TERMINATE);
+      assertThrows(HaraException.class, () -> session.executeHbc(program));
+      assertEquals(
+          1,
+          service
+              .drainEvents(controller)
+              .events()
+              .stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .count());
+      assertEquals(42L, session.executeHbc(program));
     }
   }
 
@@ -507,6 +572,26 @@ public class SessionInstrumentationTest {
         events,
         new InstrumentFilter(session, Set.of(), Set.of(), Set.of()),
         projection,
+        EventDelivery.queue(8));
+  }
+
+  private static InstrumentRegistration control(String id, String session) {
+    return new InstrumentRegistration(
+        id,
+        session,
+        InstrumentMode.CONTROL,
+        Set.of(
+            Capability.EVENT_SUSPENSION,
+            Capability.EVENT_LIFECYCLE,
+            Capability.CONTROL_PAUSE,
+            Capability.CONTROL_SINGLE_STEP,
+            Capability.CONTROL_RESUME,
+            Capability.CONTROL_TERMINATE),
+        Set.of(
+            EventKind.MACHINE_SUSPEND,
+            EventKind.EXECUTION_TERMINAL),
+        new InstrumentFilter(session, Set.of(), Set.of(), Set.of()),
+        ProjectionRequest.none(),
         EventDelivery.queue(8));
   }
 }
