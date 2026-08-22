@@ -77,16 +77,6 @@ public final class HaraRootNode extends RootNode {
 
   @Override
   public Object execute(VirtualFrame frame) {
-    HaraContext context = HaraLanguage.currentContext(this);
-    context.enterInterpreterRoot();
-    try {
-      return executeRoot(frame);
-    } finally {
-      context.exitInterpreterRoot();
-    }
-  }
-
-  private Object executeRoot(VirtualFrame frame) {
     Object[] arguments = frame.getArguments();
     int argumentOffset = exportResult ? 0 : 1;
     int actualArity = arguments.length - argumentOffset;

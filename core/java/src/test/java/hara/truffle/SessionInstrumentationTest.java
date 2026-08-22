@@ -265,7 +265,6 @@ public class SessionInstrumentationTest {
       session.eval("(do (defn inner [] 1) (inner))");
       var success = service.drainEvents(trace).events();
       assertEquals(
-          "success terminals " + success,
           1,
           success.stream()
               .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
@@ -440,7 +439,7 @@ public class SessionInstrumentationTest {
       var without = service.drainEvents(withoutLocation).events();
       var with = service.drainEvents(withLocation).events();
       assertFalse(without.isEmpty());
-      assertTrue("with-location events " + with, with.stream().allMatch(event -> event.location() != null));
+      assertTrue(with.stream().allMatch(event -> event.location() != null));
       assertTrue(without.stream().allMatch(event -> event.location() == null));
     }
   }
