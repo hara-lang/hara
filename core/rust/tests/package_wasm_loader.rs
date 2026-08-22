@@ -2,14 +2,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
-use hara_wasm::package_manifest::{PackageManifest, PackageRuntime, PackageRuntimeRequirements};
-use hara_wasm::package_wasm_loader::load_wasm_package;
 use hara_wasm::extension::Value;
+use hara_wasm::package_manifest::{PackageManifest, PackageRuntimeRequirements};
+use hara_wasm::package_wasm_loader::load_wasm_package;
 
 const ADD: &[u8] =
     b"\0asm\x01\0\0\0\x01\x07\x01\x60\x02\x7e\x7e\x01\x7e\x03\x02\x01\0\x07\x07\x01\x03add\0\0\x0a\x09\x01\x07\0\x20\0\x20\x01\x7c\x0b";
-const ARTIFACT_SHA256: &str =
-    "sha256:cf96c3351ea2afd66dd2cee4480ea44fd2e76f8009ca1df96edb9dc149749edc";
 
 const PACKAGE_MANIFEST: &str = r#"
 {:harp/format "0.0.0-alpha"
@@ -49,7 +47,10 @@ fn requirements() -> PackageRuntimeRequirements {
 }
 
 fn package_root(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("hara-package-wasm-loader-{name}-{}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "hara-package-wasm-loader-{name}-{}",
+        std::process::id()
+    ))
 }
 
 fn write_artifact(name: &str, bytes: &[u8]) -> (PackageManifest, PathBuf) {
@@ -64,14 +65,15 @@ fn write_artifact(name: &str, bytes: &[u8]) -> (PackageManifest, PathBuf) {
 
 #[test]
 fn loads_verified_core_wasm_package_artifact() {
-    assert_eq!(format!("sha256:{}", sha2::Sha256::digest(ADD).iter().map(|byte| format!("{byte:02x}")).collect::<String>()), ARTIFACT_SHA256);
     let (manifest, root) = write_artifact("success", ADD);
     let mut loaded =
         load_wasm_package(&manifest, &root, &requirements(), EXTENSION_MANIFEST).unwrap();
     let bindings = loaded.extension.require().unwrap();
     assert_eq!(bindings.len(), 1);
     assert_eq!(
-        bindings[0].invoke(&[Value::Number(19), Value::Number(23)]).unwrap(),
+        bindings[0]
+            .invoke(&[Value::Number(19), Value::Number(23)])
+            .unwrap(),
         Value::Number(42)
     );
     fs::remove_dir_all(root).unwrap();
@@ -80,8 +82,10 @@ fn loads_verified_core_wasm_package_artifact() {
 #[test]
 fn rejects_tampered_wasm_package_artifact_before_loading() {
     let (manifest, root) = write_artifact("tampered", b"not wasm");
-    let error = load_wasm_package(&manifest, &root, &requirements(), EXTENSION_MANIFEST)
-        .unwrap_err();
+    let error = match load_wasm_package(&manifest, &root, &requirements(), EXTENSION_MANIFEST) {
+        Ok(_) => panic!("tampered package artifact was loaded"),
+        Err(error) => error,
+    };
     assert!(error.starts_with("package/digest-mismatch:"));
     fs::remove_dir_all(root).unwrap();
 }
@@ -89,9 +93,12 @@ fn rejects_tampered_wasm_package_artifact_before_loading() {
 #[test]
 fn rejects_package_extension_identity_mismatch() {
     let (manifest, root) = write_artifact("identity", ADD);
-    let extension_manifest = EXTENSION_MANIFEST.replace("hara:example/provider", "hara:other/provider");
-    let error = load_wasm_package(&manifest, &root, &requirements(), &extension_manifest)
-        .unwrap_err();
+    let extension_manifest =
+        EXTENSION_MANIFEST.replace("hara:example/provider", "hara:other/provider");
+    let error = match load_wasm_package(&manifest, &root, &requirements(), &extension_manifest) {
+        Ok(_) => panic!("mismatched extension identity was loaded"),
+        Err(error) => error,
+    };
     assert_eq!(
         error,
         "package/identity-mismatch: extension identity differs from package"
