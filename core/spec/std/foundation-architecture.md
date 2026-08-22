@@ -61,14 +61,14 @@ existing source-dispatched protocol.
 
 Functionality above the native substrate belongs to focused portable libraries:
 
-- mounted filesystem paths under `std.lib.fs.path`;
-- synchronous direct-style traversal and file operations under `std.lib.fs.walk` and `std.lib.fs`, implemented by internally dereferencing the promise-based `File/*` provider boundary; see [Mounted filesystem APIs](filesystem.md);
+- mounted filesystem paths under `std.fs.path`;
+- synchronous direct-style traversal and file operations under `std.fs.walk` and `std.fs`, implemented by internally dereferencing the promise-based `File/*` provider boundary; see [Mounted filesystem APIs](filesystem.md);
 - formatting, tables, reports, and terminal presentation under `std.format.*`;
 - component lifecycle under `std.lib.component`;
 - cryptographic algorithms above native primitives under `std.crypto.*`;
 - collection helpers not retained in the root value layer under `std.lib.collection`.
 
-The filesystem split is intentional: `File/*` remains the asynchronous capability surface for explicit promise composition, while `std.lib.fs` is the familiar synchronous facade. No parallel asynchronous `std.lib.fs` compatibility namespace is maintained.
+The filesystem split is intentional: `File/*` remains the asynchronous capability surface for explicit promise composition, while `std.fs` is the familiar synchronous facade. No parallel asynchronous `std.fs` compatibility namespace is maintained.
 
 Planned replacements must be recorded as planned rather than presented as implemented.
 

@@ -1,0 +1,572 @@
+(ns code.project
+  (:require [std.block :as block]
+            [code.project.production :as production]))
+
+(def +defaults+
+  {:root "."
+   :source-paths ["src"]
+   :test-paths ["test"]
+   :extension ".hal"
+   :test-suffix "-test"})
+
+(defn project-options
+  "Applies portable project defaults without discarding host-specific keys."
+  [project]
+  (merge +defaults+ project))
+
+(defn join-path
+  [parts]
+  (str/join "/"
+               (filter (fn [part]
+                         (not (str/blank? (str part))))
+                       parts)))
+
+(defn namespace-stem
+  [namespace]
+  (str/replace
+   (str/replace (str namespace) "." "/") "-" "_"))
+
+(defn path-namespace
+  "Converts a source-relative HAL path into its namespace convention."
+  [path]
+  (let [without-extension (if (str/ends-with? path ".hal")
+                            (str/slice path 0 (- (str/length path) 4))
+                            path)]
+    (symbol
+     (str/replace
+      (str/replace without-extension "/" ".") "_" "-"))))
+
+(defn test-suffix [project]
+  (:test-suffix (project-options project)))
+
+(defn source-namespace
+  [project namespace]
+  (let [value (str namespace)
+        suffix (test-suffix project)]
+    (if (str/ends-with? value suffix)
+      (symbol (str/slice value 0 (- (str/length value)
+                                       (str/length suffix))))
+      (symbol value))))
+
+(defn test-namespace
+  [project namespace]
+  (let [value (str namespace)
+        suffix (test-suffix project)]
+    (if (str/ends-with? value suffix)
+      (symbol value)
+      (symbol (str value suffix)))))
+
+(defn source-candidates
+  [project namespace]
+  (let [options (project-options project)
+        relative (str (namespace-stem (source-namespace options namespace))
+                      (:extension options))]
+    (vec (map (fn [root]
+                (join-path [(:root options) root relative]))
+              (:source-paths options)))))
+
+(defn test-candidates
+  [project namespace]
+  (let [options (project-options project)
+        relative (str (namespace-stem (source-namespace options namespace))
+                      "_test"
+                      (:extension options))]
+    (vec (map (fn [root]
+                (join-path [(:root options) root relative]))
+              (:test-paths options)))))
+
+(defn source-path [project namespace]
+  (first (source-candidates project namespace)))
+
+(defn test-path [project namespace]
+  (first (test-candidates project namespace)))
+
+(defn index-entry
+  [path entry]
+  (merge {:path path :namespace (path-namespace path)}
+         (if (map? entry) entry {:source entry})))
+
+(defn project-index
+  "Builds path and namespace indexes from host-discovered source records."
+  [project entries]
+  (let [options (project-options project)
+        files (vec (map (fn [entry]
+                          (if (string? entry)
+                            (index-entry entry nil)
+                            (index-entry (:path entry) entry)))
+                        entries))]
+    {:project options
+     :paths (reduce (fn [out entry]
+                      (assoc out (:path entry) entry))
+                    {}
+                    files)
+     :namespaces (reduce (fn [out entry]
+                           (assoc out (:namespace entry) entry))
+                         {}
+                         files)}))
+
+(defn lookup-path [index path]
+  (get (:paths index) path))
+
+(defn lookup-namespace [index namespace]
+  (get (:namespaces index) (symbol (str namespace))))
+
+(def +required-keys+
+  [:hara/type :hara/version :project/id :project/version
+   :project/source-paths :project/test-paths :project/extension-paths
+   :project/capabilities])
+
+(def +inrepl-capabilities+
+  #{:inrepl/loopback})
+
+(defn inrepl-capabilities
+  "Returns the optional agent in-REPL policy after rejecting unknown entries."
+  [document]
+  (let [declared (or (:project/inrepl-capabilities document) #{})]
+    (if (not (set? declared))
+      (throw (ex :argument {:value declared} :ex/message ":project/inrepl-capabilities must be a set")))
+    (let [unknown (filter (fn [capability]
+                            (not (has? +inrepl-capabilities+ capability)))
+                          declared)]
+      (if (not (empty? unknown))
+        (throw (ex :serialization {:unknown (vec unknown)} :ex/message "project.edn declares an unknown in-REPL capability")))
+      declared)))
+
+(defn inrepl-loopback?
+  "True only when the project explicitly permits the loopback in-REPL client."
+  [document]
+  (has? (inrepl-capabilities document) :inrepl/loopback))
+
+
+(def +legacy-runtime-keys+
+  {:jvm/source-paths
+   [:project/runtime-profiles :jvm :runtime/native-source-paths]
+   :jvm/dependencies
+   [:project/runtime-profiles :jvm :runtime/dependencies :maven]
+   :jvm/target-path
+   [:project/runtime-profiles :jvm :runtime/target-path]})
+
+(defn reject-legacy-runtime-keys
+  [document]
+  (let [legacy-key
+        (if (has? document :jvm/source-paths)
+          :jvm/source-paths
+          (if (has? document :jvm/dependencies)
+            :jvm/dependencies
+            (if (has? document :jvm/target-path)
+              :jvm/target-path
+              nil)))]
+    (if legacy-key
+      (let [replacement (get +legacy-runtime-keys+ legacy-key)]
+        (throw
+         (ex :serialization {:type :legacy-runtime-key
+           :key legacy-key
+           :replacement replacement} :ex/message (str "project.edn " legacy-key
+               " is no longer supported; use " replacement))))
+      document)))
+
+(defn- runtime-path-vector
+  [container key label]
+  (let [value (or (get container key) [])]
+    (if (vector? value)
+      value
+      (throw
+       (ex :io {:type :invalid-runtime-profile
+         :key key
+         :value value} :ex/message (str label " must be a vector of project-relative path strings"))))))
+
+(defn- runtime-map
+  [value label]
+  (let [value (or value {})]
+    (if (map? value)
+      value
+      (throw
+       (ex :io {:type :invalid-runtime-profile
+         :value value} :ex/message (str label " must be a map"))))))
+
+(defn runtime-profile
+  [document runtime]
+  (if-not (or (= runtime :jvm) (= runtime :rust))
+    (throw
+     (ex :io {:type :invalid-runtime-profile
+       :runtime runtime} :ex/message (str "unsupported project runtime profile " runtime))))
+  (let [profiles (runtime-map (:project/runtime-profiles document)
+                              ":project/runtime-profiles")
+        profile (or (get profiles runtime) {})]
+    (runtime-map profile (str ":project/runtime-profiles " runtime))))
+
+(defn- merge-runtime-hara-dependencies
+  [shared additions runtime]
+  (reduce
+   (fn [output [coordinate declaration]]
+     (if (and (has? output coordinate)
+              (not= (get output coordinate) declaration))
+       (throw
+        (ex :conflict {:type :runtime-profile-conflict
+          :runtime runtime
+          :coordinate coordinate
+          :shared (get output coordinate)
+          :runtime-requirement declaration} :ex/message (str "conflicting Hara dependency requirements for " coordinate
+              " in runtime profile " runtime)))
+       (assoc output coordinate declaration)))
+   shared
+   additions))
+
+(defn resolve-runtime-profile
+  [document runtime]
+  (let [document (reject-legacy-runtime-keys document)
+        profile (runtime-profile document runtime)
+        dependency-groups
+        (runtime-map (:runtime/dependencies profile)
+                     (str ":runtime/dependencies for " runtime))
+        shared-hara
+        (runtime-map (:project/dependencies document)
+                     ":project/dependencies")
+        runtime-hara
+        (runtime-map (:hara dependency-groups)
+                     (str ":runtime/dependencies :hara for " runtime))
+        maven
+        (runtime-map (:maven dependency-groups)
+                     (str ":runtime/dependencies :maven for " runtime))]
+    {:runtime runtime
+     :source-paths
+     (vec (concat
+           (runtime-path-vector document
+                                :project/source-paths
+                                ":project/source-paths")
+           (runtime-path-vector profile
+                                :runtime/source-paths
+                                ":runtime/source-paths")))
+     :test-paths
+     (vec (concat
+           (runtime-path-vector document
+                                :project/test-paths
+                                ":project/test-paths")
+           (runtime-path-vector profile
+                                :runtime/test-paths
+                                ":runtime/test-paths")))
+     :extension-paths
+     (vec (concat
+           (runtime-path-vector document
+                                :project/extension-paths
+                                ":project/extension-paths")
+           (runtime-path-vector profile
+                                :runtime/extension-paths
+                                ":runtime/extension-paths")))
+     :native-source-paths
+     (runtime-path-vector profile
+                          :runtime/native-source-paths
+                          ":runtime/native-source-paths")
+     :target-path (:runtime/target-path profile)
+     :hara-dependencies
+     (merge-runtime-hara-dependencies shared-hara runtime-hara runtime)
+     :maven-dependencies maven}))
+
+(defn select-runtime
+  [document runtime]
+  (let [resolved (resolve-runtime-profile document runtime)]
+    (assoc document
+           :project/runtime runtime
+           :project/source-paths (:source-paths resolved)
+           :project/test-paths (:test-paths resolved)
+           :project/extension-paths (:extension-paths resolved)
+           :project/native-source-paths (:native-source-paths resolved)
+           :project/runtime-target-path (:target-path resolved)
+           :project/dependencies (:hara-dependencies resolved)
+           :project/maven-dependencies (:maven-dependencies resolved))))
+
+(defn- validate-runtime-profiles
+  [document]
+  (let [document (reject-legacy-runtime-keys document)
+        profiles (runtime-map (:project/runtime-profiles document)
+                              ":project/runtime-profiles")]
+    (reduce
+     (fn [output runtime]
+       (do
+         (resolve-runtime-profile document runtime)
+         output))
+     document
+     (keys profiles))))
+
+(defn missing-keys [document]
+  (vec (filter (fn [key] (not (has? document key))) +required-keys+)))
+
+(defn validate [document]
+  (let [document (validate-runtime-profiles document)
+        missing (missing-keys document)]
+    (cond
+      (not (map? document))
+      (throw (ex :serialization {} :ex/message "project.edn must be an EDN map"))
+      (not (empty? missing))
+      (throw (ex :not-found {:missing missing} :ex/message (str "project.edn missing required keys: " missing)))
+      (not= :project (:hara/type document))
+      (throw (ex :serialization {} :ex/message "project.edn :hara/type must be :project"))
+      :else (production/normalize-project document))))
+
+(defn read-text [path]
+  (str/decode-utf8 (deref (File/read path))))
+
+(defn read-project
+  ([manifest-path] (read-project manifest-path {}))
+  ([manifest-path options]
+   (let [document (validate (Edn/read (read-text manifest-path)))
+         project (assoc document
+                        :project/root (File/parent manifest-path)
+                        :project/manifest-path manifest-path)]
+     (if (:runtime options)
+       (select-runtime project (:runtime options))
+       project))))
+
+(defn start-directory [path]
+  (let [metadata (deref (File/stat path))]
+    (if (= :directory (:type metadata)) path (File/parent path))))
+
+(defn discover [start]
+  (loop [current (start-directory start)]
+    (if (nil? current)
+      (throw (ex :serialization {:start start} :ex/message (str "no project.edn found above " start)))
+      (let [manifest (File/join current "project.edn")]
+        (if (deref (File/exists? manifest))
+          (read-project manifest)
+          (recur (File/parent current)))))))
+
+(defn walk-files [path]
+  (vec (deref (File/walk path))))
+
+(defn namespace-from-forms
+  "Returns the declared ns or ns+ name from already-read top-level forms."
+  [forms]
+  (loop [remaining forms]
+    (if (empty? remaining)
+      nil
+      (let [form (first remaining)]
+        (if (and (list? form)
+                 (or (= 'ns (first form))
+                     (= 'ns+ (first form)))
+                 (< 1 (count form)))
+          (str (nth form 1))
+          (recur (rest remaining)))))))
+
+(defn namespace-from-path
+  "Reads a file through the native reader and returns its declared namespace,
+   falling back to a supplied project-relative path when parsing fails."
+  [path relative]
+  (try
+    (let [declared (namespace-from-forms (read-forms path))]
+      (if declared
+        (symbol declared)
+        (if relative (path-namespace relative) nil)))
+    (catch error
+      (if relative (path-namespace relative) nil))))
+
+(defn files-in
+  ([project roots] (files-in project roots nil))
+  ([project roots suffix]
+   (let [root (:project/root project)
+         files (reduce (fn [output path]
+                         (into output (walk-files (File/join root path))))
+                       []
+                       roots)]
+     (if suffix
+       (reduce (fn [output path]
+                 (if (str/ends-with? path suffix)
+                   (conj output path)
+                   output))
+               []
+               files)
+       files))))
+
+(defn declared-resources [project]
+  (:resources
+   (reduce
+    (fn [state path]
+      (let [source (read-text path)
+            namespace (namespace-from-forms (read-forms path))]
+        (if (nil? namespace)
+          (throw (ex :io {:path path} :ex/message (str path " does not declare an ns or ns+ namespace"))))
+        (if (has? (:names state) namespace)
+          (throw (ex :conflict {:type :duplicate-namespace
+                           :namespace namespace
+                           :paths [(get (:names state) namespace) path]} :ex/message "duplicate namespace in effective project profile")))
+        {:names (assoc (:names state) namespace path)
+         :resources
+         (conj (:resources state)
+               {:resource/name namespace
+                :resource/path path
+                :resource/source source})}))
+    {:names {} :resources []}
+    (files-in project (:project/source-paths project) ".hal"))))
+
+(defn register-resources [project]
+  (reduce
+   (fn [registered resource]
+     (Kernel/resource-register (:resource/name resource)
+                                          (:resource/source resource))
+     (conj registered (:resource/name resource)))
+   []
+   (declared-resources project)))
+
+(defn namespace-path [namespace]
+  (str (namespace-stem namespace) ".hal"))
+
+(defn main-file [project]
+  (let [main (:project/main project)]
+    (if (nil? main)
+      (throw (ex :not-found {} :ex/message "project.edn is missing :project/main"))
+      (let [relative (namespace-path main)
+            found (first
+                   (filter
+                    (fn [path] (deref (File/exists? path)))
+                    (map (fn [root]
+                           (File/join
+                            (File/join (:project/root project) root)
+                            relative))
+                         (:project/source-paths project))))]
+        (if found
+          found
+          (throw (ex :not-found {:project/main main} :ex/message (str "cannot find :project/main " main
+                       " in :project/source-paths"))))))))
+
+(defn strip-trailing-separator [path]
+  (if (and (> (str/length path) 1) (str/ends-with? path "/"))
+    (strip-trailing-separator (str/slice path 0 (dec (str/length path))))
+    path))
+
+(defn normalized-path [path]
+  (strip-trailing-separator (str/replace (str path) "\\" "/")))
+
+(defn path-under-root? [root path]
+  (let [root (normalized-path root) path (normalized-path path)]
+    (or (= root path) (str/starts-with? path (str root "/")))))
+
+(defn project-absolute-path [project path]
+  (let [path (normalized-path path)]
+    (if (str/starts-with? path "/") path
+      (normalized-path (File/resolve (:project/root project) path)))))
+
+(defn project-root-path [project root]
+  (project-absolute-path project root))
+
+(defn matching-root [project path roots]
+  (let [path (project-absolute-path project path)]
+    (loop [remaining roots selected nil]
+      (if (empty? remaining) selected
+        (let [root (first remaining)
+              absolute (project-root-path project root)
+              better (and (path-under-root? absolute path)
+                          (or (nil? selected)
+                              (> (str/length absolute)
+                                 (str/length
+                                  (project-root-path project selected)))))]
+          (recur (rest remaining) (if better root selected)))))))
+
+(defn root-index [roots root]
+  (loop [index 0]
+    (if (= index (count roots)) nil
+      (if (= root (nth roots index)) index (recur (inc index))))))
+
+(defn path-relative-to-root [project path root]
+  (let [path (project-absolute-path project path)
+        root-path (project-root-path project root)]
+    (if (not (path-under-root? root-path path)) nil
+      (if (= path root-path) ""
+        (str/slice path (inc (str/length root-path)) (str/length path))))))
+
+(defn project-relative-path [project path]
+  (path-relative-to-root project path ""))
+
+(defn test-root [project path]
+  (let [test-roots (:project/test-paths project)
+        source-roots (:project/source-paths project)
+        current-test (matching-root project path test-roots)
+        source-root (matching-root project path source-roots)]
+    (if current-test current-test
+      (if source-root
+        (let [index (root-index source-roots source-root)]
+          (or (if (< index (count test-roots)) (nth test-roots index) nil)
+              (first test-roots)))
+        (first test-roots)))))
+
+(defn test-file-name [path]
+  (if (str/ends-with? path "_test.hal") path
+    (if (str/ends-with? path ".hal")
+      (str (str/slice path 0 (- (str/length path) 4)) "_test.hal")
+      (str path "_test.hal"))))
+
+(defn paired-test-path [project path]
+  (let [test-roots (:project/test-paths project)
+        source-roots (:project/source-paths project)
+        current-test (matching-root project path test-roots)
+        source-root (matching-root project path source-roots)]
+    (if current-test (project-absolute-path project path)
+      (if source-root
+        (let [relative (path-relative-to-root project path source-root)
+              root (test-root project path)]
+          (if root
+            (File/join (project-root-path project root) (test-file-name relative))
+            (test-file-name (project-absolute-path project path))))
+        (test-file-name (project-absolute-path project path))))))
+
+(defn file-type [project path]
+  (if (or (matching-root project path (:project/test-paths project))
+          (str/ends-with? (normalized-path path) "_test.hal"))
+    :test :source))
+
+(defn project-code-path?
+  [path]
+  (and (str/ends-with? path ".hal")
+       (not (str/includes? (normalized-path path) "/.#"))))
+
+(defn project-code-paths [project]
+  (vec
+   (filter project-code-path?
+           (files-in project
+                     (vec (concat (:project/source-paths project)
+                                  (:project/test-paths project)))))))
+
+(defn namespace-from-source
+  [source relative]
+  (try
+    (symbol (str (or (block/namespace-name source)
+                     (path-namespace relative))))
+    (catch Throwable error
+      (path-namespace relative))))
+
+(defn project-file-record [project path]
+  (let [source (read-text path)
+        roots (if (= :test (file-type project path))
+                (:project/test-paths project) (:project/source-paths project))
+        root (matching-root project path roots)
+        relative (path-relative-to-root project path root)
+        namespace (namespace-from-path path relative)]
+    {:path path :relative-path (project-relative-path project path)
+     :namespace namespace :type (file-type project path) :source source}))
+
+(defn project-file-records [project]
+  (vec (map (fn [path] (project-file-record project path))
+            (project-code-paths project))))
+
+(defn file-record-index [project records]
+  (reduce
+   (fn [index entry]
+     (let [namespace (:namespace entry)]
+       (if (has? (:namespaces index) namespace)
+         (throw (ex :conflict {:type :duplicate-namespace :namespace namespace
+                          :paths [(:path (get (:namespaces index) namespace))
+                                  (:path entry)]} :ex/message "duplicate namespace in project source and test roots"))
+         {:project project :paths (assoc (:paths index) (:path entry) entry)
+          :namespaces (assoc (:namespaces index) namespace entry)})))
+   {:project project :paths {} :namespaces {}}
+   records))
+
+(defn project-file-index [project]
+  (file-record-index project (project-file-records project)))
+
+(defn project-code-files [project]
+  (reduce (fn [output entry]
+            (assoc output (:namespace entry) (:relative-path entry)))
+          {} (project-file-records project)))
+
+(defn namespace-file [project namespace]
+  (let [entry (lookup-namespace (project-file-index project) namespace)]
+    (if entry (:path entry) nil)))

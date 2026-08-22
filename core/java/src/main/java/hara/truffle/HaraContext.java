@@ -6682,9 +6682,9 @@ public final class HaraContext {
 
   private Object pointerDefault(hara.lang.data.Pointer pointer) {
     try {
-      HaraNamespace space = requiredNamespace("std.context.space");
+      HaraNamespace space = requiredNamespace("std.lib.context.space");
       HaraVar resolver = space == null ? null : space.lookup("space:rt-current");
-      if (resolver == null) throw new HaraException("std.context.space is unavailable");
+      if (resolver == null) throw new HaraException("std.lib.context.space is unavailable");
       return invokeCallable(resolver, new Object[] {pointer.context()});
     } catch (RuntimeException error) {
       String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();

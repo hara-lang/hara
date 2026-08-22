@@ -1,0 +1,195 @@
+(ns code.project-test
+  (:require [code.project :as project]
+            ))
+
+(def valid-project
+  {:hara/type :project
+   :hara/version "1.0.0"
+   :project/id 'demo
+   :project/version "0.1.0"
+   :project/source-paths ["src"]
+   :project/test-paths ["test"]
+   :project/extension-paths []
+   :project/capabilities #{}})
+
+[(test-check "project manifests validate as ordinary Hara data"
+              (project/validate valid-project)
+              valid-project)
+  (test-check "missing project keys are deterministic"
+              (project/missing-keys {:hara/type :project})
+              [:hara/version :project/id :project/version
+               :project/source-paths :project/test-paths
+               :project/extension-paths :project/capabilities])
+  (test-check "in-REPL project policy is opt-in and rejects unknown capabilities"
+              [(project/inrepl-loopback? {:project/inrepl-capabilities #{:inrepl/loopback}})
+               (project/inrepl-loopback? {})
+               (try
+                 (do (project/inrepl-capabilities
+                      {:project/inrepl-capabilities #{:inrepl/remote}})
+                     nil)
+                 (catch Throwable error (:unknown (ex-data error))))]
+              [true false [:inrepl/remote]])
+  (test-check "main namespace paths use portable project spelling"
+              [(project/namespace-path 'demo-app.main)
+               (project/namespace-path "demo.core")]
+              ["demo_app/main.hal" "demo/core.hal"])
+  (test-check "portable indexes support source tooling"
+              (let [descriptor {:root "."
+                                :source-paths ["core/lib/src"]
+                                :test-paths ["core/lib/test"]}
+                    index (project/project-index
+                           descriptor
+                           [{:path "core/lib/src/demo/core.hal"
+                             :namespace 'demo.core
+                             :source "(ns demo.core)"}])]
+                [(project/source-namespace descriptor 'demo.core-test)
+                 (project/source-candidates descriptor 'demo.core)
+                 (:namespace (project/lookup-namespace index 'demo.core))])
+              ['demo.core
+               ["./core/lib/src/demo/core.hal"]
+               'demo.core])
+  (test-check "project validation normalizes production profile build defaults"
+              (let [validated
+                    (project/validate
+                     (assoc
+                      valid-project
+                      :project/main 'demo.main
+                      :project/profiles
+                      {:production
+                       {:profile/language :hara
+                        :profile/build
+                        {:build/tree-shake true
+                         :build/entrypoints #{'demo.main/start}}}}))]
+                (get-in validated
+                        [:project/profiles :production :profile/build]))
+              {:build/tree-shake true
+               :build/entrypoints #{'demo.main/start}
+               :build/default-entrypoint 'demo.main/start
+               :build/keep-vars #{}
+               :build/keep-namespaces #{}})
+ (test-check "runtime profiles merge shared and JVM-specific collections"
+  (project/resolve-runtime-profile
+   {:project/source-paths ["src"]
+    :project/test-paths ["test"]
+    :project/extension-paths ["extensions"]
+    :project/dependencies
+    {"hara:hara/base" {:version "^1.0.0"}}
+    :project/runtime-profiles
+    {:jvm
+     {:runtime/source-paths ["src-jvm"]
+      :runtime/test-paths ["test-jvm"]
+      :runtime/extension-paths ["extensions-jvm"]
+      :runtime/native-source-paths ["src-java"]
+      :runtime/target-path "target/jvm/classes"
+      :runtime/dependencies
+      {:maven
+       {"org.postgresql/postgresql" {:version "42.7.7"}}}}}}
+   :jvm)
+  {:runtime :jvm
+   :source-paths ["src" "src-jvm"]
+   :test-paths ["test" "test-jvm"]
+   :extension-paths ["extensions" "extensions-jvm"]
+   :native-source-paths ["src-java"]
+   :target-path "target/jvm/classes"
+   :hara-dependencies
+   {"hara:hara/base" {:version "^1.0.0"}}
+   :maven-dependencies
+   {"org.postgresql/postgresql" {:version "42.7.7"}}})
+
+ (test-check "runtime selection preserves build profiles and merges Hara dependencies"
+  (let [selected
+        (project/select-runtime
+         {:project/source-paths ["src"]
+          :project/test-paths []
+          :project/extension-paths []
+          :project/dependencies
+          {"hara:hara/base" {:version "^1.0.0"}}
+          :project/profiles
+          {:production {:profile/language :hara}}
+          :project/runtime-profiles
+          {:rust
+           {:runtime/source-paths ["src-rust"]
+            :runtime/dependencies
+            {:hara
+             {"hara:hara/crypto" {:version "^1.0.0"}}}}}}
+         :rust)]
+    [(:project/runtime selected)
+     (:project/source-paths selected)
+     (:project/dependencies selected)
+     (:project/profiles selected)])
+  [:rust
+   ["src" "src-rust"]
+   {"hara:hara/base" {:version "^1.0.0"}
+    "hara:hara/crypto" {:version "^1.0.0"}}
+   {:production {:profile/language :hara}}])
+
+ (test-check "legacy JVM keys report their runtime-profile replacement"
+  (try
+    (do
+      (project/resolve-runtime-profile
+       {:jvm/source-paths ["src-java"]}
+       :jvm)
+      nil)
+    (catch Throwable error
+      (:replacement (ex-data error))))
+  [:project/runtime-profiles :jvm :runtime/native-source-paths])
+
+ (test-check "shared and runtime Hara requirements fail closed on conflict"
+  (try
+    (do
+      (project/resolve-runtime-profile
+       {:project/dependencies
+        {"hara:hara/crypto" {:version "^1.0.0"}}
+        :project/runtime-profiles
+        {:rust
+         {:runtime/dependencies
+          {:hara
+           {"hara:hara/crypto" {:version "^2.0.0"}}}}}}
+       :rust)
+      nil)
+    (catch Throwable error
+      (:coordinate (ex-data error))))
+  "hara:hara/crypto")
+
+ (test-check "project roots map source files to corresponding test roots"
+  (let [descriptor {:project/root "/project"
+                    :project/source-paths ["src" "src-lang"]
+                    :project/test-paths ["test" "test-lang"]}]
+    [(project/test-root descriptor "/project/src-lang/demo/core.hal")
+     (project/paired-test-path descriptor "/project/src-lang/demo/core.hal")
+     (project/paired-test-path descriptor "/project/test/demo/core_test.hal")])
+  ["test-lang"
+   "/project/test-lang/demo/core_test.hal"
+   "/project/test/demo/core_test.hal"])
+
+ (test-check "project paths classify and relativize native HAL files"
+  (let [descriptor {:project/root "/project"
+                    :project/source-paths ["src"]
+                    :project/test-paths ["test"]}]
+    [(project/file-type descriptor "/project/src/demo/core.hal")
+     (project/file-type descriptor "/project/test/demo/core_test.hal")
+     (project/project-relative-path descriptor "/project/src/demo/core.hal")])
+  [:source :test "src/demo/core.hal"])
+
+ (test-check "namespace parsing falls back to the project-relative path"
+  [(project/namespace-from-source "(ns demo.core)" "fallback/core.hal")
+   (project/namespace-from-source "(ns broken.core}" "fallback/core.hal")]
+  ['demo.core 'fallback.core])
+
+ (test-check "project code paths exclude editor lock symlinks"
+  [(project/project-code-path? "/project/src/demo/core.hal")
+   (project/project-code-path? "/project/src/demo/.#core.hal")]
+  [true false])
+
+ (test-check "file record indexes reject duplicate declared namespaces"
+  (try
+    (do
+      (project/file-record-index
+       {}
+       [{:path "src/demo.hal" :namespace 'demo}
+        {:path "test/demo_test.hal" :namespace 'demo}])
+      nil)
+    (catch Throwable error
+      [(:type (ex-data error)) (:namespace (ex-data error))]))
+  [:duplicate-namespace 'demo])
+]

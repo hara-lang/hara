@@ -1,0 +1,268 @@
+(ns std.lib.format.report
+  (:require [std.lib.format.common :as common]
+            [std.lib.format.table :as table]))
+
+(def ^:private +default-options+
+  {:include-title true
+   :include-section-titles true
+   :include-annotations true
+   :include-empty false
+   :exclude-sections []})
+
+(def ^:private +default-summary-fields+
+  [:items :results :warnings :errors :cumulative :elapsed])
+
+(defn- contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= candidate value)))
+   false
+   (or values [])))
+
+(defn- distinct-values
+  [values]
+  (reduce
+   (fn [output value]
+     (if (contains-value? output value)
+       output
+       (conj output value)))
+   []
+   (or values [])))
+
+(defn- record-role
+  [record]
+  (case (:status record)
+    :return :success
+    :warn :warning
+    :error :error
+    :critical :critical
+    :default))
+
+(defn- status-text
+  [status]
+  (case status
+    :return "ok"
+    :warn "warn"
+    :error "error"
+    :critical "critical"
+    (name (or status :return))))
+
+(defn- time-text
+  [value]
+  (if (nil? value)
+    ""
+    (str value "ms")))
+
+(defn- progress-line
+  [record]
+  (let [index (or (:item/index record) 0)
+        total (or (:item/total record) "?")
+        id (common/value-text (:item/id record))
+        status (status-text (:status record))
+        display
+        (if (and (= :return (:status record))
+                 (has? record :item/display))
+          (:item/display record)
+          (if (has? record :data)
+            (:data record)
+            (:error record)))
+        elapsed
+        (if (has? record :elapsed)
+          (str "  " (time-text (:elapsed record)))
+          "")]
+    (common/line
+     (str (inc index) "/" total
+          "  " id
+          "  " status
+          (if (nil? display)
+            ""
+            (str "  " (common/value-text display)))
+          elapsed)
+     (record-role record))))
+
+(defn- diagnostic-line
+  [record]
+  (let [id (common/value-text (:item/id record))
+        status (status-text (:status record))
+        value
+        (if (has? record :data)
+          (:data record)
+          (:error record))]
+    (common/line
+     (str id "  " status
+          (if (nil? value)
+            ""
+            (str "  " (common/value-text value))))
+     (record-role record))))
+
+(defn- summary-field-label
+  [field]
+  (case field
+    :items "Items"
+    :results "Results"
+    :warnings "Warnings"
+    :errors "Errors"
+    :cumulative "Cumulative"
+    :elapsed "Elapsed"
+    (name field)))
+
+(defn- summary-value-text
+  [field value]
+  (if (or (= :cumulative field)
+          (= :elapsed field))
+    (time-text value)
+    (common/value-text value)))
+
+(defn- summary-fields
+  [section summary]
+  (let [configured (:section/fields section)
+        base
+        (if (empty? configured)
+          +default-summary-fields+
+          configured)
+        extras
+        (sort-by
+         (fn [field]
+           (name field))
+         (filter
+          (fn [field]
+            (not (contains-value? base field)))
+          (keys summary)))]
+    (distinct-values (concat base extras))))
+
+(defn- summary-lines
+  [section]
+  (let [summary (first (:section/entries section))]
+    (vec
+     (map
+      (fn [field]
+        (common/line
+         (str (summary-field-label field)
+              ": "
+              (summary-value-text
+               field
+               (get summary field)))))
+      (summary-fields section summary)))))
+
+(defn- section-role
+  [section]
+  (case (:section/id section)
+    :warnings :warning
+    :errors :error
+    :summary :highlight
+    :results :highlight
+    :items :highlight
+    :highlight))
+
+(defn- section-content-lines
+  [section]
+  (case (:section/kind section)
+    :progress
+    (vec
+     (map progress-line (:section/entries section)))
+
+    :diagnostics
+    (vec
+     (map diagnostic-line (:section/entries section)))
+
+    :table
+    (table/table-lines section)
+
+    :summary
+    (summary-lines section)
+
+    :text
+    (vec
+     (map
+      (fn [entry]
+        (common/line (common/value-text entry)))
+      (:section/entries section)))
+
+    []))
+
+(defn- section-selected?
+  [section options]
+  (let [id (:section/id section)
+        include (:include-sections options)
+        exclude (:exclude-sections options)]
+    (and
+     (or (empty? include)
+         (contains-value? include id))
+     (not (contains-value? exclude id)))))
+
+(defn- section-lines
+  [section options]
+  (let [content (section-content-lines section)
+        entries (:section/entries section)
+        include-empty (:include-empty options)]
+    (if (or (not (section-selected? section options))
+            (and (empty? entries)
+                 (not include-empty)))
+      []
+      (if (:include-section-titles options)
+        (vec
+         (concat
+          [(common/line
+            (or (:section/title section)
+                (name (:section/id section)))
+            (section-role section))]
+          content))
+        content))))
+
+(defn- add-group
+  [output group]
+  (if (empty? group)
+    output
+    (vec
+     (concat
+      output
+      (if (empty? output)
+        []
+        [(common/line "")])
+      group))))
+
+(defn report-lines
+  "Renders a portable report document into structured lines."
+  ([document]
+   (report-lines document {}))
+  ([document options]
+   (let [options (merge +default-options+ options)
+         title
+         (if (and (:include-title options)
+                  (:report/title document))
+           [(common/line
+             (:report/title document)
+             :highlight)]
+           [])
+         section-groups
+         (vec
+          (map
+           (fn [section]
+             (section-lines section options))
+           (:report/sections document)))
+         output
+         (reduce add-group title section-groups)
+         annotations
+         (if (:include-annotations options)
+           (vec
+            (map
+             (fn [annotation]
+               (common/line
+                (common/value-text annotation)
+                :highlight))
+             (:report/annotations document)))
+           [])]
+     (add-group output annotations))))
+
+(defn report
+  "Renders a portable report document as plain text."
+  ([document]
+   (report document {}))
+  ([document options]
+   (str/join
+    "\n"
+    (map
+     (fn [entry]
+       (:line/text entry))
+     (report-lines document options)))))

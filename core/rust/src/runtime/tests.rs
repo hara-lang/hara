@@ -4211,7 +4211,7 @@ mod tests {
                 .eval_text(
                     "(ns std-lib-context-rust-probe \
                        (:require [std.lib.component :as component] \
-                                 [std.context.registry :as context])) \
+                                 [std.lib.context.registry :as context])) \
                      (let [runtime context/+rt-null+] \
                        [(component/started? runtime) \
                         (IContext/call runtime :a :b)])"
@@ -4546,7 +4546,7 @@ mod tests {
         assert_eq!(
             runtime
                 .eval_text(
-                    "(do (require 'std.context.space) (deref #ptr {:context :null :id \"ROOT\"}))"
+                    "(do (require 'std.lib.context.space) (deref #ptr {:context :null :id \"ROOT\"}))"
                 )
                 .unwrap(),
             "[:pointer/deref #ptr {:context :null :id \"ROOT\"}]"
@@ -6048,6 +6048,7 @@ mod tests {
             "function/arity-error",
             "binding/let-sequential",
             "binding/sequential-destructuring",
+            "binding/destructuring-foundation-shadowing",
             "binding/map-destructuring",
             "binding/missing-destructuring",
             "binding/nil-map-default",
@@ -7720,7 +7721,7 @@ mod tests {
         for (namespace, _, source) in EMBEDDED_HAL_RESOURCES {
             runtime.register_resource(namespace, source);
         }
-        // code.migrate.project.* and its std.block/std.lib.zip dependencies are not
+        // tool.migrate.project.* and its std.block/std.lib.zip dependencies are not
         // embedded bootstrap namespaces; register them from repository sources.
         let lib_src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
@@ -7741,7 +7742,7 @@ mod tests {
             .2;
         runtime.eval_text(foundation).unwrap();
         runtime.eval_text("(ns user)").unwrap();
-        runtime.eval_text("(require 'code.migrate.rule)").unwrap();
+        runtime.eval_text("(require 'tool.migrate.rule)").unwrap();
         assert_eq!(
             runtime
                 .eval_text(
@@ -7762,7 +7763,7 @@ mod tests {
                                      :match/text "std.lib.foundation"
                                      :path [0 0]}]
                           (code.framework.navigation/render
-                           (code.migrate.rule/apply-match root rule match)))"#,
+                           (tool.migrate.rule/apply-match root rule match)))"#,
                 )
                 .unwrap(),
             r#""[std.foundation/T]""#
@@ -7771,7 +7772,7 @@ mod tests {
             runtime
                 .eval_text(
                     r#"(get
-                         (code.migrate.rule/translate-source
+                         (tool.migrate.rule/translate-source
                           "(ns demo (:require [std.lib.collection :as c] [std.lib.walk :as walk] [std.native.Json :as json]))\n[c/map-keys walk/prewalk-replace json/read]"
                           {:mode :safe})
                          :output)"#,
@@ -7783,7 +7784,7 @@ mod tests {
             runtime
                 .eval_text(
                     r#"(get
-                         (code.migrate.rule/translate-source
+                         (tool.migrate.rule/translate-source
                           "(ns demo (:require [std.lib.foundation :as foundation]))\n[std.lib.foundation/T foundation/F]"
                           {:mode :review})
                          :output)"#,
@@ -7793,7 +7794,7 @@ mod tests {
         );
         assert_eq!(
             runtime
-                .eval_text("(count code.migrate.rule/+ruleset+)")
+                .eval_text("(count tool.migrate.rule/+ruleset+)")
                 .unwrap(),
             "117"
         );
@@ -7801,7 +7802,7 @@ mod tests {
             let expression = format!(
                 r#"(let [output
                          (get
-                          (code.migrate.rule/translate-source
+                          (tool.migrate.rule/translate-source
                            "(ns demo (:require [std.native.{native_type} :as native]))\n[native/probe std.native.{native_type}/probe]"
                            {{:mode :safe}})
                           :output)]
@@ -7816,7 +7817,7 @@ mod tests {
             );
         }
 
-        // The code.migrate.project native type list must equal the closed native.edn
+        // The tool.migrate.project native type list must equal the closed native.edn
         // inventory (both spell the canonical RegExp).
         if let Some(contract_source) =
             repo_text("01-lang/001-language/draft/conformance/native.edn")
@@ -7860,10 +7861,10 @@ mod tests {
             );
             assert_eq!(
                 runtime
-                    .eval_text("(vec (sort code.migrate.rules/+native-static-types+))",)
+                    .eval_text("(vec (sort tool.migrate.rules/+native-static-types+))",)
                     .unwrap(),
                 expected,
-                "code.migrate.rules/+native-static-types+ differs from native.edn"
+                "tool.migrate.rules/+native-static-types+ differs from native.edn"
             );
         }
     }

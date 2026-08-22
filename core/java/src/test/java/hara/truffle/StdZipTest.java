@@ -21,7 +21,7 @@ public class StdZipTest {
                       + "                (zip/step-inside (zip/vector-zip root))) "
                       + "      edited (zip/replace-right "
                       + "              (zip/insert-left location 9) 8)] "
-                      + "  (pr-str [(zip/result edited) root]))")
+                      + "  (pr-str [(zip/root-element edited) root]))")
               .asString());
     }
   }

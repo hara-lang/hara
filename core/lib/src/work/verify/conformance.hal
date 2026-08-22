@@ -1,0 +1,508 @@
+;; The registry is the only input to cross-runtime library verification.
+;; Runtime adapters execute the Hara test paths declared by each contract;
+;; there are no namespace-specific probes in this namespace.
+(ns work.verify.conformance
+  (:config {:role :internal})
+  (:require [code.project :as project]
+            [tool.sh :as sh]
+            [work.base :as work :refer [def.work]]
+            [work.flow.task :as task]))
+
+(def +languages+ [:rust :jvm :wasm])
+(def +registry-relative-path+
+  "01-lang/005-foundation-annex/draft/conformance/libraries/index.edn")
+
+(defn registry-root
+  [input]
+  (or (:registry/root input)
+      (os/getenv "HARA_SPECS_REGISTRY")
+      "../hara-specs-registry"))
+
+(defn project-root
+  [input]
+  (or (:project/root input) "."))
+
+(defn join-path
+  [root path]
+  (if (str/starts-with? path "/") path (File/join root path)))
+
+(defn read-document
+  [path]
+  (Edn/read (project/read-text path)))
+
+(defn registry-index
+  [input]
+  (or (:registry/index input)
+      (read-document (join-path (registry-root input)
+                                +registry-relative-path+))))
+
+(defn registry-families
+  [input]
+  (let [root (registry-root input)
+        index (registry-index input)]
+    (vec
+     (map
+      (fn [entry]
+        (assoc entry
+               :contract
+               (read-document
+                (join-path root
+                           (str "01-lang/005-foundation-annex/draft/conformance/libraries/"
+                                (:family/contract entry))))))
+      (:conformance/families index)))))
+
+(defn selected-families
+  [input]
+  (let [families (vec (or (:family-specs input) (registry-families input)))
+        selected (:families input)]
+    (if (or (nil? selected) (empty? selected))
+      families
+      (vec
+       (filter
+        (fn [family] (has? (set selected) (:family/id family)))
+        families)))))
+
+(defn runtime-items
+  [input context]
+  (let [languages (vec (or (:languages input) +languages+))
+        reports (or (:reports input) {})
+        families (selected-families input)]
+    (vec
+     (map
+      (fn [language]
+        {:item/id language
+         :item/value {:language language
+                      :report (get reports language)
+                      :registry (registry-index input)
+                      :registry/root (registry-root input)
+                      :project/root (project-root input)
+                      :family-specs families}})
+      languages))))
+
+(defn reference-line
+  [line]
+  (let [line (str/trim line)]
+    (cond
+      (str/starts-with? line "^{:refer ")
+      (str/slice line (str/length "^{:refer ") (str/length line))
+
+      (str/starts-with? line "^{:ref ")
+      (str/slice line (str/length "^{:ref ") (str/length line))
+
+      :else nil)))
+
+(defn reference-from-line
+  [line]
+  (let [tail (reference-line line)]
+    (if tail
+      (let [close (str/index-of tail "}")
+            space (str/index-of tail " ")
+            end (cond
+                  (and (< 0 close) (< 0 space)) (min close space)
+                  (< 0 close) close
+                  (< 0 space) space
+                  :else -1)]
+        (if (< 0 end)
+          (str/trim (str/slice tail 0 end))
+          nil))
+      nil)))
+
+(defn source-sections
+  [source]
+  (let [lines (str/split-lines source)]
+    (loop [remaining lines
+           current nil
+           output []]
+      (if (empty? remaining)
+        (if current (conj output current) output)
+        (let [line (first remaining)
+              reference (reference-from-line line)]
+          (if reference
+            (recur (vec (rest remaining))
+                   {:refer reference :lines []}
+                   (if current (conj output current) output))
+            (recur (vec (rest remaining))
+                   (if current (update current :lines conj line) current)
+                   output)))))))
+
+(defn count-occurrences
+  [source needle]
+  (if (empty? needle)
+    0
+    (loop [offset 0
+           total 0]
+      (let [index (str/index-of source needle offset)]
+        (if (< index 0)
+          total
+          (recur (+ index (str/length needle)) (inc total)))))))
+
+(defn section-case-count
+  [section]
+  (let [source (str/join "\n" (:lines section))
+        head (first
+              (filter
+               (fn [line] (not (str/blank? (str/trim line))))
+               (:lines section)))
+        run? (and head (str/starts-with? (str/trim head) "(Test/run"))
+        empty-run? (and head (str/starts-with? (str/trim head) "(Test/run []"))
+        named (count-occurrences source ":name ")]
+    (cond
+      (and run? empty-run?) 0
+      (and run? (< 0 named)) named
+      run? 1
+      :else 1)))
+
+(defn read-source
+  [root path]
+  (project/read-text (join-path root path)))
+
+(defn source-facts
+  [root path]
+  (vec
+   (map
+    (fn [section]
+      {:refer (:refer section)
+       :cases (section-case-count section)
+       :path path})
+    (source-sections (read-source root path)))))
+
+(defn test-files
+  [root paths]
+  (vec
+   (sort
+    (reduce
+     (fn [output path]
+       (let [resolved (join-path root path)
+             metadata (deref (File/stat resolved))]
+         (cond
+           (= :directory (:type metadata))
+           (into output
+                 (filter #(str/ends-with? % ".hal")
+                         (project/walk-files resolved)))
+
+           (and (= :file (:type metadata))
+                (str/ends-with? resolved ".hal"))
+           (conj output path)
+
+           :else output)))
+     []
+     paths))))
+
+(defn number-after
+  [source marker]
+  (if (empty? marker)
+    nil
+    (loop [offset 0]
+      (let [index (str/index-of source marker offset)]
+        (if (< index 0)
+          nil
+          (let [tail (str/trim (str/slice source
+                                          (+ index (str/length marker))
+                                          (str/length source)))
+                end (str/index-of tail " ")
+                token (if (< 0 end) (str/slice tail 0 end) tail)
+                value (try
+                        (read-string token)
+                        (catch Throwable error nil))]
+            (if (number? value)
+              value
+              (recur (+ index (str/length marker))))))))))
+
+(defn matching-line
+  [result path]
+  (let [lines (vec (str/split-lines (str (:stdout result) (:stderr result))))]
+    (loop [index 0]
+      (if (= index (count lines))
+        nil
+        (let [line (nth lines index)]
+          (if (str/includes? line path)
+            (if (and (str/starts-with? (str/trim line) "FAIL")
+                     (< (inc index) (count lines)))
+              (str line " " (nth lines (inc index)))
+              line)
+            (recur (inc index))))))))
+
+(defn file-result
+  [path line]
+  (if (nil? line)
+    {:path path :status :not-implemented :passed 0 :total 0}
+    (let [passed? (str/starts-with? (str/trim line) "PASS")
+          total (or (number-after line ":facts ")
+                    (number-after line "("))
+          passed (or (number-after line ":passed ")
+                     (if passed? total 0))]
+      {:path path
+       :status (if passed? :passed :failed)
+       :passed (or passed 0)
+       :total (or total 0)})))
+
+(defn command-result
+  [argv root]
+  (try
+    (sh/run argv {:cwd root})
+    (catch Throwable error
+      {:command argv :exit -1 :stdout "" :stderr (str error)})))
+
+(defn target-for-source
+  [root targets path]
+  (let [source (read-source root path)
+        test-namespace
+        (first
+         (keep
+          (fn [line]
+            (let [line (str/trim line)]
+              (if (or (str/starts-with? line "(ns ")
+                      (str/starts-with? line "(ns+ "))
+                (let [start (inc (str/index-of line " "))
+                      tail (str/slice line start (str/length line))
+                      end (or (str/index-of tail " ")
+                              (str/index-of tail ")"))]
+                  (str/slice tail 0 end))
+                nil)))
+          (str/split-lines source)))]
+    (first
+     (sort-by
+      (fn [target] (- (str/length target)))
+      (filter
+       (fn [target]
+         (and test-namespace
+              (or (= test-namespace target)
+                  (str/starts-with? test-namespace (str target "-"))
+                  (str/starts-with? test-namespace (str target ".")))))
+       targets)))))
+
+(defn add-counts
+  [left right]
+  {:passed (+ (:passed left) (:passed right))
+   :total (+ (:total left) (:total right))})
+
+(defn namespace-result
+  [target root paths file-results]
+  (let [paths (vec
+               (filter
+                (fn [path] (= target (target-for-source root [target] path)))
+                paths))
+        files (vec
+               (map
+                (fn [path]
+                  (or (get file-results path)
+                      {:path path :status :not-implemented :passed 0 :total 0}))
+                paths))
+        counts (reduce add-counts {:passed 0 :total 0} files)
+        failed? (some #(= :failed (:status %)) files)
+        missing? (or (empty? files)
+                     (every? #(= :not-implemented (:status %)) files))]
+    (assoc counts
+           :namespace target
+           :status (cond
+                     failed? :failed
+                     missing? :not-implemented
+                     :else :passed)
+           :files files)))
+
+(defn function-results
+  [family root paths file-results]
+  (vec
+   (mapcat
+    (fn [path]
+      (let [file-result (get file-results path)]
+        (map
+         (fn [fact]
+           {:function (:refer fact)
+            :namespace (let [index (str/index-of (:refer fact) "/")]
+                         (if (< 0 index)
+                           (str/slice (:refer fact) 0 index)
+                           (:refer fact)))
+            :family (:family/id family)
+            :cases (:cases fact)
+            :status (cond
+                      (= 0 (:cases fact)) :not-implemented
+                      (= :passed (:status file-result)) :passed
+                      (= :failed (:status file-result)) :failed
+                      :else :not-implemented)
+            :evidence (if (= :passed (:status file-result))
+                        :registry-hara-test
+                        :no-runtime-result)})
+         (source-facts root path))))
+    paths)))
+
+(defn family-result
+  [family root file-results]
+  (let [contract (:contract family)
+        paths (test-files root (:hara/test-paths contract))
+        targets (vec (:target/namespaces contract))
+        files (vec
+               (map
+                (fn [path]
+                  (or (get file-results path)
+                      {:path path :status :not-implemented :passed 0 :total 0}))
+                paths))
+        counts (reduce add-counts {:passed 0 :total 0} files)
+        namespaces (vec
+                    (map
+                     (fn [target]
+                       (namespace-result target root paths file-results))
+                     targets))]
+    (merge
+     {:family (:family/id family)
+      :family/path (:family/path family)
+      :contract (:family/contract family)
+      :status (cond
+                (some #(= :failed (:status %)) namespaces) :failed
+                (some #(= :not-implemented (:status %)) namespaces) :partial
+                :else :passed)
+      :files files
+      :namespaces namespaces
+      :functions (function-results family root paths file-results)}
+     counts)))
+
+(defn runtime-command
+  [language registry families]
+  (let [base (vec (get-in registry [:conformance/runtimes language :runtime/command]))]
+    (if (= :rust language)
+      (vec
+       (concat
+        base
+        (mapcat
+         (fn [family]
+           (:hara/test-paths (:contract family)))
+         families)))
+      base)))
+
+(defn runtime-report
+  [subject context]
+  (let [language (:language subject)
+        supplied (:report subject)]
+    {:data
+     (if (and (map? supplied) (has? supplied :families))
+       supplied
+       (let [registry (:registry subject)
+             families (:family-specs subject)
+             root (:project/root subject)
+             argv (runtime-command language registry families)
+             result (command-result argv root)
+             paths (vec
+                    (distinct
+                     (mapcat
+                      (fn [family]
+                        (test-files root (:hara/test-paths (:contract family))))
+                      families)))
+             file-results
+             (reduce
+              (fn [output path]
+                (assoc output path (file-result path (matching-line result path))))
+              {}
+              paths)
+             family-results (vec
+                             (map
+                              #(family-result % root file-results)
+                              families))
+             namespaces (vec (mapcat :namespaces family-results))
+             functions (vec (mapcat :functions family-results))]
+         {:language language
+          :status (cond
+                    (not= 0 (:exit result)) :failed
+                    (some #(= :failed (:status %)) family-results) :failed
+                    (some #(= :partial (:status %)) family-results) :partial
+                    :else :passed)
+          :registry/index +registry-relative-path+
+          :command argv
+          :exit (:exit result)
+          :families family-results
+          :namespaces namespaces
+          :functions functions
+          :stdout (:stdout result)
+          :stderr (:stderr result)}))}))
+
+(defn runtime-counts
+  [report]
+  (let [namespaces (vec (or (:namespaces report) []))
+        functions (vec (or (:functions report) []))]
+    {:implemented
+     (count (filter #(not= :not-implemented (:status %)) namespaces))
+     :namespace-total (count namespaces)
+     :passed (reduce #(+ %1 (:passed %2)) 0 namespaces)
+     :total (reduce #(+ %1 (:total %2)) 0 namespaces)
+     :functions-passed (count (filter #(= :passed (:status %)) functions))
+     :functions-total (count functions)
+     :functions-not-implemented
+     (count (filter #(= :not-implemented (:status %)) functions))}))
+
+(defn task-summary
+  [summary records results]
+  (let [reports (vec (map :data results))
+        counts
+        (reduce
+         (fn [output report]
+           (let [current (runtime-counts report)]
+             (merge-with + output current)))
+         {:implemented 0 :namespace-total 0 :passed 0 :total 0
+          :functions-passed 0 :functions-total 0
+          :functions-not-implemented 0}
+         reports)
+        failed? (some #(= :failed (:status %)) reports)
+        partial? (some #(= :partial (:status %)) reports)]
+    (merge summary counts
+           {:languages (count reports)
+            :status (cond failed? :failed partial? :partial :else :passed)})))
+
+(defn status-label
+  [status]
+  (case status
+    :passed "PASS"
+    :failed "FAIL"
+    :not-implemented "NOT-IMPLEMENTED"
+    :partial "PARTIAL"
+    (str (name status))))
+
+(defn task-status
+  [summary bundle]
+  (case (:status summary)
+    :failed :failed
+    :partial :warning
+    :completed))
+
+(def.work ^{:public true} library-conformance
+  [:task]
+  {:item {:list runtime-items
+          :list-mode :input-context
+          :display
+          (fn [report]
+            (let [counts (runtime-counts report)]
+              (str (name (:language report)) " "
+                   (status-label (:status report)) " "
+                   (:implemented counts) "/" (:namespace-total counts)
+                   " namespaces, " (:passed counts) "/" (:total counts)
+                   " cases, " (:functions-passed counts) "/"
+                   (:functions-total counts) " functions")))
+          :run runtime-report}
+   :execution {:order :input :parallel false :fail-fast false}
+   :result {:keys
+            [[:runtime (fn [report] (:language report))]
+             [:runtime-status (fn [report] (status-label (:status report)))]
+             [:implemented (fn [report] (:implemented (runtime-counts report)))]
+             [:namespace-total (fn [report] (:namespace-total (runtime-counts report)))]
+             [:passed (fn [report] (:passed (runtime-counts report)))]
+             [:total (fn [report] (:total (runtime-counts report)))]
+             [:functions-passed (fn [report] (:functions-passed (runtime-counts report)))]
+             [:functions-total (fn [report] (:functions-total (runtime-counts report)))]]
+            :columns
+            [{:key :runtime :label "RUNTIME"}
+             {:key :runtime-status :label "STATUS"}
+             {:key :implemented :label "NAMESPACES" :align :right}
+             {:key :namespace-total :label "DECLARED" :align :right}
+             {:key :passed :label "CASES OK" :align :right}
+             {:key :total :label "CASES" :align :right}
+             {:key :functions-passed :label "FUNCTIONS OK" :align :right}
+             {:key :functions-total :label "FUNCTIONS" :align :right}]}
+   :summary {:finalise task-summary
+             :fields [:items :results :languages :implemented :namespace-total
+                      :passed :total :functions-passed :functions-total
+                      :functions-not-implemented :elapsed]}
+   :report {:title "FOUNDATION LIBRARY CONFORMANCE"
+            :sections [:items :results :summary]
+            :labels {:items "RUNTIMES"
+                     :results "RUNTIME SUMMARY"
+                     :summary "OVERALL"}
+            :status task-status}
+   :return {:select :all}})

@@ -1,0 +1,35 @@
+(ns std.lib.context.space-test
+  (:require [std.lib.context.registry :as registry]
+            [std.lib.context.space :as space]))
+
+(def results
+  (Test/run
+   [{:name "spaces configure, create, cache, start, and stop runtimes"
+     :test (fn []
+             (binding [registry/*registry* (atom {})
+                       space/*spaces* (atom {})]
+               (registry/registry-install
+                :demo
+                {:rt {:default {:key :default
+                                :create (fn [config] registry/+rt-null+)
+                                :config {:nested {:base 1}}}}
+                 :scratch registry/+rt-null+})
+               (let [value (space/space-create {:namespace 'demo})]
+                 (space/space-context-set
+                  value :demo :default {:nested {:local 2}})
+                 (let [created (space/space-rt-create value :demo)
+                       started (space/space-rt-start value :demo)]
+                   [(space/space? value)
+                    (registry/rt-null? created)
+                    (= created started)
+                    (space/space:rt-active value)
+                    (space/space-rt-stop value :demo)
+                    (space/space:rt-stopped? value :demo)]))))
+     :expected [true true true [:demo] nil true]}
+    {:name "space lookup is stable per namespace"
+     :test (fn []
+             (binding [space/*spaces* (atom {})]
+               (= (space/space 'demo) (space/space 'demo))))
+     :expected true}]))
+
+(pr-str results)

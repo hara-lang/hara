@@ -32,7 +32,7 @@ class FoundationSurfaceTest(unittest.TestCase):
             ";; std.foundation\n"
             ";; std.foundation.bytes\n"
             ";; std.foundation.string\n"
-            ";; std.lib.fs.path std.format.* std.lib.component std.crypto.*\n"
+            ";; std.fs.path std.lib.format.* std.lib.component std.crypto.*\n"
             "(ns std.foundation)\n"
         )
         (root / "core/lib/src/std/foundation/bytes.hal").write_text(

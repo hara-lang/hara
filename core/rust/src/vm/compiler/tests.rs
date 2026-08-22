@@ -285,6 +285,31 @@ fn destructuring_lowers_across_bindings_parameters_and_recur() {
 }
 
 #[test]
+fn destructuring_generated_calls_ignore_shadowing() {
+    let mut runtime = Runtime::core();
+    runtime.prepare_foundation_bytecode();
+    assert_eq!(
+        runtime
+            .eval_bytecode_native(
+                "(ns compiler.destructure.override
+                   (:config {:override [atom deref drop get reset!]}))
+                 (defn atom [value] :local-atom)
+                 (defn deref [value] :local-deref)
+                 (defn drop [amount value] :local-drop)
+                 (defn get [value key] :local-get)
+                 (defn reset! [value next] :local-reset)
+                 [(let [[head & tail] [1 2 3]] [head tail])
+                  (let [{:keys [value]} {:value 42}] value)
+                  (letfn [(even* [n] (if (= n 0) true (odd* (- n 1))))
+                          (odd* [n] (if (= n 0) false (even* (- n 1))))]
+                    [(even* 4) (odd* 3)])]"
+            )
+            .unwrap(),
+        "[[1 [2 3]] 42 [true true]]"
+    );
+}
+
+#[test]
 fn static_array_calls_compile_to_native_bytecode() {
     let mut runtime = Runtime::core();
     runtime.prepare_foundation_bytecode();

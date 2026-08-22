@@ -87,7 +87,7 @@ The following roots should become `:facade` after their local implementation has
 
 Handle these after the pilot establishes role, access, lint and publication semantics:
 
-- `std.lib.fs`: split I/O, copy, delete and temporary-resource owners; keep path/walk standard if directly supported.
+- `std.fs`: split I/O, copy, delete and temporary-resource owners; keep path/walk standard if directly supported.
 - `std.lib.time`: split model, calendar, arithmetic, formatting and parsing owners.
 - `work.base`: split algebra, graph, host API, runtime API and definition-macro owners.
 - `work.agent`: split model, host, transitions, execution loop and public API.
@@ -101,7 +101,7 @@ These should normally remain `:standard` initially while private helpers move in
 - `std.codec.hex`, `std.codec.base64`, `std.codec.url`, `std.codec.form`;
 - `std.text.diff`, `std.logic.datalog`;
 - `std.lib.collection`, `std.lib.component`;
-- `std.lib.fs.path`, `std.lib.fs.walk` when kept public;
+- `std.fs.path`, `std.fs.walk` when kept public;
 - `tool.sh`, `tool.sh.git`, `tool.sh.docker`, `tool.sh.tmux`;
 - `tool.package`, `tool.vm`, `tool.project`, `tool.runtime`, `tool.inrepl`;
 - `code.deploy` and other roots retained as direct implementation APIs;

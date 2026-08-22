@@ -225,20 +225,20 @@ Move registry installation side effects to an internal registry/bootstrap owner.
 
 ## Major decompositions
 
-### `std.lib.fs`
+### `std.fs`
 
 Recommended internal owners:
 
 ```text
-std.lib.fs.io
-std.lib.fs.copy
-std.lib.fs.copy.util
-std.lib.fs.delete
-std.lib.fs.delete.util
-std.lib.fs.temp
+std.fs.io
+std.fs.copy
+std.fs.copy.util
+std.fs.delete
+std.fs.delete.util
+std.fs.temp
 ```
 
-Keep `std.lib.fs.path` and `std.lib.fs.walk` standard if they remain directly supported APIs; move their private helpers to `.util` children. Move `map-merge`, copy-target validation, directory preparation and recursive copying to the copy family. Move recursive deletion to the delete family. The root can later become a facade.
+Keep `std.fs.path` and `std.fs.walk` standard if they remain directly supported APIs; move their private helpers to `.util` children. Move `map-merge`, copy-target validation, directory preparation and recursive copying to the copy family. Move recursive deletion to the delete family. The root can later become a facade.
 
 ### `std.lib.time`
 
@@ -324,7 +324,7 @@ Likely first-pass `.util` or domain-owner extractions include:
 - `std.text.diff`;
 - `std.logic.datalog`;
 - `std.lib.collection` and `std.lib.component`;
-- `std.lib.fs.path` and `std.lib.fs.walk` when kept public;
+- `std.fs.path` and `std.fs.walk` when kept public;
 - `tool.sh`, `tool.sh.git`, `tool.sh.docker`, and `tool.sh.tmux`;
 - `tool.package`, `tool.vm`, `tool.project`, `tool.runtime`, and `tool.inrepl`;
 - `code.deploy` and any root retained as a standard implementation namespace;
@@ -407,7 +407,7 @@ Strengthen `intern-all` and `intern-in` with deterministic ordering, collision p
 5. Convert mechanical internal leaf families and add direct tests for former private functions.
 6. Extract helpers from standard public namespaces.
 7. Convert clear assembly roots (`std.typed`, `std.config`, `std.block`, `code.vm`, `code.test`, `tool.lint`, `db.postgres`) to strict facades.
-8. Decompose `std.lib.fs`, `std.lib.time`, `work.base`, `work.agent`, `lang.core`, and finally Foundation bootstrap.
+8. Decompose `std.fs`, `std.lib.time`, `work.base`, `work.agent`, `lang.core`, and finally Foundation bootstrap.
 9. Generate package API/internal-access manifests and enable hard cross-project enforcement.
 10. Make top-level private definitions errors for projects opting into the porcelain namespace model, then enable the policy for Hara itself.
 
