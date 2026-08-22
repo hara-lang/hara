@@ -325,6 +325,38 @@
    :expected "a b c"}]
  migration-test-check)
 
+^{:refer std.block.parse/parse-root}
+(Test/run
+ [{:name "parses a large flat source without dropping siblings"
+   :test (fn []
+           (let [source (str/join "\n" (repeat 2000 "x"))
+                 root (parse-root source)
+                 code (vec (filter base/expression? (base/block-children root)))]
+             [(count code)
+              (base/block-string (first code))
+              (base/block-string (last code))]))
+   :expected [2000 "x" "x"]}
+  {:name "parses deeply nested valid collections without native recursion"
+   :test (fn []
+           (let [depth 300
+                 source (str (apply str (repeat depth "("))
+                             "x"
+                             (apply str (repeat depth ")")))]
+             (base/block-string (parse-root source))))
+   :expected (str (apply str (repeat 300 "("))
+                  "x"
+                  (apply str (repeat 300 ")")))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-container-iterative}
+(Test/run
+ [{:name "closes nested ordinary collection frames in source order"
+   :test (fn []
+           (let [[block end] (parse-container-iterative "(a [b])" 0)]
+             [(base/block-string block) end]))
+   :expected ["(a [b])" 7]}]
+ migration-test-check)
+
 ^{:refer std.block.parse/parse-first :added "4.0"}
 (Test/run
  [{:name "gets the first element in root"
