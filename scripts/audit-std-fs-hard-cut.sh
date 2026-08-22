@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-legacy_namespace='std.''fs'
-legacy_path='std/''fs'
+legacy_namespace='std.lib.''fs'
+legacy_path='std/lib/''fs'
 portable_legacy_root="core/lib/src/${legacy_path}"
 test_legacy_root="core/lib/test/${legacy_path}"
 rust_legacy_root="core/rust/hal-src/${legacy_path}"
-portable_root='core/lib/src/std/lib/fs'
-test_root='core/lib/test/std/lib/fs'
-rust_root='core/rust/hal-src/std/lib/fs'
+portable_root='core/lib/src/std/fs'
+test_root='core/lib/test/std/fs'
+rust_root='core/rust/hal-src/std/fs'
 legacy_jvm_test='core/java/src/test/java/hara/truffle/Std''FsTest.java'
 canonical_jvm_test='core/java/src/test/java/hara/truffle/StdLibFsTest.java'
 failed=0
@@ -64,8 +64,8 @@ for path in "${paths[@]}"; do
 done
 
 for relative in fs.hal fs/path.hal fs/walk.hal; do
-  portable="core/lib/src/std/lib/$relative"
-  rust="core/rust/hal-src/std/lib/$relative"
+  portable="core/lib/src/std/$relative"
+  rust="core/rust/hal-src/std/$relative"
   if [[ ! -f "$rust" ]]; then
     echo "Generated Rust HAL filesystem source is missing: $rust" >&2
     failed=1
@@ -75,7 +75,7 @@ for relative in fs.hal fs/path.hal fs/walk.hal; do
   fi
 done
 
-for namespace in std.lib.fs std.lib.fs.path std.lib.fs.walk; do
+for namespace in std.fs std.fs.path std.fs.walk; do
   if ! grep -Fxq "$namespace" core/rust/standard-library.namespaces; then
     echo "Registered filesystem namespace is missing: $namespace" >&2
     failed=1
