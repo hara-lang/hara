@@ -8,6 +8,8 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
@@ -35,11 +37,19 @@ final class JvmPackageLoader {
   static final class LoadedProvider implements AutoCloseable {
     private final JvmPackageProvider provider;
     private final URLClassLoader classLoader;
+    private final FilesystemProviderRegistry filesystems;
+    private final List<IFilesystemFactory> factories;
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    LoadedProvider(JvmPackageProvider provider, URLClassLoader classLoader) {
+    LoadedProvider(
+        JvmPackageProvider provider,
+        URLClassLoader classLoader,
+        FilesystemProviderRegistry filesystems,
+        List<IFilesystemFactory> factories) {
       this.provider = provider;
       this.classLoader = classLoader;
+      this.filesystems = filesystems;
+      this.factories = List.copyOf(factories);
     }
 
     String identity() {
@@ -50,6 +60,14 @@ final class JvmPackageLoader {
     public void close() throws Exception {
       if (!closed.compareAndSet(false, true)) return;
       Exception failure = null;
+      for (int index = factories.size() - 1; index >= 0; index--) {
+        try {
+          filesystems.unregister(factories.get(index));
+        } catch (RuntimeException exception) {
+          if (failure == null) failure = exception;
+          else failure.addSuppressed(exception);
+        }
+      }
       try {
         provider.close();
       } catch (Exception exception) {
@@ -73,6 +91,7 @@ final class JvmPackageLoader {
     verifyArtifact(selection);
     URLClassLoader loader = null;
     JvmPackageProvider provider = null;
+    List<IFilesystemFactory> factories = new ArrayList<>();
     try {
       loader =
           new URLClassLoader(
@@ -94,9 +113,14 @@ final class JvmPackageLoader {
         throw failure("PACKAGE_JVM_CAPABILITY_DENIED", String.join(",", requested));
       }
       JvmPackageProvider finalProvider = provider;
-      provider.register(factory -> filesystems.register(factory));
-      return new LoadedProvider(finalProvider, loader);
+      provider.register(
+          factory -> {
+            filesystems.register(factory);
+            factories.add(factory);
+          });
+      return new LoadedProvider(finalProvider, loader, filesystems, factories);
     } catch (Throwable error) {
+      unregisterAll(filesystems, factories, error);
       closeFailed(provider, loader, error);
       if (error instanceof IllegalArgumentException exception) throw exception;
       throw failure("PACKAGE_JVM_INITIALIZATION_FAILED", message(error), error);
@@ -139,6 +163,19 @@ final class JvmPackageLoader {
         loader.close();
       } catch (Throwable close) {
         original.addSuppressed(close);
+      }
+    }
+  }
+
+  private static void unregisterAll(
+      FilesystemProviderRegistry filesystems,
+      List<IFilesystemFactory> factories,
+      Throwable original) {
+    for (int index = factories.size() - 1; index >= 0; index--) {
+      try {
+        filesystems.unregister(factories.get(index));
+      } catch (Throwable rollback) {
+        original.addSuppressed(rollback);
       }
     }
   }

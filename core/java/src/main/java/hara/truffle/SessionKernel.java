@@ -321,6 +321,10 @@ final class SessionKernel implements AutoCloseable {
     filesystemMounts.register(factory);
   }
 
+  void loadJvmProvider(JvmPackageLoader.Selection selection) {
+    filesystemMounts.loadJvmProvider(selection);
+  }
+
   CompletionStage<SessionModel.SessionMountId> createFilesystem(
       String kind, Map<String, ?> configuration) {
     if (!allowFile) {
