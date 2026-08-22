@@ -51,9 +51,8 @@ and archive:
 - [`scripts/runtime/`](../scripts/runtime/) — repo-level build/benchmark scripts.
 - `../../website/hara-www/` — the landing page for `www.hara-lang.org`
   ([`hara-lang/hara-www`](https://github.com/hara-lang/hara-www)), checked out next to this repo for builds.
-- `../../extensions/` — editor and browser apps (`hara-emacs`, `hara-lsp`, `hara-vscode`)
-  ([`hara-lang/hara-extensions`](https://github.com/hara-lang/hara-extensions)); the Chrome extension lives in
-  [`../../application/greenways-os/extension/hara-chrome`](../../../application/greenways-os/extension/hara-chrome).
+- `../../extensions/` — editor and browser apps (`hara-chrome`, `hara-emacs`, `hara-lsp`, `hara-vscode`)
+  ([`hara-lang/hara-extensions`](https://github.com/hara-lang/hara-extensions)).
 - `../hara-specs-registry/` — normative specs: prose (`.md`), machine-checked corpora,
   and spec-shaped data ([`hara-lang/hara-specs-registry`](https://github.com/hara-lang/hara-specs-registry)), checked out next to this repo.
 - `../hara-archive/` — legacy material kept for history
@@ -169,7 +168,7 @@ Per-component builds:
 
 ```shell
 cargo test --manifest-path core/rust/Cargo.toml                 # Rust runtime
-cd ../../application/greenways-os/extension/hara-chrome && npm ci && npm run build  # Chrome extension
+cd ../../extensions/hara-chrome && npm ci && npm run build  # Chrome extension
 ```
 
 ## Package workspaces

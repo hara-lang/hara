@@ -144,9 +144,8 @@ External sibling repos (checked out next to this repo in the workspace):
 
 - `../../website/hara-www/` — landing page for `www.hara-lang.org` (`hara-lang/hara-www`),
   also checked out at `../../website/hara-www/` inside this repo by CI workflows.
-- `../../extensions/` — `hara-vscode`, `hara-emacs`, `hara-lsp`
-  (`hara-lang/hara-extensions`); the Chrome extension is in
-  `../../application/greenways-os/extension/hara-chrome`.
+- `../../extensions/` — `hara-vscode`, `hara-emacs`, `hara-lsp`, and
+  `hara-chrome` (`hara-lang/hara-extensions`).
 - `../hara-specs-registry/` — normative specifications and conformance corpora
   (`hara-lang/hara-specs-registry`).
 - `../hara-archive/` — legacy source repository (`hara-lang/hara-archive`).
@@ -172,8 +171,7 @@ the workspace super-repo):
   `vendor/hara-ui` snapshot), checked out at `../../website/hara-www/` (CI checks it
   out at `../../website/hara-www/` inside this repo).
 - extensions — `hara-lang/hara-extensions` (`hara-vscode`, `hara-emacs`,
-  `hara-lsp`), checked out at `../../extensions/`; the Chrome extension lives in
-  `application/greenways-os/extension/hara-chrome`.
+  `hara-lsp`, `hara-chrome`), checked out at `../../extensions/`.
 - specs — `hara-lang/hara-specs-registry` (normative specifications and conformance
   corpora), checked out at `../hara-specs-registry/`.
 - archive — `hara-lang/hara-archive` (legacy source repository), checked out at
@@ -221,8 +219,8 @@ self-skip without it.
 Apps:
 
 ```shell
-cd ../../application/greenways-os/extension/hara-chrome && npm ci && npm run build && npm test
-cd ../../application/greenways-os/extension/hara-chrome && npm run test:browser  # playwright (needs xvfb)
+cd ../../extensions/hara-chrome && npm ci && npm run build && npm test
+cd ../../extensions/hara-chrome && npm run test:browser  # playwright (needs xvfb)
 ```
 
 ## Releasing the hara CLI

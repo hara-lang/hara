@@ -16,7 +16,7 @@ RUST_DEBUG := rust/target/debug/hara
 RUST_RELEASE := rust/target/release/hara
 WASM_RAW := rust/raw/target/wasm32-unknown-unknown/release/hara_wasm_raw.wasm
 WEB_DIR := rust/web
-CHROME_DIR := ../../application/greenways-os/extension/hara-chrome
+CHROME_DIR := ../../extensions/hara-chrome
 HARA_WWW_DIR := ../website/hara-www
 HARA_BENCH_SCRIPTS := ../../../website/hara-benchmarks/scripts/hara-runtime
 
