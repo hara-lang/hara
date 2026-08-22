@@ -13,7 +13,6 @@ import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -81,15 +80,14 @@ final class WebdavHttpClient implements WebdavFilesystem.Client {
             ? Duration.ofSeconds(30)
             : requestTimeout;
     this.capabilities =
-        Set.copyOf(
-            EnumSet.of(
-                IFilesystem.Capability.READ,
-                IFilesystem.Capability.WRITE,
-                IFilesystem.Capability.ENTRIES,
-                IFilesystem.Capability.MKDIR,
-                IFilesystem.Capability.DELETE,
-                IFilesystem.Capability.MOVE,
-                IFilesystem.Capability.REVISION_CHECK));
+        Set.of(
+            IFilesystem.Capability.READ,
+            IFilesystem.Capability.WRITE,
+            IFilesystem.Capability.ENTRIES,
+            IFilesystem.Capability.MKDIR,
+            IFilesystem.Capability.DELETE,
+            IFilesystem.Capability.MOVE,
+            IFilesystem.Capability.REVISION_CHECK);
   }
 
   @Override
@@ -119,7 +117,9 @@ final class WebdavHttpClient implements WebdavFilesystem.Client {
     HttpResponse<byte[]> response = request("GET", uri(path), null, List.of());
     expect(response, Set.of(200, 206));
     byte[] body = response.body();
-    if ((long) body.length > maxBytes) throw failure("quota-exceeded", "response-too-large", false);
+    if ((long) body.length > maxBytes) {
+      throw failure("quota-exceeded", "response-too-large", false);
+    }
     return body;
   }
 
@@ -142,14 +142,7 @@ final class WebdavHttpClient implements WebdavFilesystem.Client {
 
   @Override
   public List<WebdavFilesystem.RemoteEntry> entries(String path) throws Exception {
-    URI parent = uri(path);
-    List<WebdavFilesystem.RemoteEntry> values = propfind(parent, "1");
-    if (values.isEmpty()) return List.of();
-    ArrayList<WebdavFilesystem.RemoteEntry> children = new ArrayList<>();
-    for (WebdavFilesystem.RemoteEntry value : values) {
-      if (!value.name().isEmpty()) children.add(value);
-    }
-    return List.copyOf(children);
+    return propfind(uri(path), "1");
   }
 
   @Override
@@ -230,7 +223,9 @@ final class WebdavHttpClient implements WebdavFilesystem.Client {
               : HttpRequest.BodyPublishers.ofByteArray(body);
       HttpResponse<byte[]> response;
       try {
-        response = http.send(builder.method(method, publisher).build(), HttpResponse.BodyHandlers.ofByteArray());
+        response =
+            http.send(
+                builder.method(method, publisher).build(), HttpResponse.BodyHandlers.ofByteArray());
       } catch (java.net.http.HttpTimeoutException timeout) {
         throw failure("timeout", "http-timeout", true);
       } catch (InterruptedException interrupted) {
@@ -277,16 +272,10 @@ final class WebdavHttpClient implements WebdavFilesystem.Client {
       if (href == null) continue;
       URI resource = checkedUri(requested.resolve(href));
       boolean self = equivalentResource(requested, resource);
-      if (depthOne && self) {
-        result.add(entry(resource, response, ""));
-        continue;
-      }
+      if (depthOne && self) continue;
       if (!depthOne && !self) continue;
       String name = resourceName(resource);
       result.add(entry(resource, response, name));
-    }
-    if (depthOne && !result.isEmpty() && result.get(0).name().isEmpty()) {
-      result.remove(0);
     }
     return List.copyOf(result);
   }
@@ -333,7 +322,8 @@ final class WebdavHttpClient implements WebdavFilesystem.Client {
   }
 
   private URI checkedUri(URI candidate) throws WebdavFilesystem.ClientFailure {
-    URI absolute = candidate.isAbsolute() ? candidate.normalize() : mountedRoot.resolve(candidate).normalize();
+    URI absolute =
+        candidate.isAbsolute() ? candidate.normalize() : mountedRoot.resolve(candidate).normalize();
     if (!sameAuthority(mountedRoot, absolute) || !underRoot(mountedRoot, absolute)) {
       throw failure("outside-root", "authority-or-root-escape", false);
     }
@@ -414,8 +404,7 @@ final class WebdavHttpClient implements WebdavFilesystem.Client {
   private static String resourceName(URI uri) {
     String path = stripTrailingSlash(uri.getPath());
     int slash = path.lastIndexOf('/');
-    return java.net.URLDecoder.decode(
-        path.substring(slash + 1), StandardCharsets.UTF_8);
+    return java.net.URLDecoder.decode(path.substring(slash + 1), StandardCharsets.UTF_8);
   }
 
   private static String text(Element parent, String localName) {
