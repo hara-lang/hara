@@ -309,6 +309,7 @@ public final class HaraContext {
   private final HaraProtocol ifnProtocol;
   private final AtomicLong gensymCounter = new AtomicLong();
   private HbcMachine.HbcContinuation hbcContinuation;
+  private volatile boolean instrumentationReady;
   HaraContext(TruffleLanguage.Env environment) {
     this.environment = environment;
     this.evaluator = new Evaluator(source -> environment.parsePublic(source).call());
@@ -373,10 +374,15 @@ public final class HaraContext {
     initializeUserNamespace(currentNamespace);
   }
 
+  void markInstrumentationReady() {
+    instrumentationReady = true;
+  }
+
   void publishInterpreterEvent(
       InstrumentationModel.EventKind event,
       com.oracle.truffle.api.source.SourceSection source,
       java.util.Map<String, String> data) {
+    if (!instrumentationReady) return;
     InstrumentationModel.TargetHandle target = instrumentationInterpreterTarget();
     if (target == null
         || !sessionKernel
@@ -442,11 +448,13 @@ public final class HaraContext {
   }
 
   boolean hbcInstrumentationEnabled(InstrumentationModel.EventKind event) {
+    if (!instrumentationReady) return false;
     InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
     return target != null && sessionKernel.instrumentationHub().hasSubscribers(target, event);
   }
 
   InstrumentationModel.InstrumentDirective pollHbcDirective() {
+    if (!instrumentationReady) return null;
     InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
     if (target == null) return null;
     return sessionKernel.instrumentationHub().pollDirective(target);
@@ -498,6 +506,12 @@ public final class HaraContext {
         InstrumentationModel.EventKind.EXECUTION_TERMINAL,
         source,
         java.util.Map.of("status", status));
+  }
+
+  public void publishInterpreterSemanticBoundary(
+      com.oracle.truffle.api.source.SourceSection source) {
+    publishInterpreterEvent(
+        InstrumentationModel.EventKind.SEMANTIC_BOUNDARY, source, java.util.Map.of());
   }
 
   public void publishInterpreterTopLevelFailure(
