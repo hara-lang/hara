@@ -1,0 +1,108 @@
+(ns work.compile.hara
+  (:config {:role :internal})
+  (:require [work.base :as work]))
+
+(def lowering-version 1)
+
+(defn work-value?
+  [value]
+  (satisfies? IWork value))
+
+(defn closure-value?
+  [value]
+  (and (fn? value)
+       (not (work-value? value))))
+
+(declare form)
+
+(defn ir-value
+  [value]
+  (cond
+    (work-value? value)
+    {:ir/kind :work
+     :ir/value (ir-value (work/work-spec value))}
+
+    (closure-value? value)
+    {:ir/kind :closure
+     :ir/value value}
+
+    (map? value)
+    (reduce-kv
+     (fn [output key item]
+       (assoc output key (ir-value item)))
+     {}
+     value)
+
+    (vector? value)
+    (vec (map ir-value value))
+
+    (set? value)
+    (set (map ir-value value))
+
+    (list? value)
+    (apply list (map ir-value value))
+
+    :else value))
+
+(defn ir
+  "Returns the source-owned, inspectable Work IR for a Work value.
+
+   Closures are explicit IR leaves. They retain the process-local executable
+   value while the surrounding Work structure remains ordinary Hara data. This
+   makes closure-bearing continuations visible to analysis without pretending
+   that executable values are durable checkpoint data."
+  [work-value]
+  (if (not (work-value? work-value))
+    (throw
+     (ex :argument {:work/value work-value}
+         :ex/message "Work lowering requires an IWork value")))
+  {:ir/version lowering-version
+   :ir/work (ir-value work-value)})
+
+(defn form-value
+  [value]
+  (cond
+    (work-value? value)
+    (form value)
+
+    (closure-value? value)
+    (list 'quote value)
+
+    (map? value)
+    (reduce-kv
+     (fn [output key item]
+       (assoc output key (form-value item)))
+     {}
+     value)
+
+    (vector? value)
+    (vec (map form-value value))
+
+    (set? value)
+    (set (map form-value value))
+
+    (list? value)
+    (apply list (map form-value value))
+
+    :else value))
+
+(defn form
+  "Lowers Work to an ordinary Hara form.
+
+   The generated form only reconstructs the source-owned Work definition.
+   Execution remains with the canonical evaluator, including `:bind` source,
+   pure continuation, produced child, and frame lineage semantics."
+  ([work-value]
+   (form work-value {}))
+  ([work-value options]
+   (let [version (or (:ir/version options) lowering-version)]
+     (if (not= version lowering-version)
+       (throw
+        (ex :argument {:ir/version version}
+            :ex/message "Unsupported Work lowering version")))
+     (if (not (work-value? work-value))
+       (throw
+        (ex :argument {:work/value work-value}
+            :ex/message "Work lowering requires an IWork value")))
+     (list 'work.base/definition
+           (form-value (work/work-spec work-value))))))
