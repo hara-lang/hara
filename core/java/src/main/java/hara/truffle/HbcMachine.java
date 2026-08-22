@@ -62,6 +62,15 @@ public final class HbcMachine {
         throw new HaraException("HBC execution suspended by instrumentation");
       }
       if (directive == InstrumentationModel.InstrumentDirective.TERMINATE) {
+        if (context.hbcInstrumentationEnabled(
+            InstrumentationModel.EventKind.EXECUTION_TERMINAL)) {
+          context.publishHbcEvent(
+              InstrumentationModel.EventKind.EXECUTION_TERMINAL,
+              ip,
+              function.name(),
+              program.namespace(),
+              java.util.Map.of("status", "terminated"));
+        }
         throw new HaraException("HBC execution terminated by instrumentation");
       }
       if (context.hbcInstrumentationEnabled(

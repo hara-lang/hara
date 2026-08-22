@@ -210,6 +210,31 @@ public class SessionInstrumentationTest {
   }
 
   @Test
+  public void hbcTargetUsesExplicitBackendProvenanceAndAdvertisesImplementedControls() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("hbc");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      kernel.create(sessionId);
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/hbc", 0);
+      TargetDescriptor descriptor = service.targetDescriptor(target);
+
+      assertEquals(new RuntimeBackend("java-hbc"), descriptor.backend());
+      assertEquals(
+          Set.of(
+              Capability.EVENT_INSTRUCTION,
+              Capability.EVENT_CALL,
+              Capability.EVENT_EXCEPTION,
+              Capability.EVENT_SUSPENSION,
+              Capability.EVENT_LIFECYCLE,
+              Capability.INSPECT_SOURCE_LOCATION,
+              Capability.CONTROL_PAUSE,
+              Capability.CONTROL_TERMINATE),
+          descriptor.capabilities());
+    }
+  }
+
+  @Test
   public void topLevelFailureIsReportedOnceAndNestedRootsAreNotTerminal() {
     SessionModel.SessionId sessionId = SessionModel.SessionId.parse("failure");
     try (SessionKernel kernel = new SessionKernel(false, false)) {
