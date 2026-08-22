@@ -93,6 +93,25 @@ jobs:
           cargo fetch --locked --manifest-path core/rust/Cargo.toml
           cargo fetch --locked --manifest-path core/rust/raw/Cargo.toml
 
+      - name: Install the matching wasm-bindgen CLI
+        shell: bash
+        run: |
+          version="$(
+            cargo metadata --locked \
+              --manifest-path core/rust/Cargo.toml \
+              --format-version 1 \
+            | python3 -c '
+          import json, sys
+          metadata = json.load(sys.stdin)
+          versions = sorted({package["version"] for package in metadata["packages"] if package["name"] == "wasm-bindgen"})
+          if len(versions) != 1:
+              raise SystemExit(f"expected one wasm-bindgen version, got {versions}")
+          print(versions[0])
+          '
+          )"
+          echo "wasm-bindgen-cli=$version"
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
       - name: Prepare Maven dependencies
         run: mvn -B -Ptruffle -DskipTests dependency:go-offline --file core/java/pom.xml
 

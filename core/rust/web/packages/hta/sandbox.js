@@ -19,7 +19,7 @@ export const MAX_BROWSER_SANDBOX_LIMITS = Object.freeze({
 const REQUEST_KEYS = new Set(["operation", "source", "limits"]);
 const LIMIT_KEYS = new Set(["outputBytes", "wallMs"]);
 const TEXT_ENCODER = new TextEncoder();
-const MAX_TRANSER_DEPTH = 32;
+const MAX_TRANSFER_DEPTH = 32;
 const MAX_TRANSER_ITEMS = 65_536;
 
 function fail(code, message) {
@@ -230,7 +230,7 @@ export class BrowserWasmSandbox {
     }
     this.workerUrl = options.workerUrl;
     this.moduleUrl = options.moduleUrl;
-    this.modulebytes = options.moduleBytes;
+    this.moduleBytes = options.moduleBytes;
     this.workerFactory = options.workerFactory ?? defaultWorkerFactory;
     this.contextFactory = options.contextFactory ?? defaultContextFactory;
     this.setTimer = options.setTimer ?? ((callback, milliseconds) => setTimeout(callback, milliseconds));
