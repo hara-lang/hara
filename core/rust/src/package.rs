@@ -17,6 +17,7 @@ mod install;
 use archive::*;
 #[cfg(test)]
 use install::install_archive_at;
+pub(crate) use install::validate_installed_root;
 use install::{install_archive, json_string, validate_recipe};
 
 /// Capability adapter used by the Hara-owned CLI policy. These functions

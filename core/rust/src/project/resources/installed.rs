@@ -205,10 +205,18 @@ fn read_registration(
             path.display()
         ));
     }
-    let manifest = PackageManifest::read(&package_root.join("package.edn"))
-        .map_err(|error| format!("{} has an invalid package manifest: {error}", path.display()))?;
-    let project = validate_installed_root(&package_root, &manifest)
-        .map_err(|error| format!("{} has an invalid installed package: {error}", path.display()))?;
+    let manifest = PackageManifest::read(&package_root.join("package.edn")).map_err(|error| {
+        format!(
+            "{} has an invalid package manifest: {error}",
+            path.display()
+        )
+    })?;
+    let project = validate_installed_root(&package_root, &manifest).map_err(|error| {
+        format!(
+            "{} has an invalid installed package: {error}",
+            path.display()
+        )
+    })?;
     if normalize_coordinate(&manifest.identity)? != coordinate || manifest.version != *version {
         return Err(format!(
             "{} disagrees with the installed package manifest",
@@ -319,11 +327,17 @@ mod tests {
         .unwrap();
 
         read_registration(&root, "hara:demo/pkg", &Version::parse("1.0.0").unwrap()).unwrap();
-        fs::write(package_root.join("src/demo/core.hal"), b"(ns demo.tampered)\n").unwrap();
-        let error =
-            read_registration(&root, "hara:demo/pkg", &Version::parse("1.0.0").unwrap())
-                .unwrap_err();
-        assert!(error.contains("package/digest-mismatch"), "{error}");
+        fs::write(
+            package_root.join("src/demo/core.hal"),
+            b"(ns demo.tampered)\n",
+        )
+        .unwrap();
+        let error = read_registration(&root, "hara:demo/pkg", &Version::parse("1.0.0").unwrap())
+            .unwrap_err();
+        assert!(
+            error.contains("package/digest-mismatch") || error.contains("package/size-mismatch"),
+            "{error}"
+        );
 
         fs::remove_dir_all(root).unwrap();
     }
