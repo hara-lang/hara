@@ -116,7 +116,30 @@ export function parseHtaManifest(source) {
       handleTags[type] = tag.name;
     }
   }
-  return Object.freeze({namespace,identity,provider,module,abi,browserTarget,assets:Object.freeze(assets),handleTags:Object.freeze(handleTags)});
+  const exportsValue = manifestField(value,"exports"), exports = [];
+  if (exportsValue !== undefined) {
+    if (!(exportsValue instanceof Map)) throw new Error("hta/manifest-malformed: exports must be a map");
+    for (const [name,spec] of exportsValue) {
+      if (typeof name !== "string" || !name.length || !(spec instanceof Map)) throw new Error("hta/manifest-malformed: invalid export");
+      exports.push(name);
+    }
+  }
+  const hostCallsValue = manifestField(value,"host-calls"), hostCalls = {};
+  if (hostCallsValue !== undefined) {
+    if (!(hostCallsValue instanceof Map)) throw new Error("hta/manifest-malformed: host-calls must be a map");
+    for (const [service,methods] of hostCallsValue) {
+      if (typeof service !== "string" || !service.length || !Array.isArray(methods) ||
+          methods.some(method => typeof method !== "string" || !method.length || method.includes("/"))) {
+        throw new Error("hta/manifest-malformed: invalid host-call");
+      }
+      hostCalls[service] = Object.freeze([...methods]);
+    }
+  }
+  return Object.freeze({
+    namespace,identity,provider,module,abi,browserTarget,assets:Object.freeze(assets),
+    handleTags:Object.freeze(handleTags),exports:Object.freeze(exports),
+    hostCalls:Object.freeze(hostCalls)
+  });
 }
 
 /** Strict data-only EDN subset shared by extension and package manifests. */
@@ -151,8 +174,10 @@ export async function loadHtaExtension({worker,descriptor,descriptorUrl,packageU
     worker = new Worker(new URL(manifest.browserTarget.module,base),{type:"module",name:`hara-${manifest.namespace}`});
   }
   if (!worker) throw new Error("hta/worker-missing: worker is required for WASM providers");
-  const context = new HtaContext({worker,moduleUrl,moduleBytes,hostCalls,handleTags:manifest.handleTags});
-  context.manifest = manifest;
+  const context = new HtaContext({
+    worker,moduleUrl,moduleBytes,hostCalls,handleTags:manifest.handleTags,
+    manifest
+  });
   return context;
 }
 
@@ -248,8 +273,8 @@ class Reader {
 }
 
 export class HtaContext {
-  constructor({ worker, moduleUrl, moduleBytes, hostCalls = {}, filesystemHost = hostCalls.filesystemHost ?? null, handleTags = {}, promiseProvider = new BrowserPromiseProvider(), kernelId = null }) {
-    this.worker=worker;this.hostCalls=hostCalls;this.filesystemHost=filesystemHost;this.handleTags=handleTags;this.promiseProvider=promiseProvider;this.kernelId=kernelId;this.next=1;this.pending=new Map();this.sessions=new Map();this.mounts=new Set();
+  constructor({ worker, moduleUrl, moduleBytes, hostCalls = {}, filesystemHost = hostCalls.filesystemHost ?? null, handleTags = {}, promiseProvider = new BrowserPromiseProvider(), kernelId = null, manifest = null }) {
+    this.worker=worker;this.hostCalls=hostCalls;this.filesystemHost=filesystemHost;this.handleTags=handleTags;this.promiseProvider=promiseProvider;this.kernelId=kernelId;this.manifest=manifest;this.allowedExports=manifest ? new Set(manifest.exports) : null;this.allowedHostCalls=manifest ? new Set(Object.entries(manifest.hostCalls).flatMap(([service,methods])=>methods.map(method=>`${service}/${method}`))) : null;this.next=1;this.pending=new Map();this.sessions=new Map();this.mounts=new Set();this.closed=false;
     this.ready=new Promise((resolve,reject)=>{this.readyResolve=resolve;this.readyReject=reject;});
     worker.addEventListener("message", event=>this.message(event.data));
     worker.addEventListener("error", error=>this.fail(error));
@@ -258,10 +283,10 @@ export class HtaContext {
   call(target, args=[]) { let id=null,cancelled=false;
     return this.promiseProvider.create((resolve,reject,onCancel)=>{
       onCancel(()=>{cancelled=true;if(id!==null)this.worker.postMessage({type:"cancel",id});});
-      this.ready.then(()=>{if(cancelled)return;validateHandles(args,this);id=this.next++;this.pending.set(id,{resolve,reject});this.worker.postMessage({type:"call",id,frame:encodeHta([target,args])});}).catch(reject);
+      this.ready.then(()=>{if(cancelled)return;if(this.closed)throw new Error("hta/context-closed");if(this.allowedExports && !this.allowedExports.has(target))throw new Error(`hta/export-denied: ${target}`);validateHandles(args,this);id=this.next++;this.pending.set(id,{resolve,reject});this.worker.postMessage({type:"call",id,frame:encodeHta([target,args])});}).catch(reject);
     });
   }
-  releaseHandle(handle){if(handle.context!==this)throw new Error("hta/handle-owner-mismatch");const wireHandle=new HtaHandle(handle.owner,handle.type,handle.id);this.worker.postMessage({type:"release",frame:encodeHta(wireHandle)});}
+  releaseHandle(handle){if(handle.context!==this)throw new Error("hta/handle-owner-mismatch");if(this.closed)return;const wireHandle=new HtaHandle(handle.owner,handle.type,handle.id);this.worker.postMessage({type:"release",frame:encodeHta(wireHandle)});}
   async createSession(name){await this.call("session/create",[name]);return this.session(name);}
   async createFilesystem(descriptor={provider:"memory"}){
     if(!descriptor||typeof descriptor!=="object")throw new Error("filesystem/descriptor-invalid");
@@ -278,10 +303,10 @@ export class HtaContext {
   async message(message) {
     if(message.type==="ready"){this.readyResolve();return;}if(message.type==="fatal"){this.fail(new Error(message.error?.message??"HTA worker failed"));return;}
     if(message.type==="result"){const pending=this.pending.get(message.id);if(!pending)return;this.pending.delete(message.id);const value=bindHandles(decodeHta(message.frame),this);message.ok?pending.resolve(value):pending.reject(errorFrom(value));return;}
-    if(message.type==="host-call"){const key=`${message.service}/${message.method}`,handler=this.hostCalls[key],sessionId=message.session??"ROOT";try{if(!handler)throw new Error(`hta/host-call-denied: ${key}`);const value=await handler.call({context:this.session(sessionId),kernelContext:this,kernelId:this.kernelId??null,sessionId,mountId:message.mount??null,task:message.task},...decodeHta(message.frame));this.worker.postMessage({type:"delivery",call:message.call,ok:true,frame:encodeHta(value)});}catch(error){this.worker.postMessage({type:"delivery",call:message.call,ok:false,frame:encodeHta(errorValue(error))});}}
+    if(message.type==="host-call"){const key=`${message.service}/${message.method}`,handler=this.hostCalls[key],sessionId=message.session??"ROOT";try{if(this.allowedHostCalls && !this.allowedHostCalls.has(key))throw new Error(`hta/host-call-denied: ${key}`);if(!handler)throw new Error(`hta/host-call-denied: ${key}`);const value=await handler.call({context:this.session(sessionId),kernelContext:this,kernelId:this.kernelId??null,sessionId,mountId:message.mount??null,task:message.task},...decodeHta(message.frame));this.worker.postMessage({type:"delivery",call:message.call,ok:true,frame:encodeHta(value)});}catch(error){this.worker.postMessage({type:"delivery",call:message.call,ok:false,frame:encodeHta(errorValue(error))});}}
   }
-  fail(error){this.readyReject(error);for(const pending of this.pending.values())pending.reject(error);this.pending.clear();}
-  close(){for(const mountId of this.mounts)this.filesystemHost?.close(this,mountId).catch(()=>{});this.mounts.clear();this.worker.postMessage({type:"close"});this.worker.terminate();}
+  fail(error){if(this.closed)return;this.closed=true;this.readyReject(error);for(const pending of this.pending.values())pending.reject(error);this.pending.clear();}
+  close(){if(!this.closed){this.closed=true;const error=new Error("hta/context-closed");this.readyReject(error);for(const pending of this.pending.values())pending.reject(error);this.pending.clear();}const closes=[...this.mounts].map(mountId=>this.filesystemHost?.close(this,mountId).catch(()=>{}));this.mounts.clear();this.worker.postMessage({type:"close"});this.worker.terminate();return Promise.all(closes);}
 }
 
 export class HtaSession {
