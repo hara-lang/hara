@@ -31,6 +31,7 @@ import hara.truffle.InstrumentationModel.TargetHandle;
 import hara.truffle.InstrumentationModel.TargetKind;
 import org.graalvm.polyglot.Context;
 import org.graalvm.polyglot.HostAccess;
+import org.graalvm.polyglot.Instrument;
 import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
@@ -250,13 +251,13 @@ final class SessionKernel implements AutoCloseable {
         != null) {
       return;
     }
-    RuntimeBackend backend = new RuntimeBackend("java");
+    RuntimeBackend truffleBackend = new RuntimeBackend("java-truffle");
     registerInstrumentationTarget(
         new TargetDescriptor(
             instrumentationTargetId(sessionId, TargetKind.INTERPRETER),
             sessionId,
             TargetKind.INTERPRETER,
-            backend,
+            truffleBackend,
             java.util.Set.of(
                 Capability.EVENT_SEMANTIC_BOUNDARY,
                 Capability.EVENT_CALL,
@@ -264,18 +265,14 @@ final class SessionKernel implements AutoCloseable {
                 Capability.EVENT_EFFECT,
                 Capability.EVENT_SUSPENSION,
                 Capability.EVENT_LIFECYCLE,
-                Capability.INSPECT_SOURCE_LOCATION,
-                Capability.CONTROL_PAUSE,
-                Capability.CONTROL_SINGLE_STEP,
-                Capability.CONTROL_RESUME,
-                Capability.CONTROL_SETTLE,
-                Capability.CONTROL_TERMINATE)));
+                Capability.INSPECT_SOURCE_LOCATION)));
+    RuntimeBackend hbcBackend = new RuntimeBackend("java-hbc");
     registerInstrumentationTarget(
         new TargetDescriptor(
             instrumentationTargetId(sessionId, TargetKind.HBC),
             sessionId,
             TargetKind.HBC,
-            backend,
+            hbcBackend,
             java.util.Set.of(
                 Capability.EVENT_INSTRUCTION,
                 Capability.EVENT_CALL,
@@ -292,6 +289,16 @@ final class SessionKernel implements AutoCloseable {
 
   private void registerInstrumentationTarget(TargetDescriptor descriptor) {
     instrumentationHub.registerTarget(descriptor);
+  }
+
+  void refreshTruffleInstrumentation(String sessionId) {
+    Session session = require(SessionModel.SessionId.parse(sessionId));
+    TargetHandle target =
+        instrumentationHub.targetIfPresent(
+            instrumentationTargetId(sessionId, TargetKind.INTERPRETER));
+    if (target != null) {
+      session.setTruffleInstrumentation(instrumentationHub.hasAttachments(target));
+    }
   }
 
   InstrumentationHub instrumentationHub() {
@@ -352,6 +359,7 @@ final class SessionKernel implements AutoCloseable {
             throw error;
           }
         });
+    refreshTruffleInstrumentation(sessionId.value());
   }
 
   synchronized void detachFilesystem(SessionModel.SessionId sessionId) {
@@ -367,6 +375,7 @@ final class SessionKernel implements AutoCloseable {
                 "FILESYSTEM_ATTACHMENT_MISMATCH " + sessionId + " " + expected);
           }
         });
+    refreshTruffleInstrumentation(sessionId.value());
   }
 
   SessionModel.SessionMountId filesystem(SessionModel.SessionId sessionId) {
@@ -710,6 +719,7 @@ final class SessionKernel implements AutoCloseable {
     private String contextFilesystemBindingToken;
     private volatile AttachedFilesystem filesystem;
     private final AtomicInteger activeEvaluations = new AtomicInteger();
+    private HaraInstrumentation truffleInstrumentation;
     private final AtomicReference<SessionModel.SessionState> state =
         new AtomicReference<>(SessionModel.SessionState.NEW);
 
@@ -832,6 +842,7 @@ final class SessionKernel implements AutoCloseable {
         Context previous = context;
         String previousToken = contextFilesystemBindingToken;
         previousFilesystem = filesystem;
+        truffleInstrumentation = null;
         context = replacement.context();
         contextFilesystemBindingToken = replacement.filesystemBindingToken();
         filesystem = attached;
@@ -857,6 +868,7 @@ final class SessionKernel implements AutoCloseable {
         Context previous = context;
         String previousToken = contextFilesystemBindingToken;
         released = filesystem;
+        truffleInstrumentation = null;
         context = replacement.context();
         contextFilesystemBindingToken = replacement.filesystemBindingToken();
         filesystem = null;
@@ -1153,6 +1165,25 @@ final class SessionKernel implements AutoCloseable {
       if (!state.compareAndSet(SessionModel.SessionState.NEW, SessionModel.SessionState.ACTIVE)) {
         throw new IllegalStateException("SESSION_ALREADY_STARTED " + id());
       }
+    }
+
+    synchronized void setTruffleInstrumentation(boolean enabled) {
+        if (!enabled) {
+          if (truffleInstrumentation != null) truffleInstrumentation.deactivate();
+          return;
+        }
+        if (context == null) return;
+        if (truffleInstrumentation == null) {
+          Instrument instrument = context.getEngine().getInstruments().get("hara-execution");
+          if (instrument == null) {
+            throw new IllegalStateException("HARA_EXECUTION_INSTRUMENT_UNAVAILABLE");
+          }
+          truffleInstrumentation = instrument.lookup(HaraInstrumentation.class);
+          if (truffleInstrumentation == null) {
+            throw new IllegalStateException("HARA_EXECUTION_INSTRUMENT_SERVICE_UNAVAILABLE");
+          }
+        }
+        truffleInstrumentation.activate();
     }
   }
 }

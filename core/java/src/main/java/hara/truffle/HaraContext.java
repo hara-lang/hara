@@ -383,17 +383,20 @@ public final class HaraContext {
             .hasSubscribers(target, event)) {
       return;
     }
-    InstrumentationModel.EventLocation location =
-        source == null || !source.isAvailable()
-            ? null
-            : new InstrumentationModel.EventLocation(
-                source.getSource().getName(),
-                java.util.List.of(),
-                new InstrumentationModel.SourceSpan(
-                    Math.max(0, source.getCharIndex()),
-                    Math.max(0, source.getCharIndex() + source.getCharLength())),
-                null,
-                null);
+    InstrumentationModel.EventLocation location = null;
+    if (sessionKernel.instrumentationHub().hasSourceLocationSubscribers(target, event)
+        && source != null
+        && source.isAvailable()) {
+      location =
+          new InstrumentationModel.EventLocation(
+              source.getSource().getName(),
+              java.util.List.of(),
+              new InstrumentationModel.SourceSpan(
+                  Math.max(0, source.getCharIndex()),
+                  Math.max(0, source.getCharIndex() + source.getCharLength())),
+              null,
+              null);
+    }
     sessionKernel
         .instrumentationHub()
         .publish(
@@ -473,6 +476,15 @@ public final class HaraContext {
         InstrumentationModel.EventKind.EXECUTION_TERMINAL,
         source,
         java.util.Map.of("status", status));
+  }
+
+  public void publishInterpreterTopLevelFailure(
+      com.oracle.truffle.api.source.SourceSection source, RuntimeException error) {
+    publishInterpreterEvent(
+        InstrumentationModel.EventKind.EXCEPTION_RAISE,
+        source,
+        java.util.Map.of("type", error.getClass().getName()));
+    publishInterpreterTerminal(source, "failure");
   }
 
   void installHalcSchemas(HalcArtifact.SchemaIndex schemas) {

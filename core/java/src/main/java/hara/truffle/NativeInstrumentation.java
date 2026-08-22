@@ -132,6 +132,7 @@ final class NativeInstrumentation {
   void unregister(NativeInstrumentHandle instrument) {
     InstrumentationHub current = requireActive();
     current.removeInstrument(requireInstrument(instrument));
+    kernel.get().refreshTruffleInstrumentation(sessionId);
   }
 
   NativeTargetHandle bindTargetIdentity(String targetId, long generation) {
@@ -155,6 +156,10 @@ final class NativeInstrumentation {
     InstrumentHandle checkedInstrument = requireInstrument(instrument);
     TargetHandle checkedTarget = requireTarget(target);
     current.attach(checkedInstrument, checkedTarget);
+    if (current.descriptor(checkedTarget).kind()
+        == InstrumentationModel.TargetKind.INTERPRETER) {
+      kernel.get().refreshTruffleInstrumentation(sessionId);
+    }
     return new NativeAttachment(instrument, target);
   }
 
@@ -164,6 +169,10 @@ final class NativeInstrumentation {
     current.detach(
         requireInstrument(attachment.instrument),
         requireTarget(attachment.target));
+    if (current.descriptor(attachment.target.handle).kind()
+        == InstrumentationModel.TargetKind.INTERPRETER) {
+      kernel.get().refreshTruffleInstrumentation(sessionId);
+    }
   }
 
   EventBatch drainEvents(NativeInstrumentHandle instrument) {

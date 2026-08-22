@@ -2,13 +2,13 @@ package hara.truffle;
 
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.instrumentation.EventContext;
+import com.oracle.truffle.api.instrumentation.EventBinding;
 import com.oracle.truffle.api.instrumentation.ExecutionEventListener;
 import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
 import com.oracle.truffle.api.instrumentation.StandardTags;
 import com.oracle.truffle.api.instrumentation.TruffleInstrument;
 import com.oracle.truffle.api.source.SourceSection;
 import hara.truffle.InstrumentationModel.EventKind;
-import hara.truffle.node.HaraNodes;
 import java.util.Map;
 
 @TruffleInstrument.Registration(
@@ -16,81 +16,56 @@ import java.util.Map;
     name = "Hara execution instrumentation",
     version = "0.1")
 public final class HaraInstrumentation extends TruffleInstrument {
+  private Env environment;
+  private EventBinding<ExecutionEventListener> binding;
+
   @Override
   protected void onCreate(Env env) {
-    attach(
-        env,
-        SourceSectionFilter.newBuilder()
-            .tagIs(StandardTags.ExpressionTag.class)
-            .build(),
-        EventKind.SEMANTIC_BOUNDARY,
-        true);
-    attach(
-        env,
-        SourceSectionFilter.newBuilder().tagIs(StandardTags.CallTag.class).build(),
-        EventKind.CALL_ENTER,
-        false);
-    attach(
-        env,
-        SourceSectionFilter.newBuilder().tagIs(StandardTags.WriteVariableTag.class).build(),
-        EventKind.VAR_SET,
-        false);
+    environment = env;
+    env.registerService(this);
   }
 
-  private static void attach(
-      Env env, SourceSectionFilter filter, EventKind event, boolean reportExceptions) {
-    env.getInstrumenter()
-        .attachExecutionEventListener(
-            filter,
-            new ExecutionEventListener() {
-              @Override
-              public void onEnter(EventContext context, VirtualFrame frame) {
-                publish(actualEvent(event, context), context, null);
-              }
+  synchronized void activate() {
+    if (binding != null && binding.isAttached()) return;
+    binding =
+        environment
+            .getInstrumenter()
+            .attachExecutionEventListener(
+                SourceSectionFilter.newBuilder()
+                    .tagIs(StandardTags.ExpressionTag.class)
+                    .build(),
+                new ExecutionEventListener() {
+                  @Override
+                  public void onEnter(EventContext context, VirtualFrame frame) {
+                    publish(EventKind.SEMANTIC_BOUNDARY, context, null);
+                  }
 
-              @Override
-              public void onReturnValue(
-                  EventContext context, VirtualFrame frame, Object result) {
-                if (event == EventKind.CALL_ENTER) {
-                  publish(EventKind.CALL_RETURN, context, null);
-                }
-              }
+                  @Override
+                  public void onReturnValue(
+                      EventContext context, VirtualFrame frame, Object result) {}
 
-              @Override
-              public void onReturnExceptional(
-                  EventContext context, VirtualFrame frame, Throwable exception) {
-                if (reportExceptions) {
-                  publish(EventKind.EXCEPTION_RAISE, context, exception);
-                }
-              }
-
-              @Override
-              public void onYield(EventContext context, VirtualFrame frame, Object value) {
-                if (reportExceptions) {
-                  publish(EventKind.PROMISE_SUSPEND, context, null);
-                }
-              }
-
-              @Override
-              public void onResume(EventContext context, VirtualFrame frame) {
-                if (reportExceptions) {
-                  publish(EventKind.PROMISE_RESUME, context, null);
-                }
-              }
-            });
+                  @Override
+                  public void onReturnExceptional(
+                      EventContext context, VirtualFrame frame, Throwable exception) {}
+                });
   }
 
-  private static EventKind actualEvent(EventKind event, EventContext context) {
-    if (event == EventKind.VAR_SET
-        && context.getInstrumentedNode() instanceof HaraNodes.SetField) {
-      return EventKind.FIELD_SET;
-    }
-    return event;
+  synchronized void deactivate() {
+    if (binding == null) return;
+    binding.dispose();
+    binding = null;
+  }
+
+  @Override
+  protected synchronized void onDispose(Env env) {
+    deactivate();
+    environment = null;
   }
 
   private static void publish(EventKind event, EventContext eventContext, Throwable exception) {
     try {
-      HaraContext context = HaraLanguage.currentContext();
+      HaraContext context =
+          HaraLanguage.currentContext(eventContext.getInstrumentedNode());
       SourceSection source = eventContext.getInstrumentedSourceSection();
       context.publishInterpreterEvent(
           event,
