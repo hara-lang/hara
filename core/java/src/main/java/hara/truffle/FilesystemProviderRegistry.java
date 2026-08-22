@@ -24,6 +24,11 @@ final class FilesystemProviderRegistry {
     return this;
   }
 
+  boolean unregister(IFilesystemFactory factory) {
+    Objects.requireNonNull(factory, "filesystem factory");
+    return factories.remove(requireKind(factory.kind()), factory);
+  }
+
   boolean contains(String kind) {
     return factories.containsKey(requireKind(kind));
   }

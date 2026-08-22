@@ -105,6 +105,7 @@ final class FilesystemMountTable implements AutoCloseable {
   private final ConcurrentHashMap<Long, Mount> mounts = new ConcurrentHashMap<>();
   private final ConcurrentHashMap<AttachmentKey, SessionModel.SessionMountId> attachments =
       new ConcurrentHashMap<>();
+  private final List<JvmPackageLoader.LoadedProvider> loadedProviders = new ArrayList<>();
   private final AtomicLong nextId = new AtomicLong(1);
   private final AtomicBoolean closed = new AtomicBoolean();
 
@@ -125,6 +126,11 @@ final class FilesystemMountTable implements AutoCloseable {
     requireOpen();
     providers.register(factory);
     return this;
+  }
+
+  synchronized void loadJvmProvider(JvmPackageLoader.Selection selection) {
+    requireOpen();
+    loadedProviders.add(JvmPackageLoader.load(selection, providers));
   }
 
   boolean supports(String kind) {
@@ -312,6 +318,7 @@ final class FilesystemMountTable implements AutoCloseable {
 
   CompletionStage<Void> closeAll() {
     List<Mount> owned;
+    List<JvmPackageLoader.LoadedProvider> providersToClose;
     synchronized (this) {
       if (!closed.compareAndSet(false, true)) {
         return CompletableFuture.completedFuture(null);
@@ -319,12 +326,29 @@ final class FilesystemMountTable implements AutoCloseable {
       attachments.clear();
       owned = new ArrayList<>(mounts.values());
       mounts.clear();
+      providersToClose = new ArrayList<>(loadedProviders);
+      loadedProviders.clear();
     }
     CompletableFuture<?>[] closing =
         owned.stream()
             .map(mount -> closeProvider(mount.filesystem).toCompletableFuture())
             .toArray(CompletableFuture[]::new);
-    return CompletableFuture.allOf(closing);
+    return CompletableFuture.allOf(closing)
+        .handle(
+            (ignored, mountFailure) -> {
+              RuntimeException failure =
+                  mountFailure == null ? null : asRuntimeFailure(unwrap(mountFailure));
+              for (int index = providersToClose.size() - 1; index >= 0; index--) {
+                try {
+                  providersToClose.get(index).close();
+                } catch (Exception error) {
+                  if (failure == null) failure = asRuntimeFailure(error);
+                  else failure.addSuppressed(error);
+                }
+              }
+              if (failure != null) throw failure;
+              return null;
+            });
   }
 
   @Override
@@ -414,5 +438,11 @@ final class FilesystemMountTable implements AutoCloseable {
       current = current.getCause();
     }
     return current;
+  }
+
+  private static RuntimeException asRuntimeFailure(Throwable error) {
+    return error instanceof RuntimeException runtime
+        ? runtime
+        : new IllegalStateException("filesystem provider close failed", error);
   }
 }
