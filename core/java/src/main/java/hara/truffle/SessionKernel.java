@@ -276,7 +276,11 @@ final class SessionKernel implements AutoCloseable {
                 Capability.EVENT_EXCEPTION,
                 Capability.EVENT_SUSPENSION,
                 Capability.EVENT_LIFECYCLE,
-                Capability.INSPECT_SOURCE_LOCATION)));
+                Capability.INSPECT_SOURCE_LOCATION,
+                Capability.CONTROL_PAUSE,
+                Capability.CONTROL_SINGLE_STEP,
+                Capability.CONTROL_RESUME,
+                Capability.CONTROL_TERMINATE)));
   }
 
   private void registerInstrumentationTarget(TargetDescriptor descriptor) {

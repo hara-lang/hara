@@ -29,40 +29,136 @@ public final class HbcMachine {
   private HbcMachine() {}
 
   public static Object execute(HbcProgram program, HaraContext context) {
+    HbcContinuation continuation = context.hbcContinuation(program);
     if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.MACHINE_RESUME)) {
       context.publishHbcEvent(
           InstrumentationModel.EventKind.MACHINE_RESUME,
-          0,
-          null,
+          continuation == null ? 0 : continuation.instructionPointer,
+          continuation == null ? null : continuation.function.name(),
           program.namespace(),
           java.util.Map.of());
     }
-    return HaraBox.export(call(program, context, program.entry(), new Object[0], new Object[0]));
+    if (continuation == null) continuation = new HbcContinuation(program);
+    try {
+      Object result =
+          call(
+              program,
+              context,
+              continuation.functionIndex,
+              continuation.arguments,
+              continuation.captures,
+              continuation);
+      context.clearHbcContinuation(continuation);
+      return HaraBox.export(result);
+    } catch (HbcSuspended suspended) {
+      context.retainHbcContinuation(suspended.continuation);
+      return suspended.identity;
+    } catch (RuntimeException failure) {
+      context.clearHbcContinuation(continuation);
+      throw failure;
+    }
   }
 
   private static Object call(
       HbcProgram program, HaraContext context, int functionIndex, Object[] arguments, Object[] captures) {
+    return call(
+        program,
+        context,
+        functionIndex,
+        arguments,
+        captures,
+        new HbcContinuation(program, functionIndex, arguments, captures));
+  }
+
+  private static Object call(
+      HbcProgram program,
+      HaraContext context,
+      int functionIndex,
+      Object[] arguments,
+      Object[] captures,
+      HbcContinuation continuation) {
+    continuation.context = context;
     Function function = program.functions().get(functionIndex);
     Object[] locals = bindLocals(function, arguments, captures);
     ArrayList<Object> stack = new ArrayList<>(function.maxStack());
     ArrayDeque<CallFrame> calls = new ArrayDeque<>();
     int ip = 0;
+    boolean stepAfterInstruction = false;
+    if (continuation.initialized) {
+      functionIndex = continuation.functionIndex;
+      function = continuation.function;
+      locals = continuation.locals;
+      stack = continuation.stack;
+      calls = continuation.calls;
+      ip = continuation.instructionPointer;
+      stepAfterInstruction = continuation.stepAfterInstruction;
+      continuation.paused = false;
+    }
     while (true) {
+      if (stepAfterInstruction) {
+        throw suspend(
+            continuation,
+            program,
+            functionIndex,
+            function,
+            locals,
+            stack,
+            calls,
+            ip,
+            true);
+      }
       Instruction instruction = function.code().get(ip);
       InstrumentationModel.InstrumentDirective directive = context.pollHbcDirective();
-      if (directive == InstrumentationModel.InstrumentDirective.SUSPEND) {
-        if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.MACHINE_SUSPEND)) {
-          context.publishHbcEvent(
-              InstrumentationModel.EventKind.MACHINE_SUSPEND,
+      if (continuation.initialized && continuation.paused) {
+        if (directive == null) {
+          throw suspend(
+              continuation,
+              program,
+              functionIndex,
+              function,
+              locals,
+              stack,
+              calls,
               ip,
-              function.name(),
-              program.namespace(),
-              java.util.Map.of());
+              true);
         }
-        throw new HaraException("HBC execution suspended by instrumentation");
+        if (directive == InstrumentationModel.InstrumentDirective.CONTINUE) {
+          continuation.paused = false;
+        } else if (directive == InstrumentationModel.InstrumentDirective.STEP_NEXT) {
+          continuation.paused = false;
+          stepAfterInstruction = true;
+        } else if (directive == InstrumentationModel.InstrumentDirective.SUSPEND) {
+          throw suspend(
+              continuation,
+              program,
+              functionIndex,
+              function,
+              locals,
+              stack,
+              calls,
+              ip,
+              true);
+        } else if (directive == InstrumentationModel.InstrumentDirective.TERMINATE) {
+          terminate(context, program, function, ip);
+        }
+      }
+      if (directive == InstrumentationModel.InstrumentDirective.SUSPEND) {
+        throw suspend(
+            continuation,
+            program,
+            functionIndex,
+            function,
+            locals,
+            stack,
+            calls,
+            ip,
+            true);
+      }
+      if (directive == InstrumentationModel.InstrumentDirective.STEP_NEXT) {
+        stepAfterInstruction = true;
       }
       if (directive == InstrumentationModel.InstrumentDirective.TERMINATE) {
-        throw new HaraException("HBC execution terminated by instrumentation");
+        terminate(context, program, function, ip);
       }
       if (context.hbcInstrumentationEnabled(
           InstrumentationModel.EventKind.INSTRUCTION_EXECUTE)) {
@@ -467,6 +563,50 @@ public final class HbcMachine {
       }
       ip++;
     }
+  }
+
+  private static HbcSuspended suspend(
+      HbcContinuation continuation,
+      HbcProgram program,
+      int functionIndex,
+      Function function,
+      Object[] locals,
+      ArrayList<Object> stack,
+      ArrayDeque<CallFrame> calls,
+      int instructionPointer,
+      boolean paused) {
+    continuation.capture(
+        functionIndex, function, locals, stack, calls, instructionPointer, paused);
+    if (continuation.context.hbcInstrumentationEnabled(
+        InstrumentationModel.EventKind.MACHINE_SUSPEND)) {
+      continuation.context.publishHbcEvent(
+          InstrumentationModel.EventKind.MACHINE_SUSPEND,
+          instructionPointer,
+          function.name(),
+          program.namespace(),
+          java.util.Map.of());
+    }
+    return new HbcSuspended(
+        continuation,
+        new HbcSuspension(
+            continuation.id,
+            program.namespace(),
+            function.name(),
+            instructionPointer));
+  }
+
+  private static void terminate(
+      HaraContext context, HbcProgram program, Function function, int instructionPointer) {
+    if (context.hbcInstrumentationEnabled(
+        InstrumentationModel.EventKind.EXECUTION_TERMINAL)) {
+      context.publishHbcEvent(
+          InstrumentationModel.EventKind.EXECUTION_TERMINAL,
+          instructionPointer,
+          function.name(),
+          program.namespace(),
+          java.util.Map.of("status", "terminated"));
+    }
+    throw new HaraException("HBC execution terminated by instrumentation");
   }
 
   private static Object invokeGlobal(HaraContext context, String name, Object[] arguments) {
@@ -921,6 +1061,69 @@ public final class HbcMachine {
     @Override
     public String toString() {
       return "<fn>";
+    }
+  }
+
+  public record HbcSuspension(long id, String namespace, String function, int instructionPointer) {}
+
+  private static final class HbcSuspended extends RuntimeException {
+    final HbcContinuation continuation;
+    final HbcSuspension identity;
+
+    HbcSuspended(HbcContinuation continuation, HbcSuspension identity) {
+      this.continuation = continuation;
+      this.identity = identity;
+    }
+  }
+
+  static final class HbcContinuation {
+    private static final java.util.concurrent.atomic.AtomicLong IDS =
+        new java.util.concurrent.atomic.AtomicLong();
+    final long id = IDS.incrementAndGet();
+    final HbcProgram program;
+    final int argumentsFunctionIndex;
+    final Object[] arguments;
+    final Object[] captures;
+    HaraContext context;
+    int functionIndex;
+    Function function;
+    Object[] locals;
+    ArrayList<Object> stack;
+    ArrayDeque<CallFrame> calls;
+    int instructionPointer;
+    boolean initialized;
+    boolean paused;
+    boolean stepAfterInstruction;
+
+    HbcContinuation(HbcProgram program) {
+      this(program, program.entry(), new Object[0], new Object[0]);
+    }
+
+    HbcContinuation(HbcProgram program, int functionIndex, Object[] arguments, Object[] captures) {
+      this.program = program;
+      this.argumentsFunctionIndex = functionIndex;
+      this.arguments = arguments;
+      this.captures = captures;
+      this.functionIndex = functionIndex;
+    }
+
+    void capture(
+        int functionIndex,
+        Function function,
+        Object[] locals,
+        ArrayList<Object> stack,
+        ArrayDeque<CallFrame> calls,
+        int instructionPointer,
+        boolean paused) {
+      this.functionIndex = functionIndex;
+      this.function = function;
+      this.locals = locals;
+      this.stack = stack;
+      this.calls = calls;
+      this.instructionPointer = instructionPointer;
+      this.initialized = true;
+      this.paused = paused;
+      this.stepAfterInstruction = false;
     }
   }
 

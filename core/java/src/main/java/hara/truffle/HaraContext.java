@@ -308,6 +308,7 @@ public final class HaraContext {
   private String collectingBuiltinNamespace;
   private final HaraProtocol ifnProtocol;
   private final AtomicLong gensymCounter = new AtomicLong();
+  private HbcMachine.HbcContinuation hbcContinuation;
   HaraContext(TruffleLanguage.Env environment) {
     this.environment = environment;
     this.evaluator = new Evaluator(source -> environment.parsePublic(source).call());
@@ -447,10 +448,24 @@ public final class HaraContext {
 
   InstrumentationModel.InstrumentDirective pollHbcDirective() {
     InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
-    if (target == null) return InstrumentationModel.InstrumentDirective.CONTINUE;
-    InstrumentationModel.InstrumentDirective directive =
-        sessionKernel.instrumentationHub().pollDirective(target);
-    return directive == null ? InstrumentationModel.InstrumentDirective.CONTINUE : directive;
+    if (target == null) return null;
+    return sessionKernel.instrumentationHub().pollDirective(target);
+  }
+
+  synchronized HbcMachine.HbcContinuation hbcContinuation(HbcProgram program) {
+    if (hbcContinuation == null) return null;
+    if (hbcContinuation.program != program) {
+      throw new HaraException("HBC execution is suspended for another program");
+    }
+    return hbcContinuation;
+  }
+
+  synchronized void retainHbcContinuation(HbcMachine.HbcContinuation continuation) {
+    hbcContinuation = continuation;
+  }
+
+  synchronized void clearHbcContinuation(HbcMachine.HbcContinuation continuation) {
+    if (hbcContinuation == continuation) hbcContinuation = null;
   }
 
   private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {
@@ -548,6 +563,7 @@ public final class HaraContext {
   }
 
   void closeContext() {
+    hbcContinuation = null;
     closeExtensions();
     if (ownedFilesystem == null) return;
     filesystemRuntime.close();
