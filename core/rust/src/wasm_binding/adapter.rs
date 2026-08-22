@@ -93,15 +93,6 @@ fn emit_forwarder(exports: &[BindingFunction]) -> Result<Vec<u8>, String> {
             result_types(export.returns.wasm_type),
         );
     }
-    for export in exports {
-        types.function(
-            export
-                .arguments
-                .iter()
-                .map(|argument| val_type(argument.wasm_type)),
-            result_types(export.returns.wasm_type),
-        );
-    }
     module.section(&types);
 
     let mut imports = ImportSection::new();
@@ -115,9 +106,8 @@ fn emit_forwarder(exports: &[BindingFunction]) -> Result<Vec<u8>, String> {
     module.section(&imports);
 
     let mut functions = FunctionSection::new();
-    let import_type_count = exports.len() as u32;
     for index in 0..exports.len() {
-        functions.function(import_type_count + index as u32);
+        functions.function(index as u32);
     }
     module.section(&functions);
 
@@ -249,6 +239,57 @@ mod tests {
         .unwrap()
     }
 
+    fn multi_interface() -> WasmInterface {
+        WasmInterface::parse(
+            r#"
+            (wasm/interface
+             {:schema "hara.wasm-interface/0-alpha"
+              :namespace math.scalar
+              :module "math.wasm"
+              :exports
+              {difference {:wasm/export "sub"
+                           :arguments [{:name left :hara/type :i64 :wasm/type :i64}
+                                       {:name right :hara/type :i64 :wasm/type :i64}]
+                           :returns {:hara/type :i64 :wasm/type :i64}}
+               sum {:wasm/export "add"
+                    :arguments [{:name left :hara/type :i64 :wasm/type :i64}
+                                {:name right :hara/type :i64 :wasm/type :i64}]
+                    :returns {:hara/type :i64 :wasm/type :i64}}}})
+            "#,
+            "fixture",
+        )
+        .unwrap()
+    }
+
+    fn multi_library() -> Vec<u8> {
+        let mut module = Module::new();
+        let mut types = TypeSection::new();
+        types.function([ValType::I64, ValType::I64], [ValType::I64]);
+        module.section(&types);
+
+        let mut functions = FunctionSection::new();
+        functions.function(0);
+        functions.function(0);
+        module.section(&functions);
+
+        let mut exports = ExportSection::new();
+        exports.export("add", ExportKind::Func, 0);
+        exports.export("sub", ExportKind::Func, 1);
+        module.section(&exports);
+
+        let mut code = wasm_encoder::CodeSection::new();
+        for instruction in [Instruction::I64Add, Instruction::I64Sub] {
+            let mut function = Function::new([]);
+            function.instruction(&Instruction::LocalGet(0));
+            function.instruction(&Instruction::LocalGet(1));
+            function.instruction(&instruction);
+            function.instruction(&Instruction::End);
+            code.function(&function);
+        }
+        module.section(&code);
+        module.finish()
+    }
+
     #[test]
     fn adapter_is_deterministic_and_records_all_input_digests() {
         let interface = interface();
@@ -282,8 +323,7 @@ mod tests {
         let library = wasmtime::Module::new(&engine, ADD).unwrap();
         let adapter = wasmtime::Module::new(&engine, &artifact.bytes).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
-        let library_instance =
-            wasmtime::Instance::new(&mut store, &library, &[]).unwrap();
+        let library_instance = wasmtime::Instance::new(&mut store, &library, &[]).unwrap();
         let add = library_instance.get_func(&mut store, "add").unwrap();
         let adapter_instance =
             wasmtime::Instance::new(&mut store, &adapter, &[add.into()]).unwrap();
@@ -295,14 +335,38 @@ mod tests {
     }
 
     #[test]
-    fn adapter_output_order_is_canonical_for_constructed_interfaces() {
-        let mut interface = interface();
-        interface.exports.reverse();
-        let first = generate_adapter(ADD, &interface).unwrap();
-        interface.exports.reverse();
-        let second = generate_adapter(ADD, &interface).unwrap();
+    fn multi_export_adapter_forwards_each_import_with_its_declared_signature() {
+        let library_bytes = multi_library();
+        let artifact = generate_adapter(&library_bytes, &multi_interface()).unwrap();
+        let engine = wasmtime::Engine::default();
+        let library = wasmtime::Module::new(&engine, &library_bytes).unwrap();
+        let adapter = wasmtime::Module::new(&engine, &artifact.bytes).unwrap();
+        let mut store = wasmtime::Store::new(&engine, ());
+        let library_instance = wasmtime::Instance::new(&mut store, &library, &[]).unwrap();
+        let add = library_instance.get_func(&mut store, "add").unwrap();
+        let sub = library_instance.get_func(&mut store, "sub").unwrap();
+        let adapter_instance =
+            wasmtime::Instance::new(&mut store, &adapter, &[sub.into(), add.into()]).unwrap();
+        let difference = adapter_instance
+            .get_typed_func::<(i64, i64), i64>(&mut store, "difference")
+            .unwrap();
+        let sum = adapter_instance
+            .get_typed_func::<(i64, i64), i64>(&mut store, "sum")
+            .unwrap();
 
-        assert_eq!(first, second);
+        assert_eq!(difference.call(&mut store, (23, 19)).unwrap(), 4);
+        assert_eq!(sum.call(&mut store, (19, 23)).unwrap(), 42);
+    }
+
+    #[test]
+    fn adapter_output_order_is_canonical_for_constructed_interfaces() {
+        let mut interface = multi_interface();
+        interface.exports.reverse();
+        let first = generate_adapter(&multi_library(), &interface).unwrap();
+        interface.exports.reverse();
+        let second = generate_adapter(&multi_library(), &interface).unwrap();
+
+        assert_eq!(first.bytes, second.bytes);
     }
 
     #[test]
