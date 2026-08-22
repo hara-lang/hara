@@ -1,12 +1,14 @@
 package hara.truffle;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 import hara.truffle.InstrumentationException.Code;
 import hara.truffle.InstrumentationModel.Capability;
 import hara.truffle.InstrumentationModel.EventDelivery;
+import hara.truffle.InstrumentationModel.EventEnvelope;
 import hara.truffle.InstrumentationModel.EventKind;
 import hara.truffle.InstrumentationModel.EventPhase;
 import hara.truffle.InstrumentationModel.InstrumentFilter;
@@ -161,6 +163,133 @@ public class SessionInstrumentationTest {
     assertEquals(Code.RUNTIME_CLOSED, closed.code());
   }
 
+  @Test
+  public void truffleProducerIsLazyAndEmitsPassiveTopLevelEvents() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("truffle");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      SessionKernel.Session session = kernel.create(sessionId);
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/interpreter", 0);
+      TargetDescriptor descriptor = service.targetDescriptor(target);
+      assertEquals(new RuntimeBackend("java-truffle"), descriptor.backend());
+      assertEquals(
+          Set.of(
+              Capability.EVENT_SEMANTIC_BOUNDARY,
+              Capability.EVENT_EXCEPTION,
+              Capability.EVENT_LIFECYCLE,
+              Capability.INSPECT_SOURCE_LOCATION),
+          descriptor.capabilities());
+      NativeInstrumentHandle trace =
+          service.register(
+              passive(
+                  "trace",
+                  sessionId.value(),
+                  Set.of(EventKind.SEMANTIC_BOUNDARY, EventKind.EXECUTION_TERMINAL),
+                  Set.of(Capability.EVENT_SEMANTIC_BOUNDARY, Capability.EVENT_LIFECYCLE),
+                  ProjectionRequest.none()));
+
+      session.eval("42");
+      assertFalse(session.truffleInstrumentationActive());
+      assertTrue(service.drainEvents(trace).events().isEmpty());
+
+      NativeInstrumentation.NativeAttachment attachment = service.attach(trace, target);
+      assertTrue(session.truffleInstrumentationActive());
+      session.eval("42");
+      var events = service.drainEvents(trace).events();
+      assertTrue(events.stream().anyMatch(event -> event.event() == EventKind.SEMANTIC_BOUNDARY));
+      assertEquals(
+          1,
+          events.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .count());
+
+      service.detach(attachment);
+      assertFalse(session.truffleInstrumentationActive());
+    }
+  }
+
+  @Test
+  public void topLevelFailureIsReportedOnceAndNestedRootsAreNotTerminal() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("failure");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      SessionKernel.Session session = kernel.create(sessionId);
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/interpreter", 0);
+      NativeInstrumentHandle trace =
+          service.register(
+              passive(
+                  "trace",
+                  sessionId.value(),
+                  Set.of(EventKind.EXCEPTION_RAISE, EventKind.EXECUTION_TERMINAL),
+                  Set.of(Capability.EVENT_EXCEPTION, Capability.EVENT_LIFECYCLE),
+                  ProjectionRequest.none()));
+      service.attach(trace, target);
+
+      session.eval("(do (defn inner [] 1) (inner))");
+      var success = service.drainEvents(trace).events();
+      assertEquals(
+          1,
+          success.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .count());
+
+      assertThrows(IllegalArgumentException.class, () -> session.eval("(throw \"boom\")"));
+      var failure = service.drainEvents(trace).events();
+      assertEquals(
+          1,
+          failure.stream().filter(event -> event.event() == EventKind.EXCEPTION_RAISE).count());
+      assertEquals(
+          1,
+          failure.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .count());
+      EventEnvelope terminal =
+          failure.stream()
+              .filter(event -> event.event() == EventKind.EXECUTION_TERMINAL)
+              .findFirst()
+              .orElseThrow();
+      assertEquals("failure", terminal.data().get("status"));
+    }
+  }
+
+  @Test
+  public void sourceLocationIsProjectedOnlyToRequestingInstruments() {
+    SessionModel.SessionId sessionId = SessionModel.SessionId.parse("locations");
+    try (SessionKernel kernel = new SessionKernel(false, false)) {
+      SessionKernel.Session session = kernel.create(sessionId);
+      NativeInstrumentation service = kernel.instrumentation(sessionId);
+      NativeTargetHandle target =
+          service.bindTargetIdentity(sessionId.value() + "/interpreter", 0);
+      NativeInstrumentHandle withoutLocation =
+          service.register(
+              passive(
+                  "without-location",
+                  sessionId.value(),
+                  Set.of(EventKind.SEMANTIC_BOUNDARY),
+                  Set.of(Capability.EVENT_SEMANTIC_BOUNDARY),
+                  ProjectionRequest.none()));
+      NativeInstrumentHandle withLocation =
+          service.register(
+              passive(
+                  "with-location",
+                  sessionId.value(),
+                  Set.of(EventKind.SEMANTIC_BOUNDARY),
+                  Set.of(Capability.EVENT_SEMANTIC_BOUNDARY, Capability.INSPECT_SOURCE_LOCATION),
+                  new ProjectionRequest(true, null, null, null, null, null, null)));
+      service.attach(withoutLocation, target);
+      service.attach(withLocation, target);
+
+      session.eval("42", "location.hal", 1, 1);
+      var without = service.drainEvents(withoutLocation).events();
+      var with = service.drainEvents(withLocation).events();
+      assertFalse(without.isEmpty());
+      assertTrue(with.stream().allMatch(event -> event.location() != null));
+      assertTrue(without.stream().allMatch(event -> event.location() == null));
+    }
+  }
+
   private static TargetDescriptor interpreterTarget(String id, String session) {
     return new TargetDescriptor(
         id,
@@ -171,14 +300,28 @@ public class SessionInstrumentationTest {
   }
 
   private static InstrumentRegistration passive(String id, String session) {
+    return passive(
+        id,
+        session,
+        Set.of(EventKind.EXECUTION_TERMINAL),
+        Set.of(Capability.EVENT_LIFECYCLE),
+        ProjectionRequest.none());
+  }
+
+  private static InstrumentRegistration passive(
+      String id,
+      String session,
+      Set<EventKind> events,
+      Set<Capability> capabilities,
+      ProjectionRequest projection) {
     return new InstrumentRegistration(
         id,
         session,
         InstrumentMode.PASSIVE,
-        Set.of(Capability.EVENT_LIFECYCLE),
-        Set.of(EventKind.EXECUTION_TERMINAL),
+        capabilities,
+        events,
         new InstrumentFilter(session, Set.of(), Set.of(), Set.of()),
-        ProjectionRequest.none(),
+        projection,
         EventDelivery.queue(8));
   }
 }

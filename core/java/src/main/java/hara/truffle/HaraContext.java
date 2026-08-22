@@ -261,6 +261,7 @@ public final class HaraContext {
   private final Keyword testRunner;
   private final boolean sandboxRestricted;
   private final SessionKernel sessionKernel;
+  private final String instrumentationSessionId;
   private final FilesystemRuntimeBinding filesystemRuntime;
   private final IFilesystem ownedFilesystem;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
@@ -316,6 +317,8 @@ public final class HaraContext {
         sandboxRestricted
             ? null
             : SessionKernel.embedding(environment.getOptions().get(HaraLanguage.KERNEL_TOKEN));
+    this.instrumentationSessionId =
+        sessionKernel == null ? null : environment.getOptions().get(HaraLanguage.SESSION_ID);
     FilesystemRuntimeBinding attachedFilesystem =
         FilesystemContextBindings.claim(
             environment.getOptions().get(HaraLanguage.FILESYSTEM_BINDING_TOKEN));
@@ -333,6 +336,7 @@ public final class HaraContext {
       this.filesystemRuntime = null;
       this.ownedFilesystem = null;
     }
+
     currentNamespace = namespace(INTRINSIC_NAMESPACE);
     Map<String, Integer> ifnMethods = new LinkedHashMap<>();
     ifnMethods.put("invoke", -1);
@@ -366,6 +370,121 @@ public final class HaraContext {
     }
     currentNamespace = namespace("user");
     initializeUserNamespace(currentNamespace);
+  }
+
+  void publishInterpreterEvent(
+      InstrumentationModel.EventKind event,
+      com.oracle.truffle.api.source.SourceSection source,
+      java.util.Map<String, String> data) {
+    InstrumentationModel.TargetHandle target = instrumentationInterpreterTarget();
+    if (target == null
+        || !sessionKernel
+            .instrumentationHub()
+            .hasSubscribers(target, event)) {
+      return;
+    }
+    InstrumentationModel.EventLocation location = null;
+    if (sessionKernel.instrumentationHub().hasSourceLocationSubscribers(target, event)
+        && source != null
+        && source.isAvailable()) {
+      location =
+          new InstrumentationModel.EventLocation(
+              source.getSource().getName(),
+              java.util.List.of(),
+              new InstrumentationModel.SourceSpan(
+                  Math.max(0, source.getCharIndex()),
+                  Math.max(0, source.getCharIndex() + source.getCharLength())),
+              null,
+              null);
+    }
+    sessionKernel
+        .instrumentationHub()
+        .publish(
+            target,
+            event,
+            InstrumentationModel.EventPhase.LIVE,
+            location,
+            data);
+  }
+
+  void publishHbcEvent(
+      InstrumentationModel.EventKind event,
+      int instructionPointer,
+      String function,
+      String sourceId,
+      java.util.Map<String, String> data) {
+    InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
+    if (target == null
+        || !sessionKernel
+            .instrumentationHub()
+            .hasSubscribers(target, event)) {
+      return;
+    }
+    InstrumentationModel.EventLocation location =
+        new InstrumentationModel.EventLocation(
+            sourceId,
+            java.util.List.of(),
+            null,
+            function,
+            instructionPointer);
+    sessionKernel
+        .instrumentationHub()
+        .publish(
+            target,
+            event,
+            InstrumentationModel.EventPhase.LIVE,
+            location,
+            data);
+  }
+
+  boolean hbcInstrumentationEnabled(InstrumentationModel.EventKind event) {
+    InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
+    return target != null && sessionKernel.instrumentationHub().hasSubscribers(target, event);
+  }
+
+  InstrumentationModel.InstrumentDirective pollHbcDirective() {
+    InstrumentationModel.TargetHandle target = instrumentationHbcTarget();
+    if (target == null) return InstrumentationModel.InstrumentDirective.CONTINUE;
+    InstrumentationModel.InstrumentDirective directive =
+        sessionKernel.instrumentationHub().pollDirective(target);
+    return directive == null ? InstrumentationModel.InstrumentDirective.CONTINUE : directive;
+  }
+
+  private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {
+    return sessionKernel == null
+            || !sessionKernel.instrumentationActive()
+            || instrumentationSessionId == null
+            || instrumentationSessionId.isBlank()
+        ? null
+        : sessionKernel.instrumentationTarget(
+            instrumentationSessionId, InstrumentationModel.TargetKind.INTERPRETER);
+  }
+
+  private InstrumentationModel.TargetHandle instrumentationHbcTarget() {
+    return sessionKernel == null
+            || !sessionKernel.instrumentationActive()
+            || instrumentationSessionId == null
+            || instrumentationSessionId.isBlank()
+        ? null
+        : sessionKernel.instrumentationTarget(
+            instrumentationSessionId, InstrumentationModel.TargetKind.HBC);
+  }
+
+  public void publishInterpreterTerminal(
+      com.oracle.truffle.api.source.SourceSection source, String status) {
+    publishInterpreterEvent(
+        InstrumentationModel.EventKind.EXECUTION_TERMINAL,
+        source,
+        java.util.Map.of("status", status));
+  }
+
+  public void publishInterpreterTopLevelFailure(
+      com.oracle.truffle.api.source.SourceSection source, RuntimeException error) {
+    publishInterpreterEvent(
+        InstrumentationModel.EventKind.EXCEPTION_RAISE,
+        source,
+        java.util.Map.of("type", error.getClass().getName()));
+    publishInterpreterTerminal(source, "failure");
   }
 
   void installHalcSchemas(HalcArtifact.SchemaIndex schemas) {
@@ -3832,6 +3951,7 @@ public final class HaraContext {
     if (metadata != null) {
       context = (IMapType<Object, Object>) context.assoc(Keyword.create("meta"), metadata);
     }
+
     return result.withContext(context);
   }
 
