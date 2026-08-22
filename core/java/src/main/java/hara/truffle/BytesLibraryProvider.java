@@ -10,6 +10,6 @@ public final class BytesLibraryProvider implements HaraLibraryProvider {
 
   @Override
   public void install(HaraContext context) {
-    context.collectBuiltins("std.foundation.bytes", context::installBytesLibrary);
+    context.installBytesLibrary();
   }
 }

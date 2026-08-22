@@ -10,6 +10,6 @@ public final class PromiseLibraryProvider implements HaraLibraryProvider {
 
   @Override
   public void install(HaraContext context) {
-    context.collectBuiltins("std.foundation.promise", context::installPromiseLibrary);
+    context.installPromiseLibrary();
   }
 }

@@ -25,7 +25,11 @@ public class StdPortableLibraryProvidersTest {
     assertFalse(namespaces.contains("std.block"));
     assertFalse(namespaces.contains("std.logic.kanren"));
     assertFalse(namespaces.contains("code.test"));
-    assertTrue(namespaces.contains("std.foundation.coroutine"));
+    assertFalse(namespaces.contains("std.foundation.coroutine"));
+    assertTrue(namespaces.contains("std.native.String"));
+    assertTrue(namespaces.contains("std.native.Bytes"));
+    assertTrue(namespaces.contains("std.native.Promise"));
+    assertTrue(namespaces.contains("std.native.Coroutine"));
   }
 
   @Test

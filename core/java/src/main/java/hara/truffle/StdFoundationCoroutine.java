@@ -6,7 +6,7 @@ import hara.lang.protocol.IDeref;
 import java.util.concurrent.SynchronousQueue;
 import org.graalvm.nativeimage.ImageInfo;
 
-/** Static Java implementation exported exclusively as std.foundation.coroutine/*. */
+/** Static Java implementation exported through std.native.Coroutine/*. */
 public final class StdFoundationCoroutine {
   private StdFoundationCoroutine() {}
 

@@ -982,6 +982,19 @@ public final class HaraContext {
             HaraVar.Origin.JAVA_LIBRARY);
   }
 
+  void defineNativeFunction(
+      String namespaceName,
+      String symbolName,
+      Function<Object[], Object> implementation,
+      IMetadata metadata) {
+    namespace(namespaceName)
+        .define(
+            symbolName,
+            new VariadicBuiltin(namespaceName + "/" + symbolName, implementation),
+            metadata,
+            HaraVar.Origin.RUNTIME_PRIMITIVE);
+  }
+
   void defineLibraryValue(
       String namespaceName, String symbolName, Object value, IMetadata metadata) {
     namespace(namespaceName)
@@ -4192,12 +4205,6 @@ public final class HaraContext {
   }
 
   private void installNativeLibraries() {
-    StdFoundationCoroutine.install(this, "std.native.Coroutine");
-    namespace("std.native.Coroutine").define(
-        "instance?",
-        new UnaryBuiltin(
-            "std.native.Coroutine/instance?",
-            value -> HaraBox.unwrap(value) instanceof StdFoundationCoroutine.HaraCoroutine));
     NativeCrypto.install(this, "std.native.Crypto");
     HaraNamespace document = namespace("std.native.Document");
     for (String method : NATIVE_TYPES.get("Document")) {
@@ -4207,6 +4214,7 @@ public final class HaraContext {
               "std.native.Document/" + method,
               values -> NativeDocument.operation("std.native.Document/" + method, values)));
     }
+
     HaraNamespace test = namespace("std.native.Test");
     test.define("catalog", new VariadicBuiltin("std.native.Test/catalog", this::nativeTestCatalog));
     test.define("config", new VariadicBuiltin("std.native.Test/config", this::nativeTestConfig));
@@ -4854,7 +4862,22 @@ public final class HaraContext {
   }
 
   void installStringLibrary() {
-    withDefinitionOrigin(HaraVar.Origin.JAVA_LIBRARY, this::defineStringLibrary);
+    withDefinitionOrigin(HaraVar.Origin.RUNTIME_PRIMITIVE, this::defineStringLibrary);
+  }
+
+  void installCoroutineLibrary() {
+    withDefinitionOrigin(
+        HaraVar.Origin.RUNTIME_PRIMITIVE,
+        () -> {
+          StdFoundationCoroutine.install(this, "std.native.Coroutine");
+          namespace("std.native.Coroutine")
+              .define(
+                  "instance?",
+                  new UnaryBuiltin(
+                      "std.native.Coroutine/instance?",
+                      value ->
+                          HaraBox.unwrap(value) instanceof StdFoundationCoroutine.HaraCoroutine));
+        });
   }
 
   void installStringLikeFacade() {
@@ -4862,9 +4885,7 @@ public final class HaraContext {
   }
 
   private void defineStringLibrary() {
-    defineStringLikeFacade();
-
-    HaraNamespace string = namespace("std.foundation.string");
+    HaraNamespace string = namespace("std.native.String");
 
     // Spec-named symbols.
     string.define(
@@ -5044,11 +5065,16 @@ public final class HaraContext {
   }
 
   void installBytesLibrary() {
-    withDefinitionOrigin(HaraVar.Origin.JAVA_LIBRARY, this::defineBytesLibrary);
+    withDefinitionOrigin(HaraVar.Origin.RUNTIME_PRIMITIVE, this::defineBytesLibrary);
   }
 
   private void defineBytesLibrary() {
-    HaraNamespace bytes = namespace("std.foundation.bytes");
+    HaraNamespace bytes = namespace("std.native.Bytes");
+    bytes.define("new", new VariadicBuiltin("std.native.Bytes/new", this::createBytes));
+    bytes.define(
+        "instance?",
+        new UnaryBuiltin(
+            "std.native.Bytes/instance?", value -> HaraBox.unwrap(value) instanceof byte[]));
     bytes.define(
         "count",
         new UnaryBuiltin("bytes/count", value -> (long) bytesValue(value, "bytes/count").length));
@@ -5064,11 +5090,16 @@ public final class HaraContext {
   }
 
   void installPromiseLibrary() {
-    withDefinitionOrigin(HaraVar.Origin.JAVA_LIBRARY, this::definePromiseLibrary);
+    withDefinitionOrigin(HaraVar.Origin.RUNTIME_PRIMITIVE, this::definePromiseLibrary);
   }
 
   private void definePromiseLibrary() {
-    HaraNamespace promise = namespace("std.foundation.promise");
+    HaraNamespace promise = namespace("std.native.Promise");
+    promise.define("run", new UnaryBuiltin("std.native.Promise/run", this::promiseRun));
+    promise.define(
+        "instance?",
+        new UnaryBuiltin(
+            "std.native.Promise/instance?", value -> HaraBox.unwrap(value) instanceof HaraPromise));
     promise.define("new", new UnaryBuiltin("promise/new", this::promiseNew));
     promise.define("from", new UnaryBuiltin("promise/from", this::promiseFrom));
     promise.define("all", new UnaryBuiltin("promise/all", this::promiseAll));
