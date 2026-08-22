@@ -626,6 +626,7 @@ final class InstrumentationHub implements AutoCloseable {
       case CONTINUE -> Capability.CONTROL_RESUME;
       case SUSPEND -> Capability.CONTROL_PAUSE;
       case STEP_NEXT -> Capability.CONTROL_SINGLE_STEP;
+      case SETTLE -> Capability.CONTROL_SETTLE;
       case TERMINATE -> Capability.CONTROL_TERMINATE;
     };
   }

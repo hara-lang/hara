@@ -28,38 +28,88 @@ import java.util.Iterator;
 public final class HbcMachine {
   private HbcMachine() {}
 
-  public static Object execute(HbcProgram program, HaraContext context) {
-    if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.MACHINE_RESUME)) {
-      context.publishHbcEvent(
-          InstrumentationModel.EventKind.MACHINE_RESUME,
-          0,
-          null,
-          program.namespace(),
-          java.util.Map.of());
+  static final class ExecutionState {
+    private final HbcProgram program;
+    private final int functionIndex;
+    private final Function function;
+    private final Object[] locals;
+    private final ArrayList<Object> stack;
+    private final ArrayDeque<CallFrame> calls;
+    private final int instructionPointer;
+
+    private ExecutionState(
+        HbcProgram program,
+        int functionIndex,
+        Function function,
+        Object[] locals,
+        ArrayList<Object> stack,
+        ArrayDeque<CallFrame> calls,
+        int instructionPointer) {
+      this.program = program;
+      this.functionIndex = functionIndex;
+      this.function = function;
+      this.locals = locals;
+      this.stack = stack;
+      this.calls = calls;
+      this.instructionPointer = instructionPointer;
     }
-    return HaraBox.export(call(program, context, program.entry(), new Object[0], new Object[0]));
+
+    HbcProgram program() {
+      return program;
+    }
+  }
+
+  static final class SuspendedExecution extends RuntimeException {
+    SuspendedExecution() {
+      super("HBC execution suspended by instrumentation");
+    }
+  }
+
+  public static Object execute(HbcProgram program, HaraContext context) {
+    ExecutionState retained = context.takeHbcExecution(program);
+    return HaraBox.export(
+        call(
+            program,
+            context,
+            program.entry(),
+            new Object[0],
+            new Object[0],
+            retained));
   }
 
   private static Object call(
-      HbcProgram program, HaraContext context, int functionIndex, Object[] arguments, Object[] captures) {
-    Function function = program.functions().get(functionIndex);
-    Object[] locals = bindLocals(function, arguments, captures);
-    ArrayList<Object> stack = new ArrayList<>(function.maxStack());
-    ArrayDeque<CallFrame> calls = new ArrayDeque<>();
-    int ip = 0;
+      HbcProgram program,
+      HaraContext context,
+      int functionIndex,
+      Object[] arguments,
+      Object[] captures,
+      ExecutionState retained) {
+    Function function;
+    Object[] locals;
+    ArrayList<Object> stack;
+    ArrayDeque<CallFrame> calls;
+    int ip;
+    if (retained == null) {
+      function = program.functions().get(functionIndex);
+      locals = bindLocals(function, arguments, captures);
+      stack = new ArrayList<>(function.maxStack());
+      calls = new ArrayDeque<>();
+      ip = 0;
+    } else {
+      functionIndex = retained.functionIndex;
+      function = retained.function;
+      locals = retained.locals;
+      stack = retained.stack;
+      calls = retained.calls;
+      ip = retained.instructionPointer;
+    }
+    boolean resumed = retained != null;
+    boolean stepAfterInstruction = false;
     while (true) {
       Instruction instruction = function.code().get(ip);
       InstrumentationModel.InstrumentDirective directive = context.pollHbcDirective();
       if (directive == InstrumentationModel.InstrumentDirective.SUSPEND) {
-        if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.MACHINE_SUSPEND)) {
-          context.publishHbcEvent(
-              InstrumentationModel.EventKind.MACHINE_SUSPEND,
-              ip,
-              function.name(),
-              program.namespace(),
-              java.util.Map.of());
-        }
-        throw new HaraException("HBC execution suspended by instrumentation");
+        return suspend(context, program, functionIndex, function, locals, stack, calls, ip);
       }
       if (directive == InstrumentationModel.InstrumentDirective.TERMINATE) {
         if (context.hbcInstrumentationEnabled(
@@ -73,6 +123,18 @@ public final class HbcMachine {
         }
         throw new HaraException("HBC execution terminated by instrumentation");
       }
+      if (resumed) {
+        if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.MACHINE_RESUME)) {
+          context.publishHbcEvent(
+              InstrumentationModel.EventKind.MACHINE_RESUME,
+              ip,
+              function.name(),
+              program.namespace(),
+              java.util.Map.of());
+        }
+        resumed = false;
+      }
+      stepAfterInstruction = directive == InstrumentationModel.InstrumentDirective.STEP_NEXT;
       if (context.hbcInstrumentationEnabled(
           InstrumentationModel.EventKind.INSTRUCTION_EXECUTE)) {
         context.publishHbcEvent(
@@ -129,12 +191,18 @@ public final class HbcMachine {
         }
         case JUMP -> {
           ip = index(instruction.first());
+          if (stepAfterInstruction) {
+            return suspend(context, program, functionIndex, function, locals, stack, calls, ip);
+          }
           continue;
         }
         case JUMP_IF_FALSE -> {
           Object condition = pop(stack);
           if (!truthy(condition)) {
             ip = index(instruction.first());
+            if (stepAfterInstruction) {
+              return suspend(context, program, functionIndex, function, locals, stack, calls, ip);
+            }
             continue;
           }
         }
@@ -164,6 +232,9 @@ public final class HbcMachine {
             locals = bindLocals(function, args, closure.captures);
             stack = new ArrayList<>(function.maxStack());
             ip = 0;
+            if (stepAfterInstruction) {
+              return suspend(context, program, functionIndex, function, locals, stack, calls, ip);
+            }
             continue;
           }
           try {
@@ -207,7 +278,9 @@ public final class HbcMachine {
                   Math.min(locals.length, currentCaptureBase + target.captureCount()));
           if (target.asyncFunction()) {
             int targetIndex = index(instruction.first());
-            stack.add(context.hbcAsync(() -> call(program, context, targetIndex, args, inherited)));
+            stack.add(
+                context.hbcAsync(
+                    () -> call(program, context, targetIndex, args, inherited, null)));
           } else {
             calls.push(new CallFrame(functionIndex, function, locals, stack, ip + 1));
             functionIndex = index(instruction.first());
@@ -215,6 +288,9 @@ public final class HbcMachine {
             locals = bindLocals(function, args, inherited);
             stack = new ArrayList<>(function.maxStack());
             ip = 0;
+            if (stepAfterInstruction) {
+              return suspend(context, program, functionIndex, function, locals, stack, calls, ip);
+            }
             continue;
           }
         }
@@ -424,6 +500,9 @@ public final class HbcMachine {
           stack = caller.stack;
           stack.add(result);
           ip = caller.returnIp;
+          if (stepAfterInstruction) {
+            return suspend(context, program, functionIndex, function, locals, stack, calls, ip);
+          }
           continue;
         }
         case THROW -> {
@@ -441,6 +520,8 @@ public final class HbcMachine {
         }
         case RETHROW -> throw new HbcThrown(pop(stack));
         }
+      } catch (SuspendedExecution suspension) {
+        throw suspension;
       } catch (RuntimeException failure) {
         Integer target = routeFailure(function, ip, failure, locals, stack);
         while (target == null && !calls.isEmpty()) {
@@ -475,7 +556,32 @@ public final class HbcMachine {
         continue;
       }
       ip++;
+      if (stepAfterInstruction) {
+        return suspend(context, program, functionIndex, function, locals, stack, calls, ip);
+      }
     }
+  }
+
+  private static Object suspend(
+      HaraContext context,
+      HbcProgram program,
+      int functionIndex,
+      Function function,
+      Object[] locals,
+      ArrayList<Object> stack,
+      ArrayDeque<CallFrame> calls,
+      int ip) {
+    context.retainHbcExecution(
+        new ExecutionState(program, functionIndex, function, locals, stack, calls, ip));
+    if (context.hbcInstrumentationEnabled(InstrumentationModel.EventKind.MACHINE_SUSPEND)) {
+      context.publishHbcEvent(
+          InstrumentationModel.EventKind.MACHINE_SUSPEND,
+          ip,
+          function.name(),
+          program.namespace(),
+          java.util.Map.of());
+    }
+    throw new SuspendedExecution();
   }
 
   private static Object invokeGlobal(HaraContext context, String name, Object[] arguments) {
@@ -830,9 +936,10 @@ public final class HbcMachine {
     Object invoke(Object[] arguments) {
       Function function = program.functions().get(prototype);
       if (function.asyncFunction()) {
-        return context.hbcAsync(() -> call(program, context, prototype, arguments, captures));
+        return context.hbcAsync(
+            () -> call(program, context, prototype, arguments, captures, null));
       }
-      return call(program, context, prototype, arguments, captures);
+      return call(program, context, prototype, arguments, captures, null);
     }
 
     @ExportMessage

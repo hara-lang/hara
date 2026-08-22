@@ -36,6 +36,7 @@ import org.graalvm.polyglot.PolyglotException;
 import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.io.IOAccess;
+import org.graalvm.polyglot.io.ByteSequence;
 
 /** Owns the runtime contexts shared by local and RESP clients. */
 final class SessionKernel implements AutoCloseable {
@@ -278,6 +279,9 @@ final class SessionKernel implements AutoCloseable {
                 Capability.EVENT_LIFECYCLE,
                 Capability.INSPECT_SOURCE_LOCATION,
                 Capability.CONTROL_PAUSE,
+                Capability.CONTROL_SINGLE_STEP,
+                Capability.CONTROL_RESUME,
+                Capability.CONTROL_SETTLE,
                 Capability.CONTROL_TERMINATE)));
   }
 
@@ -900,6 +904,27 @@ final class SessionKernel implements AutoCloseable {
 
     Value eval(String source) {
       return eval(source, null, 1, 1);
+    }
+
+    Value evalHbc(hara.truffle.bytecode.HbcProgram program) {
+      activeEvaluations.incrementAndGet();
+      try {
+        synchronized (this) {
+          requireActive();
+          Source source =
+              Source.newBuilder(
+                      HaraLanguage.ID,
+                      ByteSequence.create(hara.truffle.bytecode.HbcCodec.encode(program)),
+                      "session.hbc")
+                  .mimeType(HaraLanguage.BYTECODE_MIME_TYPE)
+                  .build();
+          return context.eval(source);
+        }
+      } catch (PolyglotException error) {
+        throw new IllegalArgumentException(error.getMessage(), error);
+      } finally {
+        activeEvaluations.decrementAndGet();
+      }
     }
 
     Object evalTransfer(String source) {

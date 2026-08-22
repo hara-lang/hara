@@ -265,6 +265,7 @@ public final class HaraContext {
   private final FilesystemRuntimeBinding filesystemRuntime;
   private final IFilesystem ownedFilesystem;
   private final java.util.List<Object> nativeTestResults = new ArrayList<>();
+  private HbcMachine.ExecutionState retainedHbcExecution;
   private final Map<String, HaraNamespace> namespaces = new ConcurrentHashMap<>();
   private final Map<String, Map<String, HaraMacro>> macros = new ConcurrentHashMap<>();
   private final Map<String, Map<String, String>> aliases = new ConcurrentHashMap<>();
@@ -448,6 +449,20 @@ public final class HaraContext {
     InstrumentationModel.InstrumentDirective directive =
         sessionKernel.instrumentationHub().pollDirective(target);
     return directive == null ? InstrumentationModel.InstrumentDirective.CONTINUE : directive;
+  }
+
+  synchronized HbcMachine.ExecutionState takeHbcExecution(hara.truffle.bytecode.HbcProgram program) {
+    HbcMachine.ExecutionState retained = retainedHbcExecution;
+    if (retained == null) return null;
+    if (!retained.program().equals(program)) {
+      throw new HaraException("HBC execution is suspended for another program");
+    }
+    retainedHbcExecution = null;
+    return retained;
+  }
+
+  synchronized void retainHbcExecution(HbcMachine.ExecutionState execution) {
+    retainedHbcExecution = java.util.Objects.requireNonNull(execution, "execution");
   }
 
   private InstrumentationModel.TargetHandle instrumentationInterpreterTarget() {
@@ -6816,6 +6831,8 @@ public final class HaraContext {
     ContextSnapshot snapshot = snapshot();
     try {
       return HbcMachine.execute(program, this);
+    } catch (HbcMachine.SuspendedExecution suspension) {
+      throw suspension;
     } catch (RuntimeException error) {
       restore(snapshot);
       throw error;

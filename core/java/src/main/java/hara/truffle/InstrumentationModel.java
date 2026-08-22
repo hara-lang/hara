@@ -304,6 +304,7 @@ final class InstrumentationModel {
     CONTINUE,
     SUSPEND,
     STEP_NEXT,
+    SETTLE,
     TERMINATE
   }
 
