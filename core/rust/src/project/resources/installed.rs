@@ -256,6 +256,79 @@ fn conflict(coordinate: &str, constraints: &[String], versions: &[Version]) -> S
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
+
+    fn digest(bytes: &[u8]) -> String {
+        format!("sha256:{:x}", Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn rejects_tampered_installed_package_before_resource_loading() {
+        let archive_digest = "a".repeat(64);
+        let root = std::env::temp_dir().join(format!(
+            "hara-installed-manifest-{}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let package_root = root.join("roots/sha256").join(&archive_digest);
+        let source = b"(ns demo.core)\n";
+        let project = br#"{:hara/type :project
+ :hara/version "1.0.0"
+ :project/id "hara:demo/pkg"
+ :project/version "1.0.0"
+ :project/source-paths ["src"]
+ :project/test-paths []
+ :project/extension-paths []
+ :project/capabilities #{}
+ :project/dependencies {}}"#;
+        let manifest = format!(
+            r#"{{:harp/format "0.0.0-alpha"
+ :package {{:identity "hara:demo/pkg" :version "1.0.0"}}
+ :files {{"project.edn" {{:sha256 "{}" :size {}}}
+          "src/demo/core.hal" {{:sha256 "{}" :size {}}}}}}}"#,
+            digest(project),
+            project.len(),
+            digest(source),
+            source.len()
+        );
+
+        fs::create_dir_all(package_root.join("src/demo")).unwrap();
+        fs::write(package_root.join("project.edn"), project).unwrap();
+        fs::write(package_root.join("src/demo/core.hal"), source).unwrap();
+        fs::write(package_root.join("package.edn"), manifest).unwrap();
+        let registration = root.join("packages/hara/demo/pkg/1.0.0.edn");
+        fs::create_dir_all(registration.parent().unwrap()).unwrap();
+        fs::write(
+            &registration,
+            format!(
+                "{{:coordinate \"hara:demo/pkg\" :version \"1.0.0\" :archive-sha256 \"sha256:{}\" :root {}}}\n",
+                archive_digest,
+                Form::String(package_root.display().to_string())
+            ),
+        )
+        .unwrap();
+
+        read_registration(&root, "hara:demo/pkg", &Version::parse("1.0.0").unwrap()).unwrap();
+        fs::write(package_root.join("src/demo/core.hal"), b"(ns demo.tampered)\n").unwrap();
+        let error =
+            read_registration(&root, "hara:demo/pkg", &Version::parse("1.0.0").unwrap())
+                .unwrap_err();
+        assert!(error.contains("package/digest-mismatch"), "{error}");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+}
+
 fn ordered(
     project: &Project,
     selected: &BTreeMap<String, InstalledProject>,
