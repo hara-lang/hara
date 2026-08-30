@@ -1,45 +1,43 @@
 (ns std.foundation-test-primitives-test)
 
-(def evaluations (atom 0))
-(def passing (test-check "inner pass" {:a [1 2]} {:a [1 2]}))
-(def failing (test-check "inner fail" 1 2))
-(def thrown
-  (test-check
-   "inner throw"
-   (do
-     (swap! evaluations inc)
-     (throw (ex-info "boom" {:kind :test})))
-   :never))
-
-(def config-result (Test/config {:session-scope :fresh}))
-
-(def results
-  [(test-check
-    "test-check returns portable passing and failing maps"
-    [(Test/passed? passing) (Result/status passing)
-     (Test/passed? failing) (Test/actual failing) (Test/expected failing)]
-    [true :success false 1 2])
-
-   (test-check
-    "test-check captures thrown expressions and evaluates them once"
-    (let [error (Result/error-value thrown)]
-      [(Test/passed? thrown) (Result/status thrown)
-       (ex-message error) (ex-data error) (deref evaluations)])
-    [false :error "boom" {:kind :test} 1])
-
-   (test-check
-    "test-check compares nested collections"
-    (Test/passed? passing)
-    true)
-
-   (test-check
-    "Test/passed? follows the native Result contract"
-    [(Test/passed? passing) (Test/passed? failing) (Test/passed? thrown)]
-    [true false false])
-
-   (test-check
-    "Test/config validates options without a Foundation forwarding method"
-    [(map? config-result) (:options config-result)]
-    [true {:session-scope :fresh}])])
-
-results
+^{:refer std.native.Test/check}
+(Test/check
+ [{:name "Test/check returns portable passing and failing maps"
+   :test (fn []
+           (let [passing (test-check "inner pass" {:a [1 2]} {:a [1 2]})
+                 failing (test-check "inner fail" 1 2)]
+             [(Test/passed? passing) (Result/status passing)
+              (Test/passed? failing) (Test/actual failing) (Test/expected failing)]))
+   :expected [true :success false 1 2]}
+  {:name "Test/check captures thrown expressions and evaluates them once"
+   :test (fn []
+           (let [evaluations (atom 0)
+                 thrown (test-check
+                         "inner throw"
+                         (do
+                           (swap! evaluations inc)
+                           (throw (ex-info "boom" {:kind :test})))
+                         :never)
+                 error (Result/error-value thrown)]
+             [(Test/passed? thrown) (Result/status thrown)
+              (ex-message error) (ex-data error) (deref evaluations)]))
+   :expected [false :error "boom" {:kind :test} 1]}
+  {:name "Test/check compares nested collections"
+   :test (fn []
+           (Test/passed?
+            (test-check "nested pass" {:a [1 2]} {:a [1 2]})))
+   :expected true}
+  {:name "Test/passed? follows the native Result contract"
+   :test (fn []
+           (let [passing (test-check "pass" 1 1)
+                 failing (test-check "fail" 1 2)
+                 thrown (test-check "error" (throw (ex-info "boom" {})) :never)]
+             [(Test/passed? passing)
+              (Test/passed? failing)
+              (Test/passed? thrown)]))
+   :expected [true false false]}
+  {:name "Test/config validates options without a Foundation forwarding method"
+   :test (fn []
+           (let [config-result (Test/config {:session-scope :fresh})]
+             [(map? config-result) (:options config-result)]))
+   :expected [true {:session-scope :fresh}]}])
