@@ -1,5 +1,4 @@
-(ns std.foundation.deps-test
-  (:use code.test))
+(ns std.foundation.deps-test)
 
 (def graph
   {:a {:entry :A :deps #{:b}}
@@ -7,41 +6,41 @@
    :c {:entry :C :deps #{}}
    :x {:entry :X :deps #{}}})
 
-(def results
-  [(fact "dependency accessors support the portable map graph"
-     [(dep-get graph :a)
-      (dep-entries graph :a)
-      (set (dep-keys graph))]
-     => [:A #{:b} #{:a :b :c :x}])
-
-   (fact "dependency resolution includes transitive and independent nodes"
-     [(deps-resolve graph [:a])
-      (set (deps-ordered graph [:a :x]))]
-     => [{:all #{:a :b :c}
-          :graph {:a #{:b} :b #{:c} :c #{}}}
-         #{:a :b :c :x}])
-
-   (fact "dependency order places dependencies before dependents"
-     (deps-ordered graph [:a])
-     => [:c :b :a])
-
-   (fact "reverse dependency helpers preserve teardown order"
-     [(dependents-direct graph :c)
-      (dependents-all graph :c)
-      (dependents-ordered graph :c)]
-     => [#{:b}
-         {:c #{:b} :b #{:a} :a #{}}
-         [:a :b :c]])
-
-   (fact "selected reverse dependencies stay inside the selection"
-     (dependents-ordered graph :c [:b :c])
-     => [:b :c])
-
-   (fact "cycles are rejected by topological ordering"
-     (try
-       (deps-ordered {:a {:deps #{:b}} :b {:deps #{:a}}})
-       false
-       (catch Throwable error true))
-     => true)])
-
-(pr-str (run '[std.foundation.deps-test]))
+^{:refer std.foundation/deps-ordered}
+(Test/check
+ [{:name "dependency accessors support the portable map graph"
+   :test (fn []
+           [(dep-get graph :a)
+            (dep-entries graph :a)
+            (set (dep-keys graph))])
+   :expected [:A #{:b} #{:a :b :c :x}]}
+  {:name "dependency resolution includes transitive and independent nodes"
+   :test (fn []
+           [(deps-resolve graph [:a])
+            (set (deps-ordered graph [:a :x]))])
+   :expected [{:all #{:a :b :c}
+               :graph {:a #{:b} :b #{:c} :c #{}}}
+              #{:a :b :c :x}]}
+  {:name "dependency order places dependencies before dependents"
+   :test (fn []
+           (deps-ordered graph [:a]))
+   :expected [:c :b :a]}
+  {:name "reverse dependency helpers preserve teardown order"
+   :test (fn []
+           [(dependents-direct graph :c)
+            (dependents-all graph :c)
+            (dependents-ordered graph :c)])
+   :expected [#{:b}
+              {:c #{:b} :b #{:a} :a #{}}
+              [:a :b :c]]}
+  {:name "selected reverse dependencies stay inside the selection"
+   :test (fn []
+           (dependents-ordered graph :c [:b :c]))
+   :expected [:b :c]}
+  {:name "cycles are rejected by topological ordering"
+   :test (fn []
+           (try
+             (deps-ordered {:a {:deps #{:b}} :b {:deps #{:a}}})
+             false
+             (catch Throwable error true)))
+   :expected true}])
