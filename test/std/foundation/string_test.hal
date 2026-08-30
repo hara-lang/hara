@@ -1,203 +1,211 @@
 (ns std.foundation.string-test)
 
-(defmacro fact [name actual arrow expected]
-  `(let [name# ~name
-         expected# ~expected]
-     {:name name#
-      :test (fn [] ~actual)
-      :expected expected#}))
-
 (defstruct WrappedName [value])
 
 (extend-type WrappedName IStringLike
   (to-string [wrapped] (:value wrapped))
   (from-string [wrapped text] (WrappedName text)))
 
-(def results
-  [(fact "length"
-     (str/length "hara")
-     => 4)
-   (fact "length-unicode"
-     (str/length "hé")
-     => 2)
-   (fact "character lookups scan strings once against persistent sets"
-     [(str/includes-any? "abc" #{\x \z})
-      (str/includes-any? "abc" #{\x \b})
-      (str/includes-any? "😀" #{\😀})
-      (str/includes-any? "abc" #{})]
-     => [false true true false])
-   (fact "blank-is-nil-aware"
-     [(str/blank? nil)
-      (str/blank? "")
-      (str/blank? " \n")
-      (str/blank? "x")]
-     => [true true true false])
-   (fact "pad-left"
-     (str/pad-left "x" 3 "0")
-     => "00x")
-   (fact "pad-right"
-     (str/pad-right "x" 3 "0")
-     => "x00")
-   (fact "starts-with?"
-     (str/starts-with? "hara" "ha")
-     => true)
-   (fact "ends-with?"
-     (str/ends-with? "hara" "ra")
-     => true)
-   (fact "char-at"
-     [(str/char-at "hara" 1)
-      (char? (str/char-at "hara" 1))
-      (str/char-at " " 0)
-      (str/char-at "a😀b" 1)]
-     => [\a true \space \😀])
-   (fact "strings expose characters to sequence and lookup operations"
-     [(first "abc")
-      (char? (first "abc"))
-      (get "abc" 1)
-      (str (first "abc"))]
-     => [\a true \b "a"])
-   (fact "split"
-     (nth (str/split "a,b" ",") 1)
-     => "b")
-   (fact "split-three"
-     (nth (str/split "a,b,c" ",") 1)
-     => "b")
-   (fact "split-regexp"
-     (std.foundation.string/split "ab" #"")
-     => ["a" "b"])
-   (fact "split-empty-input"
-     [(str/split "" ",") (str/split "" #",")]
-     => [nil nil])
-   (fact "join-preserves-two-argument-contract"
-     (str/join "," ["a" "b"])
-     => "a,b")
-   (fact "index-of"
-     (str/index-of "ababa" "ba" 2)
-     => 3)
-   (fact "slice"
-     (str/slice "hara" 1 3)
-     => "ar")
-   (fact "canonical-case-names-and-aliases"
-     [(str/upper-case "hara")
-      (str/lower-case "HARA")
-      (str/upper "hara")
-      (str/lower "HARA")
-      (str/capital-case "hELLO")
-      (str/capital-case "")
-      (str/capital-case "λ")]
-     => ["HARA" "hara" "HARA" "hara" "Hello" "" "Λ"])
-   (fact "to-fixed"
-     (str/to-fixed 1.25 2)
-     => "1.25")
-   (fact "to-fixed-integer"
-     (str/to-fixed 1 2)
-     => "1.00")
-   (fact "replace"
-     (str/replace "hara" "a" "x")
-     => "hxrx")
-   (fact "replace-all-occurrences"
-     (str/replace "a-b-a" "a" "x")
-     => "x-b-x")
-   (fact "trim"
-     (str/trim " x ")
-     => "x")
-   (fact "trim-left"
-     (str/trim-left " x ")
-     => "x ")
-   (fact "trim-left-multi"
-     (str/trim-left "  a  ")
-     => "a  ")
-   (fact "trim-right"
-     (str/trim-right " x ")
-     => " x")
-   (fact "trim-right-multi"
-     (str/trim-right "  a  ")
-     => "  a")
-   (fact "trim-newlines-removes-only-trailing-line-breaks"
-     (str/trim-newlines "\n\n    hello   \r\n")
-     => "\n\n    hello   ")
-   (fact "encode-utf8/decode-utf8 round-trip"
-     (str/decode-utf8 (str/encode-utf8 "hé"))
-     => "hé")
-   (fact "tag-preserves-strings-keywords-bytes-and-printable-values"
-     [(str/tag "hello")
-      (str/tag :hello)
-      (str/tag :ns/hello)
-      (str/tag (str/encode-utf8 "hé"))
-      (str/tag 'hello)
-      (str/tag 42)
-      (str/tag nil)
-      (str/tag [1 :a])]
-     => ["hello" "hello" "ns/hello" "hé"
-         "hello" "42" "nil" "[1 :a]"])
-   (fact "tag-concatenates-variadic-values"
-     (str/tag :a "/" :ns/b "/" 3)
-     => "a/ns/b/3")
-   (fact "escape-replaces-one-character-string-keys"
-     (str/escape "a\n\"" {"\n" "\\n"
-                           "\"" "\\\""})
-     => "a\\n\\\"")
-   (fact "caseless-equality"
-     [(str/caseless= "heLLo" "HellO")
-      (str/caseless= "hello" "world")]
-     => [true false])
-   (fact "indexed-edits-use-portable-unicode-indexes"
-     [(str/replace-at "hλra" 1 "a")
-      (str/insert-at "hλra" 2 "!")]
-     => ["hara" "hλ!ra"])
-   (fact "identifier-case-conversion-recognises-runs-and-camel-humps"
-     [(str/camel-case "hello__--  world")
-      (str/pascal-case "hello_world")
-      (str/snake-case "helloWorld")
-      (str/spear-case "hello_world")
-      (str/dot-case "hello-world")
-      (str/snake-case "version2Value")
-      (str/camel-case "")
-      (str/dot-case "")]
-     => ["helloWorld" "HelloWorld" "hello_world"
-         "hello-world" "hello.world" "version2_value" "" ""])
-   (fact "identifier-case-conversion-never-treats-pipe-as-a-separator"
-     [(str/camel-case "hello|world")
-      (str/snake-case "hello|World")
-      (str/dot-case "a|b")]
-     => ["hello|world" "hello|world" "a|b"])
-   (fact "StringLike conversions preserve built-in and custom types"
-     [(str/from-string :hello (str/to-string :hello/world))
-      (str/from-string 'hello (str/to-string 'hello/world))
-      (IStringLike/to-string (WrappedName "hello"))
-      (:value (IStringLike/from-string (WrappedName "") "world"))]
-     => [:hello/world (symbol "hello/world") "hello" "world"])
-   (fact "StringLike membership uses protocol inheritance and extensions"
-     [(str/string-like? :hello)
-      (satisfies? IStringLike :hello)
-      (str/string-like? 'hello)
-      (satisfies? IStringLike 'hello)
-      (str/string-like? (WrappedName "hello"))
-      (satisfies? IStringLike (WrappedName "hello"))
-      (str/string-like? "hello")]
-     => [true true true true true true false])
-   (fact "native adapters retain inline metadata across runtimes"
-     [(get (meta (var std.foundation.string/string-like?)) :inline)
-      (get (meta (var std.foundation.string/to-string)) :inline)
-      (get (meta (var std.foundation.string/from-string)) :inline)
-      (get (meta (var std.foundation.string/split)) :inline)]
-     => [true true true true])
-   (fact "wrap preserves built-in and custom StringLike types"
-     [((str/wrap str/upper-case) :hello)
-      ((str/wrap str/split) (symbol "a.b") ".")
-      (:value ((str/wrap str/lower-case) (WrappedName "HELLO")))
-      ((str/wrap str/blank? true) :hello)]
-     => [:HELLO [(symbol "a") (symbol "b")] "hello" false])
-   (fact "wrap-compare compares StringLike values as strings"
-     ((str/wrap-compare str/caseless=) :hello (symbol "HELLO"))
-     => true)
-   (fact "excluded-foundation-base-string-helpers-remain-absent"
-     [(nil? (std.foundation/resolve 'str/joinl))
-      (nil? (std.foundation/resolve (symbol "str/|")))
-      (nil? (std.foundation/resolve 'str/truncate))
-      (nil? (std.foundation/resolve 'str/lines))
-      (nil? (std.foundation/resolve 'str/single-line))
-      (nil? (std.foundation/resolve 'str/filter-empty))]
-     => [true true true true true true])])
-
-(Test/check results)
+^{:refer std.foundation.string/length}
+(Test/check
+ [{:name "length"
+   :test (fn [] (str/length "hara"))
+   :expected 4}
+  {:name "length-unicode"
+   :test (fn [] (str/length "hé"))
+   :expected 2}
+  {:name "character lookups scan strings once against persistent sets"
+   :test (fn []
+           [(str/includes-any? "abc" #{\x \z})
+            (str/includes-any? "abc" #{\x \b})
+            (str/includes-any? "😀" #{\😀})
+            (str/includes-any? "abc" #{})])
+   :expected [false true true false]}
+  {:name "blank-is-nil-aware"
+   :test (fn []
+           [(str/blank? nil)
+            (str/blank? "")
+            (str/blank? " \n")
+            (str/blank? "x")])
+   :expected [true true true false]}
+  {:name "pad-left"
+   :test (fn [] (str/pad-left "x" 3 "0"))
+   :expected "00x"}
+  {:name "pad-right"
+   :test (fn [] (str/pad-right "x" 3 "0"))
+   :expected "x00"}
+  {:name "starts-with?"
+   :test (fn [] (str/starts-with? "hara" "ha"))
+   :expected true}
+  {:name "ends-with?"
+   :test (fn [] (str/ends-with? "hara" "ra"))
+   :expected true}
+  {:name "char-at"
+   :test (fn []
+           [(str/char-at "hara" 1)
+            (char? (str/char-at "hara" 1))
+            (str/char-at " " 0)
+            (str/char-at "a😀b" 1)])
+   :expected [\a true \space \😀]}
+  {:name "strings expose characters to sequence and lookup operations"
+   :test (fn []
+           [(first "abc")
+            (char? (first "abc"))
+            (get "abc" 1)
+            (str (first "abc"))])
+   :expected [\a true \b "a"]}
+  {:name "split"
+   :test (fn [] (nth (str/split "a,b" ",") 1))
+   :expected "b"}
+  {:name "split-three"
+   :test (fn [] (nth (str/split "a,b,c" ",") 1))
+   :expected "b"}
+  {:name "split-regexp"
+   :test (fn [] (std.foundation.string/split "ab" #""))
+   :expected ["a" "b"]}
+  {:name "split-empty-input"
+   :test (fn [] [(str/split "" ",") (str/split "" #",")])
+   :expected [nil nil]}
+  {:name "join-preserves-two-argument-contract"
+   :test (fn [] (str/join "," ["a" "b"]))
+   :expected "a,b"}
+  {:name "index-of"
+   :test (fn [] (str/index-of "ababa" "ba" 2))
+   :expected 3}
+  {:name "slice"
+   :test (fn [] (str/slice "hara" 1 3))
+   :expected "ar"}
+  {:name "canonical-case-names-and-aliases"
+   :test (fn []
+           [(str/upper-case "hara")
+            (str/lower-case "HARA")
+            (str/upper "hara")
+            (str/lower "HARA")
+            (str/capital-case "hELLO")
+            (str/capital-case "")
+            (str/capital-case "λ")])
+   :expected ["HARA" "hara" "HARA" "hara" "Hello" "" "Λ"]}
+  {:name "to-fixed"
+   :test (fn [] (str/to-fixed 1.25 2))
+   :expected "1.25"}
+  {:name "to-fixed-integer"
+   :test (fn [] (str/to-fixed 1 2))
+   :expected "1.00"}
+  {:name "replace"
+   :test (fn [] (str/replace "hara" "a" "x"))
+   :expected "hxrx"}
+  {:name "replace-all-occurrences"
+   :test (fn [] (str/replace "a-b-a" "a" "x"))
+   :expected "x-b-x"}
+  {:name "trim"
+   :test (fn [] (str/trim " x "))
+   :expected "x"}
+  {:name "trim-left"
+   :test (fn [] (str/trim-left " x "))
+   :expected "x "}
+  {:name "trim-left-multi"
+   :test (fn [] (str/trim-left "  a  "))
+   :expected "a  "}
+  {:name "trim-right"
+   :test (fn [] (str/trim-right " x "))
+   :expected " x"}
+  {:name "trim-right-multi"
+   :test (fn [] (str/trim-right "  a  "))
+   :expected "  a"}
+  {:name "trim-newlines-removes-only-trailing-line-breaks"
+   :test (fn [] (str/trim-newlines "\n\n    hello   \r\n"))
+   :expected "\n\n    hello   "}
+  {:name "encode-utf8/decode-utf8 round-trip"
+   :test (fn [] (str/decode-utf8 (str/encode-utf8 "hé")))
+   :expected "hé"}
+  {:name "tag-preserves-strings-keywords-bytes-and-printable-values"
+   :test (fn []
+           [(str/tag "hello")
+            (str/tag :hello)
+            (str/tag :ns/hello)
+            (str/tag (str/encode-utf8 "hé"))
+            (str/tag 'hello)
+            (str/tag 42)
+            (str/tag nil)
+            (str/tag [1 :a])])
+   :expected ["hello" "hello" "ns/hello" "hé"
+              "hello" "42" "nil" "[1 :a]"]}
+  {:name "tag-concatenates-variadic-values"
+   :test (fn [] (str/tag :a "/" :ns/b "/" 3))
+   :expected "a/ns/b/3"}
+  {:name "escape-replaces-one-character-string-keys"
+   :test (fn []
+           (str/escape "a\n\"" {"\n" "\\n"
+                                 "\"" "\\\""}))
+   :expected "a\\n\\\""}
+  {:name "caseless-equality"
+   :test (fn []
+           [(str/caseless= "heLLo" "HellO")
+            (str/caseless= "hello" "world")])
+   :expected [true false]}
+  {:name "indexed-edits-use-portable-unicode-indexes"
+   :test (fn []
+           [(str/replace-at "hλra" 1 "a")
+            (str/insert-at "hλra" 2 "!")])
+   :expected ["hara" "hλ!ra"]}
+  {:name "identifier-case-conversion-recognises-runs-and-camel-humps"
+   :test (fn []
+           [(str/camel-case "hello__--  world")
+            (str/pascal-case "hello_world")
+            (str/snake-case "helloWorld")
+            (str/spear-case "hello_world")
+            (str/dot-case "hello-world")
+            (str/snake-case "version2Value")
+            (str/camel-case "")
+            (str/dot-case "")])
+   :expected ["helloWorld" "HelloWorld" "hello_world"
+              "hello-world" "hello.world" "version2_value" "" ""]}
+  {:name "identifier-case-conversion-never-treats-pipe-as-a-separator"
+   :test (fn []
+           [(str/camel-case "hello|world")
+            (str/snake-case "hello|World")
+            (str/dot-case "a|b")])
+   :expected ["hello|world" "hello|world" "a|b"]}
+  {:name "StringLike conversions preserve built-in and custom types"
+   :test (fn []
+           [(str/from-string :hello (str/to-string :hello/world))
+            (str/from-string 'hello (str/to-string 'hello/world))
+            (IStringLike/to-string (WrappedName "hello"))
+            (:value (IStringLike/from-string (WrappedName "") "world"))])
+   :expected [:hello/world (symbol "hello/world") "hello" "world"]}
+  {:name "StringLike membership uses protocol inheritance and extensions"
+   :test (fn []
+           [(str/string-like? :hello)
+            (satisfies? IStringLike :hello)
+            (str/string-like? 'hello)
+            (satisfies? IStringLike 'hello)
+            (str/string-like? (WrappedName "hello"))
+            (satisfies? IStringLike (WrappedName "hello"))
+            (str/string-like? "hello")])
+   :expected [true true true true true true false]}
+  {:name "native adapters retain inline metadata across runtimes"
+   :test (fn []
+           [(get (meta (var std.foundation.string/string-like?)) :inline)
+            (get (meta (var std.foundation.string/to-string)) :inline)
+            (get (meta (var std.foundation.string/from-string)) :inline)
+            (get (meta (var std.foundation.string/split)) :inline)])
+   :expected [true true true true]}
+  {:name "wrap preserves built-in and custom StringLike types"
+   :test (fn []
+           [((str/wrap str/upper-case) :hello)
+            ((str/wrap str/split) (symbol "a.b") ".")
+            (:value ((str/wrap str/lower-case) (WrappedName "HELLO")))
+            ((str/wrap str/blank? true) :hello)])
+   :expected [:HELLO [(symbol "a") (symbol "b")] "hello" false]}
+  {:name "wrap-compare compares StringLike values as strings"
+   :test (fn [] ((str/wrap-compare str/caseless=) :hello (symbol "HELLO")))
+   :expected true}
+  {:name "excluded-foundation-base-string-helpers-remain-absent"
+   :test (fn []
+           [(nil? (std.foundation/resolve 'str/joinl))
+            (nil? (std.foundation/resolve (symbol "str/|")))
+            (nil? (std.foundation/resolve 'str/truncate))
+            (nil? (std.foundation/resolve 'str/lines))
+            (nil? (std.foundation/resolve 'str/single-line))
+            (nil? (std.foundation/resolve 'str/filter-empty))])
+   :expected [true true true true true true]}])
