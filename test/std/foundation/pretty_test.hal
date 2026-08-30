@@ -1,0 +1,62 @@
+(ns std.foundation.pretty-test
+  (:use code.test))
+
+(def document
+  [:document/group
+   "("
+   [:document/nest 2 [:document/line] "alpha" [:document/line] "beta"]
+   ")"])
+
+(def results
+  [(fact "Document constructors produce canonical ordinary data"
+     [(Document/text "a" "b")
+      (Document/annotate :pretty/string "x")
+      (Document/valid? document)
+      (Document/valid? [:document/unknown "x"])]
+     => ["ab" [:document/annotate :pretty/string "x"] true false])
+   (fact "group stays flat within width"
+     (std.foundation.pretty/render document {:width 80})
+     => "( alpha beta)")
+   (fact "group breaks and nests beyond width"
+     (std.foundation.pretty/render document {:width 8})
+     => "(\n  alpha\n  beta)")
+   (fact "pass text has zero visible width"
+     (std.foundation.pretty/render
+       [:document/group [:document/pass "<color>"] "123"
+        [:document/line] "4"]
+       {:width 5})
+     => "<color>123 4")
+   (fact "the structural visitors implement the Foundation protocol alias"
+     [(satisfies? IEncodeVisitor (std.foundation.pretty/canonical-printer))
+      (satisfies? IEncodeVisitor (std.foundation.pretty/pretty-printer))]
+     => [true true])
+   (fact "pretty values carry semantic annotations before rendering"
+     (std.foundation.pretty/format-doc
+       (std.foundation.pretty/pretty-printer)
+       "hello")
+     => [:document/annotate :pretty/string "\"hello\""])
+   (fact "portable EDN rendering is deterministic and width-sensitive"
+     [(std.foundation.pretty/render
+        (std.foundation.pretty/format-doc
+          (std.foundation.pretty/canonical-printer)
+          {:b 2 :a 1}))
+      (std.foundation.pretty/pprint-str
+        {:a [1 2 3] :b "hello"}
+        {:width 12})]
+     => ["{:a 1 :b 2}" "{:a [1 2 3],\n :b \"hello\"}"])
+   (fact "metadata and semantic handlers are portable options"
+     [(std.foundation.pretty/pprint-str
+        (with-meta [1 2] {:source "test"})
+        {:print-meta true :width 10})
+      (std.foundation.pretty/pprint-str
+        42
+        {:print-handlers {:number (fn [visitor value] "number")}})]
+     => ["^{:source \"test\"}\n[1 2]" "number"])
+   (fact "pretty/* is the portable Foundation alias"
+     (pretty/pprint-str {:b 2 :a 1})
+     => "{:a 1, :b 2}")
+   (fact "options must be a map"
+     (std.foundation.pretty/render "abc" nil)
+     => (throws))])
+
+(pr-str (run '[std.foundation.pretty-test]))

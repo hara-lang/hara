@@ -1,0 +1,3596 @@
+;; ============================================================================
+;; std.foundation — the portable value bootstrap and root language library.
+;;
+;; Contract:
+;;   * Keep this layer portable and free of direct host interop.
+;;   * Every public function carries a docstring and portable schema metadata.
+;;   * Macros carry docstrings; their form-level signatures remain outside the
+;;     value schema grammar.
+;;
+;; Embedded bootstrap family (core/rust/bootstrap.namespaces):
+;;
+;;   std.foundation
+;;   std.foundation.bytes
+;;   std.foundation.coroutine
+;;   std.foundation.pretty
+;;   std.foundation.promise
+;;   std.foundation.string
+;;
+;; The root owns composition, collections, sequences, set algebra, metadata,
+;; references, structural traversal, predicates, regular-expression helpers,
+;; dependency helpers, and the small language-level operations referred into
+;; ordinary namespaces.
+;;
+;; Runtime-installed objects such as Edn, Json, RegExp, Crypto, File, Socket,
+;; Host, Kernel, and OS use std.native.* identities but are not loadable Foundation
+;; children. Availability of capability-bearing objects remains profile- and
+;; host-dependent.
+;;
+;; Higher-level ownership:
+;;   * portable filesystem operations: std.fs, std.fs.path, and std.fs.walk
+;;   * formatting, reports, tables, and terminal rendering: std.lib.format.*
+;;   * component lifecycle: std.lib.component
+;;   * cryptographic algorithms above native primitives: std.crypto.*
+;;   * specialized collection helpers: std.lib.collection
+;;
+;; Authoritative references:
+;;   * core/spec/std/foundation-architecture.md
+;;   * core/spec/std/foundation-migrations.json
+;;   * scripts/generate_foundation_api_manifest.py
+;; ============================================================================
+(ns std.foundation)
+
+;; ============================================================================
+;; Protocol boundary
+;;
+;; These are the small, portable names that cross into a protocol or native
+;; type. Java and Rust share this contract; neither runtime should grow a
+;; second public implementation of one of these names.
+;; ============================================================================
+
+;; Associative access is a protocol operation.  The Foundation name is the
+;; portable convenience surface; receiver behavior belongs to ILookup.
+(defn ^{:inline true
+        :schema [:function [:fn [:any :any] :any]
+                  [:fn [:any :any :any] :any]]}
+  get
+  "Returns the value associated with key, or the supplied default."
+  ([value key]
+   (if (= (type value) :std.native.Object)
+     (Obj/get value key)
+     (ILookup/lookup value key)))
+  ([value key not-found]
+   (if (= (type value) :std.native.Object)
+     (Obj/get value key not-found)
+     (ILookup/lookup value key not-found))))
+
+(defn ^{:inline true :schema [:fn [:any] :long]}
+  count
+  "Returns the number of values through ICount."
+  [value]
+  (ICount/count value))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  empty
+  "Returns an empty value through IEmpty."
+  [value]
+  (IEmpty/empty value))
+
+(defn ^{:inline true :schema [:fn [:any :int] :any]}
+  nth
+  "Returns the value at index through INth."
+  [value index]
+  (INth/nth value index))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  seq
+  "Returns a reusable sequence view through the native iterator boundary."
+  [value]
+  (Iter/seq value))
+
+;; ============================================================================
+;; Representation values and constructors
+;;
+;; Base contains only representation-level operations that have no natural
+;; receiver. The public names remain Foundation Vars so they work as values;
+;; `:inline true` lets direct calls use the same native operation without
+;; creating another semantic pathway.
+;; ============================================================================
+
+;; Base-backed bootstrap shims remain ordinary functions for interpretation and
+;; first-class use. The compiler validates `:inline true` against their
+;; transparent forwarding form and lowers direct calls to the Base operation.
+(defn ^{:inline true :schema [:fn [& :any] :list]}
+  list "Creates a persistent list from values." [& values] (apply Base/list values))
+
+(defn ^{:inline true :schema [:fn [& :any] :vector]}
+  vector "Creates a persistent vector from values." [& values] (apply Base/vector values))
+
+(defn ^{:inline true :schema [:fn [& :any] :any]}
+  array
+  "Creates a mutable array from values."
+  [& values]
+  (apply Arr/new values))
+
+(defn ^{:inline true :schema [:fn [& :any] :any]}
+  object
+  "Creates a mutable object from alternating keys and values."
+  [& entries]
+  (apply Obj/new entries))
+
+(defn ^{:inline true :public true :schema [:fn [& :int] :bytes]}
+  bytes
+  "Creates an opaque byte buffer through Bytes/new."
+  [& values]
+  (apply Bytes/new values))
+
+(defn ^{:inline true :schema [:fn [:any] :vector]}
+  vec "Converts value to a persistent vector." [value] (Base/vec value))
+
+(defn ^{:inline true :schema [:fn [:any] :set]}
+  set "Converts value to a persistent set." [value] (Base/set value))
+
+(defn ^{:inline true :schema [:fn [:any] :long]}
+  hash "Returns the stable hash of value." [value] (Base/hash value))
+
+(defn ^{:inline true
+        :schema [:function [:fn [] :any]
+                           [:fn [:any] :any]
+                           [:fn [:long :long] :any]]}
+  uuid
+  "Creates a random UUID or constructs one from a value or two bit halves."
+  ([] (Base/uuid))
+  ([value] (Base/uuid value))
+  ([most-significant-bits least-significant-bits]
+   (Base/uuid most-significant-bits least-significant-bits)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  uuid?
+  "Returns true when value has the portable UUID type."
+  [value]
+  (= (type value) :std.native.UUID))
+
+(defn ^{:schema [:fn [:any :any & :any] :any]}
+  conj
+  "Adds one or more values through IConj."
+  [value item & more]
+  (loop [output (IConj/conj value item)
+         remaining more]
+    ;; Use the count boundary here instead of empty?.  The browser raw-WASM
+    ;; bootstrap does not yet expose the predicate's protocol dispatch while
+    ;; loading Foundation, whereas the variadic tail is always countable.
+    (if (= 0 (count remaining))
+      output
+      (recur (IConj/conj output (first remaining))
+             (rest remaining)))))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  cons
+  "Adds a value to the front of a sequence through ICons."
+  [value sequence]
+  (ICons/cons sequence value))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  pair "Creates a key/value pair." [left right] (global/pair left right))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  pair? "Returns true when value is a key/value pair." [value]
+  (= (type value) :std.native.MapEntry))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  map-entry? "Returns true when value is a map entry pair." [value]
+  (= (type value) :std.native.MapEntry))
+
+(defn ^{:inline true :schema [:fn [& :any] :map]}
+  hash-map "Creates a persistent map from alternating keys and values." [& entries] (apply Base/hash-map entries))
+
+(defn ^{:inline true :schema [:fn [& :any] :set]}
+  hash-set "Creates a persistent set from values." [& values] (apply Base/hash-set values))
+
+(defn ^{:inline true :schema [:fn [:any] :atom]}
+  atom "Creates an atom containing value." [value] (Base/atom value))
+
+;; ---------------------------------------------------------------------------
+;; Runtime clocks and opaque values
+;; ---------------------------------------------------------------------------
+
+(defn ^{:inline true :schema [:fn [] :long]}
+  time-ms
+  "Returns Unix wall-clock milliseconds; the value may jump when the system clock is corrected."
+  []
+  (OS/time-ms))
+
+(defn ^{:inline true :schema [:fn [] :long]}
+  time-ns
+  "Returns a runtime-local monotonic nanosecond counter for elapsed-time differences."
+  []
+  (OS/time-ns))
+
+(defn ^{:schema [:fn [:fn & :any] :any]}
+  stream
+  "Creates a lazy asynchronous pull stream from a coroutine body and its initial arguments."
+  [function & arguments]
+  (apply Stream/generate function arguments))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  stream?
+  "Returns true when value satisfies the stream capability."
+  [value]
+  (satisfies? IStream value))
+
+(defn ^{:inline true :schema [:fn [:map] :any]}
+  pointer "Creates a context pointer from descriptor." [descriptor] (Base/pointer descriptor))
+
+(defn ^{:inline true
+        :schema [:function [:fn [:str] :symbol]
+                           [:fn [:str :str] :symbol]]}
+  symbol
+  "Creates a symbol with an optional namespace."
+  ([name] (Base/symbol name))
+  ([namespace name] (Base/symbol namespace name)))
+
+(defn ^{:inline true
+        :schema [:function [:fn [:str] :keyword]
+                           [:fn [:str :str] :keyword]]}
+  keyword
+  "Creates a keyword with an optional namespace."
+  ([name] (Base/keyword name))
+  ([namespace name] (Base/keyword namespace name)))
+
+(defn ^{:inline true :schema [:fn [:any] :str]}
+  name
+  "Returns the local name of a named value."
+  [value]
+  (INamespaced/name value))
+
+(defn ^{:inline true :schema [:fn [:any] :str]}
+  namespace
+  "Returns the namespace of a named value, or nil."
+  [value]
+  (INamespaced/namespace value))
+
+(defn ^{:schema [:function [:fn [] :str]
+                            [:fn [:any & :any] :str]]}
+  str
+  "Concatenates string text, omitting nil values and rendering characters as text."
+  ([] "")
+  ([value & more]
+   (String/join
+    ""
+    (map (fn [item]
+           (cond
+             (nil? item) ""
+             (string? item) item
+             (char? item) item
+             (uuid? item) (Printer/capture (fn [] (Printer/p item)))
+             :else (IDisplay/display item)))
+         (cons value more)))))
+
+(defn ^{:schema [:fn [& :any] :str]}
+  pr-str
+  "Returns the readable display representation of values."
+  [& values]
+  (String/join
+   " "
+   (map (fn [item]
+          (cond
+            (nil? item) "nil"
+            (uuid? item) (Printer/capture (fn [] (Printer/p item)))
+            :else (IDisplay/display item)))
+        values)))
+
+(defn ^{:schema [:fn [& :any] :any]}
+  p
+  "Writes values without a trailing newline."
+  [& values]
+  (apply Printer/p values))
+
+(defn ^{:schema [:fn [& :any] :any]}
+  println
+  "Writes values separated by spaces and terminated by a newline."
+  [& values]
+  (apply Printer/println values))
+
+(defn ^{:inline true :schema [:fn [:fn] :str]}
+  capture
+  "Captures printer output produced by a zero-argument function."
+  [function]
+  (Printer/capture function))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  reduced "Wraps value as an early reduction result." [value] (Base/reduced value))
+
+;; ---------------------------------------------------------------------------
+;; Foundation truth, identity, and predicate surface
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:fn & :any] :any]}
+  apply "Applies function to leading arguments and a final sequential value."
+  [function & arguments]
+  (Base/apply Base/apply (ICons/cons arguments function)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  not "Returns true when value is false or nil." [value] (if value false true))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  boolean "Coerces value to true or false using Hara truthiness." [value] (if value true false))
+
+(defn ^{:schema [:fn [:any :any] :long]}
+  compare
+  "Compares two mutually orderable Hara values using their portable order."
+  [left right]
+  (letfn [(compare-bytes
+            [left-bytes right-bytes]
+            (let [left-count (Bytes/count left-bytes)
+                  right-count (Bytes/count right-bytes)]
+              (loop [index 0]
+                (cond
+                  (= index left-count)
+                  (if (= left-count right-count) 0 -1)
+
+                  (= index right-count)
+                  1
+
+                  :else
+                  (let [ordering (compare (Bytes/get left-bytes index)
+                                          (Bytes/get right-bytes index))]
+                    (if (= ordering 0)
+                      (recur (inc index))
+                      ordering))))))]
+    (cond
+      (= left right)
+      0
+
+      (nil? left)
+      -1
+
+      (nil? right)
+      1
+
+      (and (number? left) (number? right))
+      (if (< left right) -1 1)
+
+      (and (or (string? left)
+               (keyword? left)
+               (symbol? left)
+               (char? left))
+           (or (string? right)
+               (keyword? right)
+               (symbol? right)
+               (char? right)))
+      (compare-bytes (String/encode-utf8 (str left))
+                     (String/encode-utf8 (str right)))
+
+      (and (boolean? left) (boolean? right))
+      (if (= left false) -1 1)
+
+      (and (bytes? left) (bytes? right))
+      (compare-bytes left right)
+
+      (and (sequential? left) (sequential? right))
+      (loop [left left
+             right right]
+        (cond
+          (empty? left)
+          (if (empty? right) 0 -1)
+
+          (empty? right)
+          1
+
+          :else
+          (let [ordering (compare (first left) (first right))]
+            (if (= ordering 0)
+              (recur (rest left) (rest right))
+              ordering))))
+
+      :else
+      (throw
+       (ex :argument {:left left :right right}
+           :ex/message "compare expects two mutually orderable Hara values")))))
+
+(defn ^{:schema [:fn [:any :any] :bool]}
+  not=
+  "Returns true when adjacent values are not all equal."
+  [a b]
+  (not (= a b)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  reduced? "Returns true when value is a reduced result." [value]
+  (= (type value) :std.native.Reduced))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  unreduced "Returns the value carried by a reduced result, or value unchanged." [value]
+  (Base/unreduced value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  nil? "Returns true when value is nil." [value] (= nil value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  not-nil? "Returns true when value is not nil." [value] (not (nil? value)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  boolean? "Returns true when value is a boolean." [value] (= (type value) :std.native.Boolean))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  false? "Returns true when value is false." [value] (= false value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  true? "Returns true when value is true." [value] (= true value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  string? "Returns true when value is a string." [value] (= (type value) :std.native.String))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  char? "Returns true when value is a character." [value] (= (type value) :std.native.Character))
+
+(defn ^{:inline true :schema [:fn [:any] :bool]}
+  number? "Returns true when value is numeric." [value] (Base/number? value))
+
+(defn ^{:inline true :public true :schema [:fn [:any] :bool]}
+  long? "Returns true when value is a signed 64-bit integer." [value] (Base/long? value))
+
+(defn ^{:inline true :public true :schema [:fn [:any] :bool]}
+  bigint?
+  "Returns true when value is an arbitrary-precision integer outside signed 64-bit range."
+  [value]
+  (= (type value) :std.native.BigInteger))
+
+(defn ^{:inline true :public true :schema [:fn [:any] :bool]}
+  integer?
+  "Returns true when value is an integer of either supported representation."
+  [value]
+  (or (long? value) (bigint? value)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  double? "Returns true when value is an IEEE-754 double." [value] (= (type value) :std.native.Float))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  keyword? "Returns true when value is a keyword." [value] (= (type value) :std.native.Keyword))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  symbol? "Returns true when value is a symbol." [value] (= (type value) :std.native.Symbol))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  pointer? "Returns true when value is a context pointer." [value] (= (type value) :std.native.Pointer))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  atom? "Returns true when value is an atom." [value] (= (type value) :std.native.Atom))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  fn? "Returns true when value satisfies IFn." [value] (satisfies? IFn value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  ex?
+  "Returns true when value has the portable Exception type."
+  [value]
+  (= (type value) :std.native.Exception))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  iterable? "Returns true when value satisfies IIter." [value] (satisfies? IIter value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  iterator? "Returns true when value satisfies IIterator." [value] (satisfies? IIterator value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  counted? "Returns true when value satisfies ICount." [value] (satisfies? ICount value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  reducible? "Returns true when value satisfies IReduce." [value] (satisfies? IReduce value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  indexed?
+  "Returns true when value supports positional indexing but is not a set."
+  [value]
+  (and (not (satisfies? ISetType value))
+       (satisfies? INth value)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  associative? "Returns true when value satisfies IAssoc." [value] (satisfies? IAssoc value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  findable? "Returns true when value satisfies IFind." [value] (satisfies? IFind value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  lookupable? "Returns true when value satisfies ILookup." [value] (satisfies? ILookup value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  derefable? "Returns true when value satisfies IDeref." [value] (satisfies? IDeref value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  resettable? "Returns true when value satisfies IReset." [value] (satisfies? IReset value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  casable? "Returns true when value satisfies ICas." [value] (satisfies? ICas value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  watchable? "Returns true when value satisfies IWatch." [value] (satisfies? IWatch value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  applicable? "Returns true when value satisfies IApplicable." [value] (satisfies? IApplicable value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  mutable? "Returns true when value satisfies IMutable." [value] (satisfies? IMutable value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  persistent? "Returns true when value satisfies IPersistent." [value] (satisfies? IPersistent value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  function? "Returns true when value is a native function." [value] (= (type value) :std.native.Function))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  bytes? "Returns true when value is a byte buffer." [value]
+  (or (= (type value) :std.native.Bytes)
+      (= (type value) :std.native.ByteBuffer)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  array? "Returns true when value is a mutable array." [value] (= (type value) :std.native.Array))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  object? "Returns true when value is a mutable object." [value] (= (type value) :std.native.Object))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  list? "Returns true when value is a persistent list." [value] (= (type value) :std.native.List))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  cons? "Returns true when value is a Cons sequence." [value] (= (type value) :std.native.Cons))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  vector? "Returns true when value is a persistent vector." [value]
+  (= (type value) :std.native.Vector))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  map? "Returns true when value is a persistent map." [value]
+  (satisfies? IMapType value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  set? "Returns true when value is a persistent set." [value]
+  (satisfies? ISetType value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  sequential? "Returns true when value has sequential collection semantics." [value]
+  (satisfies? ISequential value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  coll? "Returns true when value satisfies the runtime collection capability." [value]
+  (satisfies? IColl value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  seq? "Returns true when value is a realized sequence." [value]
+  (= (type value) :std.native.Seq))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  iter? "Returns true when value is an iterator." [value]
+  (= (type value) :std.native.Iterator))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  promise? "Returns true when value is a promise." [value]
+  (= (type value) :std.native.Promise))
+
+(defn ^{:inline true :schema [:fn [:any :any] :bool]}
+  satisfies? "Returns true when value satisfies protocol." [protocol value] (Base/satisfies? protocol value))
+
+(defn ^{:inline true :schema [:fn [:any] :bool]}
+  special-symbol?
+  "Returns true when value names a language special form."
+  [value]
+  (Base/special-symbol? value))
+
+(defn ^{:inline true :schema [:fn [:any] :keyword]}
+  type "Returns value's portable runtime type keyword." [value] (Base/type value))
+
+(defn ^{:inline true :schema [:fn [:any :any] :bool]}
+  instance? "Returns true when value is an instance of descriptor." [descriptor value] (Base/instance? descriptor value))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  schema "Compiles schema data into a SchemaType." [value] (Schema/compile value))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  schema? "Returns true when value is a native SchemaType." [value]
+  (= (type value) :std.native.SchemaType))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  schema-of
+  "Returns the compiled schema contract of variable."
+  [variable]
+  (let [contract (Schema/of variable)]
+    (if contract
+      contract
+      (let [value (deref variable)]
+        (if (schema? value) value nil)))))
+
+;; Runtime-backed namespace and evaluation operations remain ordinary functions for
+;; first-class use while direct calls lower to the native Runtime object.
+(defn ^{:inline true :schema [:fn [:any] :symbol]}
+  var-sym "Returns the qualified symbol naming variable." [variable] (Runtime/var-sym variable))
+
+(defn ^{:inline true :public true :schema [:fn [] :symbol]}
+  ns-current "Returns the active namespace symbol." [] (Runtime/current))
+
+(defn ^{:inline true :public true :schema [:fn [] :vector]}
+  ns-list "Returns descriptors for every known namespace." [] (Runtime/namespaces))
+
+(defn ^{:inline true :public true :schema [:fn [:any] :any]}
+  ns-info "Returns a namespace descriptor, or nil when unknown." [namespace] (Runtime/namespace namespace))
+
+(defn ^{:inline true :public true
+        :schema [:function [:fn [] :map]
+                           [:fn [:any] :map]]}
+  ns-vars
+  "Returns Vars owned by the active or supplied namespace."
+  ([] (Runtime/vars))
+  ([namespace] (Runtime/vars namespace)))
+
+(defn ^{:inline true :public true :schema [:fn [] :map]}
+  env-snapshot "Returns a stable descriptor of the current environment." [] (Runtime/snapshot))
+
+(defn ^{:inline true :public true :schema [:fn [:str] :any]}
+  env-module "Returns the loaded module descriptor for path, or nil." [path] (Runtime/module path))
+
+(defn ^{:inline true :public true :schema [:fn [:symbol] :any]}
+  resolve "Resolves symbol without triggering namespace or package loading." [symbol] (Base/resolve symbol))
+
+(defn ^{:inline true :public true :schema [:fn [:any] :any]}
+  ns-find
+  "Returns the loaded namespace identified by value, or nil when unknown."
+  [value]
+  (Runtime/ns-find value))
+
+(defn ^{:inline true :public true :schema [:fn [:symbol] :any]}
+  ns-create
+  "Creates and returns a namespace for an unqualified symbol."
+  [symbol]
+  (Runtime/ns-create symbol))
+
+(defn ^{:inline true :public true :schema [:fn [:any] :any]}
+  ns-name
+  "Returns the symbol naming a loaded namespace."
+  [value]
+  (Runtime/ns-name value))
+
+(defn ^{:inline true :public true :schema [:fn [:any] :map]}
+  ns-publics
+  "Returns the public Vars owned by a loaded namespace."
+  [value]
+  (Runtime/ns-publics value))
+
+(defn ^{:inline true :public true :schema [:fn [:any] :map]}
+  ns-aliases
+  "Returns aliases declared by a loaded namespace."
+  [value]
+  (Runtime/ns-aliases value))
+
+(defn ^{:inline true
+        :schema [:function [:fn [] :symbol]
+                           [:fn [:str] :symbol]]}
+  gensym
+  "Returns a fresh symbol, optionally using a string prefix."
+  ([] (Runtime/gensym))
+  ([prefix] (Runtime/gensym prefix)))
+
+(defn ^{:inline false :schema [:fn [:any] :any]}
+  macroexpand-1
+  "Expands one macro layer of form."
+  [form]
+  (if (and (list? form) (= (first form) 'when))
+    (list 'if
+          (second form)
+          (apply list (cons 'do (drop 2 form)))
+          nil)
+    (Runtime/macroexpand-1 form)))
+
+(defn ^{:inline true
+        :schema [:function [:fn [:symbol] :any]
+                           [:fn [:any :symbol] :any]]}
+  ns-alias-state
+  "Returns load state for an alias in the active or supplied namespace."
+  ([alias] (Runtime/alias-state alias))
+  ([namespace alias] (Runtime/alias-state namespace alias)))
+
+(defn ^{:inline true
+        :schema [:function [:fn [:any :symbol :any] :any]
+                           [:fn [:any :symbol :any :map] :any]]}
+  intern-var
+  "Interns a Var root and optional metadata into namespace."
+  ([namespace symbol variable] (Runtime/intern-var namespace symbol variable))
+  ([namespace symbol variable metadata]
+   (Runtime/intern-var
+    namespace
+    symbol
+    variable
+    (merge metadata
+           (select-keys (or (meta variable) {})
+                        [:file :line :column])))))
+
+(defn ^{:inline true :schema [:fn [:any :any] :any]}
+  eval-in-ns "Evaluates form values in an existing namespace." [namespace forms] (Runtime/eval-in namespace forms))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  eval "Evaluates one form value in the active namespace." [form] (Runtime/eval form))
+
+(defmacro code-line
+  "Expands to the line number of the invocation form."
+  []
+  (get (meta &form) :line))
+
+(defmacro code-column
+  "Expands to the column number of the invocation form."
+  [] (get (meta &form) :column))
+
+(defn ^{:inline true :schema [:fn [:str] [:vec :any]]}
+  read-forms
+  "Reads every top-level form from a capability-gated HAL source file."
+  [path]
+  (Edn/read-forms path))
+
+(defn ^{:inline true :schema [:fn [:str] :any]}
+  read-string
+  "Reads one EDN/Hara value from text."
+  [text]
+  (Edn/read text))
+
+;; ---------------------------------------------------------------------------
+;; Completed outcomes
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:function [:fn [:any] :any]
+                           [:fn [:any :any] :any]
+                           [:fn [:keyword :any :map] :any]]}
+  result
+  "Creates or synchronizes a native Result."
+  ([value] (Result/synchronize value))
+  ([value options]
+   (if (or (= value :success) (= value :error))
+     (Result/create value options)
+     (Result/synchronize value options)))
+  ([status value context] (Result/create status value context)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  result?
+  "Returns true when value is a native Result."
+  [value]
+  (= (type value) :std.native.Result))
+
+;; ---------------------------------------------------------------------------
+;; Metadata
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any] :map]}
+  meta
+  "Returns value metadata through IObjType, or nil when none is present."
+  [value]
+  (if (satisfies? IObjType value)
+    (IObjType/meta value)
+    nil))
+
+(defn ^{:inline true :schema [:fn [:any :map] :any]}
+  with-meta
+  "Returns value carrying metadata through IObjType."
+  [value metadata]
+  (IObjType/with-meta value metadata))
+
+
+;; ---------------------------------------------------------------------------
+;; Functions and composition
+;; ---------------------------------------------------------------------------
+
+
+(defn ^{:schema [:fn [& :any] :bool]}
+  T
+  "Ignores its arguments and returns true."
+  [& values] true)
+
+(defn ^{:schema [:fn [& :any] :bool]}
+  F
+  "Ignores its arguments and returns false."
+  [& values] false)
+
+(defn ^{:schema [:fn [& :any] :nil]}
+  NIL
+  "Ignores its arguments and returns nil."
+  [& values] nil)
+
+(defn ^{:schema [:fn [:fn] :fn]}
+  U
+  "Self-application combinator."
+  [function] (fn [value] ((function function) value)))
+
+(defn ^{:schema [:fn [:fn] :any]}
+  Z
+  "Eager fixed-point combinator."
+  [function]
+  (let [A (fn [value] (function (U value)))]
+    (A A)))
+
+(defn ^{:schema [:fn [:fn] :any]}
+  Y
+  "Classical fixed-point combinator; diverges under ordinary eager use."
+  [function]
+  (let [A (fn [value] (function (value value)))]
+    (A A)))
+
+(defn ^{:schema [:fn [:any] :any]}
+  identity
+  "Returns its argument unchanged."
+  [value] value)
+
+(defn ^{:schema [:function
+                 [:fn [:any] :any]
+                 [:fn [:any [:maybe :fn] & :any] :any]]}
+  apply-with
+  "Returns object unchanged when function is nil, otherwise calls function
+   with object prepended to the remaining arguments."
+  ([object] object)
+  ([object function & arguments]
+   (if (nil? function)
+     object
+     (apply function object arguments))))
+
+(defn ^{:schema [:fn [:any :fn & :any] :any]}
+  tap
+  "Calls function with object prepended to arguments, then returns object."
+  [object function & arguments]
+  (let [ignored (apply function object arguments)]
+    object))
+
+(defn ^{:schema [:fn [:num] :num]}
+  inc
+  "Returns value + 1."
+  [value]
+  (+ value 1))
+
+(defn ^{:schema [:fn [:num] :num]}
+  dec
+  "Returns value - 1."
+  [value]
+  (- value 1))
+
+(defn ^{:schema [:fn [:any] :fn]}
+  constantly
+  "Returns a function that ignores its arguments and always returns value."
+  [value] (fn [ignored & rest] value))
+
+(defn ^{:schema [:fn [& :any] :any]}
+  concat
+  "Returns a lazy sequence containing each source in order."
+  [& sources]
+  (seq (apply Iter/iter-concat sources)))
+
+(defn ^{:schema [:function [:fn [:fn :fn] :fn]
+                            [:fn [:fn :fn :fn] :fn]
+                            [:fn [:fn :fn :fn :fn & :fn] :fn]]}
+  comp
+  "Composes two or more functions right-to-left."
+  ([f g]   (fn [value] (f (g value))))
+  ([f g h] (fn [value] (f (g (h value)))))
+  ([f g h l & more]
+   (fn [value]
+     (reduce (fn [result f] (f result))
+             value
+             (concat (reverse more)
+                     [l h g f])))))
+
+(defn ^{:schema [:fn [:fn] :fn]}
+  complement
+  "Returns a function returning the logical negation of predicate's result."
+  [predicate]
+  (fn [value] (not (predicate value))))
+
+(defn ^{:schema [:fn [:fn & :any] :fn]}
+  partial
+  "Returns a function that calls function with arguments prepended to its own."
+  [function & arguments]
+  (fn [& more]
+    (apply function (concat arguments more))))
+
+(defn ^{:schema [:fn [& :fn] :fn]}
+  juxt
+  "Returns a function whose result is the vector of each function applied to
+   its arguments."
+  [& functions]
+  (fn [& arguments]
+    (map (fn [function]
+            (apply function arguments))
+          functions)))
+
+;; ---------------------------------------------------------------------------
+;; Predicates
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:num] :bool]}
+  zero?
+  "Returns true if value equals 0."
+  [value] (= value 0))
+
+(defn ^{:schema [:fn [:num] :bool]}
+  pos?
+  "Returns true if value is greater than 0."
+  [value] (> value 0))
+
+(defn ^{:schema [:fn [:num] :bool]}
+  neg?
+  "Returns true if value is less than 0."
+  [value] (< value 0))
+
+(defn ^{:schema [:fn [:num] :bool]}
+  even?
+  "Returns true if value is evenly divisible by 2."
+  [value] (= (mod value 2) 0))
+
+(defn ^{:schema [:fn [:num] :bool]}
+  odd?
+  "Returns true if value is not evenly divisible by 2."
+  [value] (not= (mod value 2) 0))
+
+(defn ^{:schema [:fn [:any :any] :bool]}
+  has?
+  "Returns true if collection contains key, including when its value is nil."
+  [collection key]
+  (not-nil? (IFind/find collection key)))
+
+;; ---------------------------------------------------------------------------
+;; RegExp
+;; `regexp?` remains the kernel-installed root predicate. The helpers below are
+;; portable HAL wrappers over the std.native.RegExp runtime object.
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any] :bool]}
+  regexp?
+  "Returns true when value is a RegExp runtime value."
+  [value]
+  (= (type value) :std.native.RegExp))
+
+(defn ^{:schema [:fn [[:or :str :regex]] :regex]}
+  regexp
+  "Compiles a pattern string, returning RegExp values unchanged."
+  [pattern]
+  (if (= (type pattern) :std.native.RegExp)
+    pattern
+    (RegExp/compile pattern)))
+
+(defn ^{:inline true :schema [:fn [:regex] :str]}
+  re-pattern
+  "Returns the source pattern of a RegExp value."
+  [regex]
+  (RegExp/pattern regex))
+
+(defn ^{:schema [:fn [[:or :str :regex] :str] [:maybe :str]]}
+  re-find
+  "Returns the first match in input, or nil when the pattern does not match."
+  [pattern input]
+  (RegExp/find (regexp pattern) input))
+
+(defn ^{:schema [:fn [[:or :str :regex] :str] :bool]}
+  re-matches
+  "Returns true when pattern matches all of input."
+  [pattern input]
+  (RegExp/matches (regexp pattern) input))
+
+(defn ^{:schema [:fn [[:or :str :regex] :str :str] :str]}
+  re-replace
+  "Replaces every match in input using numbered $1 capture groups."
+  [pattern input replacement]
+  (RegExp/replace (regexp pattern) input replacement))
+
+(defn ^{:schema [:fn [[:or :str :regex] :str] [:maybe [:vector :str]]]}
+  re-split
+  "Splits input around matches and returns the resulting vector."
+  [pattern input]
+  (RegExp/split (regexp pattern) input))
+
+;; ---------------------------------------------------------------------------
+;; References
+;; ---------------------------------------------------------------------------
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  deref
+  "Returns a reference value through IDeref."
+  [reference]
+  (IDeref/deref reference))
+
+(defn ^{:inline true :schema [:fn [:any :any] :any]}
+  reset!
+  "Sets reference to value through IReset and returns value."
+  [reference value]
+  (IReset/reset reference value))
+
+(defn ^{:inline true :schema [:fn [:any :any :any] :bool]}
+  cas!
+  "Atomically replaces old-value with new-value through ICas."
+  [reference old-value new-value]
+  (ICas/cas reference old-value new-value))
+
+(defn ^{:schema [:fn [:any :fn & :any] :any]}
+  swap!
+  "Atomically applies function to reference through an ICas retry loop."
+  [reference function & arguments]
+  (loop []
+    (let [old-value (IDeref/deref reference)
+          new-value (apply function old-value arguments)]
+      (if (ICas/cas reference old-value new-value)
+        new-value
+        (recur)))))
+
+(defn ^{:schema [:function
+                 [:fn [:any :fn] :any]
+                 [:fn [:any :fn :bool] :any]]}
+  swap-return!
+  "Atomically replaces reference state from a function returning
+   [output new-state]. Returns output, or [output new-state] when state? is
+   true. The returned values always belong to the successful CAS attempt."
+  ([reference function]
+   (swap-return! reference function false))
+  ([reference function state?]
+   (loop []
+     (let [old-value (IDeref/deref reference)
+           result (function old-value)
+           output (first result)
+           new-value (second result)]
+       (if (ICas/cas reference old-value new-value)
+         (if state? [output new-value] output)
+         (recur))))))
+
+(defn ^{:inline true :schema [:fn [:any :any :fn] :any]}
+  watch-add
+  "Adds a keyed watch callback through IWatch and returns reference."
+  [reference key function]
+  (IWatch/watch-add reference key function))
+
+(defn ^{:inline true :schema [:fn [:any :any] :any]}
+  watch-remove
+  "Removes keyed watch through IWatch and returns reference."
+  [reference key]
+  (IWatch/watch-remove reference key))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  watch-list
+  "Returns reference's watch iterator through IWatch."
+  [reference]
+  (IWatch/watch-list reference))
+
+;; ---------------------------------------------------------------------------
+;; Mutability conversion
+;; ---------------------------------------------------------------------------
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  to-mutable
+  "Converts a persistent receiver through IToMutable."
+  [value]
+  (IToMutable/to-mutable value))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  to-persistent
+  "Converts a mutable receiver through IToPersistent."
+  [value]
+  (IToPersistent/to-persistent value))
+
+;; ---------------------------------------------------------------------------
+;; Reduced values and reduction
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:function [:fn [:fn :any] :any]
+                            [:fn [:fn :any :any] :any]]}
+  reduce
+  "Reduces source with function, optionally beginning with initial."
+  ([function source] (IReduce/reduce source function))
+  ([function initial source] (IReduce/reduce source function initial)))
+
+(defn ^{:schema [:fn [:fn :any :map] :any]}
+  reduce-kv
+  "Reduces map entries by calling function with accumulator, key, and value."
+  [function initial source]
+  (reduce-in initial
+             (fn [output entry]
+               (function output (IPair/key entry) (IPair/value entry)))
+             source))
+
+(defn ^{:schema [:fn [:any :fn :any] :any]}
+  reduce-in
+  "Reduces source into initial, using mutable conversion when supported."
+  [initial function source]
+  (let [converted (satisfies? IToMutable initial)
+        accumulator (if converted
+                      (IToMutable/to-mutable initial)
+                      initial)
+        output (reduce function accumulator source)]
+    (if (and converted (satisfies? IToPersistent output))
+      (IToPersistent/to-persistent output)
+      output)))
+
+;; ---------------------------------------------------------------------------
+;; Sequence access
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any] :bool]}
+  empty?
+  "Returns true if value yields no items."
+  [value]
+  (if (satisfies? ICount value)
+    (= 0 (ICount/count value))
+    (not (iter-next? (iter value)))))
+
+(defn ^{:schema [:fn [:any] :any]}
+  first
+  "Returns the first item of value, or nil if value is empty."
+  [value]
+  (if (satisfies? INth value)
+    (if (and (satisfies? ICount value) (= 0 (ICount/count value)))
+      nil
+      (INth/nth value 0))
+    (if (satisfies? IPeekFirst value)
+      (IPeekFirst/peek-first value)
+      (let [it (iter value)]
+        (if (iter-next? it) (iter-next it) nil)))))
+
+(defn ^{:schema [:fn [:any] :any]}
+  second
+  "Returns the second item of value, or nil if value has fewer than two items."
+  [value] (first (rest value)))
+
+(defn ^{:schema [:fn [:any] :any]}
+  rest
+  "Returns all but the first item of value as a seq, or nil if empty."
+  [value]
+  (seq (Iter/iter-drop 1 value)))
+
+(defn ^{:schema [:fn [:any] :any]}
+  not-empty
+  "Returns value if it has any items, nil otherwise."
+  [value] (if (empty? value) nil value))
+
+(defn ^{:schema [:fn [:any] :any]}
+  last
+  "Returns the last item of value, or nil if value is empty."
+  [value]
+  (if (and (satisfies? INth value) (satisfies? ICount value))
+    (let [size (ICount/count value)]
+      (if (= 0 size)
+        nil
+        (INth/nth value (dec size))))
+    (if (satisfies? IPeekLast value)
+      (IPeekLast/peek-last value)
+      (let [it (iter value)]
+        (if (iter-next? it)
+          (loop [result (iter-next it)]
+            (if (iter-next? it) (recur (iter-next it)) result))
+          nil)))))
+
+(defn ^{:schema [:fn [:any] :any]}
+  reverse
+  "Returns the items of value in reverse order as a list."
+  [value]
+  (let [it (iter value)]
+    (loop [result '()]
+      (if (iter-next? it)
+        (recur (cons (iter-next it) result))
+        result))))
+
+;; ---------------------------------------------------------------------------
+;; Nested associative access
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any :any :any & :any] :any]}
+  assoc
+  "Returns value with one or more key/value pairs associated through IAssoc."
+  [value key new-value & more]
+  (loop [output (IAssoc/assoc value key new-value)
+         remaining more]
+    (if (= 0 (count remaining))
+      output
+      (if (= 0 (count (rest remaining)))
+        (throw (ex :foundation/invalid-assoc
+                   {:value value :key (first remaining)}
+                   :ex/message "assoc requires key/value pairs"
+                   :ex/class :ex.class/argument))
+        (recur
+         (IAssoc/assoc output (first remaining) (second remaining))
+         (rest (rest remaining)))))))
+
+(defn ^{:schema [:fn [:any :any & :any] :any]}
+  dissoc
+  "Returns value with one or more keys removed through IDissoc."
+  [value key & more]
+  (loop [output (if (nil? value) nil (IDissoc/dissoc value key))
+         remaining more]
+    (if (= 0 (count remaining))
+      output
+      (recur
+       (if (nil? output) nil (IDissoc/dissoc output (first remaining)))
+       (rest remaining)))))
+
+(defn ^{:schema [:fn [:any [:vector :any]] :any]}
+  get-in
+  "Returns the value at the end of the key path keys, or nil if absent."
+  [value keys]
+  (loop [current value
+         remaining (vec keys)]
+    (if (= 0 (count remaining))
+      current
+      (recur (get current (first remaining))
+             (vec (drop 1 remaining))))))
+
+(defn ^{:schema [:fn [:any [:vector :any] :any] :any]}
+  assoc-in
+  "Returns value with new-value associated at the end of the key path keys,
+   creating intermediate maps as needed."
+  [value keys new-value]
+  (let [path (vec keys)]
+    (if (= 0 (count path))
+      new-value
+      (assoc (if (nil? value) {} value)
+             (first path)
+             (assoc-in (get value (first path))
+                       (vec (drop 1 path))
+                       new-value)))))
+
+(defn ^{:schema [:fn [:any :any :fn & :any] :any]}
+  update
+  "Associates key in value with the result of applying function to the old
+   value and args."
+  [value key function & args]
+  (assoc value key (apply function (concat [(get value key)] args))))
+
+(defn ^{:schema [:fn [:any [:vector :any] :fn & :any] :any]}
+  update-in
+  "Like update, but at the end of the key path keys."
+  [value keys function & args]
+  (assoc-in value keys (apply function (concat [(get-in value keys)] args))))
+
+;; ---------------------------------------------------------------------------
+;; Map entries
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [& [:maybe :map]] :map]}
+  merge
+  "Returns a map containing the entries of each source, with later values winning."
+  [& sources]
+  (reduce (fn [output source]
+            (if (nil? source)
+              output
+              (reduce-kv assoc output source)))
+          {}
+          sources))
+
+(defn ^{:schema [:fn [:map :any] :map]}
+  select-keys
+  "Returns a map containing the entries from source whose keys are requested."
+  [source keys]
+  (reduce-in {}
+             (fn [output requested]
+               (let [entry (IFind/find source requested)]
+                 (if entry
+                   (assoc output requested (IPair/value entry))
+                   output)))
+             keys))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  key
+  "Returns the key of a map entry."
+  [entry] (IPair/key entry))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  val
+  "Returns the value of a map entry."
+  [entry] (IPair/value entry))
+
+(defn ^{:schema [:fn [:any] :any]}
+  keys
+  "Returns a vector of the map's keys."
+  [value] (vec (Iter/iter-map key value)))
+
+(defn ^{:schema [:fn [:any] :any]}
+  vals
+  "Returns a vector of the map's values."
+  [value] (vec (Iter/iter-map val value)))
+
+;; ---------------------------------------------------------------------------
+;; Lazy producers and transformers
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  collect-like
+  "Materializes values using template's persistent collection shape when possible."
+  [template values]
+  (let [rebuild (fn [seed source] (reduce-in seed conj source))
+        output
+        (cond (map? template) (rebuild (empty template) values)
+              (set? template) (rebuild (empty template) values)
+              (list? template) (rebuild (empty template) (reverse (vec values)))
+              (= (type template) :hara/Queue)
+              (rebuild (empty template) values)
+              (vector? template) (rebuild (empty template) values)
+              :else (vec values))]
+    (if (not (nil? (meta template)))
+      (with-meta output (meta template))
+      output)))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  transform-like
+  "Keeps Seq transformations frozen and lazy, Iterator transformations
+   consumptive and lazy, and persistent collection transformations eager."
+  [template values]
+  (cond (seq? template)
+        (let [output (seq values)]
+          (if (and (not (nil? output))
+                   (not (nil? (meta template))))
+            (with-meta output (meta template))
+            output))
+        (iter? template) values
+        :else (collect-like template values)))
+
+(defn ^{:schema [:function [:fn [] :any]
+                            [:fn [:num] :any]
+                            [:fn [:num :num] :any]]}
+  range
+  "Returns a lazy seq of numbers: from 0 upward, below end, or from start
+   below end."
+  ([] (seq (Iter/iter-range 0)))
+  ([end] (seq (Iter/iter-range end)))
+  ([start end] (seq (Iter/iter-range start end))))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  materialize-groups
+  "Transforms partition groups using template's lazy or eager result mode."
+  [template groups]
+  (transform-like
+   template
+   (Iter/iter-map (fn [group] (collect-like template group)) groups)))
+
+(defn ^{:schema [:function [:fn [:any] :any]
+                            [:fn [:num :any] :any]]}
+  repeat
+  "Returns a lazy seq of value repeated forever, or amount times."
+  ([value] (seq (Iter/iter-constantly value)))
+  ([amount value] (seq (Iter/iter-take amount (Iter/iter-constantly value)))))
+
+(defn ^{:schema [:function [:fn [:fn] :any]
+                            [:fn [:num :fn] :any]]}
+  repeatedly
+  "Returns a lazy seq of calls to function, forever or amount times."
+  ([function] (seq (Iter/iter-repeatedly function)))
+  ([amount function] (seq (Iter/iter-take amount (Iter/iter-repeatedly function)))))
+
+(defn ^{:schema [:fn [:fn :any] :any]}
+  iterate
+  "Returns a lazy seq of seed, (function seed), (function (function seed)), …"
+  [function seed] (seq (Iter/iter-iterate function seed)))
+
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
+  take-while
+  "Returns a source-sensitive transform, or transforms items while predicate holds."
+  ([predicate]
+   (fn [value]
+     (transform-like value (Iter/iter-take-while predicate value))))
+  ([predicate value]
+   (transform-like value (Iter/iter-take-while predicate value))))
+
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
+  drop-while
+  "Returns a source-sensitive transform, or drops items while predicate holds."
+  ([predicate]
+   (fn [value]
+     (transform-like value (Iter/iter-drop-while predicate value))))
+  ([predicate value]
+   (transform-like value (Iter/iter-drop-while predicate value))))
+
+(defn ^{:schema [:function [:fn [:num] :fn]
+                            [:fn [:num :any] :any]]}
+  partition-all
+  "Returns a source-sensitive transform, or partitions value into groups of
+   at most amount items."
+  ([amount]
+   (fn [value]
+     (materialize-groups value (Iter/iter-partition-all amount value))))
+  ([amount value]
+   (materialize-groups value (Iter/iter-partition-all amount value))))
+
+(defn ^{:schema [:function [:fn [:num] :fn]
+                            [:fn [:num :any] :any]]}
+  partition
+  "Returns a source-sensitive transform, or partitions value into groups of
+   exactly amount items."
+  ([amount]
+   (fn [value]
+     (materialize-groups value (Iter/iter-partition amount value))))
+  ([amount value]
+   (materialize-groups value (Iter/iter-partition amount value))))
+
+(defn ^{:schema [:function [:fn [:any] :fn]
+                            [:fn [:any :any] :any]]}
+  interpose
+  "Returns a source-sensitive transform, or inserts separator between items."
+  ([separator]
+   (fn [value]
+     (transform-like value (Iter/iter-interpose separator value))))
+  ([separator value]
+   (transform-like value (Iter/iter-interpose separator value))))
+
+(defn ^{:schema [:fn [:any & :any] :any]}
+  interleave
+  "Returns alternating source items, stopping at the shortest source. The first
+   source controls result mode."
+  [value & values]
+  (transform-like value
+                  (apply Iter/iter-interleave (concat [value] values))))
+
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any & :any] :any]]}
+  map
+  "Returns a source-sensitive transform, or maps function over one or more
+   sources. The first source controls result mode."
+  ([function]
+   (fn [value]
+     (transform-like value (Iter/iter-map function value))))
+  ([function value & rest]
+   (let [sources (concat [value] rest)
+         tuples (apply Iter/iter-zip sources)]
+     (transform-like value
+                     (Iter/iter-map
+                      (fn [arguments] (apply function arguments))
+                      tuples)))))
+
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
+  filter
+  "Returns a source-sensitive transform, or keeps matching items."
+  ([predicate]
+   (fn [value]
+     (transform-like value (Iter/iter-filter predicate value))))
+  ([predicate value]
+   (transform-like value (Iter/iter-filter predicate value))))
+
+(defn ^{:schema [:function [:fn [:num] :fn]
+                            [:fn [:num :any] :any]]}
+  take
+  "Returns a source-sensitive transform, or the first amount items."
+  ([amount]
+   (fn [value]
+     (transform-like value (Iter/iter-take amount value))))
+  ([amount value] (transform-like value (Iter/iter-take amount value))))
+
+(defn ^{:schema [:function [:fn [:num] :fn]
+                            [:fn [:num :any] :any]]}
+  drop
+  "Returns a source-sensitive transform, or all but the first amount items."
+  ([amount]
+   (fn [value]
+     (transform-like value (Iter/iter-drop amount value))))
+  ([amount value] (transform-like value (Iter/iter-drop amount value))))
+
+(defn ^{:inline true
+        :schema [:function [:fn [:str :int] :str]
+                            [:fn [:str :int :int] :str]]}
+  subs
+  "Returns the string slice from start (inclusive) to optional end (exclusive)."
+  ([value start]
+   (String/slice value start))
+  ([value start end]
+   (String/slice value start end)))
+
+(defn ^{:schema [:function [:fn [:vector :int] :vector]
+                            [:fn [:vector :int :int] :vector]]}
+  subvec
+  "Returns the vector slice from start (inclusive) to end (exclusive)."
+  ([value start]
+   (subvec value start (count value)))
+  ([value start end]
+   (if (and (vector? value)
+            (<= 0 start)
+            (<= start end)
+            (<= end (count value)))
+     (vec (take (- end start) (drop start value)))
+     (throw (ex :foundation/invalid-subvec-bounds {:value value :start start :end end} :ex/message "subvec requires a vector and valid bounds" :ex/class :ex.class/argument)))))
+
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
+  mapcat
+  "Returns a source-sensitive transform, or maps and concatenates."
+  ([function]
+   (fn [value]
+     (transform-like value (Iter/iter-mapcat function value))))
+  ([function value]
+   (transform-like value (Iter/iter-mapcat function value))))
+
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :any]]}
+  keep
+  "Returns a source-sensitive transform, or keeps non-nil mapped results."
+  ([function]
+   (fn [value]
+     (transform-like value (Iter/iter-keep function value))))
+  ([function value]
+   (transform-like value (Iter/iter-keep function value))))
+
+(defn ^{:schema [:fn [:any] :any]}
+  cycle
+  "Returns a lazy seq repeating the items of value forever."
+  [value] (seq (Iter/iter-cycle value)))
+
+(defn ^{:schema [:fn [:any & :any] :any]}
+  zip
+  "Returns pair vectors of source items in parallel, stopping at the shortest
+   source. The first source controls result mode."
+  [value & values]
+  (transform-like value
+                  (apply Iter/iter-zip (concat [value] values))))
+
+(defn ^{:schema [:fn [:any] :any]}
+  partition-pair
+  "Returns value partitioned into pairs using its source result mode."
+  [value] (transform-like value (Iter/iter-partition-pair value)))
+
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :bool]]}
+  every?
+  "Unary form returns a reusable terminal; collection form tests every item."
+  ([predicate] (partial Iter/iter-every? predicate))
+  ([predicate value] (Iter/iter-every? predicate value)))
+
+(defn ^{:schema [:function [:fn [:fn] :fn]
+                            [:fn [:fn :any] :bool]]}
+  any?
+  "Unary form returns a reusable terminal; collection form tests any item."
+  ([predicate] (partial Iter/iter-any? predicate))
+  ([predicate value] (Iter/iter-any? predicate value)))
+
+(defn ^{:schema [:fn [:fn :any] :any]}
+  some
+  "Returns the first truthy result of applying predicate to values, or nil."
+  [predicate values]
+  (let [it (iter values)]
+    (loop [remaining true]
+      (if (iter-next? it)
+        (let [result (predicate (iter-next it))]
+          (if result result (recur true)))
+        nil))))
+
+(defn ^{:schema [:fn [:fn :any & :any] :vector]}
+  mapv
+  "Returns a persistent vector of function results over one or more sources."
+  [function value & values]
+  (vec (apply map function value values)))
+
+;; ---------------------------------------------------------------------------
+;; Numeric constants, conversions, bits, and math
+;; ---------------------------------------------------------------------------
+
+(def ^{:schema :num :doc "Euler's number."} E 2.718281828459045)
+
+(def ^{:schema :num
+       :doc "The ratio of a circle's circumference to its diameter."}
+  PI
+  3.141592653589793)
+
+(defn ^{:inline true :schema [:fn [:num] :long]}
+  long
+  "Converts a numeric value to a signed 64-bit integer by truncating toward zero."
+  [value]
+  (Num/long value))
+
+(defn ^{:inline true :schema [:fn [:num] :float]}
+  double
+  "Converts a numeric value to an IEEE-754 double."
+  [value]
+  (Num/double value))
+
+(defn ^{:inline true :schema [:fn [:str] [:maybe :long]]}
+  parse-long
+  "Parses a signed 64-bit integer string, returning nil when invalid."
+  [value]
+  (Num/parse-long value))
+
+(defn ^{:inline true :schema [:fn [:str] [:maybe :float]]}
+  parse-double
+  "Parses an IEEE-754 double string, returning nil when invalid."
+  [value]
+  (Num/parse-double value))
+
+(defn ^{:inline true :schema [:fn [& :any] :any]}
+  bit-and
+  "Returns the bitwise conjunction of values through the portable Bits boundary."
+  [& values]
+  (apply Bits/and values))
+
+(defn ^{:inline true :schema [:fn [& :any] :any]}
+  bit-or
+  "Returns the bitwise disjunction of values through the portable Bits boundary."
+  [& values]
+  (apply Bits/or values))
+
+(defn ^{:inline true :schema [:fn [& :any] :any]}
+  bit-xor
+  "Returns the bitwise exclusive-or of values through the portable Bits boundary."
+  [& values]
+  (apply Bits/xor values))
+
+(defn ^{:inline true :schema [:fn [:any] :any]}
+  bit-not
+  "Returns the bitwise complement of value through the portable Bits boundary."
+  [value]
+  (Bits/not value))
+
+(defn ^{:inline true :schema [:fn [& :any] :any]}
+  bit-shift-left
+  "Left-shifts the first value by the remaining shift counts."
+  [& values]
+  (apply Bits/shift-left values))
+
+(defn ^{:inline true :schema [:fn [& :any] :any]}
+  bit-shift-right
+  "Right-shifts the first value by the remaining shift counts."
+  [& values]
+  (apply Bits/shift-right values))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  abs
+  "Returns the absolute magnitude of value."
+  [value]
+  (Maths/abs value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  acos
+  "Returns the arc cosine of value in radians."
+  [value]
+  (Maths/acos value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  acosh
+  "Returns the inverse hyperbolic cosine of value."
+  [value]
+  (Maths/acosh value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  asin
+  "Returns the arc sine of value in radians."
+  [value]
+  (Maths/asin value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  asinh
+  "Returns the inverse hyperbolic sine of value."
+  [value]
+  (Maths/asinh value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  atan
+  "Returns the arc tangent of value in radians."
+  [value]
+  (Maths/atan value))
+
+(defn ^{:inline true :schema [:fn [:num :num] :num]}
+  atan2
+  "Returns the angle for y and x in radians."
+  [y x]
+  (Maths/atan2 y x))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  atanh
+  "Returns the inverse hyperbolic tangent of value."
+  [value]
+  (Maths/atanh value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  ceil
+  "Rounds value upward to the nearest integral number."
+  [value]
+  (Maths/ceil value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  cos
+  "Returns the cosine of value in radians."
+  [value]
+  (Maths/cos value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  cosh
+  "Returns the hyperbolic cosine of value."
+  [value]
+  (Maths/cosh value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  exp
+  "Returns Euler's number raised to value."
+  [value]
+  (Maths/exp value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  floor
+  "Rounds value downward to the nearest integral number."
+  [value]
+  (Maths/floor value))
+
+(defn ^{:inline true :schema [:fn [:num :num] :num]}
+  pow
+  "Returns value raised to exponent."
+  [value exponent]
+  (Maths/pow value exponent))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  sin
+  "Returns the sine of value in radians."
+  [value]
+  (Maths/sin value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  sinh
+  "Returns the hyperbolic sine of value."
+  [value]
+  (Maths/sinh value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  sqrt
+  "Returns the non-negative square root of value."
+  [value]
+  (Maths/sqrt value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  tan
+  "Returns the tangent of value in radians."
+  [value]
+  (Maths/tan value))
+
+(defn ^{:inline true :schema [:fn [:num] :num]}
+  tanh
+  "Returns the hyperbolic tangent of value."
+  [value]
+  (Maths/tanh value))
+
+;; ---------------------------------------------------------------------------
+;; Sorting and selection
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any & :any] :any]}
+  min
+  "Returns the least of value and values under compare."
+  [value & values]
+  (reduce (fn [result item]
+            (if (< (compare item result) 0) item result))
+          value
+          values))
+
+(defn ^{:schema [:fn [:any & :any] :any]}
+  max
+  "Returns the greatest of value and values under compare."
+  [value & values]
+  (reduce (fn [result item]
+            (if (> (compare item result) 0) item result))
+          value
+          values))
+
+(defn ^{:schema [:fn [:fn :any :any] :vector]}
+  insert-sorted
+  "Inserts value into the sorted vector values according to comparison."
+  [comparison value values]
+  (let [it (iter values)]
+    (loop [result []]
+      (if (iter-next? it)
+        (let [item (iter-next it)]
+          (if (<= (comparison value item) 0)
+            (vec (concat result [value item] (seq it)))
+            (recur (conj result item))))
+        (conj result value)))))
+
+(defn ^{:schema [:function [:fn [:any] :any]
+                            [:fn [:fn :any] :any]]}
+  sort
+  "Returns values sorted by comparison (default compare) as a vector. Stable."
+  ([values] (sort compare values))
+  ([comparison values]
+   (collect-like
+     values
+     (reduce (fn [result value]
+               (insert-sorted comparison value result))
+             []
+             values))))
+
+(defn ^{:schema [:function [:fn [:fn :any] :any]
+                            [:fn [:fn :fn :any] :any]]}
+  sort-by
+  "Returns values sorted by the results of key-function under comparison
+   (default compare)."
+  ([key-function values] (sort-by key-function compare values))
+  ([key-function comparison values]
+   (sort (fn [left right]
+           (comparison (key-function left) (key-function right)))
+         values)))
+
+;; ---------------------------------------------------------------------------
+;; Slicing and splitting
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:function [:fn [:any] :any]
+                            [:fn [:num :any] :any]]}
+  drop-last
+  "Returns values without its last amount items (default 1) as a vector."
+  ([values] (drop-last 1 values))
+  ([amount values]
+   (collect-like values
+                     (take (max 0 (- (count values) amount)) values))))
+
+(defn ^{:schema [:fn [:any] :any]}
+  butlast
+  "Returns values without its last item."
+  [values] (drop-last 1 values))
+
+(defn ^{:schema [:fn [:num :any] :any]}
+  take-last
+  "Returns the last amount items of values as a vector."
+  [amount values]
+  (collect-like values
+                    (drop (max 0 (- (count values) amount)) values)))
+
+(defn ^{:schema [:fn [:num :any] :vector]}
+  split-at
+  "Returns a pair of vector results from take and drop."
+  [amount values]
+  [(collect-like values (take amount values))
+   (collect-like values (drop amount values))])
+
+(defn ^{:schema [:fn [:fn :any] :vector]}
+  split-with
+  "Returns vectors containing the longest matching prefix and the remainder."
+  [predicate values]
+  (let [it (iter values)]
+    (loop [prefix []]
+      (if (iter-next? it)
+        (let [value (iter-next it)]
+          (if (predicate value)
+            (recur (conj prefix value))
+            [(collect-like values prefix)
+             (collect-like values (concat [value] (seq it)))]))
+        [(collect-like values prefix)
+         (collect-like values [])]))))
+
+(defn ^{:schema [:fn [:fn :any] :vector]}
+  partition-by
+  "Returns a vector of the runs of items of values for which function returns
+   equal consecutive markers."
+  [function values]
+  (let [it (iter values)]
+    (loop [groups []
+           group []
+           previous nil
+           started false]
+      (if (iter-next? it)
+        (let [value (iter-next it)
+              marker (function value)]
+          (if (if started (not= marker previous) false)
+            (recur (conj groups group) [value] marker true)
+            (recur groups (conj group value) marker true)))
+        (materialize-groups
+         values
+         (if started (conj groups group) groups))))))
+
+(defn ^{:schema [:fn [:num :any] :any]}
+  take-nth
+  "Returns every amount-th item as a vector. Throws on non-positive amount."
+  [amount values]
+  (if (<= amount 0)
+    (throw (ex :foundation/invalid-take-nth {:amount amount} :ex/message "take-nth expects a positive amount" :ex/class :ex.class/argument))
+    (let [it (iter values)]
+      (loop [index 0
+             result []]
+        (if (iter-next? it)
+          (let [value (iter-next it)]
+            (recur (+ index 1)
+                   (if (= (mod index amount) 0)
+                     (conj result value)
+                     result)))
+          (collect-like values result))))))
+
+;; ---------------------------------------------------------------------------
+;; Maps and reductions
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  into
+  "Returns destination with every item of source conjoined."
+  [destination source]
+  (reduce-in destination conj source))
+
+(defn ^{:schema [:fn [:any] :any]}
+  distinct
+  "Returns the items of values with duplicates removed, preserving order and
+   origin."
+  [values]
+  (let [it (iter values)]
+    (loop [seen {}
+           result []]
+      (if (iter-next? it)
+        (let [value (iter-next it)]
+          (if (has? seen value)
+            (recur seen result)
+            (recur (assoc seen value true) (conj result value))))
+        (collect-like values result)))))
+
+(defn ^{:schema [:fn [& :any] :bool]}
+  distinct?
+  "Returns true if no two of values are equal."
+  [& values]
+  (let [it (iter values)]
+    (loop [seen {}]
+      (if (iter-next? it)
+        (let [value (iter-next it)]
+          (if (has? seen value)
+            false
+            (recur (assoc seen value true))))
+        true))))
+
+(defn ^{:schema [:fn [:fn :any] :vector]}
+  filterv
+  "Returns a vector of the items for which predicate returns true."
+  [predicate values]
+  (vec (Iter/iter-filter predicate values)))
+
+(defn ^{:schema [:fn [:fn :any] :vector]}
+  map-indexed
+  "Returns a vector of function applied to each index and value."
+  [function values]
+  (let [it (iter values)]
+    (loop [index 0
+           result []]
+      (if (iter-next? it)
+        (recur (+ index 1)
+               (conj result (function index (iter-next it))))
+        result))))
+
+(defn ^{:schema [:fn [:any] :any]}
+  ffirst
+  "Returns the first item of the first item in values."
+  [values]
+  (first (first values)))
+
+(defn ^{:schema [:fn [:fn :any] :any]}
+  remove
+  "Returns the values for which predicate is false."
+  [predicate values]
+  (filter (complement predicate) values))
+
+(defn ^{:schema [:fn [:any :any] :map]}
+  zipmap
+  "Returns a map of map-keys to map-values, stopping at the shorter input."
+  [map-keys map-values]
+  (let [key-it (iter map-keys)
+        value-it (iter map-values)]
+    (loop [result {}]
+      (if (if (iter-next? key-it) (iter-next? value-it) false)
+        (recur (assoc result (iter-next key-it) (iter-next value-it)))
+        result))))
+
+(defn ^{:schema [:fn [:fn :map] :map]}
+  map-keys
+  "Returns a map whose keys are (function key), preserving each value.
+   When transformed keys collide, the later entry wins."
+  [function value-map]
+  (reduce-in (empty value-map)
+             (fn [result entry]
+               (assoc result (function (key entry)) (val entry)))
+             value-map))
+
+(defn ^{:schema [:fn [:fn :map] :map]}
+  map-vals
+  "Returns a map with function applied to each value, preserving its keys."
+  [function value-map]
+  (reduce-in (empty value-map)
+             (fn [result entry]
+               (assoc result (key entry) (function (val entry))))
+             value-map))
+
+(defn ^{:schema [:fn [:fn & :any] :map]}
+  merge-with
+  "Merges maps left-to-right, combining duplicate values with
+   (function old new). Nil maps are skipped."
+  [function & maps]
+  (reduce-in
+    {}
+    (fn [result value-map]
+      (if (nil? value-map)
+        result
+        (reduce-in
+          result
+          (fn [current entry]
+            (let [entry-key (key entry)
+                  entry-value (val entry)]
+              (assoc current
+                     entry-key
+                     (if (has? current entry-key)
+                       (function (get current entry-key) entry-value)
+                       entry-value))))
+          value-map)))
+    maps))
+
+(defn merge-nested
+  "Recursively merges maps from left to right. Later non-map values replace
+   earlier values."
+  [& maps]
+  (apply merge-with
+         (fn [& values]
+           (if (every? (fn [value] (or (map? value) (nil? value))) values)
+             (apply merge-nested values)
+             (last values)))
+         maps))
+
+(defn dissoc-in
+  "Removes the value at path and prunes empty parent maps."
+  [value-map path]
+  (let [path-key (first path)
+        remaining (rest path)]
+    (if (empty? remaining)
+      (dissoc value-map path-key)
+      (let [nested (dissoc-in (or (get value-map path-key) {}) remaining)]
+        (if (empty? nested)
+          (dissoc value-map path-key)
+          (assoc value-map path-key nested))))))
+
+(defn transpose
+  "Returns a map with its keys and values exchanged. Later duplicate values win."
+  [value-map]
+  (reduce-in {}
+             (fn [output entry]
+               (assoc output (val entry) (key entry)))
+             value-map))
+
+(defn find-at
+  "Returns the index of the first value matched by predicate, or -1."
+  [predicate values]
+  (let [it (iter values)]
+    (loop [index 0]
+      (if (iter-next? it)
+        (if (predicate (iter-next it))
+          index
+          (recur (inc index)))
+        -1))))
+
+(defn insert-at
+  "Returns a vector with one or more values inserted at index."
+  [values index value & more]
+  (vec (concat (take index values)
+               [value]
+               more
+               (drop index values))))
+
+(defn remove-at
+  "Returns values without count items beginning at index. Count defaults to one."
+  ([values index]
+   (remove-at values index 1))
+  ([values index count]
+   (let [result (concat (take index values) (drop (+ index count) values))]
+     (if (vector? values) (vec result) result))))
+
+(defn qualified-keys
+  "Returns entries whose keyword keys are qualified, optionally by namespace."
+  ([value-map]
+   (qualified-keys value-map nil))
+  ([value-map qualifier]
+   (let [qualifier-values (if (nil? qualifier)
+                            nil
+                            (if (coll? qualifier) qualifier [qualifier]))
+         qualifiers (if qualifier-values
+                      (set (map (fn [value]
+                                  (if (or (keyword? value) (symbol? value))
+                                    (name value)
+                                    (str value)))
+                                qualifier-values))
+                      nil)]
+     (reduce-in (empty value-map)
+                (fn [output entry]
+                  (let [entry-key (key entry)
+                        key-namespace (if (keyword? entry-key)
+                                        (namespace entry-key)
+                                        nil)]
+                    (if (and key-namespace
+                             (or (nil? qualifiers)
+                                 (has? qualifiers key-namespace)))
+                      (assoc output entry-key (val entry))
+                      output)))
+                value-map))))
+
+(defn unqualified-keys
+  "Returns entries whose keyword keys are unqualified."
+  [value-map]
+  (reduce-in (empty value-map)
+             (fn [output entry]
+               (let [entry-key (key entry)]
+                 (if (and (keyword? entry-key)
+                          (nil? (namespace entry-key)))
+                   (assoc output entry-key (val entry))
+                   output)))
+             value-map))
+
+(defn qualify-keys
+  "Qualifies unqualified keyword keys with qualifier."
+  [value-map qualifier]
+  (let [qualifier-name (if (or (keyword? qualifier) (symbol? qualifier))
+                         (name qualifier)
+                         (str qualifier))]
+    (map-keys (fn [entry-key]
+                (if (and (keyword? entry-key)
+                         (nil? (namespace entry-key)))
+                  (keyword qualifier-name (name entry-key))
+                  entry-key))
+              value-map)))
+
+(defn unqualify-keys
+  "Removes namespaces from keyword keys, optionally only for qualifier."
+  ([value-map]
+   (map-keys (fn [entry-key]
+               (if (keyword? entry-key)
+                 (keyword (name entry-key))
+                 entry-key))
+             value-map))
+  ([value-map qualifier]
+   (let [qualifier-name (if (or (keyword? qualifier) (symbol? qualifier))
+                          (name qualifier)
+                          (str qualifier))]
+     (map-keys (fn [entry-key]
+                 (if (and (keyword? entry-key)
+                          (= qualifier-name (namespace entry-key)))
+                   (keyword (name entry-key))
+                   entry-key))
+               value-map))))
+
+(defn flatten-nested
+  "Returns the non-collection leaves of a nested collection."
+  [value]
+  (if (coll? value)
+    (reduce-in []
+               (fn [output item]
+                 (into output (flatten-nested item)))
+               value)
+    [value]))
+
+(defn ^{:schema [:fn [:fn :any] :map]}
+  group-by
+  "Returns a map of (function value) to vectors of the values producing it."
+  [function values]
+  (reduce-in {} (fn [result value]
+            (let [group-key (function value)]
+              (assoc result
+                     group-key
+                     (conj (get result group-key []) value))))
+          values))
+
+(defn ^{:schema [:fn [:any] :map]}
+  frequencies
+  "Returns a map of each distinct item of values to its occurrence count."
+  [values]
+  (reduce-in {} (fn [result value]
+            (assoc result value (+ 1 (get result value 0))))
+          values))
+
+;; ---------------------------------------------------------------------------
+;; Set algebra and graph ordering
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [& :set] :set]}
+  union
+  "Returns a set containing every value in sets."
+  [& sets]
+  (reduce-in #{}
+             (fn [result values] (reduce-in result conj values))
+             sets))
+
+(defn ^{:schema [:fn [:set & :set] :set]}
+  intersection
+  "Returns the values present in every set."
+  [first-set & sets]
+  (reduce (fn [result values]
+            (reduce (fn [output value]
+                      (if (has? values value) (conj output value) output))
+                    #{}
+                    result))
+          first-set
+          sets))
+
+(defn ^{:schema [:fn [:set & :set] :set]}
+  difference
+  "Returns values in first-set absent from every remaining set."
+  [first-set & sets]
+  (reduce-in first-set
+             (fn [result values] (reduce-in result dissoc values))
+             sets))
+
+(defn ^{:schema [:fn [:set :set] :bool]}
+  subset?
+  "Returns true when every value in left is present in right."
+  [left right]
+  (every? (fn [value] (has? right value)) left))
+
+(defn ^{:schema [:fn [:set :set] :bool]}
+  superset?
+  "Returns true when every value in right is present in left."
+  [left right]
+  (subset? right left))
+
+
+;; ---------------------------------------------------------------------------
+;; Graph cycle detection
+;; ---------------------------------------------------------------------------
+
+(defn cycle-index [path node]
+  (loop [index 0]
+    (if (= index (count path))
+      nil
+      (if (= node (nth path index)) index (recur (+ index 1))))))
+
+(defn cycle-visit [graph node active path]
+  (if (has? active node)
+    (let [index (cycle-index path node)]
+      (conj (vec (drop index path)) node))
+    (let [dependencies (get graph node)]
+      (if (empty? dependencies)
+        nil
+        (first
+          (keep (fn [dependency]
+                  (cycle-visit graph
+                               dependency
+                               (conj active node)
+                               (conj path node)))
+                dependencies))))))
+
+(defn ^{:schema [:fn [:map] :any]}
+  find-cycle
+  "Returns one closed cycle path from graph, or nil."
+  [graph]
+  (first (keep (fn [node] (cycle-visit graph node #{} [])) (keys graph))))
+
+
+
+;; ---------------------------------------------------------------------------
+;; Graph cycle rendering
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:map] :any]}
+  hierarchical-top
+  "Returns the root node of a descendant hierarchy."
+  [index]
+  (let [descendants (apply union (vals index))]
+    (ffirst
+      (filter (fn [entry]
+                (not-empty
+                  (difference (conj (val entry) (key entry)) descendants)))
+              index))))
+
+(defn ^{:schema [:fn [:map] :map]}
+  hierarchical-sort
+  "Prunes a descendant hierarchy into its direct dependency graph."
+  [index]
+  (let [top (hierarchical-top index)]
+    (loop [output {}
+           candidates (dissoc index top)
+           level #{top}]
+      (if (empty? level)
+        output
+        (let [base (apply union (vals candidates))
+              next-output
+              (reduce (fn [result node]
+                        (assoc result node (difference (get index node) base)))
+                      output
+                      level)
+              next-level (mapcat (fn [node] (get next-output node)) level)
+              next-candidates
+              (apply dissoc index (concat (keys next-output) next-level))]
+          (recur next-output next-candidates next-level))))))
+
+
+;; ---------------------------------------------------------------------------
+;; Topological Sort
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:map] :set]}
+  topological-top
+  "Returns graph nodes which are not dependencies of another node."
+  [graph]
+  (difference (set (keys graph)) (apply union (vals graph))))
+
+
+(defn ^{:schema [:fn [:map] :vector]}
+  topological-sort
+  "Returns graph nodes in dependency order and throws on a cycle."
+  [graph]
+  (let [without-self
+        (reduce-kv (fn [output node dependencies]
+                     (assoc output node (dissoc dependencies node)))
+                   {}
+                   graph)
+        all-dependencies (apply union (vals without-self))
+        complete
+        (reduce (fn [output node]
+                  (if (has? output node) output (assoc output node #{})))
+                without-self
+                all-dependencies)]
+    (loop [remaining complete
+           ordered []]
+      (if (empty? remaining)
+        ordered
+        (let [ready (filter (fn [node] (empty? (get remaining node)))
+                            (keys remaining))]
+          (if (empty? ready)
+            (let [cycle (find-cycle remaining)]
+              (throw (ex :foundation/circular-dependency {:data remaining :list ordered :cycle cycle} :ex/message (str "Graph Contains Circular Dependency: "
+                                   (pr-str cycle)) :ex/class :ex.class/state)))
+            (let [nodes (set ready)
+                  next-remaining
+                  (reduce-kv (fn [output node dependencies]
+                               (if (has? nodes node)
+                                 output
+                                 (assoc output
+                                        node
+                                        (difference dependencies nodes))))
+                             {}
+                             remaining)]
+              (recur next-remaining (vec (concat ordered ready))))))))))
+
+(defn ^{:schema [:fn [:map :any] :vector]}
+  topological-sort-order-by-deps
+  "Stably sorts each dependency level by dependency count and node identity."
+  [graph sorted-values]
+  (loop [processed #{}
+         result []
+         remaining sorted-values]
+    (if (empty? remaining)
+      result
+      (let [level (take-while
+                    (fn [node]
+                      (every? (fn [dependency] (has? processed dependency))
+                              (get graph node)))
+                    remaining)
+            sorted-level
+            (sort-by (juxt (fn [node] (count (get graph node))) identity) level)]
+        (recur (apply conj processed sorted-level)
+               (vec (concat result sorted-level))
+               (drop (count level) remaining))))))
+
+;; ---------------------------------------------------------------------------
+;; Structural walking
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any] :bool]}
+  form?
+  "Returns true when value is a persistent Hara source form."
+  [value]
+  (or (cons? value) (list? value) (seq? value)))
+
+(defn ^{:schema [:fn [:fn :fn :any] :any]}
+  walk
+  "Traverses persistent data while preserving collection kinds and metadata."
+  [inner outer form]
+  (cond (form? form)
+        (let [metadata (meta form)
+              output   (apply list (map inner form))]
+          (outer (if (nil? metadata) output (with-meta output metadata))))
+
+        (vector? form)
+        (let [metadata (meta form)
+              output   (reduce-in (empty form)
+                                  (fn [out value] (conj out (inner value)))
+                                  form)]
+          (outer (if (nil? metadata) output (with-meta output metadata))))
+
+        (set? form)
+        (let [metadata (meta form)
+              output   (reduce-in (empty form)
+                                  (fn [out value] (conj out (inner value)))
+                                  form)]
+          (outer (if (nil? metadata) output (with-meta output metadata))))
+
+        (map? form)
+        (let [metadata (meta form)
+              output   (reduce-in (empty form)
+                                  (fn [out entry]
+                                    (assoc out
+                                           (inner (key entry))
+                                           (inner (val entry))))
+                                  form)]
+          (outer (if (nil? metadata) output (with-meta output metadata))))
+
+        :else (outer form)))
+
+(defn ^{:schema [:fn [:fn :any] :any]}
+  postwalk
+  "Performs a depth-first post-order traversal."
+  [function form]
+  (walk (fn [value] (postwalk function value)) function form))
+
+(defn ^{:schema [:fn [:fn :any] :any]}
+  prewalk
+  "Performs a depth-first pre-order traversal."
+  [function form]
+  (walk (fn [value] (prewalk function value)) identity (function form)))
+
+(defn ^{:schema [:fn [:map :any] :any]}
+  prewalk-replace
+  "Recursively replaces keys found in replacements before descending."
+  [replacements form]
+  (prewalk (fn [value]
+             (if (has? replacements value) (get replacements value) value))
+           form))
+
+(defn ^{:schema [:fn [:map :any] :any]}
+  postwalk-replace
+  "Recursively replaces keys found in replacements after descending."
+  [replacements form]
+  (postwalk (fn [value]
+              (if (has? replacements value) (get replacements value) value))
+            form))
+
+;; ---------------------------------------------------------------------------
+;; Macro tooling
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any] :any]}
+  macroexpand
+  "Repeatedly applies macroexpand-1 until the form is stable. Throws after
+   1000 expansion steps."
+  [form]
+  (loop [current form
+         expansions 0]
+    (let [expanded (macroexpand-1 current)]
+      (if (= expanded current)
+        current
+        (if (>= expansions 1000)
+          (throw (ex :foundation/macro-expansion-limit {:form current
+                           :expansions expansions
+                           :limit 1000} :ex/message "macro expansion exceeded 1000 steps" :ex/class :ex.class/limit))
+          (recur expanded (+ expansions 1)))))))
+
+(declare macroexpand-all)
+
+(defn ^{:schema [:fn [:fn :any] :any]}
+  walk-code
+  "Applies function to the immediate children of a code form, preserving
+   collection kinds and list metadata."
+  [function form]
+  (cond (list? form)
+        (let [metadata (meta form)
+              output   (apply list (map function form))]
+          (if (nil? metadata) output (with-meta output metadata)))
+
+        (vector? form)
+        (reduce-in (empty form)
+                   (fn [output value] (conj output (function value)))
+                   form)
+
+        (map? form)
+        (reduce-in (empty form)
+                   (fn [output entry]
+                     (assoc output
+                            (function (key entry))
+                            (function (val entry))))
+                   form)
+
+        (set? form)
+        (reduce-in (empty form)
+                   (fn [output value] (conj output (function value)))
+                   form)
+
+        :else form))
+
+(defn ^{:schema [:fn [:any] :any]}
+  macroexpand-syntax-template
+  "Expands unquote and unquote-splicing forms inside a syntax-quote template."
+  [form]
+  (if (list? form)
+    (let [operator (first form)]
+      (if (or (= operator 'unquote)
+              (= operator 'unquote-splicing))
+        (let [metadata (meta form)
+              output   (list operator (macroexpand-all (second form)))]
+          (if (nil? metadata) output (with-meta output metadata)))
+        (walk-code macroexpand-syntax-template form)))
+    (walk-code macroexpand-syntax-template form)))
+
+(defn ^{:schema [:fn [:any] :any]}
+  macroexpand-all
+  "Fully expands form, descending into subforms. Quote bodies are preserved;
+   syntax-quote templates expand only their unquoted parts."
+  [form]
+  (let [expanded (macroexpand form)]
+    (if (list? expanded)
+      (let [operator (first expanded)]
+        (cond (= operator 'quote)
+              expanded
+
+              (= operator 'syntax-quote)
+              (let [metadata (meta expanded)
+                    output   (list operator (macroexpand-syntax-template (second expanded)))]
+                (if (nil? metadata) output (with-meta output metadata)))
+
+              :else
+              (walk-code macroexpand-all expanded)))
+      (walk-code macroexpand-all expanded))))
+
+;; ---------------------------------------------------------------------------
+;; Threading-form helpers
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  thread-first-form
+  "Builds the form of step with value inserted as the first argument."
+  [value step]
+  (if (list? step)
+    (apply list (concat [(first step) value] (rest step)))
+    (list step value)))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  thread-last-form
+  "Builds the form of step with value inserted as the last argument."
+  [value step]
+  (if (list? step)
+    (apply list (concat step [value]))
+    (list step value)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  thread-placeholder?
+  "Returns true when form contains an unquoted thread placeholder."
+  [form]
+  (cond (= form '%)
+        true
+
+        (list? form)
+        (if (or (= 'quote (first form))
+                (= 'syntax-quote (first form)))
+          false
+          (reduce (fn [found value]
+                    (or found (thread-placeholder? value)))
+                  false
+                  form))
+
+        (vector? form)
+        (reduce (fn [found value]
+                  (or found (thread-placeholder? value)))
+                false
+                form)
+
+        (map? form)
+        (reduce (fn [found entry]
+                  (or found
+                      (thread-placeholder? (key entry))
+                      (thread-placeholder? (val entry))))
+                false
+                form)
+
+        (set? form)
+        (reduce (fn [found value]
+                  (or found (thread-placeholder? value)))
+                false
+                form)
+
+        :else false))
+
+(defn ^{:schema [:fn [:any :vector :bool] :any]}
+  thread-forms
+  "Builds a single-evaluation thread expansion, using an explicit percent
+   placeholder when present and positional insertion otherwise."
+  [value forms last?]
+  (if (= 0 (count forms))
+    value
+    (let [step (first forms)
+          threaded (if (thread-placeholder? step)
+                     step
+                     (if last?
+                       (thread-last-form '% step)
+                       (thread-first-form '% step)))]
+      (list 'let [(symbol "%") value]
+            (thread-forms threaded (vec (rest forms)) last?)))))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  conditional-thread-form
+  "Builds the nested let/if expansion of cond-> (or cond->> when last? is
+   true) for value and its condition/step clause pairs."
+  [value clauses last?]
+  (if (= 0 (count clauses))
+      value
+    (let [condition (first clauses)
+          step (second clauses)
+          remaining (vec (drop 2 clauses))
+          result-symbol (Runtime/gensym "result")
+          threaded (if last?
+                       (thread-last-form result-symbol step)
+                     (thread-first-form result-symbol step))]
+      (list 'let [result-symbol value]
+             (list 'if
+                    condition
+                    (conditional-thread-form threaded remaining last?)
+                    (conditional-thread-form result-symbol remaining last?))))))
+
+(defn ^{:schema [:fn [:any :vector] :any]}
+  case-form
+  "Builds a single-evaluation case decision from constant/expression clauses."
+  [target clauses]
+  (if (= 0 (count clauses))
+    nil
+    (if (= 1 (count clauses))
+      (first clauses)
+      (list 'if
+            (list '= target (list 'quote (first clauses)))
+            (second clauses)
+            (case-form target (vec (drop 2 clauses)))))))
+
+(defn ^{:schema [:fn [:any :vector :bool] :any]}
+  some-thread-form
+  "Builds nil-short-circuiting first- or last-threaded forms."
+  [value forms last?]
+  (if (= 0 (count forms))
+    value
+    (let [result (Runtime/gensym "some")
+          step (first forms)
+          threaded (if last?
+                     (thread-last-form result step)
+                     (thread-first-form result step))]
+      (list 'let [result value]
+            (list 'if
+                  (list 'nil? result)
+                  nil
+                  (some-thread-form threaded (vec (rest forms)) last?))))))
+
+(defn ^{:schema [:fn [:vector :any :any] :any]}
+  if-let-form
+  "Builds sequential truth-checked bindings with one shared alternative."
+  [bindings then alternative]
+  (cond (= 0 (count bindings))
+        then
+
+        (= 1 (count bindings))
+        (throw (ex :foundation/invalid-if-let-bindings {:bindings bindings} :ex/message "if-let requires an even binding vector" :ex/class :ex.class/syntax))
+
+        :else
+        (let [binding (first bindings)
+              expression (second bindings)
+              remaining (vec (drop 2 bindings))
+              result (Runtime/gensym "if-let")]
+          (list 'let [result expression]
+                (list 'if result
+                      (list 'let [binding result]
+                            (if-let-form remaining then alternative))
+                      alternative)))))
+
+(defn ^{:schema [:fn [:str :any] :any]}
+  comprehension-error
+  "Throws a comprehension binding error with the original binding form."
+  [message bindings]
+  (throw (ex :foundation/invalid-comprehension-bindings {:bindings bindings} :ex/message message :ex/class :ex.class/syntax)))
+
+(defn ^{:schema [:fn [:vector :vector :bool :vector] :map]}
+  comprehension-group
+  "Parses one collection binding and its following comprehension modifiers."
+  [remaining original allow-into? groups]
+  (if (< (count remaining) 2)
+    (comprehension-error "comprehension requires binding/source pairs" original)
+    (let [binding (first remaining)
+          source (second remaining)]
+      (if (keyword? binding)
+        (comprehension-error "comprehension modifier requires a preceding binding" original)
+        (loop [tail (vec (drop 2 remaining))
+               modifiers []]
+          (if (= 0 (count tail))
+            {:groups (conj groups {:binding binding
+                                   :source source
+                                   :modifiers modifiers})
+             :into? false
+             :destination nil
+             :remaining []}
+            (let [modifier (first tail)]
+              (if (not (keyword? modifier))
+                {:groups (conj groups {:binding binding
+                                       :source source
+                                       :modifiers modifiers})
+                 :into? false
+                 :destination nil
+                 :remaining tail}
+                (if (= 1 (count tail))
+                  (comprehension-error "comprehension modifier requires a value" original)
+                  (let [value (second tail)]
+                    (if (= modifier :into)
+                      (if (not allow-into?)
+                        (comprehension-error "doseq does not support :into" original)
+                        (if (not (= 2 (count tail)))
+                          (comprehension-error "comprehension :into must be final" original)
+                          {:groups (conj groups {:binding binding
+                                                 :source source
+                                                 :modifiers modifiers})
+                           :into? true
+                           :destination value
+                           :remaining []}))
+                      (if (= modifier :let)
+                        (if (or (not (vector? value))
+                                (not (= 0 (mod (count value) 2))))
+                          (comprehension-error "comprehension :let requires an even binding vector"
+                                               original)
+                          (recur (vec (drop 2 tail))
+                                 (conj modifiers [modifier value])))
+                        (if (or (= modifier :when) (= modifier :while))
+                          (recur (vec (drop 2 tail))
+                                 (conj modifiers [modifier value]))
+                          (comprehension-error "unsupported comprehension modifier" original))))))))))))))
+
+(defn ^{:schema [:fn [:any :bool] :map]}
+  parse-comprehension
+  "Parses collection bindings, scoped modifiers, and the optional final destination."
+  [bindings allow-into?]
+  (if (not (vector? bindings))
+    (comprehension-error "comprehension requires a binding vector" bindings)
+    (if (= 0 (count bindings))
+      (comprehension-error "comprehension requires at least one binding" bindings)
+      (loop [remaining bindings
+             groups []]
+        (let [parsed (comprehension-group remaining bindings allow-into? groups)]
+          (if (= 0 (count (:remaining parsed)))
+            (dissoc parsed :remaining)
+            (recur (:remaining parsed) (:groups parsed))))))))
+
+(defn ^{:schema [:fn [:symbol :vector] :vector]}
+  comprehension-state-bindings
+  "Builds let bindings that restore comprehension values from state."
+  [state slots]
+  (loop [index 0
+         output []]
+    (if (= index (count slots))
+      output
+      (recur (+ index 1)
+             (conj (conj output (nth slots index))
+                   (list 'nth state index))))))
+
+(defn ^{:schema [:fn [:any :vector] :any]}
+  comprehension-extend-state
+  "Builds state with raw values appended in order."
+  [state values]
+  (reduce (fn [output value] (list 'conj output value)) state values))
+
+(defn ^{:schema [:fn [:any :vector :vector] :vector]}
+  comprehension-let-form
+  "Adds one single-evaluation :let transformation to a comprehension iterator."
+  [pipeline slots bindings]
+  (let [state (Runtime/gensym "state")]
+    (loop [remaining bindings
+           raw-values []
+           next-slots slots
+           let-bindings (comprehension-state-bindings state slots)]
+      (if (= 0 (count remaining))
+        [(list 'Iter/iter-map
+               (list 'fn [state]
+                     (list 'let
+                           let-bindings
+                           (comprehension-extend-state state raw-values)))
+               pipeline)
+         next-slots]
+        (let [binding (first remaining)
+              expression (second remaining)
+              raw (Runtime/gensym "let")]
+          (recur (vec (drop 2 remaining))
+                 (conj raw-values raw)
+                 (conj next-slots binding)
+                 (conj (conj (conj (conj let-bindings raw) expression)
+                             binding)
+                       raw)))))))
+
+(defn ^{:schema [:fn [:any :vector :vector] :vector]}
+  comprehension-modifiers-form
+  "Applies scoped :let, :when, and :while iterator transformations."
+  [pipeline slots modifiers]
+  (loop [output pipeline
+         active-slots slots
+         remaining modifiers]
+    (if (= 0 (count remaining))
+      [output active-slots]
+      (let [modifier (first remaining)
+            operation (first modifier)
+            value (second modifier)]
+        (if (= operation :let)
+          (let [result (comprehension-let-form output active-slots value)]
+            (recur (first result)
+                   (second result)
+                   (vec (rest remaining))))
+          (let [state (Runtime/gensym "state")
+                native-operation (if (= operation :when)
+                                   'Iter/iter-filter
+                                   'Iter/iter-take-while)]
+            (recur (list native-operation
+                         (list 'fn [state]
+                               (list 'let
+                                     (comprehension-state-bindings state active-slots)
+                                     value))
+                         output)
+                   active-slots
+                   (vec (rest remaining)))))))))
+
+(declare comprehension-groups-form)
+
+(defn ^{:schema [:fn [:vector :any [:maybe :symbol] :vector] :any]}
+  comprehension-groups-form
+  "Builds the lazy iterator pipeline for parsed comprehension groups."
+  [groups body outer-state outer-slots]
+  (let [group (first groups)
+        raw (Runtime/gensym "item")
+        initial-state (if (nil? outer-state)
+                        [raw]
+                        (list 'conj outer-state raw))
+        initial (list 'Iter/iter-map
+                      (list 'fn [raw] initial-state)
+                      (:source group))
+        slots (conj outer-slots (:binding group))
+        modified (comprehension-modifiers-form initial slots (:modifiers group))
+        pipeline (first modified)
+        active-slots (second modified)
+        state (Runtime/gensym "state")
+        callback-bindings (comprehension-state-bindings state active-slots)]
+    (if (= 1 (count groups))
+      (list 'Iter/iter-map
+            (list 'fn [state]
+                  (list 'let callback-bindings body))
+            pipeline)
+      (list 'Iter/iter-mapcat
+            (list 'fn [state]
+                  (list 'let
+                        callback-bindings
+                        (comprehension-groups-form (vec (rest groups))
+                                                   body
+                                                   state
+                                                   active-slots)))
+            pipeline))))
+
+;; ---------------------------------------------------------------------------
+;; Macros
+;; ---------------------------------------------------------------------------
+
+(defmacro ^{:public true}
+  defstruct
+  "Declares an immutable named value and optional protocol implementations."
+  [name fields & clauses]
+  (letfn [(fail [message data]
+            (throw (ex :foundation/invalid-declaration
+                       data
+                       :ex/message message
+                       :ex/class :ex.class/syntax)))
+          (implementation-map [implementations]
+            (loop [remaining implementations
+                   output {}]
+              (if (= 0 (count remaining))
+                output
+                (let [implementation (first remaining)
+                      method (first implementation)
+                      arguments (second implementation)]
+                  (if (or (not (list? implementation))
+                          (< (count implementation) 3)
+                          (not (symbol? method))
+                          (not (nil? (namespace method)))
+                          (not (vector? arguments))
+                          (has? output (list 'quote method)))
+                    (fail "type protocol implementations require unique unqualified methods, argument vectors, and bodies"
+                          {:implementation implementation})
+                    (recur (vec (rest remaining))
+                           (assoc output
+                                  (list 'quote method)
+                                  (apply list (concat ['fn] (rest implementation))))))))))
+          (extension-forms [remaining output type-form]
+            (if (= 0 (count remaining))
+              output
+              (let [protocol (first remaining)
+                    grouped (loop [tail (vec (rest remaining))
+                                  implementations []]
+                              (if (and (> (count tail) 0)
+                                       (list? (first tail)))
+                                (recur (vec (rest tail))
+                                       (conj implementations (first tail)))
+                                [implementations tail]))
+                    implementations (first grouped)
+                    tail (second grouped)]
+                (if (or (not (symbol? protocol))
+                        (= 0 (count implementations)))
+                  (fail "type protocol clauses require a protocol symbol and implementations"
+                        {:protocol protocol :clauses remaining})
+                  (extension-forms
+                   tail
+                   (conj output
+                         (list 'Base/extend
+                               (list 'Base/current-namespace)
+                               type-form
+                               protocol
+                               (implementation-map implementations)))
+                   type-form)))))]
+    (if (or (not (symbol? name))
+            (not (nil? (namespace name)))
+            (not (vector? fields)))
+      (fail "defstruct requires an unqualified name and field vector"
+            {:name name :fields fields})
+      (let [namespace-form (list 'Base/current-namespace)
+            fields-form (apply list
+                               (concat ['Base/vector]
+                                       (map (fn [field] (list 'quote field)) fields)))
+            type-form (Runtime/gensym "type")
+            structure (list 'Base/struct
+                            namespace-form
+                            (list 'quote name)
+                            fields-form
+                            (or (meta name) nil))
+            extensions (extension-forms (vec clauses) [] type-form)
+            body (list 'let
+                       [type-form structure]
+                       (apply list (concat ['do] extensions [type-form])))
+            declaration (list 'Base/with-declaration
+                              namespace-form
+                              (list 'fn [] body))]
+        (list 'let
+              [type-form declaration]
+              (list 'def name type-form)
+              nil)))))
+
+(defmacro ^{:public true}
+  defmutable
+  "Declares a mutable named value and optional protocol implementations."
+  [name fields & clauses]
+  (letfn [(fail [message data]
+            (throw (ex :foundation/invalid-declaration
+                       data
+                       :ex/message message
+                       :ex/class :ex.class/syntax)))
+          (implementation-map [implementations]
+            (loop [remaining implementations
+                   output {}]
+              (if (= 0 (count remaining))
+                output
+                (let [implementation (first remaining)
+                      method (first implementation)
+                      arguments (second implementation)]
+                  (if (or (not (list? implementation))
+                          (< (count implementation) 3)
+                          (not (symbol? method))
+                          (not (nil? (namespace method)))
+                          (not (vector? arguments))
+                          (has? output (list 'quote method)))
+                    (fail "type protocol implementations require unique unqualified methods, argument vectors, and bodies"
+                          {:implementation implementation})
+                    (recur (vec (rest remaining))
+                           (assoc output
+                                  (list 'quote method)
+                                  (apply list (concat ['fn] (rest implementation))))))))))
+          (extension-forms [remaining output type-form]
+            (if (= 0 (count remaining))
+              output
+              (let [protocol (first remaining)
+                    grouped (loop [tail (vec (rest remaining))
+                                  implementations []]
+                              (if (and (> (count tail) 0)
+                                       (list? (first tail)))
+                                (recur (vec (rest tail))
+                                       (conj implementations (first tail)))
+                                [implementations tail]))
+                    implementations (first grouped)
+                    tail (second grouped)]
+                (if (or (not (symbol? protocol))
+                        (= 0 (count implementations)))
+                  (fail "type protocol clauses require a protocol symbol and implementations"
+                        {:protocol protocol :clauses remaining})
+                  (extension-forms
+                   tail
+                   (conj output
+                         (list 'Base/extend
+                               (list 'Base/current-namespace)
+                               type-form
+                               protocol
+                               (implementation-map implementations)))
+                   type-form)))))]
+    (if (or (not (symbol? name))
+            (not (nil? (namespace name)))
+            (not (vector? fields)))
+      (fail "defmutable requires an unqualified name and field vector"
+            {:name name :fields fields})
+      (let [namespace-form (list 'Base/current-namespace)
+            fields-form (apply list
+                               (concat ['Base/vector]
+                                       (map (fn [field] (list 'quote field)) fields)))
+            type-form (Runtime/gensym "type")
+            structure (list 'Base/mutable
+                            namespace-form
+                            (list 'quote name)
+                            fields-form
+                            (or (meta name) nil))
+            extensions (extension-forms (vec clauses) [] type-form)
+            body (list 'let
+                       [type-form structure]
+                       (apply list (concat ['do] extensions [type-form])))
+            declaration (list 'Base/with-declaration
+                              namespace-form
+                              (list 'fn [] body))]
+        (list 'let
+              [type-form declaration]
+              (list 'def name type-form)
+              nil)))))
+
+(defmacro ^{:public true}
+  defprotocol
+  "Declares a protocol with an optional leading parent protocol vector."
+  [name & declarations]
+  (letfn [(fail [message data]
+            (throw (ex :foundation/invalid-declaration
+                       data
+                       :ex/message message
+                       :ex/class :ex.class/syntax)))
+          (method-map [methods]
+            (loop [remaining methods
+                   output {}]
+              (if (= 0 (count remaining))
+                output
+                (let [declaration (first remaining)
+                      method (first declaration)
+                      arguments (second declaration)]
+                  (if (or (not (list? declaration))
+                          (not (= 2 (count declaration)))
+                          (not (symbol? method))
+                          (not (nil? (namespace method)))
+                          (not (vector? arguments))
+                          (= 0 (count arguments))
+                          (has? output (list 'quote method)))
+                    (fail "defprotocol methods require unique unqualified names and non-empty argument vectors"
+                          {:declaration declaration})
+                    (recur (vec (rest remaining))
+                           (assoc output
+                                  (list 'quote method)
+                                  (count arguments))))))))]
+    (if (or (not (symbol? name))
+            (not (nil? (namespace name))))
+      (fail "defprotocol requires an unqualified name" {:name name})
+      (let [parents? (and (> (count declarations) 0)
+                          (vector? (first declarations)))
+            parents (apply list
+                           (concat ['Base/vector]
+                                   (if parents? (first declarations) [])))
+            methods (if parents? (vec (rest declarations)) declarations)]
+        (if (= 0 (count methods))
+          (fail "defprotocol requires at least one method" {:name name})
+          (let [namespace-form (list 'Base/current-namespace)]
+            (list 'Base/with-declaration
+                  namespace-form
+                  (list 'fn []
+                        (list 'Base/protocol
+                              namespace-form
+                              (list 'quote name)
+                              (method-map methods)
+                              parents)))))))))
+
+(defmacro ^{:public true}
+  defmulti
+  "Declares a named multimethod from its dispatch function."
+  [name dispatch]
+  (letfn [(fail [message data]
+            (throw (ex :foundation/invalid-declaration
+                       data
+                       :ex/message message
+                       :ex/class :ex.class/syntax)))]
+    (if (or (not (symbol? name))
+            (not (nil? (namespace name))))
+      (fail "defmulti requires an unqualified name" {:name name})
+      (let [namespace-form (list 'Base/current-namespace)
+            multimethod-form (Runtime/gensym "multimethod")
+            declaration (list 'Base/with-declaration
+                              namespace-form
+                              (list 'fn []
+                                    (list 'Base/multimethod
+                                          namespace-form
+                                          (list 'quote name)
+                                          dispatch)))]
+        (list 'let
+              [multimethod-form declaration]
+              (list 'def name multimethod-form)
+              multimethod-form)))))
+
+(defmacro ^{:public true}
+  defmethod
+  "Registers one multimethod implementation for a dispatch value."
+  [multimethod dispatch arguments & body]
+  (letfn [(fail [message data]
+            (throw (ex :foundation/invalid-declaration
+                       data
+                       :ex/message message
+                       :ex/class :ex.class/syntax)))]
+    (if (or (not (symbol? multimethod))
+            (not (vector? arguments))
+            (= 0 (count body)))
+      (fail "defmethod requires a multimethod symbol, argument vector, and body"
+            {:multimethod multimethod :arguments arguments})
+      (let [namespace-form (list 'Base/current-namespace)
+            implementation (apply list (concat ['fn arguments] body))]
+        (list 'Base/with-declaration
+              namespace-form
+              (list 'fn []
+                    (list 'Base/method
+                          namespace-form
+                          (list 'quote multimethod)
+                          dispatch
+                          implementation)))))))
+
+(defmacro ^{:public true}
+  extend-type
+  "Registers one type's implementations for one protocol."
+  [type protocol & implementations]
+  (letfn [(fail [message data]
+            (throw (ex :foundation/invalid-declaration
+                       data
+                       :ex/message message
+                       :ex/class :ex.class/syntax)))
+          (implementation-map [implementations]
+            (loop [remaining implementations
+                   output {}]
+              (if (= 0 (count remaining))
+                output
+                (let [implementation (first remaining)
+                      method (first implementation)
+                      arguments (second implementation)]
+                  (if (or (not (list? implementation))
+                          (< (count implementation) 3)
+                          (not (symbol? method))
+                          (not (nil? (namespace method)))
+                          (not (vector? arguments))
+                          (has? output (list 'quote method)))
+                    (fail "extend-type requires unique unqualified methods, argument vectors, and bodies"
+                          {:implementation implementation})
+                    (recur (vec (rest remaining))
+                           (assoc output
+                                  (list 'quote method)
+                                  (apply list (concat ['fn] (rest implementation))))))))))]
+    (if (or (not (symbol? type))
+            (= 0 (count implementations)))
+      (fail "extend-type requires a type symbol and method implementations" {:type type :protocol protocol})
+      (let [namespace-form (list 'Base/current-namespace)
+            type-form (list 'Base/resolve (list 'quote type))]
+        (list 'Base/with-declaration
+              namespace-form
+              (list 'fn []
+                    (list 'Base/extend
+                          namespace-form
+                          type-form
+                          protocol
+                          (implementation-map implementations))
+                    protocol))))))
+
+(defmacro defonce
+  "Defines name with expression only when its Var is absent, returning the Var."
+  [name expression]
+  (let [qualified (symbol (str (:ns &env)) (str name))]
+    (list 'if
+          (list 'Base/resolve (list 'quote qualified))
+          (list 'Base/resolve (list 'quote qualified))
+          (list 'Runtime/eval (list 'quote (list 'def name expression))))))
+
+(defmacro ->
+  "Threads value through forms, inserting it as the first argument unless a
+   form contains an explicit percent placeholder."
+  [value & forms]
+  (thread-forms value forms false))
+
+(defmacro ->>
+  "Threads value through forms, inserting it as the last argument unless a
+   form contains an explicit percent placeholder."
+  [value & forms]
+  (thread-forms value forms true))
+
+(defmacro case
+  "Selects the expression paired with the matching constant, or the optional default."
+  [value & clauses]
+  (let [target (Runtime/gensym "case")]
+    (list 'let [target value] (case-form target clauses))))
+
+(defmacro some->
+  "Threads a non-nil value through forms as their first argument."
+  [value & forms]
+  (some-thread-form value forms false))
+
+(defmacro some->>
+  "Threads a non-nil value through forms as their last argument."
+  [value & forms]
+  (some-thread-form value forms true))
+
+;; ---------------------------------------------------------------------------
+;; Application
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any :any :any] :any]}
+  apply-in
+  "Invokes value in runtime after IApplicable input and output transforms."
+  [value runtime args]
+  (let [input (IApplicable/transform-in value runtime args)
+        result (IApplicable/apply-in value runtime input)]
+    (IApplicable/transform-out value runtime args result)))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  apply-as
+  "Invokes value using its default IApplicable runtime."
+  [value args]
+  (apply-in value (IApplicable/apply-default value) args))
+
+(defn ^{:schema [:fn [:any & :any] :any]}
+  invoke-as
+  "Invokes value using its default IApplicable runtime and arguments."
+  [value & args]
+  (apply-as value args))
+
+(defn ^{:schema [:fn [:any :any] :vector]}
+  doto-forms
+  "Builds the target-first calls used by doto."
+  [target forms]
+  (let [it (iter forms)]
+    (loop [calls []]
+      (if (iter-next? it)
+        (recur (conj calls
+                     (thread-first-form target (iter-next it))))
+        calls))))
+
+(defmacro doto
+  "Evaluates value once, invokes each form with it inserted first, and returns
+   the original value."
+  [value & forms]
+  (let [target (Runtime/gensym "target")
+        calls (doto-forms target forms)]
+    (list 'let
+          [target value]
+          (apply list (concat ['do] calls [target])))))
+
+(defmacro if-not
+  "Evaluates then when test is false, otherwise the optional alternative."
+  [test then & alternative]
+  `(if ~test ~(if (= 0 (count alternative)) nil (first alternative)) ~then))
+
+(defmacro when
+  "Evaluates body when test is truthy, otherwise returns nil."
+  [test & body]
+  `(if ~test (do ~@body) nil))
+
+(defmacro if-let
+  "Evaluates binding pairs from left to right; evaluates then when every value
+   is truthy, otherwise the optional shared alternative."
+  [bindings then & alternative]
+  (if-let-form bindings
+               then
+               (if (= 0 (count alternative)) nil (first alternative))))
+
+(defmacro when-let
+  "Evaluates binding pairs from left to right; when every value is truthy,
+   evaluates body."
+  [bindings & body]
+  (if-let-form bindings (apply list (concat ['do] body)) nil))
+
+(defmacro for
+  "Returns an iterator-backed Seq comprehension. Supports collection bindings,
+   :let, :when, :while, and one optional final :into destination."
+  [bindings body]
+  (let [parsed (parse-comprehension bindings true)
+        iterator (comprehension-groups-form (:groups parsed) body nil [])]
+    (if (:into? parsed)
+      (let [destination (Runtime/gensym "destination")]
+        (list 'let
+              [destination (:destination parsed)]
+              (list 'std.foundation/into
+                    destination
+                    (list 'std.foundation/seq iterator))))
+      (list 'std.foundation/seq iterator))))
+
+(defmacro doseq
+  "Executes body eagerly for collection bindings and :let, :when, or :while
+   modifiers, then returns nil."
+  [bindings & body]
+  (let [parsed (parse-comprehension bindings false)
+        iterator (comprehension-groups-form (:groups parsed)
+                                            (apply list (concat ['do] body [nil]))
+                                            nil
+                                            [])
+        it (Runtime/gensym "iterator")
+        continue (Runtime/gensym "continue")]
+    (list 'let
+          [it iterator]
+          (list 'loop
+                [continue true]
+                (list 'if
+                      (list 'std.foundation/iter-next? it)
+                      (list 'do
+                            (list 'std.foundation/iter-next it)
+                            (list 'recur true))
+                      nil)))))
+
+(defmacro dotimes
+  "Executes body with index from zero to below count, then returns nil."
+  [binding & body]
+  (if (or (not (vector? binding))
+          (not (= 2 (count binding)))
+          (not (symbol? (first binding))))
+    (throw (ex :foundation/invalid-dotimes-binding {:binding binding} :ex/message "dotimes requires [index count]" :ex/class :ex.class/syntax))
+    (let [index (first binding)
+          amount (second binding)
+          limit (Runtime/gensym "limit")]
+      (list 'let
+            [limit amount]
+            (list 'loop
+                  [index 0]
+                  (list 'if
+                        (list '< index limit)
+                        (apply list
+                               (concat ['do]
+                                       body
+                                       [(list 'recur (list '+ index 1))]))
+                        nil))))))
+
+(defmacro while
+  "Repeatedly executes body while test is truthy, then returns nil."
+  [test & body]
+      (let [continue (Runtime/gensym "continue")]
+    (list 'loop
+          [continue true]
+          (list 'if
+                test
+                (apply list (concat ['do] body [(list 'recur true)]))
+                nil))))
+
+(defmacro cond->
+  "Threads value through each step whose condition holds, inserting it as the
+   first argument."
+  [value & clauses]
+  (conditional-thread-form value clauses false))
+
+(defmacro cond->>
+  "Threads value through each step whose condition holds, inserting it as the
+   last argument."
+  [value & clauses]
+  (conditional-thread-form value clauses true))
+
+(defmacro with-ns
+  "Evaluates body forms in an existing namespace and restores the caller."
+  [namespace & forms]
+  `(eval-in-ns ~namespace '~(vec forms)))
+
+(defmacro with-out-string
+  "Captures text written by p and println while evaluating body."
+  [& body]
+  (list 'Printer/capture
+        (apply list 'fn [] body)))
+
+(defmacro with-close
+  "Binds closeable resources and closes them in reverse order after body."
+  [bindings & body]
+  (if (empty? bindings)
+    (apply list 'do body)
+    (let [resource (first bindings)
+          initializer (second bindings)]
+      (list 'let
+            [resource initializer]
+            (list 'try
+                  (apply list 'with-close (vec (drop 2 bindings)) body)
+                  (list 'finally
+                        (list 'if
+                              resource
+                              (list 'IClose/close resource)
+                              nil)))))))
+
+;; ---------------------------------------------------------------------------
+;; intern
+;; ---------------------------------------------------------------------------
+
+(defmacro intern-in
+  "Copies selected Vars into a namespace as its public façade."
+  [target-or-entry & additional-entries]
+  (let [implicit? (if (vector? target-or-entry) true (if (namespace target-or-entry) true false))
+        target (if implicit? (list 'ns-current) target-or-entry)
+        selected-entries (if implicit?
+                           (apply list target-or-entry additional-entries)
+                           additional-entries)]
+    (vec
+     (map
+      (fn [entry]
+        (let [to (if (vector? entry) (first entry) entry)
+              from (if (vector? entry) (second entry) entry)
+              metadata (select-keys
+                        (merge (meta &form) (meta entry))
+                        [:file :line :column])]
+          (list 'intern-var
+                target
+                (list 'quote (symbol (name to)))
+                (list 'var from)
+                metadata)))
+      selected-entries))))
+
+(defmacro intern-all
+  "Copies every public Var from each source namespace into the current namespace."
+  [& namespaces]
+  (vec
+   (mapcat
+    (fn [source]
+      (map
+       (fn [entry]
+         (list 'intern-var
+               (list 'ns-current)
+               (list 'quote entry)
+               (list 'var (symbol (str source) (name entry)))))
+       (keys (Runtime/ns-publics source))))
+    namespaces)))
+
+;; ---------------------------------------------------------------------------
+;; Templating
+;; ---------------------------------------------------------------------------
+
+(def ^{:dynamic true
+       :schema :any
+       :doc "Metadata supplied to the active template expansion."}
+  *template-meta*
+  nil)
+
+(defmacro with-template-meta
+  "Binds template metadata for the duration of body."
+  [metadata & body]
+  (list 'binding
+        ['std.foundation/*template-meta* metadata]
+        (apply list 'do body)))
+
+(defn ^{:schema [:fn [] :any]}
+  template-meta
+  "Returns metadata supplied to the active template expansion."
+  []
+  *template-meta*)
+
+(defmacro template-vars
+  "Evaluates template forms for named source Vars."
+  [spec & entries]
+  (let [template (first spec)
+        metadata (second spec)
+        forms
+        (map
+         (fn [entry]
+           (let [to (if (vector? entry) (first entry) (symbol (name entry)))
+                 from (if (vector? entry) (second entry) entry)
+                 args (if (vector? entry) (vec (drop 2 entry)) [])]
+             (list 'eval
+                   (apply list template (list 'quote to) (list 'var from) args))))
+         entries)]
+    (list 'binding ['std.foundation/*template-meta* metadata] (apply list 'do forms))))
+
+(defmacro template-entries
+  "Evaluates template forms for literal entries."
+  [spec & entries]
+  (let [template (first spec)
+        metadata (second spec)
+        forms (map (fn [entry]
+                     (list 'eval (list template (list 'quote entry))))
+                   entries)]
+    (list 'binding ['std.foundation/*template-meta* metadata] (apply list 'do forms))))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  template-ensure
+  "Returns generated template Vars after the caller has materialized them."
+  [symbols variables]
+  variables)
+
+
+;; ---------------------------------------------------------------------------
+;; Test assertion syntax
+;; ---------------------------------------------------------------------------
+
+(defmacro test-check
+  "Evaluates one lightweight assertion and converts thrown errors into native Test Results."
+  [name actual expected]
+  `(let [name# ~name
+         expected# ~expected]
+     (try
+       (let [actual# ~actual]
+         (Test/result name# actual# expected# (Test/compare actual# expected#)))
+       (catch error#
+         (Test/result
+          name# nil expected#
+          (Result/create
+           :error error#
+           {:test {:actual nil :expected expected#}
+            :failures []}))))))
+
+
+;; ---------------------------------------------------------------------------
+;; Dependency graph queries
+;; ---------------------------------------------------------------------------
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  dep-get
+  "Returns one dependency entry from a map graph or IDeps context."
+  [context id]
+  (if (satisfies? IDeps context)
+    (IDeps/dep-get context id)
+    (let [value (get context id)]
+      (if (and (map? value) (has? value :entry))
+        (:entry value)
+        value))))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  dep-entries
+  "Returns one entry's dependencies as a set."
+  [context id]
+  (if (satisfies? IDeps context)
+    (set (IDeps/dep-entries context id))
+    (let [value (get context id)
+          dependencies (if (and (map? value) (has? value :deps))
+                         (:deps value)
+                         [])]
+      (set (or dependencies [])))))
+
+(defn ^{:schema [:fn [:any] :vector]}
+  dep-keys
+  "Lists dependency identifiers from a map graph or IDeps context."
+  [context]
+  (if (satisfies? IDeps context)
+    (vec (IDeps/dep-keys context))
+    (vec (keys context))))
+
+(defn ^{:schema [:fn [:any :any] :map]}
+  deps-map
+  "Builds the direct dependency map for ids."
+  [context ids]
+  (reduce (fn [output id]
+            (assoc output id (dep-entries context id)))
+          {}
+          ids))
+
+(defn ^{:schema [:function [:fn [:any :any] :map]
+                            [:fn [:any :any :map] :map]]}
+  deps-resolve
+  "Resolves ids and every transitive dependency into {:all set :graph map}."
+  ([context ids]
+   (deps-resolve context ids {:all #{} :graph {}}))
+  ([context ids state]
+   (loop [pending (set ids)
+          seen (set (or (:all state) #{}))
+          graph (or (:graph state) {})]
+     (if (empty? pending)
+       {:all seen :graph graph}
+       (let [next-graph (merge graph (deps-map context pending))
+             next-seen (union seen pending)
+             discovered (apply union (vals next-graph))
+             next-pending (difference discovered next-seen)]
+         (recur next-pending next-seen next-graph))))))
+
+(defn ^{:schema [:function [:fn [:any] :vector]
+                            [:fn [:any :any] :vector]]}
+  deps-ordered
+  "Returns dependencies before dependents and throws on a cycle."
+  ([context]
+   (deps-ordered context (dep-keys context)))
+  ([context ids]
+   (topological-sort (:graph (deps-resolve context ids)))))
+
+(defn ^{:schema [:function [:fn [:any :any] :any]
+                            [:fn [:any :any :any] :any]]}
+  dependents-direct
+  "Returns selected entries that directly depend on id."
+  ([context id]
+   (dependents-direct context id (dep-keys context)))
+  ([context id selected]
+   (set (filter (fn [candidate]
+                  (has? (dep-entries context candidate) id))
+                selected))))
+
+(defn ^{:schema [:fn [:any :any :any] :map]}
+  dependents-topological
+  "Builds one level of the reverse dependency graph."
+  [context ids selected]
+  (reduce (fn [output id]
+            (assoc output id (dependents-direct context id selected)))
+          {}
+          ids))
+
+(defn ^{:schema [:function [:fn [:any :any] :map]
+                            [:fn [:any :any :any] :map]]}
+  dependents-all
+  "Returns the complete reverse graph rooted at id."
+  ([context id]
+   (dependents-all context id (dep-keys context)))
+  ([context id selected]
+   (loop [graph {id (dependents-direct context id selected)}]
+     (let [known (set (keys graph))
+           discovered (apply union (vals graph))
+           pending (difference discovered known)]
+       (if (empty? pending)
+         graph
+         (recur (merge graph
+                       (dependents-topological context pending selected))))))))
+
+(defn ^{:schema [:function [:fn [:any :any] :vector]
+                            [:fn [:any :any :any] :vector]]}
+  dependents-ordered
+  "Returns transitive dependents before id in teardown order."
+  ([context id]
+   (dependents-ordered context id (dep-keys context)))
+  ([context id selected]
+   (topological-sort (dependents-all context id selected))))

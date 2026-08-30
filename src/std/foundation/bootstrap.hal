@@ -1,0 +1,169 @@
+(ns std.foundation.bootstrap)
+
+(def +refer-prefix+ "^{:refer ")
+
+(defn ^{:public true} public-symbols
+  "Returns stable public test seams owned by a loaded namespace-symbol."
+  [namespace-symbol]
+  (let [namespace-name (str namespace-symbol)
+        seam-namespace (or (str/starts-with? namespace-name "std.native.")
+                           (str/starts-with? namespace-name "std.protocol."))
+        public (ns-publics namespace-symbol)]
+    (vec
+     (sort-by
+      str
+      (keep
+       (fn [local-symbol]
+         (let [variable-symbol (symbol namespace-name (name local-symbol))
+               metadata (meta (get public local-symbol))]
+           (when (and (not (:private metadata))
+                      (or seam-namespace (:public metadata)))
+             variable-symbol)))
+       (keys public))))))
+
+(defn declaration-prefix
+  [line]
+  (cond
+    (str/starts-with? line "(defn ") "(defn "
+    (str/starts-with? line "(defmacro ") "(defmacro "
+    :else nil))
+
+(defn ^{:public true} source-symbols
+  "Orders public symbols by defn/defmacro appearance in definition-source."
+  [namespace-symbol definition-source]
+  (let [public (public-symbols namespace-symbol)
+        find-public (fn [candidate-name]
+                      (first (filter (fn [symbol] (= (name symbol) candidate-name)) public)))]
+    (loop [lines (vec (str/split-lines definition-source))
+           pending false
+           output []]
+      (if (empty? lines)
+        (vec (concat output (filter (fn [symbol] (not (get (set output) symbol))) public)))
+        (let [line (str/trim (first lines))
+              prefix (declaration-prefix line)
+              remainder (when prefix (str/trim (str/slice line (str/length prefix))))
+              inline-name (when (and remainder (not (str/starts-with? remainder "^")))
+                            (first (str/split remainder " ")))
+              candidate (or (find-public inline-name)
+                            (when pending (find-public line)))]
+          (recur (vec (rest lines))
+                 (and (or pending prefix) (not candidate))
+                 (if candidate (conj output candidate) output)))))))
+
+(defn marker-reference
+  [line]
+  (when (str/starts-with? line +refer-prefix+)
+    (let [end (str/index-of line "}" (str/length +refer-prefix+))]
+      (when (and end (= end (dec (str/length line))))
+        (symbol (str/slice line (str/length +refer-prefix+) end))))))
+
+(defn whitespace-free
+  [value]
+  (reduce (fn [output token] (str/replace output token ""))
+          value
+          [" " "\t" "\r" "\n"]))
+
+(defn block-record
+  [lines]
+  (let [source (str/trim (str/join "\n" lines))]
+    {:refer (marker-reference (first lines))
+     :source source
+     :pending (str/includes? (whitespace-free source) "(Test/check[])")}))
+
+(defn source-sections
+  [source]
+  (loop [lines (vec (str/split-lines source))
+         preamble []
+         current []
+         blocks []]
+    (if (empty? lines)
+      {:preamble (str/trim (str/join "\n" preamble))
+       :blocks (if (empty? current) blocks (conj blocks (block-record current)))}
+      (let [line (first lines)
+            reference (marker-reference line)]
+        (cond
+          reference
+          (recur (vec (rest lines))
+                 preamble
+                 [line]
+                 (if (empty? current) blocks (conj blocks (block-record current))))
+
+          (empty? current)
+          (recur (vec (rest lines)) (conj preamble line) current blocks)
+
+          :else
+          (recur (vec (rest lines)) preamble (conj current line) blocks))))))
+
+(defn ^{:public true} test-references
+  "Returns references declared by newline-delimited bootstrap blocks."
+  [source]
+  (vec (map :refer (:blocks (source-sections source)))))
+
+(defn ^{:public true} arrange-blocks
+  "Sorts reference blocks and maintains one blank line between every block."
+  ([source] (arrange-blocks source []))
+  ([source order]
+  (let [{:keys [preamble blocks]} (source-sections source)
+        find-block (fn [reference]
+                     (first (filter (fn [block] (= (:refer block) reference)) blocks)))
+        ordered (vec (keep find-block order))
+        ordered-references (set (map :refer ordered))
+        remaining (sort-by (fn [block] (str (:refer block)))
+                           (filter (fn [block] (not (get ordered-references (:refer block)))) blocks))
+        body (str/join "\n\n"
+                       (map :source (concat ordered remaining)))]
+    (cond
+      (and (str/blank? preamble) (str/blank? body)) ""
+      (str/blank? preamble) (str body "\n")
+      (str/blank? body) (str preamble "\n")
+      :else (str preamble "\n\n" body "\n")))))
+
+(defn ^{:public true} coverage
+  "Reports covered, pending, missing, and orphaned symbols for source."
+  [namespace-symbol source]
+  (let [public (public-symbols namespace-symbol)
+        public-set (set public)
+        blocks (:blocks (source-sections source))
+        references (set (map :refer blocks))
+        covered (vec (sort-by str (set (map :refer (filter (fn [block] (not (:pending block))) blocks)))))
+        pending (vec (sort-by str (set (map :refer (filter (fn [block] (:pending block)) blocks)))))]
+    {:covered (filter (fn [reference] (get public-set reference)) covered)
+     :pending (filter (fn [reference] (get public-set reference)) pending)
+     :missing (filter (fn [reference] (not (get references reference))) public)
+     :orphaned (vec (sort-by str (filter (fn [reference] (not (get public-set reference))) references)))}))
+
+(defn namespace-header
+  [namespace-symbol test-namespace alias]
+  (str "(ns " test-namespace "\n"
+       "  (:require [" namespace-symbol " :as " alias "]))"))
+
+(defn pending-block
+  [reference]
+  (str +refer-prefix+ reference "}\n(Test/check [])"))
+
+(defn ^{:public true} scaffold
+  "Returns a pure preview that adds missing Test/check blocks using string concatenation."
+  ([namespace-symbol source]
+   (scaffold namespace-symbol source {}))
+  ([namespace-symbol source options]
+   (let [public (if (:definition-source options)
+                  (source-symbols namespace-symbol (:definition-source options))
+                  (public-symbols namespace-symbol))
+         test-namespace (or (:test-namespace options)
+                            (symbol (str namespace-symbol "-bootstrap-test")))
+         alias (or (:alias options) 'subject)
+         base (if (str/blank? source)
+                (namespace-header namespace-symbol test-namespace alias)
+                source)
+         references (set (test-references base))
+         missing (vec (filter (fn [reference] (not (get references reference))) public))
+         additions (map pending-block missing)
+         combined (if (empty? additions)
+                    base
+                    (str (str/trim-right base) "\n\n" (str/join "\n\n" additions) "\n"))
+         after (arrange-blocks combined public)]
+     {:before source
+      :after after
+      :changed (not= source after)
+      :write false
+      :coverage (coverage namespace-symbol after)})))
