@@ -34,7 +34,7 @@ jobs:
           app-id: ${{ vars.HARA_PACKAGES_APP_ID }}
           private-key: ${{ secrets.HARA_PACKAGES_APP_PRIVATE_KEY }}
           owner: hara-lang
-          repositories: hara-packages
+          repositories: hara-packages,hara-native
       - name: Create an OIDC-signed publication receipt PR
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -65,9 +65,11 @@ jobs:
           test -n "$native_version"
           [[ "$native_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
           native_tag="v${native_version}"
-          native_revision="$(git ls-remote https://github.com/hara-lang/hara-native.git "refs/tags/${native_tag}^{}" | awk '{print $1}')"
-          if [ -z "$native_revision" ]; then
-            native_revision="$(git ls-remote https://github.com/hara-lang/hara-native.git "refs/tags/${native_tag}" | awk '{print $1}')"
+          native_ref="$(gh api "repos/hara-lang/hara-native/git/ref/tags/${native_tag}")"
+          native_revision="$(jq -r '.object.sha' <<<"$native_ref")"
+          native_ref_type="$(jq -r '.object.type' <<<"$native_ref")"
+          if [ "$native_ref_type" = "tag" ]; then
+            native_revision="$(gh api "repos/hara-lang/hara-native/git/tags/${native_revision}" --jq '.object.sha')"
           fi
           test -n "$native_revision"
           [[ "$native_revision" =~ ^[0-9a-f]{40}$ ]]
