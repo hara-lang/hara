@@ -1,0 +1,55 @@
+(ns hara.command-test
+  (:require [hara.command]))
+
+^{:refer hara.command/version-response}
+(Test/check
+ [{:name "creates the version command response"
+   :test (fn [] (hara.command/version-response {}))
+   :expected {:stdout "hara 0.1.0\n" :stderr "" :exit 0}}])
+
+^{:refer hara.command/help-response}
+(Test/check
+ [{:name "creates the help command response"
+   :test (fn [] (hara.command/help-response {}))
+   :expected {:stdout "Usage: hara [--version|help|headless]\n" :stderr "" :exit 0}}])
+
+^{:refer hara.command/headless-response}
+(Test/check
+ [{:name "creates the successful headless command response"
+   :test (fn [] (hara.command/headless-response {}))
+   :expected {:stdout "" :stderr "" :exit 0}}])
+
+^{:refer hara.command/application}
+(Test/check
+ [{:name "installs version, help, and headless routes in a fresh command application"
+   :test (fn []
+           (let [app (hara.command/application)]
+             [(= (:id (std.native.Command/config app)) 'hara/command)
+              (vec (map :id (std.native.Command/routes app)))
+              (std.native.Command/run app {:argv ["version"]})]))
+   :expected [true [:version :help :headless]
+              {:stdout "hara 0.1.0\n" :stderr "" :exit 0}]}])
+
+^{:refer hara.command/normalise-argv}
+(Test/check
+ [{:name "keeps ordinary argv and preserves legacy trailing headless options"
+   :test (fn []
+           [(hara.command/normalise-argv ["--version"])
+            (hara.command/normalise-argv ["headless" "--port" "0"])
+            (hara.command/normalise-argv ["--project" "/tmp/demo" "--port" "0" "headless"])])
+   :expected [["--version"]
+              ["headless" "--port" "0"]
+              ["headless" "--project" "/tmp/demo" "--port" "0"]]}])
+
+^{:refer hara.command/main}
+(Test/check
+ [{:name "routes version, help, legacy headless, and unknown commands"
+   :test (fn []
+           [(hara.command/main ["--version"])
+            (hara.command/main [])
+            (hara.command/main ["--port" "0" "headless"])
+            (hara.command/main ["build"])])
+   :expected [{:stdout "hara 0.1.0\n" :stderr "" :exit 0}
+              {:stdout "Usage: hara [--version|help|headless]\n" :stderr "" :exit 0}
+              {:hara/host-action :resp}
+              {:stdout "" :stderr ":command/unknown-route: unknown command: build\n" :exit 2}]}])

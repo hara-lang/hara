@@ -1,0 +1,70 @@
+(ns std.lib.encode.base64-test
+  (:require [std.lib.encode.base64]))
+
+(def +all-bytes+ (apply Bytes/new (range 0 256)))
+
+^{:refer std.lib.encode.base64/input-bytes}
+(Test/check
+ [{:name "accepts Bytes and retains structured wrong-type errors"
+   :test (fn []
+           [(bytes/count (std.lib.encode.base64/input-bytes (Bytes/new 1 2 3)))
+            (try
+              (std.lib.encode.base64/input-bytes "Hara")
+              :not-thrown
+              (catch error
+                [(ex-class error) (:ex/code (ex-data error)) (:value (ex-data error))]))])
+   :expected [3 [:ex.class/serialization :hara/serialization "Hara"]]}])
+
+^{:refer std.lib.encode.base64/value-of}
+(Test/check
+ [{:name "maps the RFC 4648 alphabet and identifies invalid characters"
+   :test (fn []
+           [(std.lib.encode.base64/value-of "A" 0)
+            (std.lib.encode.base64/value-of "/" 1)
+            (try
+              (std.lib.encode.base64/value-of "$" 2)
+              :not-thrown
+              (catch error
+                [(ex-class error) (:ex/code (ex-data error))
+                 (:character (ex-data error)) (:index (ex-data error))]))])
+   :expected [0 63 [:ex.class/serialization :hara/serialization "$" 2]]}])
+
+^{:refer std.lib.encode.base64/encode}
+(Test/check
+ [{:name "emits canonical padded RFC 4648 output"
+   :test (fn []
+           [(std.lib.encode.base64/encode (str/encode-utf8 ""))
+            (std.lib.encode.base64/encode (str/encode-utf8 "f"))
+            (std.lib.encode.base64/encode (str/encode-utf8 "fo"))
+            (std.lib.encode.base64/encode (str/encode-utf8 "foo"))
+            (std.lib.encode.base64/encode (str/encode-utf8 "foobar"))])
+   :expected ["" "Zg==" "Zm8=" "Zm9v" "Zm9vYmFy"]}])
+
+^{:refer std.lib.encode.base64/decode}
+(Test/check
+ [{:name "decodes canonical bytes, round trips all values, and rejects invalid padding"
+   :test (fn []
+           [(= (std.lib.encode.base64/decode "SGFyYSDOuw==")
+               (str/encode-utf8 "Hara λ"))
+            (= (std.lib.encode.base64/decode
+                (std.lib.encode.base64/encode +all-bytes+))
+               +all-bytes+)
+            (try
+              (std.lib.encode.base64/decode "abc")
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))
+                            (:length (ex-data error))]))
+            (try
+              (std.lib.encode.base64/decode "Zg=A")
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))
+                            (:index (ex-data error))]))
+            (try
+              (std.lib.encode.base64/decode "Zh==")
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))
+                            (:index (ex-data error))]))])
+   :expected [true true
+              [:ex.class/serialization :hara/serialization 3]
+              [:ex.class/serialization :hara/serialization 0]
+              [:ex.class/serialization :hara/serialization 0]]}])

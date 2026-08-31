@@ -1,0 +1,69 @@
+(ns std.lib.encode.url-test
+  (:require [std.lib.encode.url]))
+
+^{:refer std.lib.encode.url/unreserved?}
+(Test/check
+ [{:name "recognizes precisely the RFC 3986 unreserved byte set"
+   :test (fn []
+           [(std.lib.encode.url/unreserved? 65)
+            (std.lib.encode.url/unreserved? 122)
+            (std.lib.encode.url/unreserved? 48)
+            (std.lib.encode.url/unreserved? 126)
+            (std.lib.encode.url/unreserved? 32)
+            (std.lib.encode.url/unreserved? 37)])
+   :expected [true true true true false false]}])
+
+^{:refer std.lib.encode.url/hex-value}
+(Test/check
+ [{:name "reads hexadecimal escapes case-insensitively with position data"
+   :test (fn []
+           [(std.lib.encode.url/hex-value \a 0)
+            (std.lib.encode.url/hex-value \F 1)
+            (try
+              (std.lib.encode.url/hex-value \G 2)
+              :not-thrown
+              (catch error
+                [(ex-class error) (:ex/code (ex-data error))
+                 (:character (ex-data error)) (:index (ex-data error))]))])
+   :expected [10 15 [:ex.class/serialization :hara/serialization \G 2]]}])
+
+^{:refer std.lib.encode.url/append-character}
+(Test/check
+ [{:name "appends the UTF-8 bytes for one character"
+   :test (fn [] (std.lib.encode.url/append-character [] \λ))
+   :expected [206 187]}])
+
+^{:refer std.lib.encode.url/encode}
+(Test/check
+ [{:name "encodes one RFC 3986 UTF-8 component"
+   :test (fn []
+           [(std.lib.encode.url/encode "Hara + λ")
+            (std.lib.encode.url/encode (str/decode-utf8 (Bytes/new 0)))
+            (try
+              (std.lib.encode.url/encode (Bytes/new 1))
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))]))])
+   :expected ["Hara%20%2B%20%CE%BB" "%00"
+              [:ex.class/dependency :hara/dependency]]}])
+
+^{:refer std.lib.encode.url/decode}
+(Test/check
+ [{:name "decodes valid components and reports malformed escapes"
+   :test (fn []
+           [(std.lib.encode.url/decode "Hara%20%2B%20%CE%BB")
+            (std.lib.encode.url/decode "a+b")
+            (= (std.lib.encode.url/decode "%00")
+               (str/decode-utf8 (Bytes/new 0)))
+            (try
+              (std.lib.encode.url/decode "%0")
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))
+                            (:index (ex-data error))]))
+            (try
+              (std.lib.encode.url/decode "%GG")
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))
+                            (:index (ex-data error))]))])
+   :expected ["Hara + λ" "a+b" true
+              [:ex.class/serialization :hara/serialization 0]
+              [:ex.class/serialization :hara/serialization 1]]}])

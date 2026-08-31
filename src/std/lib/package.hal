@@ -1,0 +1,67 @@
+(ns std.lib.package)
+
+(defn executable-config
+  [project]
+  (let [config (:project/executable project)
+        entry (:entry config)
+        output (:output config)
+        primary (:primary config)
+        archives (or (:archives config) [])]
+    (cond
+      (not (map? config))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn requires :project/executable"}))
+
+      (not (symbol? entry))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn :project/executable :entry must be a symbol"}))
+
+      (not (string? output))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn :project/executable :output must be a string"}))
+
+      (not (and (map? primary) (string? (:project primary))))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn :project/executable :primary must declare a project path"}))
+
+      (not (vector? archives))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn :project/executable :archives must be a vector"}))
+
+      :else config)))
+
+(defn archive-specs
+  [archives]
+  (mapv (fn [archive]
+          (cond
+            (not (and (map? archive) (string? (:harp archive))))
+            (throw (ex :package/invalid-executable
+                       {:ex/message "project.edn executable archives must declare :harp strings"}))
+
+            :else {:path (:harp archive) :primary false}))
+        archives))
+
+(defn seal-spec
+  [config primary-archive]
+  {:output (:output config)
+   :entry (:entry config)
+   :archives (conj (archive-specs (or (:archives config) []))
+                   {:path primary-archive :primary true})})
+
+(defn project-form
+  []
+  (IPromise/then
+   (File/read "/project.edn")
+   (fn [source]
+     (read-string (String/decode-utf8 source)))))
+
+(defn ^{:public true}
+  seal-project
+  "Builds the declared primary HARP and seals every declared HARP into one executable."
+  []
+  (IPromise/then
+   (project-form)
+   (fn [project]
+     (let [config (executable-config project)
+           primary-archive (Package/build (:project (:primary config)))]
+       (Package/seal (seal-spec config primary-archive))))))

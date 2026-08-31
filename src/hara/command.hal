@@ -1,0 +1,69 @@
+(ns hara.command)
+
+(def +version+ "hara 0.1.0")
+
+(def +usage+ "Usage: hara [--version|help|headless]")
+
+(defn version-response
+  [_]
+  {:stdout (str +version+ "\n")
+   :stderr ""
+   :exit 0})
+
+(defn help-response
+  [_]
+  {:stdout (str +usage+ "\n")
+   :stderr ""
+   :exit 0})
+
+(defn headless-response
+  [_]
+  {:stdout ""
+   :stderr ""
+   :exit 0})
+
+(defn application
+  "Creates one ephemeral Hara command application for an argv invocation."
+  []
+  (let [app (std.native.Command/create {:id 'hara/command
+                                         :desc "Hara command"})]
+    (std.native.Command/install app
+                                {:id :version
+                                 :path ["--version"]
+                                 :aliases [["version"]]
+                                 :desc "Print the Hara version"
+                                 :handler version-response})
+    (std.native.Command/install app
+                                {:id :help
+                                 :path []
+                                 :aliases [["help"] ["--help"]]
+                                 :desc "Print command usage"
+                                 :handler help-response})
+    (std.native.Command/install app
+                                {:id :headless
+                                 :path ["headless"]
+                                 :desc "Start the loopback RESP companion"
+                                 :options [{:id :project :type :string}
+                                           {:id :root :type :string}
+                                           {:id :host :type :string}
+                                           {:id :port :type :string}]
+                                 :handler headless-response})
+    app))
+
+(defn normalise-argv
+  "Moves a legacy trailing headless command before its global options."
+  [argv]
+  (if (= (last argv) "headless")
+    (vec (concat ["headless"] (drop-last argv)))
+    argv))
+
+(defn ^{:public true}
+  main
+  "Runs argv through std.native.Command and declares the RESP host action."
+  [argv]
+  (let [argv (normalise-argv argv)
+        response (std.native.Command/run (application) {:argv argv})]
+    (if (and (= (first argv) "headless")
+             (= (:exit response) 0))
+      {:hara/host-action :resp}
+      response)))

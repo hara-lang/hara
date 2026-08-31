@@ -1,0 +1,75 @@
+(ns std.lib.package-test
+  (:require [std.lib.package]))
+
+^{:refer std.lib.package/executable-config}
+(Test/check
+ [{:name "accepts a complete executable declaration"
+   :test (fn []
+           (std.lib.package/executable-config
+            {:project/executable {:entry 'demo/main
+                                  :output "target/demo"
+                                  :primary {:project "."}
+                                  :archives []}}))
+   :expected {:entry 'demo/main
+              :output "target/demo"
+              :primary {:project "."}
+              :archives []}}])
+
+^{:refer std.lib.package/archive-specs}
+(Test/check
+ [{:name "converts declared HARP archives to native package records"
+   :test (fn []
+           (std.lib.package/archive-specs
+            [{:harp "target/shared.harp"}
+             {:harp "target/support.harp"}]))
+   :expected [{:path "target/shared.harp" :primary false}
+              {:path "target/support.harp" :primary false}]}])
+
+^{:refer std.lib.package/seal-spec}
+(Test/check
+ [{:name "keeps dependencies before the primary archive"
+   :test (fn []
+           (std.lib.package/seal-spec
+            {:entry 'demo/main
+             :output "target/demo"
+             :archives [{:harp "target/shared.harp"}]}
+            "target/demo.harp"))
+   :expected {:output "target/demo"
+              :entry 'demo/main
+              :archives [{:path "target/shared.harp" :primary false}
+                         {:path "target/demo.harp" :primary true}]}}])
+
+^{:refer std.lib.package/project-form}
+(Test/check
+ [{:name "reads the executable declaration from the mounted project"
+   :test (fn []
+           (IPromise/then
+            (std.lib.package/project-form)
+            (fn [project]
+              (select-keys (:project/executable project)
+                           [:entry :output :primary :archives]))))
+   :expected {:entry 'hara.command/main
+              :output "target/hara/hara"
+              :primary {:project "."}
+              :archives []}}])
+
+^{:refer std.lib.package/seal-project}
+(Test/check
+ [{:name "builds and verifies a one-file executable with its HARP payload"
+   :test (fn []
+           (let [output "/target/hara/hara"]
+             (IPromise/then
+              (File/delete output {:missing-ok? true})
+              (fn [_]
+                (IPromise/finally
+                 (IPromise/then
+                  (std.lib.package/seal-project)
+                  (fn [manifest]
+                    (let [verified (Package/verify-seal "target/hara/hara")]
+                      [(:executable/format manifest)
+                       (:entry manifest)
+                       (count (:archives manifest))
+                       (:executable/format verified)])))
+                 (fn []
+                   (File/delete output {:missing-ok? true})))))))
+   :expected ["hara-executable/v1" 'hara.command/main 1 "hara-executable/v1"]}])

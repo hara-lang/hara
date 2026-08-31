@@ -1,0 +1,87 @@
+(ns std.lib.encode.form-test
+  (:require [std.lib.encode.form]))
+
+(def +pairs+
+  [["a" "1"]
+   ["a" "2"]
+   ["" ""]
+   ["space key" "a+b c"]])
+
+^{:refer std.lib.encode.form/encode-component}
+(Test/check
+ [{:name "encodes form components with plus for spaces"
+   :test (fn []
+           [(std.lib.encode.form/encode-component "a+b c")
+            (try
+              (std.lib.encode.form/encode-component 1)
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))]))])
+   :expected ["a%2Bb+c" [:ex.class/dependency :hara/dependency]]}])
+
+^{:refer std.lib.encode.form/decode-component}
+(Test/check
+ [{:name "decodes plus-form components through URL decoding"
+   :test (fn [] (std.lib.encode.form/decode-component "a%2Bb+c"))
+   :expected "a+b c"}])
+
+^{:refer std.lib.encode.form/valid-pair?}
+(Test/check
+ [{:name "accepts exactly two-string vector pairs"
+   :test (fn []
+           [(std.lib.encode.form/valid-pair? ["a" "b"])
+            (std.lib.encode.form/valid-pair? ["a"])
+            (std.lib.encode.form/valid-pair? ["a" 1])
+            (std.lib.encode.form/valid-pair? '("a" "b"))])
+   :expected [true false false false]}])
+
+^{:refer std.lib.encode.form/checked-pairs}
+(Test/check
+ [{:name "retains ordered valid pairs and reports malformed pair positions"
+   :test (fn []
+           [(std.lib.encode.form/checked-pairs [["a" "1"] ["a" "2"]])
+            (try
+              (std.lib.encode.form/checked-pairs [["a"]])
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))
+                            (:index (ex-data error))]))])
+   :expected [[["a" "1"] ["a" "2"]]
+              [:ex.class/syntax :hara/syntax 0]]}])
+
+^{:refer std.lib.encode.form/encode}
+(Test/check
+ [{:name "preserves repeated keys and empty values in ordered form output"
+   :test (fn []
+           [(std.lib.encode.form/encode +pairs+)
+            (std.lib.encode.form/encode [])
+            (try
+              (std.lib.encode.form/encode {"a" "1"})
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))]))])
+   :expected ["a=1&a=2&=&space+key=a%2Bb+c" ""
+              [:ex.class/serialization :hara/serialization]]}])
+
+^{:refer std.lib.encode.form/decode-pair}
+(Test/check
+ [{:name "splits one form pair and records malformed pair provenance"
+   :test (fn []
+           [(std.lib.encode.form/decode-pair "a+b=c+d" 0 0)
+            (try
+              (std.lib.encode.form/decode-pair "a" 2 4)
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))
+                            (:index (ex-data error)) (:offset (ex-data error))]))])
+   :expected [["a b" "c d"]
+              [:ex.class/syntax :hara/syntax 2 4]]}])
+
+^{:refer std.lib.encode.form/decode}
+(Test/check
+ [{:name "decodes ordered forms and rejects malformed text"
+   :test (fn []
+           [(std.lib.encode.form/decode "a=1&a=2&=&space+key=a%2Bb+c")
+            (std.lib.encode.form/decode "")
+            (try
+              (std.lib.encode.form/decode "a=1&")
+              :not-thrown
+              (catch error [(ex-class error) (:ex/code (ex-data error))
+                            (:index (ex-data error)) (:offset (ex-data error))]))])
+   :expected [+pairs+ [] [:ex.class/syntax :hara/syntax 1 4]]}])

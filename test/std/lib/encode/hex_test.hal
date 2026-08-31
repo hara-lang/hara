@@ -1,0 +1,59 @@
+(ns std.lib.encode.hex-test
+  (:require [std.lib.encode.hex]))
+
+(def +all-bytes+ (apply Bytes/new (range 0 256)))
+
+^{:refer std.lib.encode.hex/input-bytes}
+(Test/check
+ [{:name "accepts Bytes and preserves serialization failure data"
+   :test (fn []
+           [(bytes/count (std.lib.encode.hex/input-bytes (Bytes/new 1 2 3)))
+            (try
+              (std.lib.encode.hex/input-bytes "Hara")
+              :not-thrown
+              (catch error
+                [(ex-class error) (:ex/code (ex-data error)) (:value (ex-data error))]))])
+   :expected [3 [:ex.class/serialization :hara/serialization "Hara"]]}])
+
+^{:refer std.lib.encode.hex/digit}
+(Test/check
+ [{:name "maps either digit case and reports invalid digit positions"
+   :test (fn []
+           [(std.lib.encode.hex/digit "0" 0)
+            (std.lib.encode.hex/digit "a" 1)
+            (std.lib.encode.hex/digit "F" 2)
+            (try
+              (std.lib.encode.hex/digit "g" 3)
+              :not-thrown
+              (catch error
+                [(ex-class error) (:ex/code (ex-data error))
+                 (:value (ex-data error)) (:index (ex-data error))]))])
+   :expected [0 10 15 [:ex.class/serialization :hara/serialization "g" 3]]}])
+
+^{:refer std.lib.encode.hex/encode}
+(Test/check
+ [{:name "encodes portable bytes as lowercase hexadecimal"
+   :test (fn []
+           [(std.lib.encode.hex/encode (Bytes/new))
+            (std.lib.encode.hex/encode (Bytes/new 0 15 16 255))])
+   :expected ["" "000f10ff"]}])
+
+^{:refer std.lib.encode.hex/decode}
+(Test/check
+ [{:name "decodes either case, round trips all byte values, and rejects malformed text"
+   :test (fn []
+           [(= (std.lib.encode.hex/decode "00FF10") (Bytes/new 0 255 16))
+            (= (std.lib.encode.hex/decode (std.lib.encode.hex/encode +all-bytes+)) +all-bytes+)
+            (try
+              (std.lib.encode.hex/decode "0")
+              :not-thrown
+              (catch error
+                [(ex-class error) (:ex/code (ex-data error)) (:length (ex-data error))]))
+            (try
+              (std.lib.encode.hex/decode "0g")
+              :not-thrown
+              (catch error
+                [(ex-class error) (:ex/code (ex-data error)) (:index (ex-data error))]))])
+   :expected [true true
+              [:ex.class/serialization :hara/serialization 1]
+              [:ex.class/serialization :hara/serialization 1]]}])
