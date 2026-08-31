@@ -1,0 +1,60 @@
+{:document/id :hal/evaluation-journal
+ :document/type :diagnostic-spec
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :journal/schema "hal.evaluation-journal/0-alpha"
+ :purpose
+ "A runtime-neutral, bounded record of observable HAL evaluation operations. The journal is diagnostic data, never an execution trace or semantic input."
+ :ownership
+ {:contract :shared-hal-platform
+  :implementations #{:java-truffle :rust}
+  :excluded #{:rust-vm-instructions :rust-jit-traces :truffle-ast-nodes :host-stack-frames}}
+ :defaults
+ {:limit/events 10000
+  :limit/depth 100
+  :limit/value-characters 1000
+  :preview/ellipsis "…"
+  :preview/ellipsis-counts-toward-limit true}
+ :journal/required
+ [:journal/schema :journal/id :journal/status :journal/events]
+ :journal/status #{:ok :error :truncated}
+ :event/required [:event/id :event/sequence :event/kind]
+ :event/kinds
+ {:evaluation/start {:portable true}
+  :macro/expand {:portable true}
+  :operation/enter {:portable true :required [:operation/id :operation/depth :operation/name :operation/arguments]}
+  :operation/return {:portable true :required [:operation/id :operation/result]}
+  :evaluation/error {:portable true :required [:error/message]}
+  :journal/truncated {:portable true :required [:truncation/reason]}}
+ :operation/rules
+ {:id "Positive integer unique within one journal. Enter and return share it."
+  :parent "Nil for a root operation; otherwise an earlier entered operation ID."
+  :depth "Root depth is zero. Child depth is parent depth plus one."
+  :ordering "Event IDs and sequences are positive, unique, and strictly increasing."
+  :failure "Entered operations may lack returns when evaluation fails."}
+ :source/optional [:source/resource :source/line :source/column :source/form-id]
+ :preview
+ {:required [:value/type :value/display :value/truncated]
+  :portable-types
+  ["nil" "boolean" "integer" "big-integer" "float" "decimal" "character"
+   "string" "symbol" "keyword" "list" "vector" "map" "set" "function"
+   "error" "host-handle" "unreadable"]
+  :display "Use the portable HAL display form. Unreadable values use <unreadable>. Host handles expose only a redacted type label."
+  :truncation "Truncate by Unicode scalar value. When truncated, the final character is the ellipsis and counts toward the configured limit."
+  :redaction "Secrets, host object contents, pointer values, and host identities must not appear in previews."}
+ :extensions
+ {:field :event/extensions
+  :rule "Optional map keyed by runtime-qualified keywords. Portable conformance ignores this field."
+  :examples {:java/truffle-node "Invoke" :rust/vm-ip 42}}
+ :limits
+ {:event-count "Emit exactly one :journal/truncated event when the next portable event would exceed the limit."
+  :depth "Do not record operations deeper than the limit; emit :journal/truncated once."
+  :evaluation "Evaluation continues after journal truncation."
+  :disabled "Disabled collection must preserve results, errors, and side effects and must not allocate journal events."}
+ :serialization
+ {:canonical :hal-edn-data
+  :map-keys :keywords
+  :runtime-objects-forbidden true}
+ :conformance
+ {:corpus "conformance/evaluation-journal.edn"
+  :comparison "Compare the required portable event subsequence and previews; ignore :event/extensions and explicitly permitted runtime events."}}

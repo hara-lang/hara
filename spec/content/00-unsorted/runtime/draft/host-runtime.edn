@@ -1,0 +1,130 @@
+{:document/id :hara/host-runtime
+ :document/type :runtime-spec
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "HAL host capability boundary"
+ :document/summary
+ "Product-neutral contract between a Hara evaluator and capabilities supplied by its embedding host."
+
+ :host/ownership
+ {:runtime-object std.native.Host
+  :foundation-alias std.foundation/Host
+  :startup-alias Host
+  :identity "(= Host std.native.Host std.foundation/Host)"
+  :portable-module std.foundation.host
+  :consumer-prefix "host/"
+  :product-shells [:greenways.studio]
+  :rule
+  "Hara owns capability invocation, grants, kernels, sessions, package activation, and providers. Product shells own editors, REPL views, visualizations, and management interfaces."}
+
+ :host/native-type
+ {:qualified-var std.native.Host
+  :qualified-methods
+  [{:symbol Host/call
+    :arguments [service method args-vector]
+    :returns :promise}
+   {:symbol Host/describe
+    :arguments []
+    :returns :promise/descriptor}
+   {:symbol Host/capabilities
+    :arguments []
+    :returns :promise/vector}
+   {:symbol Host/capability?
+    :arguments [capability]
+    :returns :promise/boolean}]
+  :raw-special-form nil
+  :direct-user-call false}
+
+ :host/foundation
+ {:module std.foundation.host
+  :require "[std.foundation.host :as host]"
+  :functions
+  [{:symbol host/call
+    :arguments [service method & args]
+    :implementation "(Host/call service method (vec args))"}
+   {:symbol host/describe :arguments []}
+   {:symbol host/capabilities :arguments []}
+   {:symbol host/capability? :arguments [capability]}]}
+
+ :host/substrate
+ {:related-contract :xt/substrate-base
+  :source-implementation "xt.substrate"
+  :relationship :related-not-conforming
+  :conformance-claim false
+  :layer :portable-above-host
+  :host-authority false
+  :role
+  "The numbered substrate family specifies the pinned XTalk library. This host contract does not claim that Hara runtimes implement that complete contract."}
+
+ :host/descriptor
+ {:version-key :host/version
+  :version "hara.host.v1"
+  :available-key :host/available
+  :granted-key :host/granted
+  :limits-key :host/limits
+  :capabilities-result :session-granted
+  :capability-result :membership-in-session-grant
+  :available-meaning :provider-installed
+  :granted-meaning :project-policy-intersected-with-available}
+
+ :host/session-authority
+ {:identity [:kernel/id :session/id]
+  :grant-source [:project/capabilities :embedding-policy]
+  :default :deny-ungranted
+  :isolation :per-session
+  :close :revoke-all-session-grants
+  :provider-dispatch
+  [:resolve-session :require-grant :validate-method-and-arguments :invoke-provider]}
+
+ :host/errors
+ {:transport :rejected-promise
+  :value :ex-info
+  :code-key :error/code
+  :codes
+  [:host/unavailable
+   :host/capability-unavailable
+   :host/capability-denied
+   :host/method-unavailable
+   :host/call-failed
+   :host/call-cancelled]
+  :rule
+  "The original ex-info value, including :error/code, remains observable through promise catch, deref, session evaluation, and host transport settlement."}
+
+ :host/browser
+ {:owner hara-web
+  :source-root "rust/web/host/"
+  :wire-event
+  [:host-call :call/id :task/id :session/id
+   :filesystem/mount-id-or-nil :service :method :arguments]
+  :wasm-authority
+  "The evaluator emits calls and receives settlements. JavaScript owns browser APIs, provider instances, project policy, verified package bytes, and session-scoped grants."
+  :atomic-resource-target "register-resources"}
+
+ :host/native
+ {:provider-side :runtime-embedding
+  :same-contract true
+  :filesystem :host-confined-root
+  :socket :native-provider
+  :unavailable-result :rejected-promise}
+
+ :host/conformance
+ [{:id :host/type-identity
+   :assert "(= Host std.native.Host std.foundation/Host)"}
+  {:id :host/session-local-facade
+   :assert
+   "Each session receives a distinct Host façade identity while all three Host names within that session resolve to that one identity."}
+  {:id :host/namespace-loaded
+   :assert
+   "std.native and std.native.Host report :loaded immediately and inspection does not force provider discovery or package activation."}
+  {:id :host/no-special-form
+   :assert "host/call resolves only through an explicitly required HAL namespace"}
+  {:id :host/session-grants
+   :assert "Two sessions may observe different host/capabilities results."}
+  {:id :host/no-live-transfer
+   :assert
+   "Host façades, provider handles, promises, streams, and sockets are rejected by session transfer."}
+  {:id :host/rejected-ex-info
+   :assert
+   "Rejected Host promises preserve ex-info identity and one of the normative :host/* error codes through catch, deref, and session evaluation."}
+  {:id :host/atomic-resources
+   :assert "A failed batch registers no resources."}]}

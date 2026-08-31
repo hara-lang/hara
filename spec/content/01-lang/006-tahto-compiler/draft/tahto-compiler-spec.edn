@@ -1,0 +1,171 @@
+{:document/id :tahto/compiler
+ :document/type :compiler-spec
+ :document/version "alpha"
+ :document/status :draft
+ :document/title "Tahto staged compiler pipeline"
+ :document/summary
+ "Normative contract for grammar resolution boundaries, entry materialization, staged form compilation, diagnostics, explicit publication, and portable provenance worklogs."
+
+ :compiler/scope
+ {:scope/includes
+  #{:grammar-selection-boundary :entry-materialization :form-compilation
+    :phase-protocols :diagnostics :fatal-errors :publication
+    :provenance-worklog}
+  :scope/excludes
+  #{:grammar-source-storage-semantics :target-language-grammar-content
+    :module-build-order :artifact-packaging}}
+
+ :compiler/boundaries
+ {:registry
+  {:mutation-protocol tahto.protocol.registry/IGrammarRegistry
+   :catalog-protocol tahto.protocol.registry/IGrammarCatalog
+   :resolution-protocol tahto.protocol.registry/IGrammarResolver
+   :rule
+   "Registry mutation and source lookup are control-plane operations. A caller resolves a request before invoking a compiler; a compiler never installs, removes, or resolves grammar sources."}
+  :selection
+  {:required-keys [:coordinate :grammar :fingerprint :provenance]
+   :rule
+   "Every compiler entry point receives an already materialized, immutable grammar selection."}
+  :entry
+  {:rule
+   "Entry compilation formats and hydrates an entry before using the pure form pipeline. Raw-form compilation begins at normalization."}
+  :publication
+  {:rule
+   "Compilation and hydration return publication contributions as data. Publication occurs only through an explicit publisher call after successful compilation or installation."}}
+
+ :compiler/pipeline
+ {:form [:normalize :stage :rewrite/canonical :infer :lint
+         :rewrite/target :rewrite/staging :emit]
+  :entry [:format :normalize :hydrate :stage :rewrite/canonical :infer :lint
+          :rewrite/target :rewrite/staging :emit]
+  :publish [:publish]
+  :rules
+  ["Canonical rewriting precedes inference so analysis observes canonical forms."
+   "Target and staging rewrites follow inference and lint so diagnostics retain a source-oriented form."
+   "Publication is not part of the pure form or entry pipeline."
+   "Each phase has one input value, one returned value, and an ordered worklog event."]}
+
+ :compiler/protocols
+ [{:protocol tahto.protocol.compiler/INormalizer
+   :method normalize-form
+   :args [normalizer raw context]
+   :returns :normalized-form}
+  {:protocol tahto.protocol.compiler/IEntryFormatter
+   :method format-entry
+   :args [formatter entry selected context]
+   :returns :entry-with-form-input}
+  {:protocol tahto.protocol.compiler/IEntryHydrator
+   :method hydrate-entry
+   :args [hydrator entry input selected context]
+   :returns {:entry :enriched-entry
+             :form :hydrated-form
+             :contributions :vector}}
+  {:protocol tahto.protocol.compiler/IStager
+   :method stage-form
+   :args [stager input selected context]
+   :returns {:form :staged-form
+             :dependencies {:code :set :fragment :set :native :map}}}
+  {:protocol tahto.protocol.compiler/IInferencer
+   :method infer-form
+   :args [inferencer canonical selected context]
+   :returns :inference-map}
+  {:protocol tahto.protocol.compiler/ILinter
+   :method lint-form
+   :args [linter canonical inference selected context]
+   :returns :diagnostic-vector}
+  {:protocol tahto.protocol.compiler/IRewriter
+   :method rewrite-form
+   :args [rewriter phase form selected context]
+   :phase-values [:canonical :target :staging]
+   :returns :form}
+  {:protocol tahto.protocol.compiler/IEmitter
+   :method emit-form
+   :args [emitter rewritten selected context]
+   :returns :target-output}
+  {:protocol tahto.protocol.compiler/ICompiler
+   :method compile-form
+   :args [compiler raw selected context]
+   :returns :compile-result}
+  {:protocol tahto.protocol.compiler/IEntryCompiler
+   :method compile-entry
+   :args [compiler entry selected context]
+   :returns :entry-compile-result}
+  {:protocol tahto.protocol.compiler/IEntryPublisher
+   :method publish-entry
+   :args [publisher entry contributions context]
+   :returns :publication-receipt}]
+
+ :compiler/hooks
+ {:format
+  {:foundation-key :format
+   :phase :format
+   :rule "Formats the captured raw entry and establishes :form-input."}
+  :hydrate
+  {:foundation-key :hydrate
+   :phase :hydrate
+   :rule
+   "Purely enriches an entry and form. It may resolve information from the supplied immutable context but must not publish or mutate external application state."}
+  :hydrate-hook
+  {:foundation-key :hydrate-hook
+   :phase :publish
+   :rule
+   "A compatibility adapter invokes this hook only from an explicit publisher, never during hydration or emission."}}
+
+ :compiler/results
+ {:required
+  [:output :grammar :dependencies :inference :diagnostics :stages
+   :provenance]
+  :entry-additions [:entry :contributions]
+  :dependencies
+  {:code :set :fragment :set :native :map}
+  :diagnostic
+  {:required [:level :code :message]
+   :optional [:phase :form :line :column :path :data]
+   :rule
+   "Diagnostics are returned in order and do not stop compilation solely because of their level. A phase throws when compilation cannot continue."}}
+
+ :compiler/provenance
+ {:purpose
+  "An ordered, portable worklog records how an input and its contributions became an output."
+  :event-required [:index :phase]
+  :event-optional
+  [:value :actor :source :entry :grammar :hook :contributions]
+  :context-inputs
+  {:actor :tahto/actor
+   :source :tahto/source
+   :work :tahto/work}
+  :rules
+  ["Events are append-only within a compile result and use monotonically increasing indexes."
+   "Actor, source, and work identifiers are copied from caller context and are never inferred."
+   "Grammar coordinate, fingerprint, and source provenance are retained."]}
+
+ :compiler/errors
+ {:mode :structured-throw
+  :namespace :tahto
+  :required
+  [:tahto/phase :tahto/error-code :tahto/provenance
+   :tahto/provenance-stack :tahto/cause-class :tahto/cause-message]
+  :context
+  [:tahto/subsystem :tahto/lang :tahto/module :tahto/namespace
+   :tahto/entry :tahto/form :tahto/line :tahto/hook
+   :tahto/grammar-coordinate :tahto/grammar-fingerprint]
+  :codes
+  [:tahto/error-format :tahto/error-normalize :tahto/error-hydrate
+   :tahto/error-stage :tahto/error-rewrite-canonical
+   :tahto/error-infer :tahto/error-lint :tahto/error-rewrite-target
+   :tahto/error-rewrite-staging :tahto/error-emit :tahto/error-publish]
+  :rules
+  ["A phase boundary preserves the original cause and ex-data."
+   "Nested phase wrappers append distinct provenance frames."
+   "Compiler phases do not print forms or errors as a side effect."]}
+
+ :compiler/conformance
+ [{:conformance/id :tahto/compiler-protocols
+   :conformance/path "../../../../lib/test/tahto/protocol_test.hal"}
+  {:conformance/id :tahto/compiler-pipeline
+   :conformance/path "../../../../lib/test/tahto/common/compiler_test.hal"}]
+
+ :compiler/references
+ [{:reference/id :tahto/foundation-entry
+   :reference/path "../../../../../foundation-base/src/tahto/core/impl_entry.clj"
+   :reference/role :migration-source}]}

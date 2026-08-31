@@ -1,0 +1,111 @@
+(ns work.flow.task.command-test
+  (:require [work.core]
+            [work.flow.task.command]))
+
+(defn echo-bundle
+  []
+  (work.core/bundle
+   (Work/pure "fixture/echo")
+   {"fixture/echo"
+    (fn [input]
+      {:status :return
+       :data {:options (:command/options input)
+              :arguments (:command/arguments input)
+              :context (:command/context input)}})}))
+
+(def route-options
+  {:id :echo
+   :path ["echo"]
+   :desc "Echo normalized task input"
+   :options [{:id :verbose :type :boolean}]
+   :arguments [{:id :values :required? false :many? true}]})
+
+^{:refer work.flow.task.command/request-input}
+(Test/check
+ [{:name "projects native command parser fields into one task input"
+   :test (fn [] (work.flow.task.command/request-input
+                 {:options {:verbose true} :arguments {:values ["one"]} :context {:origin :test}}))
+   :expected {:command/request {:options {:verbose true} :arguments {:values ["one"]} :context {:origin :test}}
+              :command/options {:verbose true}
+              :command/arguments {:values ["one"]}
+              :command/context {:origin :test}}}])
+
+^{:refer work.flow.task.command/error-status?}
+(Test/check
+ [{:name "recognises error and critical task records"
+   :test (fn [] [(work.flow.task.command/error-status? {:status :error})
+                 (work.flow.task.command/error-status? {:status :critical})
+                 (work.flow.task.command/error-status? {:status :return})])
+   :expected [true true false]}])
+
+^{:refer work.flow.task.command/response}
+(Test/check
+ [{:name "returns the closed native Command response envelope"
+   :test (fn [] (let [success {:status :return :data 1}
+                      failure {:status :error :error "broken"}
+                      success-response (work.flow.task.command/response success)
+                      failure-response (work.flow.task.command/response failure)]
+                  [(= (:stdout success-response) (str success))
+                   (= (:stderr success-response) "")
+                   (= (:exit success-response) 0)
+                   (= (:stdout failure-response) "")
+                   (= (:stderr failure-response) (str failure))
+                   (= (:exit failure-response) 1)]))
+   :expected [true true true true true true]}])
+
+^{:refer work.flow.task.command/route}
+(Test/check
+ [{:name "creates native route descriptors without reimplementing argv parsing"
+   :test (fn [] (let [route (work.flow.task.command/route route-options (echo-bundle))]
+                 [(select-keys route [:id :path :desc :options :arguments :passthrough?])
+                  (fn? (:handler route))]))
+   :expected [{:id :echo :path ["echo"] :desc "Echo normalized task input"
+               :options [{:id :verbose :type :boolean}]
+               :arguments [{:id :values :required? false :many? true}]
+               :passthrough? false}
+              true]}])
+
+^{:refer work.flow.task.command/install}
+(Test/check
+ [{:name "installs a task route into a native application"
+   :test (fn [] (let [app (Command/create {:id 'fixture/install :desc "Install"})]
+                 (try
+                   (work.flow.task.command/install app route-options (echo-bundle))
+                   (count (Command/routes app))
+                   (finally (Command/close app)))))
+   :expected 1}])
+
+^{:refer work.flow.task.command/create}
+(Test/check
+ [{:name "creates an application with each task route installed"
+   :test (fn [] (let [app (work.flow.task.command/create
+                        {:id 'fixture/create :desc "Create"}
+                        [{:command/options route-options :command/bundle (echo-bundle)}])]
+                 (try
+                   (count (Command/routes app))
+                   (finally (Command/close app)))))
+   :expected 1}])
+
+^{:refer work.flow.task.command/run}
+(Test/check
+ [{:name "uses native parsing before evaluating the task bundle"
+   :test (fn [] (let [app (work.flow.task.command/create
+                        {:id 'fixture/run :desc "Run"}
+                        [{:command/options route-options :command/bundle (echo-bundle)}])]
+                 (try
+                   (:exit (work.flow.task.command/run app ["echo" "--verbose" "one"] {:origin :test}))
+                   (finally (Command/close app)))))
+   :expected 0}])
+
+^{:refer work.flow.task.command/reset}
+(Test/check
+ [{:name "idempotently clears installed native task routes"
+   :test (fn [] (let [app (work.flow.task.command/create
+                        {:id 'fixture/reset :desc "Reset"}
+                        [{:command/options route-options :command/bundle (echo-bundle)}])]
+                 (try
+                   (work.flow.task.command/reset app)
+                   (work.flow.task.command/reset app)
+                   (count (Command/routes app))
+                   (finally (Command/close app)))))
+   :expected 0}])

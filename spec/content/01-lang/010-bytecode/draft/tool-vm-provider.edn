@@ -1,0 +1,189 @@
+{:document/id :hal/tool-vm-provider
+ :document/type :runtime-provider-spec
+ :document/version "0.1.0-draft"
+ :document/status :draft
+ :document/title "Hara VM tooling provider boundary"
+ :document/summary
+ "Private runtime-provider contract beneath the public tool.vm, tool.vm.halc, and tool.vm.hbc namespaces. It exposes portable artifact operations through ordinary Hara values while keeping compiler, interpreter, Truffle, Graal, and machine state private."
+
+ :provider/ownership
+ {:public-namespaces [tool.vm tool.vm.halc tool.vm.hbc]
+  :private-namespace tool.vm.provider
+  :visibility :implementation-private
+  :package-coordinate false
+  :distribution-coordinate false
+  :direct-user-dependency false
+  :std-native-type false
+  :global-alias false
+  :rule
+  "Each runtime supplies tool.vm.provider as a private library. Public callers use only tool.vm.* wrappers, which validate exact provider capabilities and never silently select another runtime."}
+
+ :provider/formats
+ {:hal
+  {:kind :source
+   :binary-artifact false
+   :executable-by-provider false}
+  :halc
+  {:kind :canonical-module
+   :binary-artifact true
+   :wire-contract :hal/halc-v1}
+  :hbc
+  {:kind :executable-module
+   :binary-artifact true
+   :wire-contract :hal/hbc0}}
+
+ :provider/functions
+ {:provider
+  {:arguments []
+   :returns :ordinary-hara-map
+   :required-keys
+   [:provider/id :provider/operations :provider/formats
+    :provider/transforms :provider/engines]
+   :exact-format-operations true
+   :exact-transforms true
+   :exact-engines true
+   :provider-ids [:rust :truffle]
+   :silent-provider-fallback false}
+
+  :validate
+  {:arguments [format bytes]
+   :formats [:halc :hbc]
+   :returns true
+   :requires-bytes true
+   :atomic true
+   :side-effects false
+   :failure :structured-artifact-error}
+
+  :inspect
+  {:arguments [format bytes]
+   :formats [:halc :hbc]
+   :requires-validation true
+   :returns :ordinary-hara-map
+   :side-effects false
+   :host-objects false}
+
+  :transform
+  {:arguments [from to input options]
+   :legal-edges [[:hal :halc] [:hal :hbc] [:halc :hbc]]
+   :identity-edges false
+   :reverse-edges false
+   :provider-capability-required true
+   :silent-provider-fallback false
+   :returns :artifact-wrapper}
+
+  :execute
+  {:arguments [format bytes options]
+   :formats [:halc :hbc]
+   :requires-validation true
+   :hbc-source-fallback false
+   :provider-engine-visible true
+   :returns :ordinary-hara-value}
+
+  :disassemble
+  {:arguments [bytes]
+   :format :hbc
+   :requires-validation true
+   :returns :string
+   :deterministic true
+   :decompilation false}}
+
+ :provider/inspection
+ {:halc
+  {:required-fields
+   [:artifact/format :artifact/version :artifact/origin
+    :artifact/bytes :payload/bytes :payload/checksum
+    :module/namespace :module/resource :source/hash
+    :forms/count :schemas/definitions :schemas/functions]}
+  :hbc
+  {:required-fields
+   [:artifact/format :artifact/version :artifact/bytes
+    :payload/bytes :payload/checksum :module/namespace
+    :program/entry :constants/count :functions/count
+    :instructions/count :handlers/count]}
+  :ordering
+  {:map-keys :ordinary-map-semantics
+   :schema-names :lexicographic
+   :function-summaries :program-order}}
+
+ :provider/profiles
+ {:rust
+  {:identity :rust
+   :read-only
+   {:halc [:validate :inspect]
+    :hbc [:validate :inspect :disassemble]}
+   :transforms
+   {:hal-to-halc :requires-halc-encoder
+    :hal-to-hbc :requires-hbc-compiler
+    :halc-to-hbc :requires-hbc-compiler}
+   :engines
+   {:hbc :stack-vm
+    :halc :lower-to-hbc}}
+
+  :truffle
+  {:identity :truffle
+   :read-only
+   {:halc [:validate :inspect]
+    :hbc [:validate :inspect :disassemble]}
+   :transforms
+   {:hal-to-halc :available
+    :hal-to-hbc :unavailable
+    :halc-to-hbc :unavailable}
+   :engines
+   {:halc :ast-lowering
+    :hbc :reference-vm}
+   :hbc-optimizing false
+   :rule
+   "The current HBC executor crosses a Truffle boundary into HbcMachine. It is reported as :reference-vm until individual HBC operations participate in Truffle compilation."}}
+
+ :provider/errors
+ {:capability-unavailable
+  {:type :tool.vm/capability-unavailable
+   :required-data [:operation :provider :available]
+   :optional-data [:from :to :format]}
+  :artifact-invalid
+  {:type :tool.vm/artifact-invalid
+   :required-data [:format :operation :message]
+   :mutation-before-failure false}
+  :invalid-request
+  {:type :tool.vm/invalid-request
+   :required-data [:operation :message]}}
+
+ :provider/security
+ {:decode-before-effects true
+  :validate-before-execute true
+  :artifact-identities-not-authority true
+  :filesystem-from-artifact false
+  :network-from-artifact false
+  :provider-fallback false
+  :forbidden-results
+  [:rust/program :rust/instruction :rust/vm-frame :rust/suspension
+   :truffle/node :truffle/call-target :graal/graph :machine-code]
+  :sandbox
+  {:availability :provider-defined
+   :capabilities-must-remain-explicit true}}
+
+ :provider/conformance
+ {:shared-formats [:halc :hbc]
+  :requirements
+  [:same-valid-artifact-acceptance
+   :same-invalid-artifact-rejection-category
+   :same-canonical-halc-bytes
+   :same-canonical-hbc-bytes
+   :same-inspection-required-fields
+   :deterministic-hbc-disassembly-per-provider
+   :no-silent-provider-fallback]
+  :corpora
+  {:halc "01-lang/009-halc/draft/conformance"
+   :hbc "01-lang/010-bytecode/draft/conformance"}}
+
+ :provider/non-goals
+ [:package-assembly
+  :hbx
+  :harp
+  :native-executable-packaging
+  :trace-ir
+  :mir
+  :ssa
+  :truffle-ast
+  :graal-graph
+  :machine-code]}

@@ -1,0 +1,407 @@
+{:document/id :std/typed
+ :document/type :std/typed-spec
+ :document/version "alpha"
+ :document/status :draft
+ :document/title "Portable schemas and conservative inference for Hara"
+ :document/summary
+ "Defines the portable interpretation of ^{:schema ...} metadata, typed struct declaration schemas, normalized schema data, directional assignment, conservative inference, project schema indexes, and integration with non-evaluating source analysis."
+
+ :typed/scope
+ {:scope/metadata-site :definition-symbol
+  :scope/metadata-key :schema
+  :scope/runtime-instrumentation :forbidden
+  :scope/evaluation :forbidden
+  :scope/primary-consumer :tool/lint
+  :scope/portable-implementations
+  [:hara/std.typed.schema :hara/std.typed.infer :rust/SchemaType :jvm/HalcSchema]
+  :scope/deferred
+  [:runtime-call-instrumentation
+   :runtime-transformations
+   :generators
+   :malli-style-properties
+   :macro-expansion
+   :dependency-artifact-loading]}
+
+ :typed/invariants
+ [{:requirement/id :std.typed/canonical-metadata
+   :requirement/level :must
+   :requirement/text "std.typed is the canonical portable interpretation of ^{:schema ...} metadata."}
+  {:requirement/id :std.typed/data-only
+   :requirement/level :must
+   :requirement/text "Schema annotations remain ordinary Hara data and never instrument, wrap, transform, or otherwise alter runtime calls or values."}
+  {:requirement/id :std.typed/strict-known-forms
+   :requirement/level :must
+   :requirement/text "Known schema forms reject malformed arity, shape, rest markers, duplicate map fields, unsupported primitives, and unsupported composite heads."}
+  {:requirement/id :std.typed/conservative-unknown
+   :requirement/level :must
+   :requirement/text "Unknown inferred values suppress mismatch findings rather than producing speculative diagnostics."}
+  {:requirement/id :std.typed/non-evaluating-resolution
+   :requirement/level :must
+   :requirement/text "Named schema collection, reference resolution, and inference do not evaluate project source or load dependency artifacts."}
+  {:requirement/id :std.typed/cycle-safe-resolution
+   :requirement/level :must
+   :requirement/text "Reference traversal terminates for recursive schemas and preserves recursive edges as finite references."}
+  {:requirement/id :std.typed/index-before-analysis
+   :requirement/level :must
+   :requirement/text "A project-wide schema index is built before individual files are analyzed so forward, aliased, referred, qualified, and recursive references have a stable resolution environment."}
+  {:requirement/id :std.typed/declaration-registry
+   :requirement/level :must
+   :requirement/text "defstruct and defmutable use their typed field vector as the sole declaration source; a legacy symbol field is :any, a typed field may carry properties, and the type Var plus generated ->Type and map->Type products share one first-class :struct schema descriptor."}
+  {:requirement/id :std.typed/metadata-precedence
+   :requirement/level :must
+   :requirement/text "Resolved metadata contracts take precedence over pinned profile signatures; profile signatures remain the fallback when metadata is absent or unknown."}
+  {:requirement/id :std.typed/portable-parity
+   :requirement/level :must
+   :requirement/text "Portable Hara, Rust SchemaType, and JVM HalcSchema consumers agree on normalized forms, inference fixtures, and deterministic error categories."}
+  {:requirement/id :std.typed/extensible-normalization
+   :requirement/level :must
+   :requirement/text "The native Hara normalizer is a multimethod dispatched by normalized input class or composite head, so libraries may register namespaced extension schema forms without replacing built-in normalization."}
+  {:requirement/id :std.typed/extensible-validation
+   :requirement/level :must
+   :requirement/text "Native Hara validation dispatches normalized schemas through a multimethod keyed by :kind, so extension schema forms may define validation without replacing built-in validators."}
+  {:requirement/id :std.typed/schema-deref-shorthand
+   :requirement/level :must
+   :requirement/text "SchemaType implements IDeref and dereferences its normalized schema AST to canonical recursive vector shorthand, independent of the original input spelling."}]
+
+ :typed/surface-grammar
+ {:primitives
+  #{:any :nil :bool :num :int :float :decimal :str :char :regex
+    :keyword :symbol :list :vector :map :set :fn :atom :bytes :promise}
+
+  :primitive-aliases
+  {:boolean :bool
+   :number :num
+   :integer :int
+   :string :str}
+
+  :numeric-relationships
+  {:subtypes {:int :num :float :num :decimal :num}
+   :compatibility :symmetric-overlap
+   :assignment :directional}
+
+  :composites
+  {:or {:surface [:or type & types]
+        :minimum-members 1
+        :normal :union
+        :flatten true
+        :deduplicate true
+        :collapse-singleton true}
+   :maybe {:surface [:maybe type]
+           :normal :union
+           :equivalent [:or type :nil]}
+   :vector {:surface [:vector item-type]
+            :normal :vector}
+   :tuple {:surface [:tuple & item-types]
+           :normal :tuple}
+   :map {:surface [:map [field-name field-type] & fields]
+         :normal :map
+         :duplicate-fields :invalid}
+   :struct {:surface [:struct properties? (var qualified/type) & fields]
+            :properties #{:mutable?}
+            :field-surface [field-name field-type]
+            :field-properties [field-name properties field-type]
+            :normal :struct
+            :qualified-name :required
+            :duplicate-fields :invalid}
+   :fn {:surface [:fn [fixed-inputs & rest-input] output]
+        :normal :fn
+        :single-arity true
+        :rest-marker &
+        :rest-requirement "The & marker precedes exactly one final rest type."}
+   :function {:surface [:function fn-schema & fn-schemas]
+              :normal :function
+              :minimum-members 1
+              :members :fn-only}
+   :enum {:surface [:enum value & values]
+          :normal :enum
+          :minimum-members 1
+          :deduplicate true}}
+
+  :reference
+  {:surface "#'qualified/Schema"
+   :reader-form (var qualified/Schema)
+   :qualification :required
+   :target :named-schema-var}
+
+  :internal
+  {:unknown {:surface-visible false
+             :suppresses-mismatch-findings true}}
+
+  :unsupported
+  {:behavior :invalid-schema
+   :extension-preservation "Runtime artifact readers may preserve legacy extension nodes for compatibility, but the portable metadata normalizer does not produce them."}}
+
+ :typed/normal-forms
+ {:primitive {:kind :primitive :name :canonical-primitive}
+  :reference {:kind :reference :name qualified/Schema}
+  :union {:kind :union :types [:normal-form]}
+  :vector {:kind :vector :item :normal-form}
+  :tuple {:kind :tuple :items [:normal-form]}
+  :map {:kind :map
+        :fields [{:name :field-name :type :normal-form}]}
+  :struct {:kind :struct
+           :name qualified/type
+           :mutable? :boolean
+           :fields [{:name :field-name :type :normal-form}]}
+  :fn {:kind :fn
+       :inputs {:fixed [:normal-form]
+                :rest :normal-form-or-nil}
+       :output :normal-form}
+  :function {:kind :function
+             :arities [:fn-normal-form]}
+  :enum {:kind :enum :values [:value]}
+  :unknown {:kind :unknown :surface :original-form}}
+
+ :typed/normalization
+ {:dispatch
+  {:mechanism :defmulti
+   :normalized-map :normalized
+   :primitive-keyword :primitive
+   :unsupported-surface :unknown
+   :vector-form :head
+   :fallback :default}
+  :result
+  {:success {:schema :normal-form}
+   :failure {:error {:code :keyword
+                     :message :string
+                     :surface :original-form}}}
+  :determinism :stable-input-order
+  :validation-dispatch {:mechanism :defmulti :key :kind :fallback :valid}
+  :errors
+  #{:empty-schema
+    :unsupported-value
+    :unsupported-primitive
+    :invalid-reference
+    :unqualified-reference
+    :invalid-head
+    :unsupported-form
+    :empty-union
+    :invalid-arity
+    :invalid-map-field
+    :duplicate-map-field
+    :invalid-struct-field
+    :duplicate-struct-field
+    :invalid-function-inputs
+    :invalid-function-rest
+    :empty-function
+    :invalid-function-member
+    :empty-enum}}
+
+ :typed/relationships
+ {:compatible
+  {:purpose :overlapping-value-domains
+   :directional false
+   :unknown true
+   :unresolved-reference true
+   :union-rule :any-overlap
+   :map-rule :shared-fields-must-overlap}
+
+  :assignable
+  {:purpose :argument-initializer-and-return-contracts
+   :directional true
+   :meaning "Every value represented by actual is accepted by expected."
+   :unknown true
+   :unresolved-reference true
+   :numeric-rule :subtype-to-supertype
+   :union-actual :all-members-must-fit
+   :union-expected :some-member-must-accept
+   :map-rule :every-expected-field-must-exist-and-accept
+   :function-rule {:inputs :contravariant
+                   :outputs :covariant
+                   :arity-shape :exact-fixed-and-variadic-layout}}
+
+  :resolution
+  {:input [:normal-form :definitions]
+   :definitions :map-qualified-symbol-to-normal-form
+   :recursive-edge :preserve-reference
+   :missing-reference :preserve-reference
+   :cycle-detection :visited-qualified-symbols}}
+
+ :typed/inference
+ {:style :shallow-conservative
+  :evaluation :forbidden
+  :fixed-point "Function inference repeats until stable or until one pass beyond the number of function definitions."
+  :rules
+  {:literals
+   {:nil :nil
+    :boolean :bool
+    :integer :int
+    :float :float
+    :decimal :decimal
+    :character :char
+    :regex :regex
+    :string :str
+    :keyword :keyword
+    :quoted-symbol :symbol
+    :quoted-list :list
+    :set :set}
+   :collections
+   {:vector :join-item-types
+    :map :field-value-types
+    :hash-map :field-value-types}
+   :locals "Parameters and let/loop bindings carry known initializer or declared input schemas into their lexical body."
+   :branches "if joins branch results; an omitted else branch contributes :nil."
+   :sequences "do and function bodies infer the last expression."
+   :numeric "Arithmetic returns :int only when all known operands are :int; otherwise known numeric operands return :num."
+   :predicates :bool
+   :constructors {:str :str :keyword :keyword :symbol :symbol}
+   :calls "A call with a known matching signature infers the declared output; absent, ambiguous, or non-matching calls are unknown."
+   :collection-results
+   "Pinned Foundation collection-result rules transfer the outer collection schema, vector backend, and metadata certainty from an arity-specific source argument. Item schemas are retained only for item-preserving operations."
+   :functions "Each defn/defn- arity produces fixed inputs, optional rest input, and a conservative body output."}
+ :unknown-propagation
+  {:unknown-operand :unknown
+   :mixed-incompatible-numeric :unknown
+   :unknown-call :unknown
+   :mismatch-diagnostic false}
+  :refinements
+  {:vector/backend #{:compact :persistent :unknown}
+   :metadata #{:absent :present :unknown}
+   :join :retain-only-identical-facts
+   :schema-separation "Refinements are analysis facts and do not extend the portable schema surface grammar."}
+  :annotation-use
+  {:parameters :seed-from-matching-declared-arity
+   :return :inferred-separately
+   :contract-replacement false}}
+
+ :typed/metadata
+ {:sites
+  {:function #{defn defn-}
+   :value #{def}}
+  :function-requirement "A resolved schema on defn or defn- is :fn or :function."
+  :value-requirement "A resolved schema on def describes the initializer value."
+  :declaration-requirement "A defstruct or defmutable field vector is normalized into a :struct schema; declaration metadata is derived from fields rather than a second schema annotation."
+  :named-schema-definition "A def initializer that itself normalizes as a schema may be indexed when reachable from an annotation."
+  :collection
+  {:source :recovering-std.block-tree
+   :evaluation false
+   :preserve-source-span true
+   :preserve-surface true
+   :context [:namespace :aliases :refer-map]}}
+
+ :typed/schema-index
+ {:build-order :before-per-file-analysis
+  :shape
+  {:definitions :map-qualified-symbol-to-reachable-normal-form
+   :values :map-qualified-symbol-to-resolved-value-contract
+   :functions :map-qualified-symbol-to-resolved-function-contract
+   :types :map-qualified-symbol-to-resolved-struct-schema
+   :declarations :map-qualified-symbol-to-declaration-descriptor
+   :inferred-functions :map-qualified-symbol-to-inferred-function-schema
+   :mode #{:off :warn :error}}
+  :resolution
+  {:current-namespace true
+   :aliases true
+   :explicit-refers true
+   :qualified-references true
+   :forward-references true
+   :recursive-references true
+   :project-local-unresolved :finding
+   :external-unavailable :unknown
+   :external-supplied :schema-index-option}
+  :reachability
+  {:definitions "Named schema definitions and declaration types are published from the project declaration registry."
+   :generated-products "Each struct declaration publishes positional and map constructor contracts derived from the same descriptor."
+   :invalid-reachable-definition :invalid-schema
+   :unreferenced-schema-like-def :not-contractual}
+  :external-index
+  {:keys [:definitions :values :functions :types :declarations :inferred-functions]
+   :merge-precedence :project-over-external-for-project-definitions}
+  :consumer-output "analyze-source and lint-project return the public normalized schema index for LSP and other consumers."}
+
+ :typed/precedence
+ {:signature [:resolved-metadata :profile-signature :inferred-function :unknown]
+  :mode [:cli :analyzer-option :project-lint-configuration :default]
+  :default-mode :warn
+  :mode-semantics
+  {:off {:emit-metadata-findings false
+         :build-index true}
+   :warn {:finding-level :warning
+          :build-index true}
+   :error {:finding-level :error
+           :build-index true}}
+  :unknown-fallthrough true}
+
+ :typed/findings
+ {:namespace :tool.lint
+  :types
+  {:tool.lint/invalid-schema
+   {:requirement :tool.source-analysis/schema-normalization
+    :trigger "An inline or reachable named schema is malformed or unsupported."}
+   :tool.lint/invalid-declaration
+   {:requirement :tool.source-analysis/declaration-collection
+    :trigger "A defstruct or defmutable declaration has an invalid field vector or duplicate field name."}
+   :tool.lint/unresolved-schema
+   {:requirement :tool.source-analysis/schema-resolution
+    :trigger "A schema reference targets a project namespace but cannot be resolved from the project index."}
+   :tool.lint/invalid-function-schema
+   {:requirement :tool.source-analysis/function-schema
+    :trigger "A resolved defn or defn- annotation is not :fn or :function."}
+   :tool.lint/schema-arity-mismatch
+   {:requirement :tool.source-analysis/schema-arity
+    :trigger "Declared fixed and variadic arity shapes differ from the function parameter lists."}
+   :tool.lint/schema-argument-mismatch
+   {:requirement :tool.source-analysis/schema-argument
+    :trigger "A known call argument is not directionally assignable to its metadata-derived input contract."}
+   :tool.lint/schema-value-mismatch
+   {:requirement :tool.source-analysis/schema-value
+    :trigger "A known def initializer is not directionally assignable to its metadata-derived value contract."}
+   :tool.lint/schema-return-mismatch
+   {:requirement :tool.source-analysis/schema-return
+    :trigger "A known inferred body result is not directionally assignable to its declared output contract."}}
+  :level :selected-by-schema-mode
+  :span :annotation-or-definition-source-block
+  :file :source-document
+  :determinism :source-order-then-standard-finding-sort
+  :unknown-suppresses
+  [:schema-argument-mismatch :schema-value-mismatch :schema-return-mismatch]}
+
+ :typed/cli
+ {:command "hara lint"
+  :option "--schema-mode off|warn|error"
+  :formats [:text :edn]
+  :exit-policy "Warnings retain a successful exit; promoted schema errors contribute to the lint error exit status."
+  :project-configuration [:lint :schema-mode]}
+
+ :typed/parity
+ {:corpus :std.typed/parity-corpus
+  :consumers
+  {:hara [:std.typed.schema :std.typed.infer]
+   :rust :kernel/SchemaType
+   :jvm :truffle/HalcSchema}
+  :operations
+  [:normalize :normalization-error :compatible :assignable :infer :infer-call]
+  :requirements
+  {:normalized-spelling :identical
+   :error-category :identical
+   :inference-result :identical}}
+
+ :typed/public-semantics
+ {:std.typed.schema
+  {normalize {:args [surface] :returns :normal-form-or-throws}
+   normalize-result {:args [surface context] :returns :normalization-result}
+   compatible? {:args [expected actual] :returns :bool}
+   assignable? {:args [expected actual] :returns :bool}
+   resolve {:args [schema definitions] :returns :normal-form}
+   unresolved-references {:args [schema known-names] :returns :vector-of-symbols}
+   project-arities {:args [fn-or-function-schema] :returns :vector-of-fn-normal-forms}}
+ :std.typed.infer
+  {infer {:args [form context] :returns :normal-form}
+   infer-result {:args [form context]
+                 :returns {:schema :normal-form :refinements :map}}
+   infer-function-arity {:args [parameters body declared context]
+                         :returns :fn-normal-form}
+   join {:args [types] :returns :normal-form}}}
+
+ :typed/migration
+ {:source :99-archive/planning/language/typed.edn
+  :destination :01-lang/008-source-analysis/draft/std-typed.edn
+  :changes
+  [:make-schema-metadata-canonical
+   :reconcile-rust-jvm-hara-normalization
+   :add-directional-assignment
+   :add-project-index
+   :add-cross-namespace-resolution
+   :add-schema-mode
+   :add-distinct-findings
+   :replace-proposed-implementation-status-with-portable-contract]}}

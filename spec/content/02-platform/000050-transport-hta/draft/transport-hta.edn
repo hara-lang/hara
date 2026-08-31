@@ -1,0 +1,300 @@
+{:document/id :hara/transport-hta
+ :document/type :transport-contract
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "Hara Transport Adaptor contract"
+ :document/summary
+ "Defines discovery, manifests, providers, wire values, lifecycle, host calls, errors, handles, and multi-target packaging for HTA extensions."
+
+ :spec/scope
+ {:scope/includes
+  [:hta/extension-discovery
+   :hta/manifest
+   :hta/provider-lifecycle
+   :hta/core-v1
+   :hta/hta-v1
+   :hta/value-encoding
+   :hta/opaque-handles
+   :hta/host-calls
+   :hta/multi-target-packages]
+  :scope/excludes
+  [:hta/source-level-transport-messages
+   :hta/ambient-wasm-imports
+   :hta/package-build-toolchains]
+  :scope/source-boundary
+  "Hara programs consume extension namespaces through ordinary require forms and do not directly construct HTA messages or operate a WASM engine."}
+
+ :spec/invariants
+ [{:requirement/id :hara.hta/manifest-is-data
+   :requirement/level :must
+   :requirement/text "The :project/extensions map in project.edn is inert metadata and is not evaluated as Hara source."}
+  {:requirement/id :hara.hta/import-free
+   :requirement/level :must
+   :requirement/text "An HTA v1 WASM module has no ambient imports; the host drives its exported mailbox."}
+  {:requirement/id :hara.hta/explicit-authority
+   :requirement/level :must
+   :requirement/text "Every host call is declared by the descriptor and authorized by host policy before delivery."}
+  {:requirement/id :hara.hta/handle-unforgeability
+   :requirement/level :must
+   :requirement/text "Reading a printed handle creates inert data and never creates a live provider-owned capability."}
+  {:requirement/id :hara.hta/canonical-values
+   :requirement/level :must
+   :requirement/text "Equivalent portable values produce identical HTA0 frames across Java, Rust, and JavaScript implementations."}
+  {:requirement/id :hara.hta/named-value-boundary
+   :requirement/level :must
+   :requirement/text "An immutable defstruct value encodes its qualified type name, declared field order, and ordered field values. A defmutable value or mutable named type descriptor is a live reference and is rejected rather than snapshotted or converted to an opaque handle."}
+  {:requirement/id :hara.hta/no-spin
+   :requirement/level :must-not
+   :requirement/text "An idle provider actor or worker polls its mailbox in a spin loop."}]
+
+ :hta/discovery
+ {:discovery/trigger :hara.namespace/require
+  :discovery/manifest-name "project.edn"
+  :discovery/order
+  [:registry/reuse-loaded
+   :registry/search-extension-roots
+   :registry/read-manifest
+   :registry/validate-manifest
+   :registry/select-provider
+   :registry/create-namespace]
+  :discovery/namespace-kind :runtime-generated}
+
+ :hta/manifest
+ {:manifest/required
+  [:extension/namespace
+   :extension/version
+   :extension/provider
+   :extension/abi
+   :extension/exports
+   :extension/capabilities]
+  :manifest/optional
+  [:extension/identity
+   :extension/module
+   :extension/host-calls
+   :extension/handles
+   :extension/targets
+   :extension/assets]
+  :manifest/providers [:wasm :hta]
+  :manifest/abis [:core.v1 :hta.v1]
+  :manifest/export-shape
+  {:export/required [:export/args :export/returns]
+   :export/optional [:export/async]}
+  :manifest/handle-shape
+  {:handle/required [:handle/tag]}}
+
+ :hta/provider-lifecycle
+ {:lifecycle/states
+  [:provider/discovered
+   :provider/described
+   :provider/started
+   :provider/invoking
+   :provider/cancelling
+   :provider/shutdown]
+  :lifecycle/transitions
+  [{:transition/from :provider/discovered
+    :transition/event :provider/describe
+    :transition/to :provider/described}
+   {:transition/from :provider/described
+    :transition/event :provider/start
+    :transition/to :provider/started}
+   {:transition/from :provider/started
+    :transition/event :provider/invoke
+    :transition/to :provider/invoking}
+   {:transition/from :provider/invoking
+    :transition/event :provider/result
+    :transition/to :provider/started}
+   {:transition/from :provider/invoking
+    :transition/event :provider/error
+    :transition/to :provider/started}
+   {:transition/from :provider/invoking
+    :transition/event :provider/cancel
+    :transition/to :provider/cancelling}
+   {:transition/from :provider/cancelling
+    :transition/event :provider/cancelled
+    :transition/to :provider/started}
+   {:transition/from :provider/started
+    :transition/event :provider/shutdown
+    :transition/to :provider/shutdown}]
+  :lifecycle/invocation-result :hara/promise}
+
+ :hta/abi-profiles
+ [{:abi/id :core.v1
+   :abi/summary "Direct scalar WASM ABI."
+   :abi/stateful false}
+  {:abi/id :hta.v1
+   :abi/summary
+   "Stateful promise-returning mailbox ABI using canonical HTA0 frames."
+   :abi/stateful true
+   :abi/imports []
+   :abi/accepted-exported-versions [1 2]
+   :abi/required-memory "memory"
+   :abi/required-exports
+   ["hta_abi_version"
+    "hta_alloc"
+    "hta_dealloc"
+    "hta_start"
+    "hta_next_event"
+    "hta_deliver"
+    "hta_cancel"
+    "hta_drop_task"
+    "hta_release"]
+   :abi/optional-exports ["hta_poll"]
+   :abi/event-kinds [:hta/settlement :hta/host-call]}]
+
+ :hta/value-codec
+ {:codec/id :hta/HTA0
+  :codec/portable-values
+  [:value/nil
+   :value/boolean
+   :value/signed-i64
+   :value/utf8-string
+   :value/bytes
+   :value/keyword
+   :value/symbol
+   :value/list
+   :value/vector
+   :value/set
+   :value/map
+   :value/struct
+   :value/opaque-handle]
+  :codec/handle-fields
+  [:handle/owner :handle/type :handle/id]
+  :codec/portable-tag-table
+  [{:tag/number 0 :tag/value :value/nil}
+   {:tag/number 1 :tag/value :value/false}
+   {:tag/number 2 :tag/value :value/true}
+   {:tag/number 3 :tag/value :value/signed-i64}
+   {:tag/number 4 :tag/value :value/utf8-string}
+   {:tag/number 5 :tag/value :value/bytes}
+   {:tag/number 6 :tag/value :value/keyword}
+   {:tag/number 7 :tag/value :value/symbol}
+   {:tag/number 8 :tag/value :value/list}
+   {:tag/number 9 :tag/value :value/vector}
+   {:tag/number 10 :tag/value :value/set}
+   {:tag/number 11 :tag/value :value/map}
+   {:tag/number 12 :tag/value :value/opaque-handle}
+   {:tag/number 33 :tag/value :value/struct}]
+  :codec/extension-tags
+  {:codec/rust-and-browser
+   [{:tag/number 13 :tag/value :value/namespace}
+    {:tag/number 14 :tag/value :value/var-snapshot}
+    {:tag/number 15 :tag/value :value/binary64}
+    {:tag/number 16 :tag/value :value/atom-snapshot}
+    {:tag/number 17 :tag/value :value/mutable-array-snapshot}
+    {:tag/number 18 :tag/value :value/mutable-object-snapshot}
+    {:tag/number 19 :tag/value :value/character}
+    {:tag/number 20 :tag/value :value/big-integer}
+    {:tag/number 21 :tag/value :value/decimal}
+    {:tag/number 22 :tag/value :value/regex}
+    {:tag/number 23 :tag/value :value/legacy-tuple}
+    {:tag/number 24 :tag/value :value/cons}
+    {:tag/number 25 :tag/value :value/queue}
+    {:tag/number 26 :tag/value :value/ordered-map}
+    {:tag/number 27 :tag/value :value/sorted-map}
+    {:tag/number 28 :tag/value :value/trie}
+    {:tag/number 29 :tag/value :value/ordered-set}
+    {:tag/number 30 :tag/value :value/sorted-set}
+    {:tag/number 31 :tag/value :value/tagged-literal}
+    {:tag/number 32 :tag/value :value/exception-info}
+    {:tag/number 33 :tag/value :value/struct}
+    {:tag/number 34 :tag/value :value/pointer}
+    {:tag/number 35 :tag/value :value/var-reference}
+    {:tag/number 36 :tag/value :value/deque}
+    {:tag/number 37 :tag/value :value/priority-map}
+    {:tag/number 38 :tag/value :value/map-entry}]}
+  :codec/map-order :encoded-byte-order
+  :codec/set-order :encoded-byte-order
+  :codec/struct-shape [:struct/type-name :struct/declared-fields :struct/ordered-values]
+  :codec/mutable-named-values :unsupported}
+
+ :hta/handles
+ {:handle/registered-print-shape "#<tag>[:<type> <id>]"
+  :handle/fallback-print-shape "#ht[:handle <id>]"
+  :handle/read-result :inert-data
+  :handle/ownership-check-fields
+  [:handle/owner :handle/type :handle/id]}
+
+ :hta/execution
+ {:execution/java-owner :java/virtual-thread-actor
+  :execution/java-context :graalwasm/context
+  :execution/browser-owner :browser/web-worker
+  :execution/ownership :exclusive
+  :execution/idle-wait :blocking-mailbox
+  :execution/completion-delivery
+  "Package completions enqueue delivery to the owner before any subsequent WASM export call."
+  :execution/pending-deref
+  "A pending deref suspends an explicit evaluator fiber and settlement resumes the retained continuation without replaying completed forms."}
+
+ :hta/host-calls
+ {:host-call/shape
+  [:host-call/namespace :host-call/operation :host-call/arguments]
+  :host-call/authorization
+  [:manifest/declared :host-policy/granted]
+  :host-call/denied-result :hta/error
+  :host-call/error-fields
+  [:error/code
+   :error/message
+   :error/data
+   :error/origin
+   :error/retryable
+   :error/stack
+   :error/cause]
+  :host-call/transports-host-stack false
+  :host-call/rejection-semantics :promise/exceptional-settlement}
+
+ :hta/multi-target
+ {:target/required-fields [:target/module :target/runtime]
+  :target/known-runtimes [:process :web-worker]
+  :target/selection :host
+  :target/source-branches-on-host false
+  :target/path-base :extension/package-root
+  :target/path-must-remain-within :extension/package-root
+  :target/assets-built true
+  :target/development-dependencies-runtime-required false
+  :target/validation-time :before-worker-start
+  :target/shared-contract
+  [:hta/operations
+   :hta/values
+   :hta/errors
+   :hta/promises
+   :hta/artifact-formats]}
+
+ :spec/requirements
+ [{:requirement/id :hara.hta.discovery/validate-before-start
+   :requirement/level :must
+   :requirement/text "The host validates provider, module or target, ABI, exports, handles, assets, and package-relative paths before starting a worker."}
+  {:requirement/id :hara.hta.discovery/no-authority
+   :requirement/level :must-not
+   :requirement/text "Loading a manifest grants a requested capability."}
+  {:requirement/id :hara.hta.values/named-values
+   :requirement/level :must
+   :requirement/text "Cross-runtime HTA codecs preserve immutable defstruct type and declared field order exactly, and fail with an unsupported-value error for defmutable instances and mutable named type descriptors."}
+  {:requirement/id :hara.hta.provider/actor-ownership
+   :requirement/level :must
+   :requirement/text "One actor or worker exclusively owns each stateful provider context."}
+  {:requirement/id :hara.hta.provider/structured-errors
+   :requirement/level :must
+   :requirement/text "Provider and host-call failures cross HTA as structured values and settle the corresponding promise exceptionally."}
+  {:requirement/id :hara.hta.provider/no-cross-wasm-exception
+   :requirement/level :must-not
+   :requirement/text "A Rust panic or Java exception is thrown through the WASM boundary as the error protocol."}
+  {:requirement/id :hara.hta.package/portable-assets
+   :requirement/level :must
+   :requirement/text "An installed multi-target package contains deployable built assets and does not require its development dependency tree at runtime."}]
+
+ :spec/references
+ [{:reference/id :hara.hta.reference/readme
+   :reference/kind :rendered
+   :reference/path "README.md"
+   :reference/authority :informative
+   :reference/description "Human-readable contract, diagrams, examples, and packaging notes."}
+  {:reference/id :hara.hta.reference/conformance
+   :reference/kind :conformance
+   :reference/path "conformance/transport-hta.edn"
+   :reference/authority :evidence
+   :reference/description "Cross-runtime HTA validation criteria and parity gates."}]
+
+ :spec/conformance
+ [{:conformance/id :hara.hta/transport-cases
+   :conformance/path "conformance/transport-hta.edn"
+   :conformance/required true}]}

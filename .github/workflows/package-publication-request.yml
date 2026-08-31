@@ -1,0 +1,138 @@
+name: Request Hara package publication
+
+on:
+  push:
+    tags: ["*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing signed release tag"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: hara-package-request-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  request:
+    runs-on: ubuntu-24.04
+    environment: hara-package-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: sigstore/cosign-installer@v3.9.0
+      - id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.HARA_PACKAGES_APP_ID }}
+          private-key: ${{ secrets.HARA_PACKAGES_APP_PRIVATE_KEY }}
+          owner: hara-lang
+          repositories: hara-packages
+      - name: Create an OIDC-signed publication receipt PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit="$(git rev-list -n 1 "$REQUESTED_TAG")"
+          git verify-tag "$REQUESTED_TAG"
+          version="$(grep -E '^ :project/version "' project.edn | sed -E 's/^ :project\/version "([^"]+)".*/\1/')"
+          test -n "$version"
+          test "$version" = "$REQUESTED_TAG"
+          native_version="$(grep -E '^ :project/native \{:version "' project.edn | sed -E 's/^ :project\/native \{:version "([^"]+)"\}.*/\1/')"
+          test -n "$native_version"
+          [[ "$native_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          native_tag="v${native_version}"
+          native_revision="$(git ls-remote https://github.com/hara-lang/hara-native.git "refs/tags/${native_tag}^{}" | awk '{print $1}')"
+          if [ -z "$native_revision" ]; then
+            native_revision="$(git ls-remote https://github.com/hara-lang/hara-native.git "refs/tags/${native_tag}" | awk '{print $1}')"
+          fi
+          test -n "$native_revision"
+          [[ "$native_revision" =~ ^[0-9a-f]{40}$ ]]
+          native_release="$(gh release view "$native_tag" --repo hara-lang/hara-native --json isDraft,isPrerelease,tagName)"
+          jq -e --arg tag "$native_tag" '.isDraft == false and .isPrerelease == false and .tagName == $tag' <<<"$native_release" >/dev/null
+          recipe_path="$(grep -E '^ :project/recipe "' project.edn | sed -E 's/^ :project\/recipe "([^"]+)".*/\1/')"
+          test -n "$recipe_path"
+          test -f "$recipe_path"
+          test -f spec/content/registry-index.json
+          git show "$commit:spec/content/spec-manifest.json" | jq -e '
+            .version == 1
+            and ([.files[].path] | length) >= 250
+            and any(.files[]; .path == "00-unsorted/artifact/metaspec/artifact-metaspec.edn")
+            and any(.files[]; .path == "01-lang/001-language/draft/hal-langspec.edn")
+            and any(.files[]; .path == "02-platform/000006-package/draft/hara-package.edn")
+            and all(.files[];
+              (.path | startswith("00-unsorted/contrib/") | not)
+              and (.path | startswith("00-unsorted/package/") | not)
+              and (.path | startswith("00-unsorted/platform-language/") | not)
+              and (.path | startswith("99-archive/") | not))
+          ' >/dev/null
+          git show "$commit:spec/content/registry-index.json" | jq -e '
+            .schemaVersion == 3
+            and .source.kind == "hara-specs-harp"
+            and .source.coordinate == "hara/foundation.specs"
+            and .summary.specifications == 57
+            and all(.specs[]; .classification == "hara")
+            and all(.specs[];
+              .source.artifactPath == .sourcePath
+              and .documentation.artifactPath == .documentationPath)
+          ' >/dev/null
+          if git cat-file -e "${commit}:spec" 2>/dev/null; then
+            specs_tree="$(git rev-parse "${commit}:spec")"
+          else
+            specs_tree="absent"
+          fi
+          image="hara-lang.hara"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          gh release download "$native_tag" --repo hara-lang/hara-native --pattern release-manifest.json --dir "$work/native-release"
+          jq -e \
+            --arg tag "$native_tag" \
+            --arg version "$native_version" \
+            --arg revision "$native_revision" \
+            '.releaseTag == $tag and .version == $version and .commit == $revision' \
+            "$work/native-release/release-manifest.json" >/dev/null
+          receipt="$work/${version}.json"
+          jq -n \
+            --arg tag "$REQUESTED_TAG" \
+            --arg commit "$commit" \
+            --arg project_sha "sha256:$(shasum -a 256 project.edn | cut -d ' ' -f 1)" \
+            --arg recipe_path "$recipe_path" \
+            --arg recipe_sha "sha256:$(shasum -a 256 "$recipe_path" | cut -d ' ' -f 1)" \
+            --arg native_version "$native_version" \
+            --arg native_tag "$native_tag" \
+            --arg native_revision "$native_revision" \
+            --arg specs_tree "$specs_tree" \
+            --arg bundle "requests/${image}/${version}.sigstore.json" \
+            '{format: "hara-package-receipt/1", source: {repository: "hara-lang/hara", coordinate: "hara:hara/foundation", projectPath: ".", tag: $tag, version: $tag, commit: $commit, projectSha256: $project_sha, recipePath: $recipe_path, recipeSha256: $recipe_sha, native: {repository: "hara-lang/hara-native", version: $native_version, tag: $native_tag, revision: $native_revision}}, specs: {path: "spec", gitTree: $specs_tree}, signature: {bundle: $bundle}}' > "$receipt"
+          cosign sign-blob --yes --bundle "$work/${version}.sigstore.json" "$receipt"
+          branch="package-request/hara-lang-hara-${version}"
+          gh repo clone hara-lang/hara-packages "$work/hara-packages" -- --depth=1
+          if git -C "$work/hara-packages" ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            git -C "$work/hara-packages" fetch origin "$branch:$branch"
+            git -C "$work/hara-packages" checkout "$branch"
+          else
+            git -C "$work/hara-packages" checkout -b "$branch"
+          fi
+          mkdir -p "$work/hara-packages/requests/${image}"
+          cp "$receipt" "$work/hara-packages/requests/${image}/${version}.json"
+          cp "$work/${version}.sigstore.json" "$work/hara-packages/requests/${image}/${version}.sigstore.json"
+          git -C "$work/hara-packages" add "requests/${image}/${version}.json" "requests/${image}/${version}.sigstore.json"
+          if ! git -C "$work/hara-packages" diff --cached --quiet; then
+            git -C "$work/hara-packages" -c user.name='hara-packages[bot]' -c user.email='hara-packages[bot]@users.noreply.github.com' commit -m "request: hara-lang/hara ${version}"
+            git -C "$work/hara-packages" push origin "$branch"
+          fi
+          existing="$(gh pr list --repo hara-lang/hara-packages --head "hara-lang:${branch}" --state open --json number --jq 'length')"
+          if [ "$existing" = 0 ]; then
+            gh pr create --repo hara-lang/hara-packages --base main --head "$branch" \
+              --title "Publish hara-lang/hara ${version}" \
+              --body "OIDC-signed source receipt for `hara-lang/hara` `${version}`. The protected hara-packages workflow rebuilds and publishes both GHCR artifacts after review."
+          fi

@@ -1,0 +1,105 @@
+{:suite/id :hara.lsp/base
+ :suite/version "0.1.0"
+ :suite/spec :hara/lsp-base
+ :suite/cases
+ [{:case/id :hara.lsp.case/lifecycle
+   :case/given [:client/initialize :client/initialized]
+   :case/when :client/shutdown
+   :case/expect [:server/initialize-result :server/shutdown-result :client/exit]}
+  {:case/id :hara.lsp.case/incremental-overlay
+   :case/given [:document/open-version-1 :document/incremental-change-version-2]
+   :case/when :request/hover-version-2
+   :case/expect [:analysis/version-2 :analysis/uses-unsaved-text]}
+  {:case/id :hara.lsp.case/stale-diagnostics
+   :case/given [:analysis/version-1-running :document/change-version-2]
+   :case/when :analysis/version-1-completes
+   :case/expect [:diagnostics/version-1-discarded]}
+  {:case/id :hara.lsp.case/utf16-position
+   :case/given [:document/text-with-non-bmp-character :position/utf16]
+   :case/when :request/definition
+   :case/expect [:location/exact-end-exclusive-range]}
+  {:case/id :hara.lsp.case/qualified-completion
+   :case/given
+   [{:source/text "(ns app.core (:require [std.foundation.promise :as promise]))\n(promise/"
+     :cursor/after "promise/"}]
+   :case/when :request/completion
+   :case/expect
+   [{:completion/includes ["promise/run" "promise/new" "promise/from"]}
+    {:completion/excludes
+     ["promise/Coroutine" "promise/E" "promise/Edn" "promise/Error"
+      "promise/File" "promise/Host" "promise/IApplicable" "promise/IFn"]}]}
+  {:case/id :hara.lsp.case/unknown-alias
+   :case/given
+   [{:source/text "(ns app.core)\n(co/"
+     :cursor/after "co/"}]
+   :case/when :request/completion
+   :case/expect
+   [{:completion/items []}
+    {:completion/no-global-fallback true}
+    {:code-action/may-add-require true}]}
+  {:case/id :hara.lsp.case/lexical-shadow
+   :case/given
+   [{:source/text "(let [map 1] ma)"
+     :cursor/after "ma"}]
+   :case/when :request/completion
+   :case/expect
+   [{:completion/first "map"}
+    {:completion/identity :lexical-binding}]}
+  {:case/id :hara.lsp.case/protocol-root
+   :case/given
+   [{:workspace/namespace "std.protocol"
+     :workspace/definition "IInvoke"}]
+   :case/when
+   [:request/completion :request/hover :request/definition
+    :request/references :request/workspace-symbol]
+   :case/expect
+   [{:symbol/indexed true}
+    {:symbol/kind :protocol}
+    {:symbol/identity-stable true}]}
+  {:case/id :hara.lsp.case/protocol-descendant
+   :case/given
+   [{:workspace/namespace "std.protocol.context"
+     :workspace/definition "IContext"
+     :workspace/member "-context"}]
+   :case/when
+   [:request/completion :request/signature-help :request/definition
+    :request/references :request/rename]
+   :case/expect
+   [{:protocol/indexed true}
+    {:protocol/member-indexed true}
+    {:protocol/namespace-prefix "std.protocol."}]}
+  {:case/id :hara.lsp.case/private-symbol
+   :case/given
+   [{:workspace/private-definition "library.hidden/secret"
+     :source/text "(ns app.core (:require [library.hidden :as hidden]))\n(hidden/se"}]
+   :case/when :request/completion
+   :case/expect
+   [{:completion/excludes ["hidden/secret"]}]}
+  {:case/id :hara.lsp.case/malformed-source
+   :case/given
+   [{:source/text "(defn before [] 1)\n(defn broken [\n(defn after [] 2)"}]
+   :case/when [:request/document-symbol :request/diagnostics]
+   :case/expect
+   [{:symbols/include ["before"]}
+    {:diagnostic/includes :hara.reader/incomplete-form}
+    {:server/responsive true}]}
+  {:case/id :hara.lsp.case/resolved-rename
+   :case/given
+   [{:workspace/definition "app.core/value"
+     :workspace/references 3
+     :workspace/unrelated-same-spelling 1}]
+   :case/when
+   [{:request/rename "value2"}]
+   :case/expect
+   [{:rename/edits-definition true}
+    {:rename/edits-resolved-references 3}
+    {:rename/edits-unrelated 0}]}
+  {:case/id :hara.lsp.case/no-analysis-evaluation
+   :case/given
+   [{:source/text "(host/process \"touch\" \"forbidden\")"}]
+   :case/when
+   [:request/diagnostics :request/completion :request/hover]
+   :case/expect
+   [{:host/processes-started 0}
+    {:host/files-written 0}
+    {:server/responsive true}]}]}

@@ -1,0 +1,137 @@
+{:document/id :hara/session-snapshot
+ :document/type :session-snapshot-spec
+ :document/version "alpha"
+ :document/status :draft
+ :document/title "Hara session snapshots"
+ :document/summary
+ "Portable, deterministic startup images shared by Hara embeddings, with optional content-addressed incremental layers and runtime accelerators."
+
+ :snapshot/format
+ {:format/id :HSS0
+  :format/magic "HSS0"
+  :format/version "alpha"
+  :format/checksum :sha-256
+  :format/portable-digest
+  "The digest of the resolved portable manifest. Runtime accelerator sections do not contribute to this identity."
+  :format/artifact-digest
+  "The digest of the concrete full or incremental artifact bytes."
+  :format/portable-inputs
+  #{:language-version :dependency-lock :libraries :halc-modules
+    :namespace-order :immutable-roots :var-metadata :protocols :schemas
+    :entrypoints :initial-state :capability-requirements :secret-requirements}
+  :format/accelerators #{:HBC2 :runtime-cache}}
+
+ :snapshot/semantics
+ {:snapshot/role :startup-image
+  :snapshot/not #{:heap-dump :process-checkpoint :fiber-checkpoint :authority-container}
+  :snapshot/session-modes
+  {:sealed
+   "Uses the immutable snapshot without a namespace or Var-root overlay. Runtime definition, reload, and root mutation are rejected."
+   :overlay
+   "Uses the immutable snapshot as a base with isolated session-local namespace and Var-root changes. The snapshot never changes."}
+  :snapshot/restore
+  [:verify-envelope :verify-portable-digest :resolve-incremental-base
+   :select-compatible-accelerator :materialize-language-state
+   :attach-fresh-host-facade :intersect-capability-grants
+   :resolve-secret-requirements :validate-entrypoints :publish-session]
+  :snapshot/publication :transactional}
+
+ :snapshot/incremental
+ {:incremental/base :resolved-portable-digest
+  :incremental/content
+  "An incremental artifact carries a complete logical manifest and may omit unchanged namespace payloads that have the same name and digest in its exact base."
+  :incremental/identity
+  "The resolved logical digest is independent of whether content arrived in a full artifact or through incremental layers."
+  :incremental/failure
+  #{:missing-base :base-digest-mismatch :missing-inherited-section
+    :inherited-section-digest-mismatch}
+  :incremental/not
+  "Incremental snapshots do not capture mutations, in-flight execution, Promise settlement, or shared-state history."}
+
+ :snapshot/secrets
+ {:secret/content :never-in-snapshot
+  :secret/requirement-keys
+  [:secret/id :secret/purpose :secret/required :secret/provider-version]
+  :secret/resolution :after-language-restore-before-session-publication
+  :secret/default-exposure :opaque
+  :secret/raw-reveal :requires-distinct-explicit-capability
+  :secret/hta :redacted
+  :secret/inspection :requirements-only
+  :secret/rotation
+  "A host may attach a new provider version without rebuilding portable language state. Traces may record a non-secret provider version identifier, never key bytes or a guessable-value digest."
+  :secret/security-boundary
+  "The embedding host necessarily handles a secret it uses. HSS0 prevents the key from entering portable artifacts and ordinary guest values; it does not protect against malicious native code in the host process."}
+
+ :snapshot/limitations
+ [{:limitation/id :snapshot/no-live-values
+   :limitation/text
+   "Promises, fibers, continuations, closures, dynamic bindings, mutable references, streams, sockets, files, native handles, provider instances, and host facades cannot be captured."}
+  {:limitation/id :snapshot/no-in-flight-resume
+   :limitation/text
+   "Requests and asynchronous operations running at capture time cannot resume from HSS0."}
+  {:limitation/id :snapshot/no-authority
+   :limitation/text
+   "Capabilities in a snapshot are requirements only. Every restored session receives fresh grants from its host."}
+  {:limitation/id :snapshot/no-secret-material
+   :limitation/text
+   "Credentials, private keys, tokens, and secret-derived canonical fields are forbidden."}
+  {:limitation/id :snapshot/no-nondeterministic-initialization
+   :limitation/text
+   "Snapshot construction cannot call a host, inspect undeclared environment state, use wall-clock time or randomness, or depend on absolute machine paths."}
+  {:limitation/id :snapshot/initial-state-only
+   :limitation/text
+   "Shared-state initial values may be stored; later revisions require a separate checkpoint or event log."}
+  {:limitation/id :snapshot/external-resources-not-guaranteed
+   :limitation/text
+   "Successful verification does not guarantee that declared providers, files, networks, or services are available at restore time."}
+  {:limitation/id :snapshot/accelerator-portability
+   :limitation/text
+   "Runtime accelerators are optional caches. Incompatible accelerators are ignored and rebuilt from portable content."}
+  {:limitation/id :snapshot/version-window
+   :limitation/text
+   "Only declared language and format compatibility ranges are supported; incompatible artifacts fail before publication."}
+  {:limitation/id :snapshot/identity
+   :limitation/text
+   "Qualified names and immutable values are reproducible. Live Var, function, and object memory identities are regenerated per session."}
+  {:limitation/id :snapshot/no-cross-worker-mutation
+   :limitation/text
+   "Read-only bytes may be mapped across processes. Mutable Hara state requires Nginx shared memory or an external provider."}
+  {:limitation/id :snapshot/nonzero-startup-cost
+   :limitation/text
+   "Large artifacts still incur I/O, checksum verification, mapping, and cold-page costs."}]
+
+ :snapshot/invariants
+ [{:requirement/id :snapshot/deterministic-portable-bytes
+   :requirement/level :must
+   :requirement/text
+   "Identical declared inputs, dependency locks, language version, and compiler version produce identical portable bytes and digest."}
+  {:requirement/id :snapshot/immutable-transfer-only
+   :requirement/level :must
+   :requirement/text
+   "Every root and initial-state value satisfies the host/kernel immutable session-transfer contract."}
+  {:requirement/id :snapshot/transactional-restore
+   :requirement/level :must
+   :requirement/text
+   "A failed section, base, accelerator fallback, grant, secret requirement, or entrypoint validation publishes no session."}
+  {:requirement/id :snapshot/no-secret-bytes
+   :requirement/level :must
+   :requirement/text
+   "Snapshot building, inspection, diffing, tracing, and HTA encoding never receive secret material."}
+  {:requirement/id :snapshot/logical-delta-equivalence
+   :requirement/level :must
+   :requirement/text
+   "A resolved incremental chain and a full artifact with the same logical content have the same portable digest."}]
+
+ :snapshot/conformance
+ [{:conformance/id :snapshot/full-round-trip
+   :conformance/assert :byte-identical}
+  {:conformance/id :snapshot/incremental-inheritance
+   :conformance/assert :exact-base-and-section-digests}
+  {:conformance/id :snapshot/live-value-rejection
+   :conformance/assert :all-live-categories-rejected}
+  {:conformance/id :snapshot/secret-redaction
+   :conformance/assert :no-key-material-in-artifact-inspection-or-hta}
+  {:conformance/id :snapshot/accelerator-independence
+   :conformance/assert :portable-digest-unchanged}
+  {:conformance/id :snapshot/sealed-session
+   :conformance/assert :namespace-and-var-root-mutation-rejected}]}

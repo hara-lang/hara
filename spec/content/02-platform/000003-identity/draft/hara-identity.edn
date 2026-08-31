@@ -1,0 +1,78 @@
+{:document/id :hara/identity
+ :document/type :hara/tap-protocol
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "Hara tap identity protocol"
+ :document/summary
+ "Normative root trust, GitHub enrollment, publisher authorization and revocation contract."
+ :spec/conforms-to {:spec/id :hara/tap-protocol-metaspec
+                    :spec/version "0.0.0-alpha"}
+
+ :platform/roles
+ [{:role/id :hara.identity.role/root
+   :role/summary "Pins and delegates tap identity authority."}
+  {:role/id :hara.identity.role/enrollment
+   :role/summary "Verifies provider ownership and publisher key possession."}
+  {:role/id :hara.identity.role/publisher
+   :role/summary "Signs canonical publication intents externally."}]
+
+ :platform/entities
+ [{:entity/id :hara.identity/root-policy
+   :entity/summary "Offline-signed root key and constrained delegations."
+   :entity/fields [:identity/format :identity/tap :identity/root-key
+                   :identity/delegations]}
+  {:entity/id :hara.identity/github-subject
+   :entity/summary "Immutable GitHub account identity and current display login."
+   :entity/fields [:github/id :github/login :github/type]}
+  {:entity/id :hara.identity/grant
+   :entity/summary "Binding of a publisher key to a Hara namespace."
+   :entity/fields [:grant/id :grant/subject :grant/namespace
+                   :grant/public-key :grant/valid-from :grant/valid-until]}
+  {:entity/id :hara.identity/revocation
+   :entity/summary "Signed removal of a key or grant."
+   :entity/fields [:revocation/id :revocation/target
+                   :revocation/effective-at :revocation/reason]}]
+
+ :platform/operations
+ [{:operation/id :hara.identity.operation/enroll
+   :operation/role :hara.identity.role/enrollment
+   :operation/input :hara.identity/enrollment-request
+   :operation/output :hara.identity/grant
+   :operation/failures [:github-proof-failed :key-proof-failed
+                        :namespace-conflict :challenge-replayed]}
+  {:operation/id :hara.identity.operation/authorize
+   :operation/role :hara.identity.role/publisher
+   :operation/input :hara.identity/signed-intent
+   :operation/output :hara.identity/authorization
+   :operation/failures [:unknown-key :wrong-namespace :expired :revoked]}
+  {:operation/id :hara.identity.operation/revoke
+   :operation/role :hara.identity.role/enrollment
+   :operation/input :hara.identity/revocation-request
+   :operation/output :hara.identity/revocation
+   :operation/failures [:unauthorized-revocation :unknown-target]}]
+
+ :platform/invariants
+ [{:requirement/id :hara.identity/public-only
+   :requirement/level :must
+   :requirement/text "Identity services and repositories contain public keys and signed policy only, never publisher private keys."}
+  {:requirement/id :hara.identity/external-signer
+   :requirement/level :must
+   :requirement/text "The CLI sends canonical bytes to HARA_SIGNER and receives a key ID and detached Ed25519 signature."}
+  {:requirement/id :hara.identity/github-numeric-id
+   :requirement/level :must
+   :requirement/text "GitHub enrollment binds immutable numeric subject IDs; display logins are informative and may change."}
+  {:requirement/id :hara.identity/namespace-proof
+   :requirement/level :must
+   :requirement/text "Personal namespaces require account control and organization namespaces require organization ownership proof."}
+  {:requirement/id :hara.identity/key-possession
+   :requirement/level :must
+   :requirement/text "Enrollment verifies a fresh service challenge signed by the proposed publisher key."}
+  {:requirement/id :hara.identity/delegation-bounds
+   :requirement/level :must
+   :requirement/text "Online enrollment and CI keys are explicitly delegated, scoped and revocable by an offline tap root."}]
+
+ :platform/conformance
+ [{:conformance/id :hara.identity/enrollment
+   :conformance/path "conformance/enrollment.edn"}
+  {:conformance/id :hara.identity/authorization
+   :conformance/path "conformance/authorization.edn"}]}

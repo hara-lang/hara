@@ -55,6 +55,40 @@
    (fn [source]
      (read-string (String/decode-utf8 source)))))
 
+(defn specs-project
+  "Returns the self-contained artifact project used for a specification HARP."
+  [version]
+  {:hara/type :project
+   :hara/version "1.0.0"
+   :project/id 'hara/foundation.specs
+   :project/version version
+   :project/source-paths []
+   :project/test-paths []
+   :project/extension-paths []
+   :project/artifact-paths ["content"]
+   :project/capabilities #{:file :kernel}
+   :project/dependencies {}})
+
+(defn ^{:public true}
+  build-specs
+  "Builds a deterministic HARP containing the versioned specification corpus."
+  [project output]
+  (Package/build project output))
+
+(def +specs-coordinate+ "hara:hara/foundation.specs")
+
+(defn ^{:public true}
+  read-spec-content
+  "Reads UTF-8 content from the mounted, versioned specification HARP."
+  [path]
+  (let [descriptor (Package/find +specs-coordinate+)]
+    (cond
+      descriptor (String/decode-utf8 (Package/read descriptor path))
+      :else
+      (throw (ex :package/specs-unavailable
+                 {:ex/message "specification package is not installed"
+                  :package/coordinate +specs-coordinate+})))))
+
 (defn ^{:public true}
   seal-project
   "Builds the declared primary HARP and seals every declared HARP into one executable."
@@ -63,5 +97,7 @@
    (project-form)
    (fn [project]
      (let [config (executable-config project)
+           specs-archive (build-specs "spec" "target/hara/hara-specs.harp")
+           config (assoc config :archives (conj (:archives config) {:harp specs-archive}))
            primary-archive (Package/build (:project (:primary config)))]
        (Package/seal (seal-spec config primary-archive))))))

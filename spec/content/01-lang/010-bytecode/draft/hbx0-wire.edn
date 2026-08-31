@@ -1,0 +1,71 @@
+{:document/id :hal/hbx0-wire
+ :document/type :portable-format-spec
+ :document/version "0-alpha"
+ :document/status :draft
+ :document/title "HBX0 deterministic executable-package wire format"
+ :document/summary
+ "Authenticated, deterministic packaging of already-produced HBC0 modules. HBX0 is a container and never a compiler or VM instruction format."
+
+ :format
+ {:identity :hbx
+  :magic "HBX0"
+  :extension ".hbx"
+  :byte-order :little-endian
+  :envelope [:magic/u8x4 :payload-sha256/u8x32 :payload/bytes]
+  :authentication "SHA-256 covers the complete payload and is verified before descriptor or HBC decoding"
+  :compatibility "An incompatible field-order or scalar change requires new magic; readers never infer versions from payload shape."}
+
+ :scalars
+ {:u32 "four-byte unsigned little-endian integer"
+  :bool "u8 0 or 1; every other value is invalid"
+  :bytes "u32 byte count followed by exactly that many bytes"
+  :string "bytes containing canonical UTF-8"
+  :digest "exactly 32 SHA-256 bytes"
+  :many "u32 count followed by exactly count elements"}
+
+ :payload
+ [:module-count/u32 [:modules [:many :module]]]
+
+ :module
+ [{:field :resource :encoding :string}
+  {:field :namespace-form :encoding :string}
+  {:field :source-digest :encoding :digest}
+  {:field :dependencies :encoding [:many :string]}
+  {:field :eager :encoding :bool}
+  {:field :artifact :encoding :bytes :requires :hal/hbc0-wire}]
+
+ :canonical-ordering
+ {:modules "topological dependency order; ties use ascending resource identity"
+  :dependencies "ascending resource identity with duplicates removed"
+  :duplicates "duplicate module resources and duplicate dependency identities are invalid"
+  :dependency-order "a dependency present in the package must precede its dependent module"
+  :determinism "the same normalized descriptors and HBC bytes produce byte-identical HBX0 output"}
+
+ :validation
+ {:order [:header :checksum :payload-decode :descriptor-validation :hbc-authentication]
+  :atomic true
+  :side-effects false
+  :rules
+  ["resource and namespace-form must be non-empty canonical UTF-8"
+   "namespace-form must contain exactly one namespace declaration"
+   "source-digest is exactly 32 bytes"
+   "eager is exactly 0 or 1"
+   "every artifact is an independently authenticated and structurally valid HBC0 module"
+   "overflow, truncation, checksum mismatch, malformed UTF-8, duplicates, dependency-order violations, and trailing bytes reject the complete package"]}
+
+ :operations
+ {:pack "HBC descriptors -> deterministic HBX0 bytes; source input and implicit compilation are forbidden"
+  :unpack "HBX0 bytes -> validated descriptors containing copied HBC0 bytes"
+  :execute "owned by tool.vm execution providers, after complete HBX0 and nested HBC0 validation"
+  :extract "select one validated HBC0 artifact by resource identity"}
+
+ :conformance
+ {:golden :hal/hbx0-golden
+  :malformed :hal/hbx0-malformed}
+
+ :boundary
+ {:hbc :hal/hbc0-wire
+  :vm "HBX0 has no opcodes or execution semantics"
+  :source "pack never parses, evaluates, canonicalizes, or compiles HAL source"
+  :library-package "tool.package HBX is executable-artifact packaging and is distinct from std.lib.package dependency/library distribution"
+  :harp "HARP transport and deployment packaging remain separate."}}

@@ -1,0 +1,1333 @@
+;; Shared behavioral protocol contract owned by hara-specs-registry.
+;; Runtime repositories consume this file; they do not own corpus copies.
+(ns user)
+
+(defstruct ProtocolUseCase [state])
+;; Failure receivers are corpus data. Runtime harnesses execute each quoted
+;; call as written and never search for or substitute a receiver.
+(def unsupported ICount)
+(def unsupported-protocol ICount)
+
+(defn use-case []
+  (ProtocolUseCase
+    (atom {:collection {:a 1 :b 2}
+           :sequence [1 2 3]
+           :cell (atom 10)
+           :closed false
+           :component-status :stopped
+           :contexts {}
+           :deps {:a {:entry :A :deps #{:b}} :b {:entry :B :deps #{}}}
+           :runtimes {}
+           :hash-cache 0
+           :meta {:source :fixture}
+           :realized false
+           :value 42
+           :watches (atom [])})))
+
+(defn state [fixture]
+  (deref (:state fixture)))
+
+(defn state-get [fixture key]
+  (get (state fixture) key))
+
+(defn state-put [fixture key value]
+  (do (std.protocol.ireset.IReset/reset
+        (:state fixture)
+        (assoc (state fixture) key value))
+      value))
+
+(defn raises? [f]
+  (try
+    (do (f) false)
+    (catch Throwable error true)))
+
+(defn result [protocol method success limit failure-form]
+  {:protocol protocol
+   :method method
+   :success success
+   :limit limit
+   :limit-category :protocol/arity
+   :failure (if (nil? failure-form) :not-applicable :host-checked)
+   :failure-form failure-form
+   :failure-category (if (nil? failure-form) nil :protocol/unsupported-receiver)
+   :pass (if success limit false)})
+
+(defn protocol-case [protocol method method-var success unsupported-form]
+  (result protocol
+          method
+          success
+          (raises? (fn [] (method-var)))
+          unsupported-form))
+
+(extend-type ProtocolUseCase IApplicable
+  (apply-default [fixture] (state-get fixture :value))
+  (apply-in [fixture runtime args]
+    (runtime (nth args 0) (nth args 1) (nth args 2)))
+  (transform-in [fixture runtime args]
+    (runtime (nth args 0) (nth args 1)))
+  (transform-out [fixture runtime args value]
+    (runtime (nth args 0) (nth args 1) value)))
+
+(extend-type ProtocolUseCase IAssoc
+  (assoc [fixture key value] (assoc (state-get fixture :collection) key value)))
+
+(extend-type ProtocolUseCase ICas
+  (cas [fixture old-value new-value]
+    (std.protocol.icas.ICas/cas (state-get fixture :cell) old-value new-value)))
+
+(extend-type ProtocolUseCase IClose
+  (close [fixture] (do (state-put fixture :closed true) nil)))
+
+(extend-type ProtocolUseCase IColl
+  (start-string [fixture] "(")
+  (end-string [fixture] ")")
+  (sep-string [fixture] " "))
+
+(extend-type ProtocolUseCase IComponent
+  (props [fixture] {:name :component})
+  (status [fixture] (state-get fixture :component-status))
+  (started? [fixture] (= :started (state-get fixture :component-status)))
+  (stopped? [fixture] (= :stopped (state-get fixture :component-status)))
+  (start [fixture] (do (state-put fixture :component-status :started) fixture))
+  (stop [fixture] (do (state-put fixture :component-status :stopped) fixture))
+  (kill [fixture] (do (state-put fixture :component-status :killed) fixture))
+  (remote? [fixture] false))
+
+(extend-type ProtocolUseCase IConj
+  (conj [fixture value] (conj (state-get fixture :sequence) value)))
+
+(extend-type ProtocolUseCase ICons
+  (cons [fixture value] [value 1 2 3]))
+
+(extend-type ProtocolUseCase IContext
+  (call [fixture arg] [arg]))
+
+(extend-type ProtocolUseCase ICoroutine
+  (status [fixture] (state-get fixture :component-status))
+  (resume [fixture arg] [arg]))
+
+(extend-type ProtocolUseCase IStream
+  (next [fixture] (state-get fixture :value)))
+
+(extend-type ProtocolUseCase IContextLifeCycle
+  (has-module? [fixture module] (not (nil? (get (state-get fixture :contexts) module))))
+  (setup-module [fixture module]
+    (do (state-put fixture :contexts (assoc (state-get fixture :contexts) module :module))
+        fixture))
+  (teardown-module [fixture module]
+    (do (state-put fixture :contexts (dissoc (state-get fixture :contexts) module))
+        fixture))
+  (has-pointer? [fixture pointer] (not (nil? (get (state-get fixture :contexts) pointer))))
+  (setup-pointer [fixture pointer]
+    (do (state-put fixture :contexts (assoc (state-get fixture :contexts) pointer :pointer))
+        fixture))
+  (teardown-pointer [fixture pointer]
+    (do (state-put fixture :contexts (dissoc (state-get fixture :contexts) pointer))
+        fixture)))
+
+(extend-type ProtocolUseCase ICount
+  (count [fixture] (count (state-get fixture :sequence))))
+
+(extend-type ProtocolUseCase IDeps
+  (dep-get [fixture id] (:entry (get (state-get fixture :deps) id)))
+  (dep-entries [fixture id] (:deps (get (state-get fixture :deps) id)))
+  (dep-keys [fixture] (keys (state-get fixture :deps))))
+
+(extend-type ProtocolUseCase IDeref
+  (deref [fixture] (deref (state-get fixture :cell))))
+
+(extend-type ProtocolUseCase IDerefTimeout
+  (deref-timeout [fixture milliseconds timeout-value]
+    (if (neg? milliseconds) timeout-value (state-get fixture :value))))
+
+(extend-type ProtocolUseCase IDisplay
+  (display [fixture] "<protocol-use-case>"))
+
+(extend-type ProtocolUseCase IDissoc
+  (dissoc [fixture key] (dissoc (state-get fixture :collection) key)))
+
+(extend-type ProtocolUseCase IEmpty
+  (empty [fixture] []))
+
+(extend-type ProtocolUseCase IEncodable
+  (encode-with [fixture visitor] :encoded-with))
+
+(extend-type ProtocolUseCase IEncode
+  (encode [fixture options] :encoded))
+
+(extend-type ProtocolUseCase IEncodeVisitor
+  (visit-nil [fixture] :nil)
+  (visit-boolean [fixture value] value)
+  (visit-number [fixture value] value)
+  (visit-character [fixture value] value)
+  (visit-string [fixture value] value)
+  (visit-keyword [fixture value] value)
+  (visit-symbol [fixture value] value)
+  (visit-seq [fixture value] value)
+  (visit-vector [fixture value] value)
+  (visit-map [fixture value] value)
+  (visit-set [fixture value] value)
+  (visit-tagged [fixture tag value] [tag value])
+  (visit-unknown [fixture value] value))
+
+(extend-type ProtocolUseCase IEquality
+  (equality [fixture other] (= (state-get fixture :value) other)))
+
+(extend-type ProtocolUseCase IExInfo
+  (data [fixture] {:kind :fixture-error}))
+
+(extend-type ProtocolUseCase IFind
+  (find [fixture key]
+    (std.protocol.ifind.IFind/find (state-get fixture :collection) key)))
+
+(extend-type ProtocolUseCase IFn
+  (invoke [fixture arg] [arg]))
+
+(extend-type ProtocolUseCase IHash
+  (hash [fixture] (state-get fixture :value)))
+
+(extend-type ProtocolUseCase IHashCached
+  (hash-current [fixture] (state-get fixture :hash-cache))
+  (hash-put [fixture value] (do (state-put fixture :hash-cache value) fixture)))
+
+(extend-type ProtocolUseCase IIndexed
+  (index-of [fixture value]
+    (if (= value 1) 0 (if (= value 2) 1 (if (= value 3) 2 nil)))))
+
+(extend-type ProtocolUseCase IIndexedKV
+  (index-of-key [fixture key] (if (= key :a) 0 (if (= key :b) 1 -1)))
+  (index-of-val [fixture value] (if (= value 1) 0 (if (= value 2) 1 -1))))
+
+(extend-type ProtocolUseCase IInvokeIn
+  (invoke-in [fixture context arg]
+    (std.protocol.icontext.IContext/call context arg)))
+
+(extend-type ProtocolUseCase IIter
+  (iter [fixture] (std.protocol.iiter.IIter/iter (state-get fixture :sequence))))
+
+(extend-type ProtocolUseCase IIterator
+  (iter-next? [fixture]
+    (std.protocol.iiterator.IIterator/iter-next? (state-get fixture :iterator)))
+  (iter-next [fixture]
+    (std.protocol.iiterator.IIterator/iter-next (state-get fixture :iterator))))
+
+(extend-type ProtocolUseCase ILookup
+  (lookup [fixture key]
+    (get (state-get fixture :collection) key)))
+
+(extend-type ProtocolUseCase IMetadata
+  (metatype [fixture] :object))
+
+(extend-type ProtocolUseCase INamespaced
+  (name [fixture] "demo")
+  (namespace [fixture] "std.protocol"))
+
+(extend-type ProtocolUseCase INth
+  (nth [fixture index] (nth (state-get fixture :sequence) index)))
+
+(extend-type ProtocolUseCase IObjType
+  (meta [fixture] (state-get fixture :meta))
+  (with-meta [fixture metadata] (do (state-put fixture :meta metadata) fixture)))
+
+(extend-type ProtocolUseCase IPair
+  (key [fixture] :a)
+  (value [fixture] 1))
+
+(extend-type ProtocolUseCase IPeekFirst
+  (peek-first [fixture] (first (state-get fixture :sequence))))
+
+(extend-type ProtocolUseCase IPeekLast
+  (peek-last [fixture] (nth (state-get fixture :sequence) 2)))
+
+(extend-type ProtocolUseCase IPromise
+  (state [fixture] :fulfilled)
+  (value [fixture] (state-get fixture :value))
+  (then [fixture function] (function (state-get fixture :value)))
+  (catch [fixture function] fixture)
+  (finally [fixture function] (do (function) fixture))
+  (cancel [fixture] (do (state-put fixture :component-status :cancelled) fixture)))
+
+(extend-type ProtocolUseCase IPointer
+  (ptr-context [fixture] :runtime/demo))
+
+(extend-type ProtocolUseCase IPopFirst
+  (pop-first [fixture] [2 3]))
+
+(extend-type ProtocolUseCase IPopLast
+  (pop-last [fixture] [1 2]))
+
+(extend-type ProtocolUseCase IPushFirst
+  (push-first [fixture value] [value 1 2 3]))
+
+(extend-type ProtocolUseCase IPushLast
+  (push-last [fixture value] (conj (state-get fixture :sequence) value)))
+
+(extend-type ProtocolUseCase IRealize
+  (realized? [fixture] (state-get fixture :realized))
+  (realize [fixture] (do (state-put fixture :realized true) (state-get fixture :value))))
+
+;; IReduce is exercised against a native vector below because Rust currently
+;; requires guest variadic implementations to use a fixed compatibility form.
+
+(extend-type ProtocolUseCase IReset
+  (reset [fixture value]
+    (std.protocol.ireset.IReset/reset (state-get fixture :cell) value)))
+
+(extend-type ProtocolUseCase ISpace
+  (context-set [fixture context key options]
+    (do (state-put fixture :contexts
+                   (assoc (state-get fixture :contexts)
+                          context
+                          {:key key :options options}))
+        fixture))
+  (context-unset [fixture context]
+    (do (state-put fixture :contexts (dissoc (state-get fixture :contexts) context))
+        fixture))
+  (context-list [fixture] (keys (state-get fixture :contexts)))
+  (context-get [fixture context] (get (state-get fixture :contexts) context))
+  (rt-active [fixture] (keys (state-get fixture :runtimes)))
+  (rt-get [fixture context] (get (state-get fixture :runtimes) context))
+  (rt-start [fixture context]
+    (do (state-put fixture :runtimes
+                   (assoc (state-get fixture :runtimes) context :started))
+        :started))
+  (rt-started? [fixture context]
+    (= :started (get (state-get fixture :runtimes) context)))
+  (rt-stopped? [fixture context]
+    (not (= :started (get (state-get fixture :runtimes) context))))
+  (rt-stop [fixture context]
+    (do (state-put fixture :runtimes
+                   (assoc (state-get fixture :runtimes) context :stopped))
+        fixture)))
+
+(extend-type ProtocolUseCase IToMutable
+  (to-mutable [fixture] (std.foundation/array 1 2 3)))
+
+(extend-type ProtocolUseCase IToPersistent
+  (to-persistent [fixture] [1 2 3]))
+
+(extend-type ProtocolUseCase IWatch
+  (watch-add [fixture key function]
+    (std.protocol.iwatch.IWatch/watch-add (state-get fixture :cell) key function))
+  (watch-remove [fixture key]
+    (std.protocol.iwatch.IWatch/watch-remove (state-get fixture :cell) key))
+  (watch-list [fixture]
+    (std.protocol.iwatch.IWatch/watch-list (state-get fixture :cell))))
+
+;; Receiver examples are executable corpus data, not one-off host probes.
+;; They preserve representative positive and negative satisfaction matrices
+;; for inherited protocols, marker protocols, and universal adapters.
+(defn receiver-case [id expected actual]
+  {:case id
+   :expected expected
+   :actual actual
+   :pass (= expected actual)})
+
+(defn protocol-receiver-matrix-results []
+  (let [persistent (vec [1])
+        mutable (std.foundation/to-mutable persistent)
+        promise (std.foundation.promise/from 1)
+        iterator (iter [1])
+        object (with-meta (vec [1]) {:source :matrix})
+        cached (vec [1])
+        results
+        [(receiver-case :inheritance/iterator
+           [true true]
+           [(satisfies? IIterator iterator)
+            (satisfies? IIter iterator)])
+         (receiver-case :inheritance/lookup
+           [true true]
+           [(satisfies? ILookup {:a 1})
+            (satisfies? IFind {:a 1})])
+         (receiver-case :inheritance/promise
+           [true true true]
+           [(satisfies? IPromise promise)
+            (satisfies? IDeref promise)
+            (satisfies? IDerefTimeout promise)])
+         (receiver-case :inheritance/object
+           [true true true]
+           [(satisfies? IObjType object)
+            (satisfies? IHash object)
+            (satisfies? IDisplay object)])
+         (receiver-case :inheritance/hash-cached
+           [true true]
+           [(satisfies? IHashCached cached)
+            (satisfies? IHash cached)])
+         (receiver-case :inheritance/persistent
+           [true true]
+           [(satisfies? IToMutable persistent)
+            (satisfies? IPersistent persistent)])
+         (receiver-case :inheritance/mutable
+           [true true]
+           [(satisfies? IToPersistent mutable)
+            (satisfies? IMutable mutable)])
+         (receiver-case :receiver/hash-cached
+           [false true true true true false]
+           [(satisfies? IHashCached nil)
+            (satisfies? IHashCached (vec [1]))
+            (satisfies? IHashCached {:a 1})
+            (satisfies? IHashCached #{1})
+            (satisfies? IHashCached (list 1))
+            (satisfies? IHashCached (atom 1))])
+         (receiver-case :receiver/universal-hash-adapter
+           [false false]
+           [(satisfies? IHashCached "x")
+            (satisfies? IHash "x")])
+         (receiver-case :marker/iofn
+           [true true]
+           [(satisfies? IOFn :a)
+            (satisfies? IFn :a)])]]
+    (do
+      (std.protocol.iclose.IClose/close iterator)
+      (std.foundation/to-persistent mutable)
+      results)))
+
+;; Original native collection assertions are retained as individually named
+;; corpus cases. Runtime tests invoke this entrypoint instead of carrying a
+;; second fixture and a host-owned expected vector.
+(defn protocol-native-value-results []
+  (let [queue (Algo/queue 1 2)
+        mutable-queue (std.foundation/to-mutable queue)
+        vector (Base/vec [1 2])
+        mutable-map (std.foundation/to-mutable {:a 1})]
+    [(receiver-case :native-value/queue-push-first-satisfaction
+       true
+       (satisfies? IPushFirst queue))
+     (receiver-case :native-value/queue-push-first
+       (Algo/queue 0 1 2)
+       (std.protocol.ipushfirst.IPushFirst/push-first queue 0))
+     (receiver-case :native-value/mutable-queue-push-first-satisfaction
+       true
+       (satisfies? IPushFirst mutable-queue))
+     (receiver-case :native-value/mutable-queue-push-first
+       0
+       (do
+         (std.protocol.ipushfirst.IPushFirst/push-first mutable-queue 0)
+         (std.protocol.ipeekfirst.IPeekFirst/peek-first mutable-queue)))
+     (receiver-case :native-value/mutable-queue-pop-first-satisfaction
+       true
+       (satisfies? IPopFirst mutable-queue))
+     (receiver-case :native-value/mutable-queue-pop-first
+       1
+       (do
+         (std.protocol.ipopfirst.IPopFirst/pop-first mutable-queue)
+         (std.protocol.ipeekfirst.IPeekFirst/peek-first mutable-queue)))
+     (receiver-case :native-value/vector-push-first-boundary
+       false
+       (satisfies? IPushFirst vector))
+     (receiver-case :native-value/vector-pop-first-boundary
+       false
+       (satisfies? IPopFirst vector))
+     (receiver-case :native-value/vector-push-last-satisfaction
+       true
+       (satisfies? IPushLast vector))
+     (receiver-case :native-value/vector-pop-last-satisfaction
+       true
+       (satisfies? IPopLast vector))
+     (receiver-case :native-value/mutable-map-find-satisfaction
+       true
+       (satisfies? IFind mutable-map))
+     (receiver-case :native-value/mutable-map-find
+       [:a 1]
+       (std.protocol.ifind.IFind/find mutable-map :a))
+     (receiver-case :native-value/iterator-traversal-and-close
+       [true 1 2 false nil]
+       (let [iterator (std.protocol.iiter.IIter/iter [1 2])]
+         [(std.protocol.iiterator.IIterator/iter-next? iterator)
+          (std.protocol.iiterator.IIterator/iter-next iterator)
+          (std.protocol.iiterator.IIterator/iter-next iterator)
+          (std.protocol.iiterator.IIterator/iter-next? iterator)
+          (std.protocol.iclose.IClose/close iterator)]))
+     (receiver-case :native-value/atom-watch-key-order
+       [2 [:log 1 2]]
+       (let [cell (atom 1) seen (atom nil)]
+         (std.protocol.iwatch.IWatch/watch-add
+           cell :log
+           (fn [key ref old-value new-value]
+             (std.protocol.ireset.IReset/reset seen [key old-value new-value])))
+         (std.protocol.ireset.IReset/reset cell 2)
+         [(std.protocol.ideref.IDeref/deref cell)
+          (std.protocol.ideref.IDeref/deref seen)]))
+     (receiver-case :native-value/mutable-find-matrix
+       [true true [:a 1] nil true :a true [1 20]]
+       (let [map-value (std.foundation/to-mutable {:a 1})
+             set-value (std.foundation/to-mutable #{:a})
+             vector-value (std.foundation/to-mutable (Base/vec [10 20]))]
+         [(satisfies? IFind map-value)
+          (satisfies? IFind map-value)
+          (std.protocol.ifind.IFind/find map-value :a)
+          (std.protocol.ifind.IFind/find map-value :missing)
+          (satisfies? IFind set-value)
+          (std.protocol.ifind.IFind/find set-value :a)
+          (satisfies? IFind vector-value)
+          (std.protocol.ifind.IFind/find vector-value 1)]))]))
+
+;; Predicate assertions formerly embedded in the Rust host tests are part of
+;; the behavioral contract because fn? is specified in terms of IFn
+;; satisfaction and callable? must not appear as an undocumented substitute.
+(defn protocol-predicate-results []
+  (eval
+    '(do
+       (defprotocol ProtocolPredicateReady
+         (protocol-predicate-ready [receiver]))
+       (defstruct ProtocolPredicateBox [value])
+       (def protocol-predicate-before
+         (satisfies? ProtocolPredicateReady (ProtocolPredicateBox 1)))
+       (extend-type ProtocolPredicateBox ProtocolPredicateReady
+         (protocol-predicate-ready [receiver] (:value receiver)))
+
+       (defstruct ProtocolPredicateInvokable [value])
+       (defstruct ProtocolPredicatePlain [value])
+       (defmutable ProtocolPredicateMutableInvokable [value])
+       (defmutable ProtocolPredicateMutablePlain [value])
+       (extend-type ProtocolPredicateInvokable IFn
+         (invoke [receiver] (:value receiver)))
+       (extend-type ProtocolPredicateMutableInvokable IFn
+         (invoke [receiver] (field receiver :value)))
+
+       (let [function (fn [value] value)
+             pointer-value (pointer {:context :kernel :id "ROOT"})]
+         [(receiver-case :predicate/native-capabilities
+            [true true true true true true true true
+             true true true true true true true true]
+            [(coll? {})
+             (satisfies? IIter "value")
+             (satisfies? IIterator (iter []))
+             (satisfies? ICount nil)
+             (satisfies? IReduce [])
+             (satisfies? INth [1])
+             (satisfies? IAssoc {})
+             (satisfies? IFind #{:value})
+             (satisfies? ILookup {:value 1})
+             (satisfies? IDeref (atom 1))
+             (satisfies? IReset (atom 1))
+             (satisfies? ICas (atom 1))
+             (satisfies? IWatch (atom 1))
+             (satisfies? IPair (first {:value 1}))
+             (satisfies? IPersistent [])
+             (satisfies? IMutable
+                         (std.foundation/to-mutable (Base/vec [])))])
+          (receiver-case :predicate/extension-registration
+            [false true]
+            [protocol-predicate-before
+             (satisfies? ProtocolPredicateReady (ProtocolPredicateBox 1))])
+          (receiver-case :predicate/ifn-versus-function
+            [[true true 3] [true true 2] [true false] [true false]
+             [true false] [true false 4] [true false]
+             [true false true 1] [true false true 2]
+             [false false] [false false] [false false]]
+            [[(fn? function) (function? function)
+              (std.protocol.ifn.IFn/invoke function 3)]
+             [(fn? inc) (function? inc)
+              (std.protocol.ifn.IFn/invoke inc 1)]
+             [(fn? :key) (function? :key)]
+             [(fn? {:key 1}) (function? {:key 1})]
+             [(fn? #{:key}) (function? #{:key})]
+             [(fn? ProtocolPredicateInvokable)
+              (function? ProtocolPredicateInvokable)
+              (:value
+                (std.protocol.ifn.IFn/invoke ProtocolPredicateInvokable 4))]
+             [(fn? pointer-value) (function? pointer-value)]
+             [(fn? (ProtocolPredicateInvokable 1))
+              (function? (ProtocolPredicateInvokable 1))
+              (satisfies? IFn
+                          (ProtocolPredicateInvokable 1))
+              ((ProtocolPredicateInvokable 1))]
+             [(fn? (ProtocolPredicateMutableInvokable 2))
+              (function? (ProtocolPredicateMutableInvokable 2))
+              (satisfies? IFn
+                          (ProtocolPredicateMutableInvokable 2))
+              ((ProtocolPredicateMutableInvokable 2))]
+             [(fn? (ProtocolPredicatePlain 1))
+              (satisfies? IFn (ProtocolPredicatePlain 1))]
+             [(fn? (ProtocolPredicateMutablePlain 2))
+              (satisfies? IFn
+                          (ProtocolPredicateMutablePlain 2))]
+             [(fn? 42) (function? 42)]])
+          (receiver-case :predicate/no-callable-alias
+            true
+            (nil? (resolve 'callable?)))
+          (receiver-case :predicate/no-collection-alias
+            true
+            (nil? (resolve 'collection?)))
+          (receiver-case :predicate/non-ifn-immutable-rejected
+            true
+            (raises? (fn [] ((ProtocolPredicatePlain 1)))))
+          (receiver-case :predicate/non-ifn-mutable-rejected
+            true
+            (raises? (fn [] ((ProtocolPredicateMutablePlain 2)))))]))))
+
+;; Cross-cutting protocol behavior is kept beside the per-method corpus so
+;; every runtime executes the same extension, reload, collision, mutability,
+;; and normalized-error examples.
+(defn protocol-cross-cutting-results []
+  (eval
+    '(do
+       (defstruct ProtocolInheritanceBox [value])
+       (extend-type ProtocolInheritanceBox ICoroutine
+         (status [receiver] :ready)
+         (resume [receiver & values] values))
+       (def protocol-inheritance-before
+         (satisfies? ICoroutine
+                     (ProtocolInheritanceBox 41)))
+       (extend-type ProtocolInheritanceBox IClose
+         (close [receiver] :closed))
+       (def protocol-inheritance-after
+         [(satisfies? ICoroutine
+                      (ProtocolInheritanceBox 42))
+          (std.protocol.icoroutine.ICoroutine/status (ProtocolInheritanceBox 43))
+          (std.protocol.iclose.IClose/close (ProtocolInheritanceBox 44))])
+
+       (defstruct ProtocolImmutableExample [value])
+       (defmutable ProtocolMutableExample [value])
+       (defprotocol ProtocolReadExample
+         (protocol-read-example [receiver]))
+       (extend-type ProtocolImmutableExample ProtocolReadExample
+         (protocol-read-example [receiver] (:value receiver)))
+       (extend-type ProtocolMutableExample ProtocolReadExample
+         (protocol-read-example [receiver] (field receiver :value)))
+       (def protocol-extension-initial
+         [(protocol-read-example (ProtocolImmutableExample 41))
+          (protocol-read-example (ProtocolMutableExample 42))
+          (satisfies? ProtocolReadExample (ProtocolImmutableExample 0))
+          (satisfies? ProtocolReadExample (ProtocolMutableExample 0))])
+       (extend-type ProtocolImmutableExample ProtocolReadExample
+         (protocol-read-example [receiver] (+ 1 (:value receiver))))
+       (def protocol-extension-replaced
+         (protocol-read-example (ProtocolImmutableExample 41)))
+
+       (defstruct ProtocolReloadBox [value])
+       (defprotocol ProtocolReloadExample
+         (protocol-reload-read [receiver]))
+       (extend-type ProtocolReloadBox ProtocolReloadExample
+         (protocol-reload-read [receiver] (:value receiver)))
+       (def protocol-reload-before
+         (protocol-reload-read (ProtocolReloadBox 41)))
+       (defprotocol ProtocolReloadExample
+         (protocol-reload-read [receiver]))
+       (def protocol-reload-cleared
+         (raises? (fn [] (protocol-reload-read (ProtocolReloadBox 41)))))
+       (extend-type ProtocolReloadBox ProtocolReloadExample
+         (protocol-reload-read [receiver] (+ 1 (:value receiver))))
+       (def protocol-reload-after
+         (protocol-reload-read (ProtocolReloadBox 41)))
+
+       (def protocol-collision-method 7)
+       (def protocol-collision-rejected
+         (raises?
+           (fn []
+             (eval
+               '(defprotocol ProtocolCollisionExample
+                  (protocol-collision-fresh [receiver])
+                  (protocol-collision-method [receiver]))))))
+       (def protocol-collision-atomic
+         [(raises? (fn [] (eval 'ProtocolCollisionExample)))
+          (raises? (fn [] (eval 'protocol-collision-fresh)))
+          (= 7 protocol-collision-method)])
+
+       [(receiver-case :inheritance/parent-required
+          [false true :ready :closed]
+          [protocol-inheritance-before
+           (nth protocol-inheritance-after 0)
+           (nth protocol-inheritance-after 1)
+           (nth protocol-inheritance-after 2)])
+        (receiver-case :extension/immutable-mutable
+          [41 42 true true]
+          protocol-extension-initial)
+        (receiver-case :extension/replace
+          42
+          protocol-extension-replaced)
+        (receiver-case :reload/same-protocol
+          [41 true 42]
+          [protocol-reload-before protocol-reload-cleared protocol-reload-after])
+        (receiver-case :collision/reject-atomically
+          [true true true true]
+          [protocol-collision-rejected
+           (nth protocol-collision-atomic 0)
+           (nth protocol-collision-atomic 1)
+           (nth protocol-collision-atomic 2)])
+        (receiver-case :error/normalized-categories
+          [true true]
+          [(try
+             (protocol-read-example)
+             false
+             (catch Throwable error
+               (str/includes? (ex-message error) "protocol/arity")))
+           (try
+             (protocol-read-example ICount)
+             false
+             (catch Throwable error
+               (str/includes? (ex-message error)
+                              "protocol/unsupported-receiver")))])])))
+
+;; Capability-specific protocol cases migrated from the original JVM and Rust
+;; host assertions. Hosts consume these entrypoints instead of owning guest
+;; snippets or expected values.
+(extend-type ProtocolUseCase IStreamWrite
+  (write [fixture value] [:written value]))
+
+(extend-type ProtocolUseCase IAbort
+  (abort [fixture error] [:aborted error]))
+
+(extend-type ProtocolUseCase IStreamPoll
+  (poll [fixture] :polled))
+
+(extend-type ProtocolUseCase IStreamOffer
+  (offer [fixture value] true))
+
+(extend-type ProtocolUseCase IClosed
+  (closed? [fixture] false))
+
+(extend-type ProtocolUseCase IFlush
+  (flush [fixture] :flushed))
+
+(extend-type ProtocolUseCase IWork
+  (work-spec [fixture] {:op :pure}))
+
+(extend-type ProtocolUseCase IWorkExecutor
+  (work-execute [fixture request] [:executed request]))
+
+(extend-type ProtocolUseCase IWorkStore
+  (work-query [fixture query] [:query query])
+  (work-transact [fixture transition] [:transact transition]))
+
+(extend-type ProtocolUseCase IWorkRef
+  (work-id [fixture] "run-1"))
+
+(extend-type ProtocolUseCase IWorkHost
+  (work-submit [fixture work input options] [work input options])
+  (work-resolve [fixture reference] reference))
+
+(extend-type ProtocolUseCase IWorkRun
+  (work-status [fixture] :completed)
+  (work-result [fixture] 42)
+  (work-events [fixture options] [:events options])
+  (work-cancel [fixture reason] [:cancel reason]))
+
+(extend-type ProtocolUseCase IMatch
+  (match-value [fixture actual] (= (state-get fixture :value) actual)))
+
+(extend-type ProtocolUseCase IStringLike
+  (to-string [fixture] "protocol-use-case")
+  (from-string [fixture text] text))
+
+(defn protocol-capability-receiver-results []
+  (let [fixture (use-case)]
+    [(receiver-case :inheritance/stream-duplex
+       [true true true true]
+       [(satisfies? IStreamDuplex fixture)
+        (satisfies? IStream fixture)
+        (satisfies? IStreamWrite fixture)
+        (satisfies? IAbort fixture)])
+     (receiver-case :inheritance/work-host
+       [true true]
+       [(satisfies? IWorkHost fixture)
+        (satisfies? IComponent fixture)])
+     (receiver-case :inheritance/work-run
+       [true true true]
+       [(satisfies? IWorkRun fixture)
+        (satisfies? IWorkRef fixture)
+        (satisfies? IClosed fixture)])
+     (receiver-case :namespace/unqualified-imatch-resolution
+       [true true]
+       [(boolean IMatch)
+        (IMatch/match-value fixture (state-get fixture :value))])
+     (receiver-case :namespace/unqualified-work-resolution
+       [true true true true]
+       [(boolean IWork)
+        (boolean IWorkRef)
+        (= {:op :pure} (IWork/work-spec fixture))
+        (= "run-1" (IWorkRef/work-id fixture))])
+     (receiver-case :native/string-like
+       [true "hello/world" :hello/world]
+       [(satisfies? IStringLike :hello)
+        (IStringLike/to-string :hello/world)
+        (IStringLike/from-string :sample "hello/world")])
+     (receiver-case :extension/string-like
+       ["protocol-use-case" "restored"]
+       [(IStringLike/to-string fixture)
+        (IStringLike/from-string fixture "restored")])
+     (receiver-case :extension/native-protocols
+       [true true true true true true true true true]
+       [(satisfies? IStreamWrite fixture)
+        (satisfies? IStreamPoll fixture)
+        (satisfies? IStreamOffer fixture)
+        (satisfies? IFlush fixture)
+        (satisfies? IWork fixture)
+        (satisfies? IWorkExecutor fixture)
+        (satisfies? IWorkStore fixture)
+        (satisfies? IMatch fixture)
+        (satisfies? IStringLike fixture)])]))
+
+(defn capability-protocol-results []
+  [(protocol-case :IStreamWrite :write std.protocol.istreamwrite.IStreamWrite/write
+     (= [:written 42] (std.protocol.istreamwrite.IStreamWrite/write (use-case) 42))
+     '(std.protocol.istreamwrite.IStreamWrite/write unsupported 42))
+   (protocol-case :IAbort :abort std.protocol.iabort.IAbort/abort
+     (= [:aborted :failure] (std.protocol.iabort.IAbort/abort (use-case) :failure))
+     '(std.protocol.iabort.IAbort/abort unsupported :failure))
+   (protocol-case :IStreamPoll :poll std.protocol.istreampoll.IStreamPoll/poll
+     (= :polled (std.protocol.istreampoll.IStreamPoll/poll (use-case)))
+     '(std.protocol.istreampoll.IStreamPoll/poll unsupported))
+   (protocol-case :IStreamOffer :offer std.protocol.istreamoffer.IStreamOffer/offer
+     (= true (std.protocol.istreamoffer.IStreamOffer/offer (use-case) 42))
+     '(std.protocol.istreamoffer.IStreamOffer/offer unsupported 42))
+   (protocol-case :IClosed :closed? std.protocol.iclosed.IClosed/closed?
+     (= false (std.protocol.iclosed.IClosed/closed? (use-case)))
+     '(std.protocol.iclosed.IClosed/closed? unsupported))
+   (protocol-case :IFlush :flush std.protocol.iflush.IFlush/flush
+     (= :flushed (std.protocol.iflush.IFlush/flush (use-case)))
+     '(std.protocol.iflush.IFlush/flush unsupported))
+   (protocol-case :IWork :work-spec std.protocol.iwork.IWork/work-spec
+     (= {:op :pure} (std.protocol.iwork.IWork/work-spec (use-case)))
+     '(std.protocol.iwork.IWork/work-spec unsupported))
+   (protocol-case :IWorkExecutor :work-execute std.protocol.iworkexecutor.IWorkExecutor/work-execute
+     (= [:executed {:leaf :compile}]
+        (std.protocol.iworkexecutor.IWorkExecutor/work-execute (use-case) {:leaf :compile}))
+     '(std.protocol.iworkexecutor.IWorkExecutor/work-execute unsupported {:leaf :compile}))
+   (protocol-case :IWorkStore :work-query std.protocol.iworkstore.IWorkStore/work-query
+     (= [:query {:query/type :run}]
+        (std.protocol.iworkstore.IWorkStore/work-query (use-case) {:query/type :run}))
+     '(std.protocol.iworkstore.IWorkStore/work-query unsupported {:query/type :run}))
+   (protocol-case :IWorkStore :work-transact std.protocol.iworkstore.IWorkStore/work-transact
+     (= [:transact {:transition/run-id "run-1"}]
+        (std.protocol.iworkstore.IWorkStore/work-transact
+          (use-case) {:transition/run-id "run-1"}))
+     '(std.protocol.iworkstore.IWorkStore/work-transact unsupported {:transition/run-id "run-1"}))
+   (protocol-case :IWorkRef :work-id std.protocol.iworkref.IWorkRef/work-id
+     (= "run-1" (std.protocol.iworkref.IWorkRef/work-id (use-case)))
+     '(std.protocol.iworkref.IWorkRef/work-id unsupported))
+   (protocol-case :IWorkHost :work-submit std.protocol.iworkhost.IWorkHost/work-submit
+     (= [:work :input {:priority :high}]
+        (std.protocol.iworkhost.IWorkHost/work-submit
+          (use-case) :work :input {:priority :high}))
+     '(std.protocol.iworkhost.IWorkHost/work-submit unsupported :work :input {}))
+   (protocol-case :IWorkHost :work-resolve std.protocol.iworkhost.IWorkHost/work-resolve
+     (= "run-1" (std.protocol.iworkhost.IWorkHost/work-resolve (use-case) "run-1"))
+     '(std.protocol.iworkhost.IWorkHost/work-resolve unsupported "run-1"))
+   (protocol-case :IWorkRun :work-status std.protocol.iworkrun.IWorkRun/work-status
+     (= :completed (std.protocol.iworkrun.IWorkRun/work-status (use-case)))
+     '(std.protocol.iworkrun.IWorkRun/work-status unsupported))
+   (protocol-case :IWorkRun :work-result std.protocol.iworkrun.IWorkRun/work-result
+     (= 42 (std.protocol.iworkrun.IWorkRun/work-result (use-case)))
+     '(std.protocol.iworkrun.IWorkRun/work-result unsupported))
+   (protocol-case :IWorkRun :work-events std.protocol.iworkrun.IWorkRun/work-events
+     (= [:events {:after 0}]
+        (std.protocol.iworkrun.IWorkRun/work-events (use-case) {:after 0}))
+     '(std.protocol.iworkrun.IWorkRun/work-events unsupported {:after 0}))
+   (protocol-case :IWorkRun :work-cancel std.protocol.iworkrun.IWorkRun/work-cancel
+     (= [:cancel :requested]
+        (std.protocol.iworkrun.IWorkRun/work-cancel (use-case) :requested))
+     '(std.protocol.iworkrun.IWorkRun/work-cancel unsupported :requested))
+   (protocol-case :IMatch :match-value std.protocol.imatch.IMatch/match-value
+     (= true (std.protocol.imatch.IMatch/match-value (use-case) 42))
+     '(std.protocol.imatch.IMatch/match-value unsupported 42))
+   (protocol-case :IStringLike :to-string std.protocol.istringlike.IStringLike/to-string
+     (= "protocol-use-case" (std.protocol.istringlike.IStringLike/to-string (use-case)))
+     '(std.protocol.istringlike.IStringLike/to-string unsupported))
+   (protocol-case :IStringLike :from-string std.protocol.istringlike.IStringLike/from-string
+     (= "restored"
+        (std.protocol.istringlike.IStringLike/from-string (use-case) "restored"))
+     '(std.protocol.istringlike.IStringLike/from-string unsupported "restored"))])
+
+(let []
+  [(protocol-case :IApplicable :apply-default std.protocol.iapplicable.IApplicable/apply-default
+     (= 42 (std.protocol.iapplicable.IApplicable/apply-default (use-case)))
+     '(std.protocol.iapplicable.IApplicable/apply-default unsupported))
+   (protocol-case :IApplicable :apply-in std.protocol.iapplicable.IApplicable/apply-in
+     (= [1 2 3] (std.protocol.iapplicable.IApplicable/apply-in
+                  (use-case) (fn [a b c] [a b c]) [1 2 3]))
+     '(std.protocol.iapplicable.IApplicable/apply-in unsupported (fn [& xs] xs) [1]))
+   (protocol-case :IApplicable :transform-in std.protocol.iapplicable.IApplicable/transform-in
+     (= [2 3] (std.protocol.iapplicable.IApplicable/transform-in
+                (use-case) (fn [a b] [a b]) [2 3]))
+     '(std.protocol.iapplicable.IApplicable/transform-in unsupported (fn [& xs] xs) [2]))
+   (protocol-case :IApplicable :transform-out std.protocol.iapplicable.IApplicable/transform-out
+     (= [1 2 3] (std.protocol.iapplicable.IApplicable/transform-out
+                  (use-case) (fn [a b c] [a b c]) [1 2] 3))
+     '(std.protocol.iapplicable.IApplicable/transform-out unsupported (fn [& xs] xs) [1] 2))
+
+   (protocol-case :IAssoc :assoc std.protocol.iassoc.IAssoc/assoc
+     (= {:a 1 :b 2 :c 3}
+        (std.protocol.iassoc.IAssoc/assoc (use-case) :c 3))
+     '(std.protocol.iassoc.IAssoc/assoc unsupported :c 3))
+
+   (protocol-case :ICas :cas std.protocol.icas.ICas/cas
+     (= [true 11]
+        (let [fixture (use-case)]
+          [(std.protocol.icas.ICas/cas fixture 10 11)
+           (deref (state-get fixture :cell))]))
+     '(std.protocol.icas.ICas/cas unsupported 10 11))
+
+   (protocol-case :IClose :close std.protocol.iclose.IClose/close
+     (= true
+        (let [fixture (use-case)]
+          (std.protocol.iclose.IClose/close fixture)
+          (state-get fixture :closed)))
+     '(std.protocol.iclose.IClose/close unsupported))
+
+   (protocol-case :IColl :start-string std.protocol.icoll.IColl/start-string
+     (= "(" (std.protocol.icoll.IColl/start-string (use-case)))
+     '(std.protocol.icoll.IColl/start-string unsupported))
+   (protocol-case :IColl :end-string std.protocol.icoll.IColl/end-string
+     (= ")" (std.protocol.icoll.IColl/end-string (use-case)))
+     '(std.protocol.icoll.IColl/end-string unsupported))
+   (protocol-case :IColl :sep-string std.protocol.icoll.IColl/sep-string
+     (= " " (std.protocol.icoll.IColl/sep-string (use-case)))
+     '(std.protocol.icoll.IColl/sep-string unsupported))
+
+   (protocol-case :IComponent :props std.protocol.icomponent.IComponent/props
+     (= {:name :component} (std.protocol.icomponent.IComponent/props (use-case)))
+     '(std.protocol.icomponent.IComponent/props unsupported))
+   (protocol-case :IComponent :status std.protocol.icomponent.IComponent/status
+     (= :stopped (std.protocol.icomponent.IComponent/status (use-case)))
+     '(std.protocol.icomponent.IComponent/status unsupported))
+   (protocol-case :IComponent :started? std.protocol.icomponent.IComponent/started?
+     (= true
+        (let [fixture (use-case)]
+          (std.protocol.icomponent.IComponent/start fixture)
+          (std.protocol.icomponent.IComponent/started? fixture)))
+     '(std.protocol.icomponent.IComponent/started? unsupported))
+   (protocol-case :IComponent :stopped? std.protocol.icomponent.IComponent/stopped?
+     (= true (std.protocol.icomponent.IComponent/stopped? (use-case)))
+     '(std.protocol.icomponent.IComponent/stopped? unsupported))
+   (protocol-case :IComponent :start std.protocol.icomponent.IComponent/start
+     (= :started
+        (let [fixture (use-case)]
+          (std.protocol.icomponent.IComponent/start fixture)
+          (state-get fixture :component-status)))
+     '(std.protocol.icomponent.IComponent/start unsupported))
+   (protocol-case :IComponent :stop std.protocol.icomponent.IComponent/stop
+     (= :stopped
+        (let [fixture (use-case)]
+          (std.protocol.icomponent.IComponent/start fixture)
+          (std.protocol.icomponent.IComponent/stop fixture)
+          (state-get fixture :component-status)))
+     '(std.protocol.icomponent.IComponent/stop unsupported))
+   (protocol-case :IComponent :kill std.protocol.icomponent.IComponent/kill
+     (= :killed
+        (let [fixture (use-case)]
+          (std.protocol.icomponent.IComponent/kill fixture)
+          (state-get fixture :component-status)))
+     '(std.protocol.icomponent.IComponent/kill unsupported))
+   (protocol-case :IComponent :remote? std.protocol.icomponent.IComponent/remote?
+     (= false (std.protocol.icomponent.IComponent/remote? (use-case)))
+     '(std.protocol.icomponent.IComponent/remote? unsupported))
+
+   (protocol-case :IConj :conj std.protocol.iconj.IConj/conj
+     (= [1 2 3 4] (std.protocol.iconj.IConj/conj (use-case) 4))
+     '(std.protocol.iconj.IConj/conj unsupported 4))
+
+   (protocol-case :ICons :cons std.protocol.icons.ICons/cons
+     (= [0 1 2 3] (std.protocol.icons.ICons/cons (use-case) 0))
+     '(std.protocol.icons.ICons/cons unsupported 0))
+
+   (protocol-case :IContext :call std.protocol.icontext.IContext/call
+     (= [1] (std.protocol.icontext.IContext/call (use-case) 1))
+     '(std.protocol.icontext.IContext/call unsupported 1))
+
+   (protocol-case :ICoroutine :status std.protocol.icoroutine.ICoroutine/status
+     (= :stopped (std.protocol.icoroutine.ICoroutine/status (use-case)))
+     '(std.protocol.icoroutine.ICoroutine/status unsupported))
+   (protocol-case :ICoroutine :resume std.protocol.icoroutine.ICoroutine/resume
+     (= [:input] (std.protocol.icoroutine.ICoroutine/resume (use-case) :input))
+     '(std.protocol.icoroutine.ICoroutine/resume unsupported :input))
+
+   (protocol-case :IStream :next std.protocol.istream.IStream/next
+     (= 42 (std.protocol.istream.IStream/next (use-case)))
+     '(std.protocol.istream.IStream/next unsupported))
+
+   (protocol-case :IContextLifeCycle :has-module? std.protocol.icontextlifecycle.IContextLifeCycle/has-module?
+     (= false (std.protocol.icontextlifecycle.IContextLifeCycle/has-module? (use-case) :demo))
+     '(std.protocol.icontextlifecycle.IContextLifeCycle/has-module? unsupported :demo))
+   (protocol-case :IContextLifeCycle :setup-module std.protocol.icontextlifecycle.IContextLifeCycle/setup-module
+     (= true
+        (let [fixture (use-case)]
+          (std.protocol.icontextlifecycle.IContextLifeCycle/setup-module fixture :demo)
+          (std.protocol.icontextlifecycle.IContextLifeCycle/has-module? fixture :demo)))
+     '(std.protocol.icontextlifecycle.IContextLifeCycle/setup-module unsupported :demo))
+   (protocol-case :IContextLifeCycle :teardown-module std.protocol.icontextlifecycle.IContextLifeCycle/teardown-module
+     (= false
+        (let [fixture (use-case)]
+          (std.protocol.icontextlifecycle.IContextLifeCycle/setup-module fixture :demo)
+          (std.protocol.icontextlifecycle.IContextLifeCycle/teardown-module fixture :demo)
+          (std.protocol.icontextlifecycle.IContextLifeCycle/has-module? fixture :demo)))
+     '(std.protocol.icontextlifecycle.IContextLifeCycle/teardown-module unsupported :demo))
+   (protocol-case :IContextLifeCycle :has-pointer? std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer?
+     (= false (std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer? (use-case) :pointer))
+     '(std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer? unsupported :pointer))
+   (protocol-case :IContextLifeCycle :setup-pointer std.protocol.icontextlifecycle.IContextLifeCycle/setup-pointer
+     (= true
+        (let [fixture (use-case)]
+          (std.protocol.icontextlifecycle.IContextLifeCycle/setup-pointer fixture :pointer)
+          (std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer? fixture :pointer)))
+     '(std.protocol.icontextlifecycle.IContextLifeCycle/setup-pointer unsupported :pointer))
+   (protocol-case :IContextLifeCycle :teardown-pointer std.protocol.icontextlifecycle.IContextLifeCycle/teardown-pointer
+     (= false
+        (let [fixture (use-case)]
+          (std.protocol.icontextlifecycle.IContextLifeCycle/setup-pointer fixture :pointer)
+          (std.protocol.icontextlifecycle.IContextLifeCycle/teardown-pointer fixture :pointer)
+          (std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer? fixture :pointer)))
+     '(std.protocol.icontextlifecycle.IContextLifeCycle/teardown-pointer unsupported :pointer))
+
+   (protocol-case :ICount :count std.protocol.icount.ICount/count
+     (= 3 (std.protocol.icount.ICount/count (use-case)))
+     '(std.protocol.icount.ICount/count unsupported-protocol))
+
+   (protocol-case :IDeps :dep-get std.protocol.ideps.IDeps/dep-get
+     (= :A (std.protocol.ideps.IDeps/dep-get (use-case) :a))
+     '(std.protocol.ideps.IDeps/dep-get unsupported :a))
+
+   (protocol-case :IDeps :dep-entries std.protocol.ideps.IDeps/dep-entries
+     (= #{:b} (std.protocol.ideps.IDeps/dep-entries (use-case) :a))
+     '(std.protocol.ideps.IDeps/dep-entries unsupported :a))
+
+   (protocol-case :IDeps :dep-keys std.protocol.ideps.IDeps/dep-keys
+     (= #{:a :b} (set (std.protocol.ideps.IDeps/dep-keys (use-case))))
+     '(std.protocol.ideps.IDeps/dep-keys unsupported))
+
+   (protocol-case :IDeref :deref std.protocol.ideref.IDeref/deref
+     (= 10 (std.protocol.ideref.IDeref/deref (atom 10)))
+     '(std.protocol.ideref.IDeref/deref unsupported))
+
+   (protocol-case :IDerefTimeout :deref-timeout std.protocol.idereftimeout.IDerefTimeout/deref-timeout
+     (= :timeout (std.protocol.idereftimeout.IDerefTimeout/deref-timeout (use-case) -1 :timeout))
+     '(std.protocol.idereftimeout.IDerefTimeout/deref-timeout unsupported 0 :timeout))
+
+   (protocol-case :IDisplay :display std.protocol.idisplay.IDisplay/display
+     (= "<protocol-use-case>" (std.protocol.idisplay.IDisplay/display (use-case)))
+     '(std.protocol.idisplay.IDisplay/display unsupported))
+
+   (protocol-case :IDissoc :dissoc std.protocol.idissoc.IDissoc/dissoc
+     (= {:b 2} (std.protocol.idissoc.IDissoc/dissoc (use-case) :a))
+     '(std.protocol.idissoc.IDissoc/dissoc unsupported :a))
+
+   (protocol-case :IEmpty :empty std.protocol.iempty.IEmpty/empty
+     (= [] (std.protocol.iempty.IEmpty/empty (use-case)))
+     '(std.protocol.iempty.IEmpty/empty unsupported-protocol))
+
+   (protocol-case :IEncodable :encode-with std.protocol.iencodable.IEncodable/encode-with
+     (= :encoded-with (std.protocol.iencodable.IEncodable/encode-with (use-case) (use-case)))
+     nil)
+
+   (protocol-case :IEncode :encode std.protocol.iencode.IEncode/encode
+     (= :encoded (std.protocol.iencode.IEncode/encode (use-case) {}))
+     '(std.protocol.iencode.IEncode/encode unsupported {}))
+
+   (protocol-case :IEncodeVisitor :visit-nil std.protocol.iencodevisitor.IEncodeVisitor/visit-nil
+     (= :nil (std.protocol.iencodevisitor.IEncodeVisitor/visit-nil (use-case)))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-nil unsupported))
+   (protocol-case :IEncodeVisitor :visit-boolean std.protocol.iencodevisitor.IEncodeVisitor/visit-boolean
+     (= true (std.protocol.iencodevisitor.IEncodeVisitor/visit-boolean (use-case) true))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-boolean unsupported true))
+   (protocol-case :IEncodeVisitor :visit-number std.protocol.iencodevisitor.IEncodeVisitor/visit-number
+     (= 42 (std.protocol.iencodevisitor.IEncodeVisitor/visit-number (use-case) 42))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-number unsupported 42))
+   (protocol-case :IEncodeVisitor :visit-character std.protocol.iencodevisitor.IEncodeVisitor/visit-character
+     (= "c" (std.protocol.iencodevisitor.IEncodeVisitor/visit-character (use-case) "c"))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-character unsupported "c"))
+   (protocol-case :IEncodeVisitor :visit-string std.protocol.iencodevisitor.IEncodeVisitor/visit-string
+     (= "text" (std.protocol.iencodevisitor.IEncodeVisitor/visit-string (use-case) "text"))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-string unsupported "text"))
+   (protocol-case :IEncodeVisitor :visit-keyword std.protocol.iencodevisitor.IEncodeVisitor/visit-keyword
+     (= :demo (std.protocol.iencodevisitor.IEncodeVisitor/visit-keyword (use-case) :demo))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-keyword unsupported :demo))
+   (protocol-case :IEncodeVisitor :visit-symbol std.protocol.iencodevisitor.IEncodeVisitor/visit-symbol
+     (= 'demo (std.protocol.iencodevisitor.IEncodeVisitor/visit-symbol (use-case) 'demo))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-symbol unsupported 'demo))
+   (protocol-case :IEncodeVisitor :visit-seq std.protocol.iencodevisitor.IEncodeVisitor/visit-seq
+     (= '(1 2) (std.protocol.iencodevisitor.IEncodeVisitor/visit-seq (use-case) '(1 2)))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-seq unsupported '(1 2)))
+   (protocol-case :IEncodeVisitor :visit-vector std.protocol.iencodevisitor.IEncodeVisitor/visit-vector
+     (= [1 2] (std.protocol.iencodevisitor.IEncodeVisitor/visit-vector (use-case) [1 2]))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-vector unsupported [1 2]))
+   (protocol-case :IEncodeVisitor :visit-map std.protocol.iencodevisitor.IEncodeVisitor/visit-map
+     (= {:a 1} (std.protocol.iencodevisitor.IEncodeVisitor/visit-map (use-case) {:a 1}))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-map unsupported {:a 1}))
+   (protocol-case :IEncodeVisitor :visit-set std.protocol.iencodevisitor.IEncodeVisitor/visit-set
+     (= #{1 2} (std.protocol.iencodevisitor.IEncodeVisitor/visit-set (use-case) #{1 2}))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-set unsupported #{1 2}))
+   (protocol-case :IEncodeVisitor :visit-tagged std.protocol.iencodevisitor.IEncodeVisitor/visit-tagged
+     (= [:demo 42] (std.protocol.iencodevisitor.IEncodeVisitor/visit-tagged (use-case) :demo 42))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-tagged unsupported :demo 42))
+   (protocol-case :IEncodeVisitor :visit-unknown std.protocol.iencodevisitor.IEncodeVisitor/visit-unknown
+     (= :unknown (std.protocol.iencodevisitor.IEncodeVisitor/visit-unknown (use-case) :unknown))
+     '(std.protocol.iencodevisitor.IEncodeVisitor/visit-unknown unsupported :unknown))
+
+   (protocol-case :IEquality :equality std.protocol.iequality.IEquality/equality
+     (= true (std.protocol.iequality.IEquality/equality (use-case) 42))
+     '(std.protocol.iequality.IEquality/equality unsupported 42))
+
+   (protocol-case :IExInfo :data std.protocol.iexinfo.IExInfo/data
+     (= {:kind :fixture-error} (std.protocol.iexinfo.IExInfo/data (use-case)))
+     '(std.protocol.iexinfo.IExInfo/data unsupported))
+
+   (protocol-case :IFind :find std.protocol.ifind.IFind/find
+     (= 1
+        (std.protocol.ipair.IPair/value
+          (std.protocol.ifind.IFind/find (use-case) :a)))
+     '(std.protocol.ifind.IFind/find unsupported-protocol :a))
+
+   (protocol-case :IFn :invoke std.protocol.ifn.IFn/invoke
+     (= [1] (std.protocol.ifn.IFn/invoke (use-case) 1))
+     '(std.protocol.ifn.IFn/invoke unsupported 1))
+
+   (protocol-case :IHash :hash std.protocol.ihash.IHash/hash
+     (= 42 (std.protocol.ihash.IHash/hash (use-case)))
+     '(std.protocol.ihash.IHash/hash unsupported))
+
+   (protocol-case :IHashCached :hash-current std.protocol.ihashcached.IHashCached/hash-current
+     (= 0 (std.protocol.ihashcached.IHashCached/hash-current (use-case)))
+     '(std.protocol.ihashcached.IHashCached/hash-current unsupported))
+   (protocol-case :IHashCached :hash-put std.protocol.ihashcached.IHashCached/hash-put
+     (= 99
+        (let [fixture (use-case)]
+          (std.protocol.ihashcached.IHashCached/hash-put fixture 99)
+          (std.protocol.ihashcached.IHashCached/hash-current fixture)))
+     '(std.protocol.ihashcached.IHashCached/hash-put unsupported 99))
+
+   (protocol-case :IIndexed :index-of std.protocol.iindexed.IIndexed/index-of
+     (= 1 (std.protocol.iindexed.IIndexed/index-of (use-case) 2))
+     '(std.protocol.iindexed.IIndexed/index-of unsupported 2))
+
+   (protocol-case :IIndexedKV :index-of-key std.protocol.iindexedkv.IIndexedKV/index-of-key
+     (= 1 (std.protocol.iindexedkv.IIndexedKV/index-of-key (use-case) :b))
+     '(std.protocol.iindexedkv.IIndexedKV/index-of-key unsupported :b))
+   (protocol-case :IIndexedKV :index-of-val std.protocol.iindexedkv.IIndexedKV/index-of-val
+     (= 0 (std.protocol.iindexedkv.IIndexedKV/index-of-val (use-case) 1))
+     '(std.protocol.iindexedkv.IIndexedKV/index-of-val unsupported 1))
+
+   (protocol-case :IInvokeIn :invoke-in std.protocol.iinvokein.IInvokeIn/invoke-in
+     (= [1] (std.protocol.iinvokein.IInvokeIn/invoke-in (use-case) (use-case) 1))
+     '(std.protocol.iinvokein.IInvokeIn/invoke-in unsupported (use-case) 1))
+
+   (protocol-case :IIter :iter std.protocol.iiter.IIter/iter
+     (= 1
+        (std.protocol.iiterator.IIterator/iter-next
+          (std.protocol.iiter.IIter/iter (use-case))))
+     '(std.protocol.iiter.IIter/iter unsupported-protocol))
+
+   (protocol-case :IIterator :iter-next? std.protocol.iiterator.IIterator/iter-next?
+     (= true
+        (let [fixture (use-case)]
+          (state-put fixture :iterator (std.protocol.iiter.IIter/iter [1]))
+          (std.protocol.iiterator.IIterator/iter-next? fixture)))
+     '(std.protocol.iiterator.IIterator/iter-next? unsupported))
+   (protocol-case :IIterator :iter-next std.protocol.iiterator.IIterator/iter-next
+     (= 1
+        (let [fixture (use-case)]
+          (state-put fixture :iterator (std.protocol.iiter.IIter/iter [1]))
+          (std.protocol.iiterator.IIterator/iter-next fixture)))
+     '(std.protocol.iiterator.IIterator/iter-next unsupported))
+
+   (protocol-case :ILookup :lookup std.protocol.ilookup.ILookup/lookup
+     (= 1 (std.protocol.ilookup.ILookup/lookup (use-case) :a))
+     '(std.protocol.ilookup.ILookup/lookup unsupported :a))
+
+   (protocol-case :IMetadata :metatype std.protocol.imetadata.IMetadata/metatype
+     (= :object (std.protocol.imetadata.IMetadata/metatype (use-case)))
+     '(std.protocol.imetadata.IMetadata/metatype unsupported))
+
+   (protocol-case :INamespaced :name std.protocol.inamespaced.INamespaced/name
+     (= "demo" (std.protocol.inamespaced.INamespaced/name (use-case)))
+     '(std.protocol.inamespaced.INamespaced/name unsupported))
+   (protocol-case :INamespaced :namespace std.protocol.inamespaced.INamespaced/namespace
+     (= "std.protocol" (std.protocol.inamespaced.INamespaced/namespace (use-case)))
+     '(std.protocol.inamespaced.INamespaced/namespace unsupported))
+
+   (protocol-case :INth :nth std.protocol.inth.INth/nth
+     (= 2 (std.protocol.inth.INth/nth (use-case) 1))
+     '(std.protocol.inth.INth/nth unsupported 1))
+
+   (protocol-case :IObjType :meta std.protocol.iobjtype.IObjType/meta
+     (= {:source :fixture} (std.protocol.iobjtype.IObjType/meta (use-case)))
+     '(std.protocol.iobjtype.IObjType/meta unsupported-protocol))
+   (protocol-case :IObjType :with-meta std.protocol.iobjtype.IObjType/with-meta
+     (= {:source :updated}
+        (let [fixture (use-case)]
+          (std.protocol.iobjtype.IObjType/with-meta fixture {:source :updated})
+          (std.protocol.iobjtype.IObjType/meta fixture)))
+     '(std.protocol.iobjtype.IObjType/with-meta unsupported-protocol {:source :updated}))
+
+   (protocol-case :IPair :key std.protocol.ipair.IPair/key
+     (= :a (std.protocol.ipair.IPair/key (use-case)))
+     '(std.protocol.ipair.IPair/key unsupported))
+   (protocol-case :IPair :value std.protocol.ipair.IPair/value
+     (= 1 (std.protocol.ipair.IPair/value (use-case)))
+     '(std.protocol.ipair.IPair/value unsupported))
+
+   (protocol-case :IPeekFirst :peek-first std.protocol.ipeekfirst.IPeekFirst/peek-first
+     (= 1 (std.protocol.ipeekfirst.IPeekFirst/peek-first (use-case)))
+     '(std.protocol.ipeekfirst.IPeekFirst/peek-first unsupported))
+   (protocol-case :IPeekLast :peek-last std.protocol.ipeeklast.IPeekLast/peek-last
+     (= 3 (std.protocol.ipeeklast.IPeekLast/peek-last (use-case)))
+     '(std.protocol.ipeeklast.IPeekLast/peek-last unsupported))
+
+   (protocol-case :IPromise :state std.protocol.ipromise.IPromise/state
+     (= :fulfilled (std.protocol.ipromise.IPromise/state (use-case)))
+     '(std.protocol.ipromise.IPromise/state unsupported))
+   (protocol-case :IPromise :value std.protocol.ipromise.IPromise/value
+     (= 42 (std.protocol.ipromise.IPromise/value (use-case)))
+     '(std.protocol.ipromise.IPromise/value unsupported))
+   (protocol-case :IPromise :then std.protocol.ipromise.IPromise/then
+     (= 43 (std.protocol.ipromise.IPromise/then (use-case) (fn [value] (inc value))))
+     '(std.protocol.ipromise.IPromise/then unsupported (fn [value] value)))
+   (protocol-case :IPromise :catch std.protocol.ipromise.IPromise/catch
+     (= 42
+        (let [fixture (use-case)]
+          (std.protocol.ipromise.IPromise/catch fixture (fn [value] value))
+          (std.protocol.ipromise.IPromise/value fixture)))
+     '(std.protocol.ipromise.IPromise/catch unsupported (fn [x] x)))
+   (protocol-case :IPromise :finally std.protocol.ipromise.IPromise/finally
+     (= :finished
+        (let [seen (atom nil)]
+          (std.protocol.ipromise.IPromise/finally
+            (use-case)
+            (fn [] (std.protocol.ireset.IReset/reset seen :finished)))
+          (deref seen)))
+     '(std.protocol.ipromise.IPromise/finally unsupported (fn [x] x)))
+   (protocol-case :IPromise :cancel std.protocol.ipromise.IPromise/cancel
+     (= :cancelled
+        (let [fixture (use-case)]
+          (std.protocol.ipromise.IPromise/cancel fixture)
+          (state-get fixture :component-status)))
+     '(std.protocol.ipromise.IPromise/cancel unsupported))
+
+   (protocol-case :IPointer :ptr-context std.protocol.ipointer.IPointer/ptr-context
+     (= :runtime/demo (std.protocol.ipointer.IPointer/ptr-context (use-case)))
+     '(std.protocol.ipointer.IPointer/ptr-context unsupported))
+
+   (protocol-case :IPopFirst :pop-first std.protocol.ipopfirst.IPopFirst/pop-first
+     (= [2 3] (std.protocol.ipopfirst.IPopFirst/pop-first (use-case)))
+     '(std.protocol.ipopfirst.IPopFirst/pop-first unsupported))
+   (protocol-case :IPopLast :pop-last std.protocol.ipoplast.IPopLast/pop-last
+     (= [1 2] (std.protocol.ipoplast.IPopLast/pop-last (use-case)))
+     '(std.protocol.ipoplast.IPopLast/pop-last unsupported))
+   (protocol-case :IPushFirst :push-first std.protocol.ipushfirst.IPushFirst/push-first
+     (= [0 1 2 3] (std.protocol.ipushfirst.IPushFirst/push-first (use-case) 0))
+     '(std.protocol.ipushfirst.IPushFirst/push-first unsupported 0))
+   (protocol-case :IPushLast :push-last std.protocol.ipushlast.IPushLast/push-last
+     (= [1 2 3 4] (std.protocol.ipushlast.IPushLast/push-last (use-case) 4))
+     '(std.protocol.ipushlast.IPushLast/push-last unsupported 4))
+
+   (protocol-case :IRealize :realized? std.protocol.irealize.IRealize/realized?
+     (= false (std.protocol.irealize.IRealize/realized? (use-case)))
+     '(std.protocol.irealize.IRealize/realized? unsupported))
+   (protocol-case :IRealize :realize std.protocol.irealize.IRealize/realize
+     (= [42 true]
+        (let [fixture (use-case)]
+          [(std.protocol.irealize.IRealize/realize fixture)
+           (std.protocol.irealize.IRealize/realized? fixture)]))
+     '(std.protocol.irealize.IRealize/realize unsupported))
+
+   (protocol-case :IReduce :reduce std.protocol.ireduce.IReduce/reduce
+     (= 2
+        (std.protocol.ireduce.IReduce/reduce
+          [1 2] (fn [left right] right)))
+     '(std.protocol.ireduce.IReduce/reduce unsupported-protocol (fn [left right] right)))
+
+   (protocol-case :IReset :reset std.protocol.ireset.IReset/reset
+     (= [12 12]
+        (let [fixture (use-case)]
+          [(std.protocol.ireset.IReset/reset fixture 12)
+           (std.protocol.ideref.IDeref/deref fixture)]))
+     '(std.protocol.ireset.IReset/reset unsupported 12))
+
+   (protocol-case :ISpace :context-set std.protocol.ispace.ISpace/context-set
+     (= {:key :main :options {:reload true}}
+        (let [fixture (use-case)]
+          (std.protocol.ispace.ISpace/context-set fixture :ctx :main {:reload true})
+          (std.protocol.ispace.ISpace/context-get fixture :ctx)))
+     '(std.protocol.ispace.ISpace/context-set unsupported :ctx :main {}))
+   (protocol-case :ISpace :context-unset std.protocol.ispace.ISpace/context-unset
+     (= nil
+        (let [fixture (use-case)]
+          (std.protocol.ispace.ISpace/context-set fixture :ctx :main {})
+          (std.protocol.ispace.ISpace/context-unset fixture :ctx)
+          (std.protocol.ispace.ISpace/context-get fixture :ctx)))
+     '(std.protocol.ispace.ISpace/context-unset unsupported :ctx))
+   (protocol-case :ISpace :context-list std.protocol.ispace.ISpace/context-list
+     (= :ctx
+        (let [fixture (use-case)]
+          (std.protocol.ispace.ISpace/context-set fixture :ctx :main {})
+          (std.protocol.iiterator.IIterator/iter-next
+            (std.protocol.iiter.IIter/iter
+              (std.protocol.ispace.ISpace/context-list fixture)))))
+     '(std.protocol.ispace.ISpace/context-list unsupported))
+   (protocol-case :ISpace :context-get std.protocol.ispace.ISpace/context-get
+     (= nil (std.protocol.ispace.ISpace/context-get (use-case) :missing))
+     '(std.protocol.ispace.ISpace/context-get unsupported :missing))
+   (protocol-case :ISpace :rt-active std.protocol.ispace.ISpace/rt-active
+     (= :ctx
+        (let [fixture (use-case)]
+          (std.protocol.ispace.ISpace/rt-start fixture :ctx)
+          (std.protocol.iiterator.IIterator/iter-next
+            (std.protocol.iiter.IIter/iter
+              (std.protocol.ispace.ISpace/rt-active fixture)))))
+     '(std.protocol.ispace.ISpace/rt-active unsupported))
+   (protocol-case :ISpace :rt-get std.protocol.ispace.ISpace/rt-get
+     (= :started
+        (let [fixture (use-case)]
+          (std.protocol.ispace.ISpace/rt-start fixture :ctx)
+          (std.protocol.ispace.ISpace/rt-get fixture :ctx)))
+     '(std.protocol.ispace.ISpace/rt-get unsupported :ctx))
+   (protocol-case :ISpace :rt-start std.protocol.ispace.ISpace/rt-start
+     (= :started (std.protocol.ispace.ISpace/rt-start (use-case) :ctx))
+     '(std.protocol.ispace.ISpace/rt-start unsupported :ctx))
+   (protocol-case :ISpace :rt-started? std.protocol.ispace.ISpace/rt-started?
+     (= true
+        (let [fixture (use-case)]
+          (std.protocol.ispace.ISpace/rt-start fixture :ctx)
+          (std.protocol.ispace.ISpace/rt-started? fixture :ctx)))
+     '(std.protocol.ispace.ISpace/rt-started? unsupported :ctx))
+   (protocol-case :ISpace :rt-stopped? std.protocol.ispace.ISpace/rt-stopped?
+     (= true (std.protocol.ispace.ISpace/rt-stopped? (use-case) :ctx))
+     '(std.protocol.ispace.ISpace/rt-stopped? unsupported :ctx))
+   (protocol-case :ISpace :rt-stop std.protocol.ispace.ISpace/rt-stop
+     (= true
+        (let [fixture (use-case)]
+          (std.protocol.ispace.ISpace/rt-start fixture :ctx)
+          (std.protocol.ispace.ISpace/rt-stop fixture :ctx)
+          (std.protocol.ispace.ISpace/rt-stopped? fixture :ctx)))
+     '(std.protocol.ispace.ISpace/rt-stop unsupported :ctx))
+
+   (protocol-case :IToMutable :to-mutable std.protocol.itomutable.IToMutable/to-mutable
+     (= 2
+        (std.protocol.inth.INth/nth
+          (std.protocol.itomutable.IToMutable/to-mutable (use-case))
+          1))
+     '(std.protocol.itomutable.IToMutable/to-mutable unsupported))
+
+   (protocol-case :IToPersistent :to-persistent std.protocol.itopersistent.IToPersistent/to-persistent
+     (= [1 2 3] (std.protocol.itopersistent.IToPersistent/to-persistent (use-case)))
+     '(std.protocol.itopersistent.IToPersistent/to-persistent unsupported))
+
+   (protocol-case :IWatch :watch-add std.protocol.iwatch.IWatch/watch-add
+     (= 11
+        (let [fixture (use-case)
+              seen (atom nil)]
+          (std.protocol.iwatch.IWatch/watch-add
+            fixture :audit
+            (fn [key ref old new] (std.protocol.ireset.IReset/reset seen new)))
+          (std.protocol.ireset.IReset/reset fixture 11)
+          (deref seen)))
+     '(std.protocol.iwatch.IWatch/watch-add unsupported :audit (fn [x] x)))
+   (protocol-case :IWatch :watch-remove std.protocol.iwatch.IWatch/watch-remove
+     (= nil
+        (let [fixture (use-case)
+              seen (atom nil)]
+          (std.protocol.iwatch.IWatch/watch-add
+            fixture :audit
+            (fn [key ref old new] (std.protocol.ireset.IReset/reset seen new)))
+          (std.protocol.iwatch.IWatch/watch-remove fixture :audit)
+          (std.protocol.ireset.IReset/reset fixture 11)
+          (deref seen)))
+     '(std.protocol.iwatch.IWatch/watch-remove unsupported :audit))
+   (protocol-case :IWatch :watch-list std.protocol.iwatch.IWatch/watch-list
+     (= true
+        (let [fixture (use-case)]
+          (std.protocol.iwatch.IWatch/watch-add fixture :audit (fn [key ref old new] new))
+          (std.protocol.iiterator.IIterator/iter-next?
+            (std.protocol.iiter.IIter/iter
+              (std.protocol.iwatch.IWatch/watch-list fixture)))))
+     '(std.protocol.iwatch.IWatch/watch-list unsupported))])

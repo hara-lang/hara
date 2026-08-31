@@ -1,0 +1,258 @@
+(ns work.flow-test
+  (:require [work.flow]))
+
+(defn fixture-flow
+  ([] (fixture-flow [:fixture]))
+  ([path]
+   {:flow/path path
+    :flow/defaults {:nested {:left 1}}
+    :flow/normalise (fn [profile name definition] (assoc definition :name name))
+    :flow/compile (fn [profile definition] (assoc definition :compiled true))
+    :flow/reconcile (fn [profile previous candidate definition]
+                      (assoc candidate :previous previous))}))
+
+(defn isolated
+  [function]
+  (let [before (work.flow/snapshot)]
+    (try
+      (work.flow/reset)
+      (function)
+      (finally (work.flow/restore before)))))
+
+^{:refer work.flow/merge-options}
+(Test/check
+ [{:name "merges nested maps while retaining inherited nil values"
+   :test (fn [] (work.flow/merge-options {:nested {:left 1 :right 2} :keep 1}
+                                          {:nested {:right 3 :new 4} :keep nil}))
+   :expected {:nested {:left 1 :right 3 :new 4} :keep 1}}])
+
+^{:refer work.flow/vector-like?}
+(Test/check
+ [{:name "recognises vectors and rejects non-vector values"
+   :test (fn [] [(work.flow/vector-like? [:a]) (work.flow/vector-like? :a)])
+   :expected [true false]}])
+
+^{:refer work.flow/flow-path?}
+(Test/check
+ [{:name "requires a non-empty keyword vector"
+   :test (fn [] [(work.flow/flow-path? [:task :unit])
+                 (work.flow/flow-path? [])
+                 (work.flow/flow-path? [:task "unit"])])
+   :expected [true false false]}])
+
+^{:refer work.flow/assert-flow-path}
+(Test/check
+ [{:name "returns valid paths and rejects invalid paths"
+   :test (fn [] [(work.flow/assert-flow-path [:task])
+                 (try (work.flow/assert-flow-path []) false (catch error true))])
+   :expected [[:task] true]}])
+
+^{:refer work.flow/removal-path?}
+(Test/check
+ [{:name "recognises non-empty option removal paths"
+   :test (fn [] [(work.flow/removal-path? [:nested :left])
+                 (work.flow/removal-path? [])])
+   :expected [true false]}])
+
+^{:refer work.flow/assert-removals}
+(Test/check
+ [{:name "keeps valid removals and rejects malformed ones"
+   :test (fn [] [(work.flow/assert-removals [[:nested :left]])
+                 (try (work.flow/assert-removals :not-a-vector) false (catch error true))])
+   :expected [[[:nested :left]] true]}])
+
+^{:refer work.flow/remove-option}
+(Test/check
+ [{:name "removes only the selected nested option"
+   :test (fn [] (work.flow/remove-option {:nested {:left 1 :right 2} :keep 3}
+                                           [:nested :left]))
+   :expected {:nested {:right 2} :keep 3}}])
+
+^{:refer work.flow/remove-options}
+(Test/check
+ [{:name "applies every explicit removal path"
+   :test (fn [] (work.flow/remove-options {:nested {:left 1 :right 2} :keep 3}
+                                            [[:nested :left] [:keep]]))
+   :expected {:nested {:right 2}}}])
+
+^{:refer work.flow/parent-path}
+(Test/check
+ [{:name "returns the immediate parent or nil for root paths"
+   :test (fn [] [(work.flow/parent-path [:task :unit])
+                 (work.flow/parent-path [:task])])
+   :expected [[:task] nil]}])
+
+^{:refer work.flow/assert-flow-function}
+(Test/check
+ [{:name "accepts functions and rejects required missing entries"
+   :test (fn [] [(fn? (work.flow/assert-flow-function {:flow/path [:task] :flow/compile (fn [value] value)}
+                                                        :flow/compile true))
+                 (try (work.flow/assert-flow-function {:flow/path [:task]} :flow/compile true)
+                      false
+                      (catch error true))])
+   :expected [true true]}])
+
+^{:refer work.flow/assert-flow}
+(Test/check
+ [{:name "validates a complete workflow descriptor"
+   :test (fn [] [(= [:fixture] (:flow/path (work.flow/assert-flow (fixture-flow))))
+                 (try (work.flow/assert-flow {:flow/path [:fixture]}) false (catch error true))])
+   :expected [true true]}])
+
+^{:refer work.flow/register}
+(Test/check
+ [{:name "registers a descriptor by path"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (has? (work.flow/registered) [:fixture]))))
+   :expected true}])
+
+^{:refer work.flow/unregister}
+(Test/check
+ [{:name "removes an installed descriptor"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (work.flow/unregister [:fixture])
+                            (work.flow/registered))))
+   :expected {}}])
+
+^{:refer work.flow/registered}
+(Test/check
+ [{:name "returns all installed descriptors"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (vec (keys (work.flow/registered))))))
+   :expected [[:fixture]]}])
+
+^{:refer work.flow/registered-flow}
+(Test/check
+ [{:name "finds an exact installed descriptor"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (:flow/path (work.flow/registered-flow [:fixture])))))
+   :expected [:fixture]}])
+
+^{:refer work.flow/resolve-flow}
+(Test/check
+ [{:name "resolves the nearest registered ancestor"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow [:fixture]))
+                            (:flow/path (work.flow/resolve-flow [:fixture :child])))))
+   :expected [:fixture]}])
+
+^{:refer work.flow/profile-parent-path}
+(Test/check
+ [{:name "prefers explicit profile inheritance over a path parent"
+   :test (fn [] [(work.flow/profile-parent-path [:fixture :child] (fixture-flow [:fixture :child]) {})
+                 (work.flow/profile-parent-path [:fixture :child] (fixture-flow [:fixture :child])
+                                                {:extends [:other]})])
+   :expected [[:fixture] [:other]]}])
+
+^{:refer work.flow/profile-cycle?}
+(Test/check
+ [{:name "detects paths already present in ancestry"
+   :test (fn [] [(work.flow/profile-cycle? [:fixture] [[:parent] [:fixture]])
+                 (work.flow/profile-cycle? [:fixture] [[:parent]])])
+   :expected [true false]}])
+
+^{:refer work.flow/profile-options}
+(Test/check
+ [{:name "merges inherited defaults local overrides and removals"
+   :test (fn [] (:nested
+                 (work.flow/profile-options
+                  (fixture-flow)
+                  {:workflow/flow (fixture-flow) :workflow/options {:nested {:parent 1}}}
+                  {:nested {:right 2} :flow/remove [[:nested :left]]})))
+   :expected {:parent 1 :right 2}}])
+
+^{:refer work.flow/configure-for*}
+(Test/check
+ [{:name "creates an immutable configured profile"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (select-keys (work.flow/configure-for* [:fixture] {:value 1} [])
+                                         [:workflow/path :workflow/options]))))
+   :expected {:workflow/path [:fixture]
+              :workflow/options {:nested {:left 1} :value 1}}}])
+
+^{:refer work.flow/configure}
+(Test/check
+ [{:name "accepts optional profile overrides"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (:workflow/options (work.flow/configure [:fixture] {:value 2})))))
+   :expected {:nested {:left 1} :value 2}}])
+
+^{:refer work.flow/profile?}
+(Test/check
+ [{:name "recognises configured workflow profiles"
+   :test (fn [] [(work.flow/profile? {:workflow/path [:fixture]
+                                       :workflow/flow (fixture-flow)
+                                       :workflow/options {}})
+                 (work.flow/profile? {})])
+   :expected [true false]}])
+
+^{:refer work.flow/definition}
+(Test/check
+ [{:name "finds the last installed definition"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (work.flow/define-work :sample [:fixture] {:value 1})
+                            (:compiled (work.flow/definition :sample)))))
+   :expected true}])
+
+^{:refer work.flow/definitions}
+(Test/check
+ [{:name "returns every installed definition"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (work.flow/define-work :sample [:fixture] {:value 1})
+                            (vec (keys (work.flow/definitions))))))
+   :expected [:sample]}])
+
+^{:refer work.flow/reset}
+(Test/check
+ [{:name "idempotently restores the empty registry baseline"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (work.flow/reset)
+                            (work.flow/reset)
+                            [(work.flow/registered) (work.flow/definitions)])))
+   :expected [{} {}]}])
+
+^{:refer work.flow/snapshot}
+(Test/check
+ [{:name "captures both registry maps"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (vec (keys (:workflow/flows (work.flow/snapshot)))))))
+   :expected [[:fixture]]}])
+
+^{:refer work.flow/restore}
+(Test/check
+ [{:name "restores a captured registry snapshot"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (let [state (work.flow/snapshot)]
+                              (work.flow/reset)
+                              (work.flow/restore state)
+                              (vec (keys (work.flow/registered)))))))
+   :expected [[:fixture]]}])
+
+^{:refer work.flow/define}
+(Test/check
+ [{:name "normalises compiles reconciles and installs definitions"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (let [value (work.flow/define (work.flow/configure [:fixture]) :sample {:value 1})]
+                              (select-keys value [:name :compiled :previous :value])))))
+   :expected {:name :sample :compiled true :previous nil :value 1}}])
+
+^{:refer work.flow/define-work}
+(Test/check
+ [{:name "configures and defines through an explicit flow path"
+   :test (fn [] (isolated (fn []
+                            (work.flow/register (fixture-flow))
+                            (select-keys (work.flow/define-work :sample [:fixture] {:value 2})
+                                         [:name :compiled :value]))))
+   :expected {:name :sample :compiled true :value 2}}])

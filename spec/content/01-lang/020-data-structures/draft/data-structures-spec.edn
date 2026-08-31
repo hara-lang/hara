@@ -1,0 +1,269 @@
+{:document/id :hara/data-structures
+ :document/type :data-structures-spec
+ :document/version "alpha"
+ :document/status :draft
+ :document/title "Hara persistent data structures specification"
+ :document/summary
+ "Portable contract for the built-in persistent data structures: the structure catalog, op semantics, iteration-order guarantees, and the cross-runtime hashing stack (RAPID default; SYSTEM, MURMUR3, SIP alternatives)."
+
+ :spec/conforms-to
+ {:spec/id :hara/data-structures-metaspec
+  :spec/version "alpha"
+  :spec/status :planned}
+
+ :data-structures/scope
+ {:scope/includes
+  #{:structure-catalog :op-semantics :iteration-order :hash-functions
+    :hash-composition :canonical-number-hashing :string-type-hashing
+    :transient-semantics :conformance-corpora}
+  :scope/excludes
+  #{:reader-syntax :evaluation :protocol-dispatch :foundation-wrappers
+    :serialization :host-interop-types}
+  :scope/note
+  "Reader syntax for collection literals is owned by the language specification (01-lang/001-language). Protocol descriptors (IAssoc, ICount, ...) are owned by 01-lang/002-protocol. This layer pins the observable behaviour of the concrete structures themselves."}
+
+ :data-structures/invariants
+ [{:requirement/id :data-structures/persistence
+   :requirement/level :must
+   :requirement/text
+   "Every persistent op returns a new structure and leaves the receiver observable state unchanged; structural sharing keeps this cheap. Transient (Mutable) variants mutate in place and are converted back with to-persistent."}
+  {:requirement/id :data-structures/coherent-observation
+   :requirement/level :must
+   :requirement/text
+   "count, iteration, positional and key lookups, and hashing observe the same logical contents: iteration yields exactly count elements and nth/find/contains agree with iteration. (This requirement is why the reference runtime's Queue iterator/nth defects - stale head segments after pop-first - were repaired alongside this specification.)"}
+  {:requirement/id :data-structures/iteration-order
+   :requirement/level :must
+   :requirement/text
+   "Iteration order is a per-structure guarantee: positional for vector/list/queue/deque, insertion order for ordered-map/ordered-set, comparator order for sorted-map/sorted-set, priority order with stable insertion-order ties for priority-map, lexicographic key order for trie, and CHAMP hash order for map/set (implementation-defined but stable for a given structure; the Java layout is pinned exactly in the corpus)."}
+  {:requirement/id :data-structures/default-hash
+   :requirement/level :must
+   :requirement/text
+   "The default hash function is RAPID. SYSTEM, MURMUR3, and SIP exist as explicit alternatives through the HashType enumeration; value-level hashes route through the same dispatch at every nesting level."}
+  {:requirement/id :data-structures/hash-parity
+   :requirement/level :must
+   :requirement/text
+   "Conforming runtimes reproduce the hash-parity corpus byte-for-byte in result value: same inputs, same Java long expectations. Documented deviations (keyword display form, symbol class-qualified form, subnormal-double formatting) are part of the contract, not optional behaviour."}
+  {:requirement/id :data-structures/no-identity-hashes
+   :requirement/level :must-not
+   :requirement/text
+   "No conforming runtime may expose identity-based (address-dependent) hashes for values covered by the hash-parity corpus. Where the Java runtime is identity-based (Keyword.toString, Pointer, SYSTEM hash of collections), the standardised deterministic replacement is specified in :data-structures/deviations."}
+  {:requirement/id :data-structures/sorted-comparability
+   :requirement/level :must
+   :requirement/text
+   "Keys of sorted-map and elements of sorted-set are mutually comparable under the structure's comparator (natural ordering by default). Mixed-incompatible key types are outside the portable contract."}
+  {:requirement/id :data-structures/vector-public-type
+   :requirement/level :must
+   :requirement/text
+   "Compact tuple-backed vectors and persistent-tree-backed vectors are one public value category. Both report :std.native.Vector from type and satisfy vector?; no public tuple type descriptor or tuple? predicate exists."}
+  {:requirement/id :data-structures/vector-compact-boundary
+   :requirement/level :must
+   :requirement/text
+   "Bracket literals and portable BUILD_VECTOR operations materialise counts 0 through 8 with the compact tuple backend and counts 9 or greater with the persistent vector backend. Growing a compact value to count 9 promotes it without changing logical contents or metadata; a persistent vector is not required to demote after shrinking."}
+  {:requirement/id :data-structures/vector-backend-observation
+   :requirement/level :must
+   :requirement/text
+   "The compact tuple backend is an internal implementation detail and has no public representation predicate. pair? and map-entry? are exact predicates for dedicated MapEntry values; ordinary vectors and lists are false even when their count is two. These predicates do not alter equality, hashing, iteration, positional lookup, destructuring, or display semantics."}]
+
+ :data-structures/hash-functions
+ [{:hash/id :system
+   :hash/width 32
+   :hash/summary
+   "Java Object.hashCode semantics: String.hashCode (31-polynomial over UTF-16 code units) for strings, canonical number hashes for numbers, Arrays.hashCode for byte arrays, Boolean/Character hashCode. For non-IHash values every hash type degrades to this value."}
+  {:hash/id :rapid
+   :hash/width 64
+   :hash/default true
+   :hash/summary
+   "RapidHash over UTF-8 bytes for raw strings and bytes. For IHash values, the value's per-type composition driven by RAPID element hashes."}
+  {:hash/id :murmur3
+   :hash/width 32
+   :hash/summary
+   "Murmur3: hashChars over UTF-16 code units for strings, hashInt/hashLong mixers for raw ints/longs; sign-extended to 64 bits in corpora. For IHash values, the value's per-type composition driven by MURMUR3 element hashes."}
+  {:hash/id :sip
+   :hash/width 64
+   :hash/summary
+   "SipHash with the HARA key for raw strings/bytes. SipHash is never routed through value dispatch: string types (keyword, symbol) return -1, and collection composition under SIP is a deterministic structural fallback, not Java-observable behaviour."}]
+
+ :data-structures/hash-composition
+ {:composition/seed
+  "hashSeed = \"::\" + ObjType name, hashed with String.hashCode. SEQUENTIAL covers vector, list, queue, deque, cons, seq, and MapEntry (NOT per-structure names); MAP covers map, ordered-map, sorted-map, priority-map, and trie; SET covers set, ordered-set, and sorted-set."
+  :composition/ordered
+  "ISequentialType: acc starts at the seed (widened to long); acc = acc*31 + hash(item) per item, wrapping 64-bit."
+  :composition/unordered
+  "Map and set types: acc starts at the seed; acc += hash(item) per item (order-insensitive sum), wrapping 64-bit. Map items are dedicated MapEntry values."
+  :composition/entry
+  "A map entry hashes as a MapEntry under the SEQUENTIAL seed: (seed*31 + hash(key))*31 + hash(value)."
+  :composition/trie
+  "Trie overrides unordered composition: acc += hash(key) + hash(value) per entry - NOT the MapEntry entry composition."
+  :composition/string-type
+  "Keyword and symbol hash the string hashSeed + \"|\" + toString under the requested hash function; SIP returns -1. See :data-structures/deviations for the standardised toString forms."}
+
+ :data-structures/canonical-numbers
+ {:numbers/long
+  "BigDecimal.valueOf(n).hashCode(). The long path does NOT strip trailing zeros, so hash(100) = 3100 while hash(100.0) = 29: integer/float hash equality holds only for values without trailing decimal zeros."
+  :numbers/double
+  "0.0 and -0.0 hash to 0; NaN and infinities hash as Double.hashCode (NaN canonicalised); every other finite value hashes as canonicalDecimal(BigDecimal.valueOf(d)).hashCode(), i.e. via the shortest round-trip decimal digits with trailing zeros stripped."
+  :numbers/bigint
+  "canonicalDecimal(new BigDecimal(n)).hashCode(): trailing zeros stripped, then BigInteger/BigDecimal hashCode (31-fold over big-endian sign-magnitude u32 words, times signum, plus scale for decimals)."
+  :numbers/decimal
+  "canonicalDecimal(d).hashCode(), same as bigint."
+  :numbers/bool "Boolean.hashCode: 1231 / 1237."
+  :numbers/char "Character.hashCode: the UTF-16 code unit as int."
+  :numbers/bytes "java.util.Arrays.hashCode(byte[]): h = 1; h = 31*h + signed-byte per element."
+  :numbers/nil "nil hashes to 0 under every hash type."}
+
+ :data-structures/structures
+ [{:structure/id :vector
+   :structure/family :positional
+   :structure/ops [conj push-last pop-last assoc nth]
+   :structure/iteration "index order 0..count-1"
+   :structure/hash :ordered-sequential
+   :structure/note
+   "The public :std.native.Vector category has compact tuple (counts 0..8 when constructed by bracket/BUILD_VECTOR) and persistent tree backends. The compact backend is not publicly distinguishable from the vector category."}
+  {:structure/id :list
+   :structure/family :positional
+   :structure/ops [conj push-first push-last pop-first pop-last nth]
+   :structure/iteration "front to back; push-first conses onto the front"
+   :structure/hash :ordered-sequential}
+  {:structure/id :queue
+   :structure/family :positional
+   :structure/ops [push-last pop-first pop-last peek-first peek-last nth]
+   :structure/iteration "front to back"
+   :structure/hash :ordered-sequential
+   :structure/note
+   "Segmented head/buffer/tail representation with 1024-element segments. The reference runtime's iterator and nth defects (stale head segment after pop-first; swapped segment/index past the head) were repaired alongside this specification; the corpus pins the coherent semantics."}
+  {:structure/id :deque
+   :structure/family :positional
+   :structure/ops [conj cons push-first push-last pop-first pop-last peek-first peek-last assoc nth]
+   :structure/iteration "front to back"
+   :structure/hash :ordered-sequential
+   :structure/note
+   "Persistent-only count-measured finger-tree representation. End operations preserve the receiver and run in amortised constant time; indexed lookup and assoc use cached subtree measures."}
+  {:structure/id :map
+   :structure/family :hashed-associative
+   :structure/ops [assoc dissoc lookup]
+   :structure/iteration
+   "CHAMP hash order: implementation-defined, stable for a given structure. The Java layout is pinned exactly in the corpus; conforming runtimes must iterate the same entry set and match count/lookup/hash."
+   :structure/hash :unordered-entry}
+  {:structure/id :map-entry
+   :structure/family :map-element
+   :structure/ops [key val nth]
+   :structure/iteration "key then value"
+   :structure/hash :ordered-sequential
+   :structure/note
+   "Map iteration yields dedicated MapEntry values. A map entry has count 2, supports positional access at 0 and 1, and satisfies pair? and map-entry? while remaining distinct from vector representations."}
+  {:structure/id :set
+   :structure/family :hashed-associative
+   :structure/ops [conj dissoc find]
+   :structure/iteration "as :map"
+   :structure/hash :unordered-element}
+  {:structure/id :ordered-map
+   :structure/family :insertion-ordered-associative
+   :structure/ops [assoc dissoc lookup nth]
+   :structure/iteration
+   "insertion order; assoc of an existing key keeps its position; dissoc then assoc re-appends. Tombstoned slots are compacted as an invisible implementation detail."
+   :structure/hash :unordered-entry}
+  {:structure/id :ordered-set
+   :structure/family :insertion-ordered-associative
+   :structure/ops [conj dissoc find nth]
+   :structure/iteration "insertion order, as :ordered-map"
+   :structure/hash :unordered-element}
+  {:structure/id :sorted-map
+   :structure/family :sorted-associative
+   :structure/ops [assoc dissoc lookup nth index-of-key floor-index ceil-index slice]
+   :structure/iteration "comparator order (natural ordering by default)"
+   :structure/hash :unordered-entry}
+  {:structure/id :priority-map
+   :structure/family :priority-associative
+   :structure/ops [assoc dissoc lookup peek-first peek-last pop-first pop-last]
+   :structure/iteration
+   "ascending natural priority; keys sharing a priority retain insertion order. Re-associating the same priority keeps position; changing priority appends the key to the target priority bucket."
+   :structure/hash :unordered-entry}
+  {:structure/id :sorted-set
+   :structure/family :sorted-associative
+   :structure/ops [conj dissoc find index-of floor-index ceil-index slice]
+   :structure/iteration "comparator order (natural ordering by default)"
+   :structure/hash :unordered-element}
+  {:structure/id :trie
+   :structure/family :string-key-associative
+   :structure/ops [assoc dissoc find]
+   :structure/iteration "lexicographic key order (sorted depth-first traversal)"
+   :structure/hash :trie-override}]
+
+ :data-structures/deviations
+ [{:deviation/id :keyword-display-form
+   :deviation/status :standardised
+   :deviation/text
+   "Java's IStringType.hashCalc composes hashSeed + \"|\" + toString, and Keyword does not override toString, so raw Java keyword hashes are identity-based and non-deterministic. The standardised form is \"::KEYWORD|:ns/name\" over the display string."}
+  {:deviation/id :symbol-class-qualified-form
+   :deviation/status :mirrored
+   :deviation/text
+   "Symbol inherits ObjPersistent.toString = class-name + \"<\" + display + \">\", which is deterministic; conforming runtimes mirror it exactly: \"::SYMBOL|hara.lang.data.Symbol<ns/name>\"."}
+  {:deviation/id :pointer-identity
+   :deviation/status :standardised
+   :deviation/text
+   "Java hashes Pointer via System.identityHashCode. The standardised deterministic replacement is the string-type hash of \"::POINTER|\" + as_str."}
+  {:deviation/id :system-hash-of-collections
+   :deviation/status :standardised
+   :deviation/text
+   "Java's SYSTEM dispatch degrades to Object.hashCode (identity) for collection objects. Conforming runtimes use the same structural composition as the other hash types so SYSTEM stays deterministic."}
+  {:deviation/id :sip-not-routed
+   :deviation/status :mirrored
+   :deviation/text
+   "Java never routes SipHash through value dispatch (G.hashSip degrades to hashValue) and string types return -1 under SIP. The -1 string-type result is mirrored exactly; collection composition under SIP is a deterministic structural fallback."}
+  {:deviation/id :sorted-map-identity-hash
+   :deviation/status :standardised
+   :deviation/text
+   "Java's SortedMap iterator yields raw SortedMap.Node objects which do not override hashCode, so G.hashCalc over sorted maps sums identity hashes and is non-deterministic across JVM processes (same defect class as Keyword.toString). The standardised hash is the unordered map composition over MapEntry values, identical to :map; the collections corpus emits the standardised value. Sorted-set is unaffected: its iterator yields elements directly."}
+  {:deviation/id :subnormal-double-formatting
+   :deviation/status :known-divergence
+   :deviation/text
+   "Double.MIN_VALUE: Java's Double.toString emits \"4.9E-324\" (hash 1844) while Rust's shortest-digits formatter picks \"5e-324\" (hash 479). Both round-trip to the same double. This case is excluded from the hash-parity corpus."}
+  {:deviation/id :queue-iterator-offset
+   :deviation/status :repaired-reference
+   :deviation/text
+   "Java Queue.Base.iterator ignored the popped-head offset, so iteration, display, and hashing read stale head elements after pop-first. Repaired in the Java reference (Queue.java): the iterator drops the first _offset head elements; the collections corpus pins the repaired behaviour."}
+  {:deviation/id :queue-nth-segment-index
+   :deviation/status :repaired-reference
+   :deviation/text
+   "Java Queue.Base.nth swapped segment and index past the head (row = j % MAX_LENGTH, col = j / MAX_LENGTH), addressing the wrong segment and the wrong slot in the tail. Repaired in the Java reference (Queue.java): seg = j / MAX_LENGTH, idx = j % MAX_LENGTH, tail probed at j - buffer.count * MAX_LENGTH."}
+  {:deviation/id :queue-pop-last-promote
+   :deviation/status :mirrored
+   :deviation/text
+   "Java Queue popLast with an empty tail and a non-empty buffer promotes the buffer's last segment to tail without removing any element: size decrements by 1 while the logical contents are unchanged, so iteration then yields one more element than count reports. Mirrored exactly for parity; the corpus keeps queue growth/pop cases probe-only (:iter omitted) so this quirk is not pinned as portable behaviour."}
+  {:deviation/id :vector-pop-tail-copy-on-write
+   :deviation/status :standardised
+   :deviation/text
+   "Java S.popTail (Vector.java) mutates node.array[subidx] in place even when editable == false, corrupting every persistent vector that shares those nodes. Deliberately not replicated: conforming runtimes implement persistent pop-last as unconditional copy-on-write down the path."}
+  {:deviation/id :vector-transient-write-back
+   :deviation/status :standardised
+   :deviation/text
+   "Java S.getNodeArrayFor(editable = true) wraps non-matching children with editableNode but never writes the copy back into the parent, so a transient assoc through a not-yet-editable path silently loses the write. Deliberately not replicated: conforming runtimes link editable copies back into the parent on descent (as Clojure's editableNodeFor does)."}
+  {:deviation/id :vector-subview-end-bounds
+   :deviation/status :standardised
+   :deviation/text
+   "Java subview rejects end > size - 1, an off-by-one that makes it impossible to view the last element (subview(0, size) throws). The standardised bounds are start <= end <= size for both the root vector and nested subviews."}
+  {:deviation/id :list-to-persistent-tail-partial
+   :deviation/status :mirrored
+   :deviation/text
+   "Java Mutable.toPersistent cuts the remainder (size % 32) FIRST from the logical end, so after freezing the LAST chunk is partial and every chunk ahead of it is full with offset 0. Mirrored exactly; observable only through chunk internals, not through iteration or lookups."}
+  {:deviation/id :sorted-slice-invariant-relaxation
+   :deviation/status :mirrored
+   :deviation/text
+   "Java Node.slice prunes out-of-range subtrees and rejoins with rotate (not full rebalancing), so a sliced tree may violate the red-black black-height invariant that checkInvariant enforces elsewhere. BST order still holds and the map keeps accepting assoc/dissoc. Mirrored exactly: conforming runtimes relax the black-height invariant for slice results while preserving comparator order and the weight (size) record."}]
+
+ :data-structures/conformance
+ {:conformance/hash-parity
+  {:corpus/path "conformance/hash-parity.edn"
+   :corpus/generator "specs/scripts/hashdump/HashDump.java (Java reference runtime)"
+   :corpus/case-count 275
+   :corpus/format
+   "{:cases [{:id :<hash>/<label> :hash :system|:rapid|:murmur3|:sip :kind :string|:int|:long|:double|:bigint|:decimal|:bool|:char|:bytes|:nil|:seed|:keyword|:symbol|:collection :input <edn> :expect <java-long>}]}. :input is an EDN form per :kind; :expect is the decimal Java long with 32-bit hashes sign-extended. Collection cases add :structure and encode queue, compact-vector2, and map-entry inputs as vectors."}
+  :conformance/collections
+  {:corpus/path "conformance/collections.edn"
+   :corpus/generator "specs/scripts/hashdump/CollectionDump.java (Java reference runtime)"
+   :corpus/case-count 54
+   :corpus/format
+   "{:cases [{:id :<structure>/<label> :structure :map|:vector|:list|:set|:ordered-map|:ordered-set|:sorted-map|:sorted-set|:trie|:queue :transient <bool> :ops [[:assoc k v] [:dissoc k] [:conj v] [:push-first v] [:push-last v] [:pop-first] [:pop-last]] :expect {...}]}. Expect keys: :count; :iter (map-like entries as [k v] pairs); :first/:last; :nth {idx val}; :find {key val-or-nil}; :contains {val bool}; :index-of {key rank-or-(-1)}; :hash (RAPID) and :hash-murmur3. Values are strings or small longs. For :map and :set the :iter order is the Java CHAMP layout; runtimes without layout parity assert unordered equality. For :queue growth cases :iter is omitted (probe-only)."}
+  :conformance/consumers
+  ["rust: lang::hash::tests::java_parity_fixture (hash-parity)"
+   "rust: lang::data::conformance_tests (collections)"]}}

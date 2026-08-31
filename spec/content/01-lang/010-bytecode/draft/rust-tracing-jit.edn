@@ -1,0 +1,77 @@
+{:document/id :hal/rust-tracing-jit
+ :document/type :runtime-implementation-spec
+ :document/version "alpha"
+ :document/status :draft
+ :runtime :rust
+ :feature "tracing-jit"
+ :ownership
+ {:owner :rust-runtime
+  :shared-hal-contract false
+  :must-not-appear-in #{:halc :evaluation-journal :java-runtime-requirements}
+  :semantic-authority :rust-bytecode-interpreter
+  :java-path [:truffle-ast :truffle-specialization :graal]}
+ :pipeline
+ [:rust-forms :rust-vm-compiler :rust-bytecode :rust-vm-interpreter
+  :rust-execution-trace :rust-trace-ir :native-code]
+ :features
+ {:tracing-jit {:requires #{:bytecode-vm} :default false}
+  :native-jit {:requires #{:tracing-jit} :target :non-wasm :default false}
+  :browser "The browser uses the bytecode interpreter unless a future wasm-specific backend is explicitly selected."}
+ :hotness
+ {:key [:program-identity :function-index :backedge-target]
+  :counter :saturating-u32
+  :default-threshold 16
+  :default-side-trace-threshold 16
+  :default-max-traces-per-loop 4
+  :default-branch-exit-bailout 32
+  :default-min-iterations-per-branch-exit 8
+  :rule "Only backward Jump and taken backward JumpIfFalse edges increment counters."
+  :cache "A bounded set of compiled observed paths per loop key and program generation."
+  :invalidation "Dropping or replacing the Program drops its trace cache; no trace survives semantic-version or registry-generation changes."}
+ :recording
+ {:start "The VM retains the concrete instruction path between a loop header and its backedge; a hot path is lowered after the interpreter crosses the backedge."
+  :end "The observed path returns to the loop header, exits the loop, calls unsupported code, throws, or reaches the recorder limit."
+  :default-max-operations 4096
+  :inputs "Observed VM instruction addresses and branch directions, compact slots, local indices, primitive identities, and scalar tags."
+  :forbidden-inputs #{:evaluation-journal-events :halc-bytes}
+  :alternate-paths "A repeatedly observed branch side exit may produce another whole-loop trace, bounded by max-traces-per-loop."
+  :adaptive-fallback "A loop whose branch exits remain frequent relative to completed trace iterations is disabled for the program generation."
+  :nested-loops "Inner and outer backedges are hot and compiled independently; an unsupported combined path remains interpreted."
+  :unsupported "Calls, allocation-heavy values, globals, handlers, and host boundaries end recording with an interpreter side exit."}
+ :trace-ir
+ {:types #{:i64 :bool :nil :numeric-vector :numeric-vector-slice :boxed}
+  :operations #{:constant-i64 :load-local-i64 :store-local-i64 :add-i64 :sub-i64
+                :mul-i64 :div-i64 :rem-i64 :compare-i64 :constant-bool
+                :constant-nil :vector-count :vector-first :vector-rest
+                :vector-second :vector-nth :guard-tag :guard-nonzero
+                :guard-overflow :guard-branch :loop-backedge :exit}
+  :form :typed-linear-stack
+  :rule "IR is internal; potentially failing operations restart from the last committed loop-header checkpoint."}
+ :guards
+ {:tag "Every unboxed input is guarded by its observed VmSlot tag."
+  :arithmetic "Checked integer operations side-exit on overflow; remainder guards divisor nonzero."
+  :control "Observed branch direction is guarded."
+  :failure "A failed guard never changes HAL behavior; it restores a snapshot and resumes the interpreter."}
+ :side-exits
+ {:snapshot [:function :instruction-pointer :locals :operand-stack]
+  :resume "Pure loop traces checkpoint at each completed backedge and resume the interpreter at the loop header after restoring that checkpoint."
+  :errors "Language errors are produced by the interpreter after exit, preserving exact diagnostics."
+  :journal "When Evaluation Journal collection is enabled, compiled traces are bypassed unless a future implementation proves identical semantic events."}
+ :backend
+ {:interface [:compile :enter]
+  :portable-tier "A checked Trace IR executor is the reference backend and differential oracle."
+  :native-tier "Optional non-wasm backend lowers the same guarded IR to host machine code."
+  :abi {:inputs [:locals-pointer :exit-snapshot-pointer] :result [:completed-iterations-or-side-exit]}
+  :w-x "Native memory is writable during emission and executable during entry, never both."
+  :size "Native backend dependencies and symbols are absent unless native-jit is enabled."}
+ :verification
+ {:differential "For every traceable corpus workload compare interpreter, checked Trace IR, and native backend values/errors."
+  :forced-exits #{:wrong-tag :branch-change :overflow :division-by-zero :global-change}
+  :benchmarks #{:arithmetic-loop :closure-loop :nested-loop :branchy-loop :map-reduce :text-processing}
+  :acceptance
+  [:interpreter-remains-semantic-authority
+   :no-journal-input
+   :no-halc-change
+   :feature-gated-size-zero-in-default-build
+   :all-guard-exits-differentially-tested
+   :native-backend-beats-interpreter-on-supported-hot-loops]}}

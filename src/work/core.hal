@@ -1,0 +1,114 @@
+(ns work.core)
+
+(defn targets?
+  [value]
+  (and (map? value)
+       (reduce
+        (fn [valid name]
+          (and valid (function? (get value name))))
+        true
+        (keys value))))
+
+(defn bundle?
+  "Recognises a process-local definition bundle. Only :work/plan is portable."
+  [value]
+  (and (map? value)
+       (has? value :work/plan)
+       (targets? (:work/targets value))))
+
+(defn assert-bundle
+  [value]
+  (if (not (bundle? value))
+    (throw
+     (ex :argument {:work/bundle value}
+         :ex/message "Work definition bundle requires a plan and callable targets")))
+  (if (not (Work/plan? (:work/plan value)))
+    (throw
+     (ex :argument {:work/plan (:work/plan value)}
+         :ex/message "Work definition bundle plan must be canonical")))
+  value)
+
+(defn ^{:public true} bundle
+  "Pairs one portable Work plan with process-local, single-input target functions."
+  [plan targets]
+  (assert-bundle {:work/plan plan :work/targets (or targets {})}))
+
+(defn ^{:public true} plan
+  [bundle]
+  (:work/plan (assert-bundle bundle)))
+
+(defn ^{:public true} targets
+  [bundle]
+  (:work/targets (assert-bundle bundle)))
+
+(defn merge-targets
+  [bundles]
+  (reduce
+   (fn [output bundle]
+     (reduce
+      (fn [output name]
+        (if (has? output name)
+          (throw
+           (ex :argument {:work/target name}
+               :ex/message "Work definition bundles cannot redefine a target")))
+        (assoc output name (get (targets bundle) name)))
+      output
+      (keys (targets bundle))))
+   {}
+   bundles))
+
+(defn ^{:public true} chain
+  "Composes bundles without placing their local functions in the portable plan."
+  [bundles]
+  (bundle (Work/chain (vec (map plan bundles)))
+          (merge-targets bundles)))
+
+(defn bind-targets
+  [registry target-map]
+  (reduce
+   (fn [bound name]
+     (Work/bind-target bound name (get target-map name)))
+   registry
+   (keys target-map)))
+
+(defn ^{:public true} prepare
+  "Creates one fresh native registry/runtime pair for a definition bundle."
+  ([bundle]
+   (prepare bundle {}))
+  ([bundle options]
+   (let [registry (bind-targets (Work/new-registry) (targets bundle))
+         suspension (:work/suspension options)
+         runtime (if suspension
+                   (Work/new-runtime registry suspension)
+                   (Work/new-runtime registry))]
+     {:work/registry registry
+      :work/runtime runtime})))
+
+(defn ^{:public true} reset
+  "Idempotently clears a prepared native runtime and its target registry."
+  [prepared]
+  (let [runtime (:work/runtime prepared)
+        registry (:work/registry prepared)]
+    (Work/reset-runtime runtime)
+    (Work/reset-registry registry)
+    prepared))
+
+(defn ^{:public true} evaluate
+  "Evaluates a bundle and returns the native promise value."
+  ([bundle input]
+   (let [prepared (prepare bundle)]
+     (evaluate prepared bundle input)))
+  ([prepared bundle input]
+   (Work/evaluate (:work/runtime prepared) (plan bundle) input)))
+
+(defn ^{:public true} submit
+  "Submits a bundle through a native WorkHost and returns std.native.WorkRun."
+  ([bundle input]
+   (submit (Work/default-host) bundle input {}))
+  ([host bundle input options]
+   (let [prepared (prepare bundle options)]
+     (Work/submit-plan host
+                       (:work/runtime prepared)
+                       (plan bundle)
+                       input
+                       (dissoc options :work/suspension)))))

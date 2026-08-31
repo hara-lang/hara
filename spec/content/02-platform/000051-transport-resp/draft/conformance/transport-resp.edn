@@ -1,0 +1,231 @@
+{:suite/id :hara.resp/transport
+ :suite/version "0.1.0"
+ :suite/spec :hara/transport-resp
+ :suite/purpose
+ "Validates the RESP2 codec and broker protocol against Truffle and Rust while making current interoperability blockers explicit."
+
+ :suite/implementations
+ [{:implementation/id :resp/truffle
+   :implementation/sources
+   ["java/src/main/java/std/lib/resp/RespConnection.java"
+    "java/src/main/java/hara/truffle/HaraServer.java"]
+   :implementation/tests
+   ["java/src/test/java/std/lib/resp/RespConnectionTest.java"
+    "java/src/test/java/hara/truffle/HaraServerTest.java"]}
+  {:implementation/id :resp/rust
+   :implementation/sources ["rust/src/resp.rs"]
+   :implementation/tests ["rust/src/resp.rs"]}]
+
+ :suite/profiles
+ [{:profile/id :resp/codec
+   :profile/implementations [:resp/truffle :resp/rust]
+   :profile/required-cases
+   [:resp.case/value-round-trip
+    :resp.case/null-and-binary
+    :resp.case/malformed-wire
+    :resp.case/resource-limits]}
+  {:profile/id :resp/broker-v4
+   :profile/implementations [:resp/truffle :resp/rust]
+   :profile/required-cases
+   [:resp.case/hello-v4
+    :resp.case/eval-v4
+    :resp.case/error-v4
+    :resp.case/eval-error-diagnostic-v4
+    :resp.case/session-sharing
+    :resp.case/session-lifecycle
+    :resp.case/completion
+    :resp.case/commands
+    :resp.case/quit]}
+  {:profile/id :resp/legacy
+   :profile/implementations [:resp/truffle :resp/rust]
+   :profile/required-cases
+   [:resp.case/default-legacy-eval :resp.case/legacy-error]}]
+
+ :suite/acceptance
+ {:acceptance/codec
+  "Both codecs accept every valid corpus frame, reject every invalid corpus frame, and round-trip equivalent values."
+  :acceptance/broker
+  "The same client transcript produces equivalent normalized replies and session state against Truffle and Rust."
+  :acceptance/normalization
+  "Only instance identifiers, ports, project roots, and declared implementation capability extensions may be normalized."
+  :acceptance/parity
+  "No open divergence remains before the transport profile advances from draft to candidate."}
+
+ :suite/cases
+ [{:case/id :resp.case/value-round-trip
+   :case/level :must
+   :case/method :cross-codec-matrix
+   :case/input
+   [:resp/simple-string
+    :resp/error
+    :resp/i64-boundaries
+    :resp/bulk-string
+    :resp/nested-array]
+   :case/expect :resp/equivalent-value}
+  {:case/id :resp.case/null-and-binary
+   :case/level :must
+   :case/method :exact-and-property
+   :case/input ["$-1\r\n" "*-1\r\n" :bytes/all-octets]
+   :case/expect
+   [:resp/null-bulk :resp/null-array :bytes/exact-round-trip]}
+  {:case/id :resp.case/malformed-wire
+   :case/level :must
+   :case/method :negative-corpus
+   :case/input
+   [:wire/unknown-prefix
+    :wire/bad-crlf
+    :wire/truncated-bulk
+    :wire/invalid-integer
+    :wire/invalid-length
+    :wire/truncated-array
+    :line/embedded-cr-or-lf
+    :line/invalid-utf8]
+   :case/expect :resp/protocol-error}
+  {:case/id :resp.case/resource-limits
+   :case/level :must
+   :case/method :boundary
+   :case/input
+   [{:limit/name :line/bytes :limit/value 65536}
+    {:limit/name :bulk/bytes :limit/value 67108864}
+    {:limit/name :array/elements :limit/value 65536}
+    {:limit/name :array/depth :limit/value 64}]
+   :case/expect
+   [:boundary/accepted-when-well-formed
+    :boundary-plus-one/rejected-at-connection-level]}
+  {:case/id :resp.case/hello-v4
+   :case/level :must
+   :case/method :client-transcript
+   :case/input ["HELLO" "4"]
+   :case/expect
+   {:hello/server "HARA"
+    :hello/protocol 4
+    :hello/required-keys ["SERVER" "INSTANCE" "PROTOCOL" "ROOT"]}}
+  {:case/id :resp.case/eval-v4
+   :case/level :must
+   :case/method :client-transcript
+   :case/input ["EVAL" "REQ-1" "(+ 19 23)"]
+   :case/expect
+   [["RESULT" "REQ-1" "42"]
+    ["DONE" "REQ-1" "OK"]]}
+  {:case/id :resp.case/error-v4
+   :case/level :must
+   :case/method :client-transcript
+   :case/input ["DOES-NOT-EXIST" "BAD-1"]
+   :case/expect
+   [["ERROR" "BAD-1" "UNKNOWN_OP" :error/message]
+    ["DONE" "BAD-1" "ERROR"]]}
+  {:case/id :resp.case/eval-error-diagnostic-v4
+   :case/level :must
+   :case/method :client-transcript
+   :case/input
+   ["EVAL" "ERROR-1" "(throw (ex :test/failed {:value 41}))"
+    "FILE" "/tmp/request.hal" "LINE" "10" "COLUMN" "5"]
+   :case/expect
+   [["ERROR" "ERROR-1" "EVAL_ERROR" :error/message
+     ["VERSION" 1
+      "MESSAGE" :error/message
+      "EXCEPTION" ["MESSAGE" :exception/message
+                   "CLASS" :exception/class?
+                   "CODE" ":test/failed"
+                   "DATA" :bounded-readable-data
+                   "CAUSE" :exception/cause?
+                   "THROWS" :exception/throw-locations]
+      "PRIMARY" ["FILE" "/tmp/request.hal" "LINE" 10 "COLUMN" :location/column]
+      "EXCERPT" ["START-LINE" 10 "TEXT" :source/excerpt]
+      "FRAMES" [:frame/inner-to-outer]]]
+    ["DONE" "ERROR-1" "ERROR"]]}
+  {:case/id :resp.case/session-sharing
+   :case/level :must
+   :case/method :two-connections
+   :case/input
+   [:connection-a/define-in-root :connection-b/evaluate-in-root]
+   :case/expect :broker/shared-root-state}
+  {:case/id :resp.case/session-lifecycle
+   :case/level :must
+   :case/method :client-transcript
+   :case/input
+   [:session/new
+    :session/list
+    :session/attach
+    :session/info
+    :session/detach
+    :session/close]
+   :case/expect
+   [:session/isolated
+    :session/detach-attaches-root
+    :session/closed-not-addressable]}
+  {:case/id :resp.case/completion
+   :case/level :must
+   :case/method :client-transcript
+   :case/input ["COMPLETE" "COMP-1" "pre"]
+   :case/expect
+   [["RESULT" "COMP-1" :completion/newline-joined-candidates]
+    ["DONE" "COMP-1" "OK"]]}
+  {:case/id :resp.case/commands
+   :case/level :must
+   :case/method :client-transcript
+   :case/input ["COMMANDS" "COMMANDS-1"]
+   :case/expect
+   [["RESULT" "COMMANDS-1"
+     "HELLO EVAL COMPLETE SESSION COMMANDS INFO QUIT"]
+    ["DONE" "COMMANDS-1" "OK"]]}
+  {:case/id :resp.case/quit
+   :case/level :must
+   :case/method :client-transcript
+   :case/input ["QUIT"]
+   :case/expect [:resp/simple-string-ok :connection/closed]}
+  {:case/id :resp.case/default-legacy-eval
+   :case/level :must
+   :case/method :client-transcript
+   :case/input ["EVAL" "ROOT" "(+ 19 23)"]
+   :case/expect :resp/bulk-string-42}
+  {:case/id :resp.case/legacy-error
+   :case/level :must
+   :case/method :client-transcript
+   :case/input ["UNKNOWN"]
+   :case/expect :resp/error-unknown-op}]
+
+ :suite/observed-divergences
+ [{:divergence/id :resp.divergence/hello-keys
+   :divergence/status :open
+   :divergence/truffle
+   ["SERVER" "VERSION" "PROTO" "RUNTIME" "CONNECTION"
+    "INSTANCE" "PROJECT" "CAPABILITIES"]
+   :divergence/rust ["SERVER" "INSTANCE" "PROTOCOL" "ROOT"]
+   :divergence/target :resp.case/hello-v4}
+  {:divergence/id :resp.divergence/protocol-three
+   :divergence/status :open
+   :divergence/truffle :correlated-two-frame-dialect
+   :divergence/rust :legacy-one-reply-dialect
+   :divergence/target :resp/legacy}
+  {:divergence/id :resp.divergence/parser-limits
+   :divergence/status :open
+   :divergence/truffle
+   {:limit/array-elements 1000000 :limit/array-depth 128}
+   :divergence/rust
+   {:limit/array-elements 65536 :limit/array-depth 64}
+   :divergence/target :resp.case/resource-limits}
+  {:divergence/id :resp.divergence/detach
+   :divergence/status :open
+   :divergence/truffle :session/no-session-attached
+   :divergence/rust :session/root-attached
+   :divergence/target :session/detach-attaches-root}
+  {:divergence/id :resp.divergence/quit
+   :divergence/status :open
+   :divergence/truffle :response/bye-or-v4-envelope
+   :divergence/rust :response/simple-ok
+   :divergence/target :resp.case/quit}
+  {:divergence/id :resp.divergence/result-shapes
+   :divergence/status :open
+   :divergence/truffle :structured-arrays
+   :divergence/rust :newline-joined-bulk-strings
+   :divergence/affected [:operation/complete :operation/commands]
+   :divergence/target
+   [:resp.case/completion :resp.case/commands]}]
+
+ :suite/commands
+ [{:command/id :resp.check/truffle
+   :command/run
+   "mvn -f java/pom.xml -Ptruffle -Dtest=std.lib.resp.RespConnectionTest,hara.truffle.HaraServerTest test"}
+  {:command/id :resp.check/rust
+   :command/run "cargo test --manifest-path rust/Cargo.toml resp::tests"}]}

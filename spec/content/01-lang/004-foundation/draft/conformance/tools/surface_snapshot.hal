@@ -1,0 +1,73 @@
+(ns hara.specs.foundation.surface-snapshot)
+
+(defn foundation-namespace?
+  [namespace-name]
+  (or (= namespace-name "std.foundation")
+      (str/starts-with? namespace-name "std.foundation.")))
+
+(defn definition-declaration
+  [definition]
+  {:kind (keyword (get definition "kind"))
+   :signature (get definition "signature")
+   :doc (get definition "doc")})
+
+(defn grouped-definitions
+  [definitions]
+  (reduce
+   (fn [grouped definition]
+     (let [definition-name (get definition "name")]
+       (assoc grouped
+              definition-name
+              (conj (or (get grouped definition-name) [])
+                    (definition-declaration definition)))))
+   {}
+   definitions))
+
+(defn namespace-entry
+  [namespace]
+  (let [grouped (grouped-definitions (get namespace "definitions"))
+        names (vec (sort-by str (keys grouped)))]
+    {:namespace (symbol (get namespace "name"))
+     :source (get namespace "source")
+     :vars
+     (vec
+      (map
+       (fn [definition-name]
+         {:name (symbol definition-name)
+          :declarations (get grouped definition-name)})
+       names))}))
+
+(defn snapshot
+  [api-index]
+  {:document/id :hara/foundation-surface
+   :document/type :hara/conformance-surface
+   :document/status :draft
+   :counting
+   {:unit :effective-public-var
+    :rule "A fully qualified public Var contributes once. Multiple source declarations that materialize the same Var remain visible as declaration evidence but do not increase the effective-surface count."
+    :counts :derived}
+   :namespaces
+   (vec
+    (map namespace-entry
+         (filter
+          (fn [namespace]
+            (foundation-namespace? (get namespace "name")))
+          (get api-index "namespaces"))))})
+
+(let [sample
+      {"namespaces"
+       [{"name" "std.foundation"
+         "source" "std/foundation.hal"
+         "definitions"
+         [{"name" "identity" "kind" "defn" "signature" "[value]" "doc" "Identity."}
+          {"name" "Visitor" "kind" "defstruct" "signature" "[options]" "doc" ""}
+          {"name" "Visitor" "kind" "def" "signature" "" "doc" ""}]}
+        {"name" "std.lib.collection" "source" "std/lib/collection.hal"
+         "definitions" []}]}
+      result (snapshot sample)
+      namespace (first (:namespaces result))]
+  {:pass
+   (and (= 1 (count (:namespaces result)))
+        (= 2 (count (:vars namespace)))
+        (= 2 (count (:declarations (first (:vars namespace))))))
+   :result result})

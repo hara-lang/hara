@@ -1,0 +1,142 @@
+{:document/id :hara/foundation-conformance-validation
+ :document/type :hara/conformance-validation-matrix
+ :document/status :draft
+ :authority :specs-owned
+
+ :inputs
+ {:surface "foundation-surface.edn"
+  :behavior "fixtures/foundation_behavioral.hal"
+  :registered-inventory "core/rust/standard-library.namespaces"
+  :bootstrap-inventory "core/rust/bootstrap.namespaces"
+  :schema-v2-manifest "core/target/foundation-api-manifest.json"}
+
+ :counting
+ {:policy :derived
+  :effective-vars :declaration-once
+  :namespace-count "count(foundation-source-namespaces)"
+  :surface-count "count(foundation-source-vars)"
+  :classification-counts "foundation-profile-report"
+  :result-counts "foundation-summary-report"}
+
+ :saved-checks
+ [{:id :surface/corpus-closure
+   :entrypoint foundation-corpus-valid?
+   :failure-on [:duplicate-var :unclassified-addition :unclassified-removal
+                :unclassified-rename :missing-reason]}
+  {:id :surface/registered-namespaces
+   :entrypoint foundation-namespace-closure-report
+   :failure-on [:stale-namespace :missing-namespace]}
+  {:id :surface/fresh-runtime-exports
+   :entrypoint foundation-closure-report
+   :failure-on [:missing-binding :extra-binding]}
+  {:id :surface/source-manifest
+   :expected-digest :from-foundation-surface
+   :failure-on [:stale-manifest :binding-mismatch :signature-mismatch
+                :status-mismatch :nondeterministic-output]}
+  {:id :behavior/portable
+   :entrypoint foundation-profile-report
+   :failure-on [:normalized-result-mismatch :unexpected-error]}
+  {:id :behavior/variadic-mapv-and-some
+   :entrypoint foundation-calibration-results
+   :case :mapv-and-some
+   :covers [:persistent-vector-result :variadic-shortest-source
+            :first-truthy-result :no-match-nil]
+   :failure-on [:iterator-arity-regression :result-mismatch]}
+  {:id :behavior/boundaries
+   :entrypoint foundation-boundary-results
+   :covers [:arity-failure :type-failure :normalized-error
+            :identity-fast-path :mutation :lifecycle :cleanup]}
+  {:id :diagnostics/calibration
+   :entrypoint foundation-calibration-results
+   :source foundation-calibration-snippets
+   :failure-on [:calibration-regression]}
+  {:id :diagnostics/qualified-aliases
+   :entrypoint foundation-calibration-results
+   :case :builtin-alias-resolution
+   :aliases [str co promise bytes pretty Test]
+   :accepts-lifecycle-states [:loaded :unloaded]
+   :failure-on [:wrong-target :invalid-lifecycle-state
+                :unresolved-qualified-member]}
+  {:id :diagnostics/direct-native-test-api
+   :entrypoint foundation-calibration-results
+   :cases [:direct-native-test-api :removed-test-forwarders]
+   :required-api [Test/config Test/run Test/result Test/compare Test/passed?
+                  Test/actual Test/expected]
+   :forbidden-forwarders [std.foundation/test-config
+                          std.foundation/test-result
+                          std.foundation/test-passed?]
+   :failure-on [:native-test-api-missing :forwarder-reintroduced]}
+  {:id :surface/result-boundary
+   :required [std.foundation/result std.foundation/result?]
+   :forbidden [std.foundation/result-status
+               std.foundation/res-synchronize
+               std.foundation/res-result?
+               std.foundation/res-success?
+               std.foundation/res-error?
+               std.foundation/res-status
+               std.foundation/res-data
+               std.foundation/res-error-value
+               std.foundation/res-context
+               std.foundation/res-with-context]
+   :inspection-owner Result
+   :failure-on [:legacy-result-forwarder :missing-result-constructor
+                :missing-result-predicate]}
+  {:id :surface/with-macro-spelling
+   :entrypoint foundation-calibration-results
+   :case :with-macro-spelling
+   :required [std.foundation/with-out-string
+              std.foundation/with-close
+              std.foundation/with-template-meta]
+   :forbidden [std.foundation/with:out-string
+               std.foundation/with:close
+               std.foundation/with:template-meta]
+   :failure-on [:colon-spelling-resolves :hyphen-spelling-missing
+                :macro-behavior-regression]}
+  {:id :migration/direct-native-test-api
+   :source "core/lib/src/code/migrate/rules.hal"
+   :legacy [std.lib.test/config std.lib.test/passed?]
+   :expected-rewrites [Test/config Test/passed?]
+   :failure-on [:removed-forwarder-target :qualified-alias-missing]}
+  {:id :ownership/canonical-hal
+   :source foundation-implementation-calibrations
+   :failure-on [:runtime-library-owner :reflective-export-provider
+                :foundation-native-alias-collision]}
+  {:id :execution/evaluator-compiler
+   :entrypoint foundation-summary-report
+   :failure-on [:evaluator-bytecode-divergence]}
+  {:id :execution/browser-wasm
+   :entrypoint foundation-summary-report
+   :failure-on [:unsupported-portable-case :browser-bytecode-divergence]}]
+
+ :negative-controls
+ [{:id :stale-namespace
+   :operation "Add std.foundation.stale to the observed registered namespace set."
+   :expect {:pass false :extra [std.foundation.stale]}}
+  {:id :missing-source-var
+   :operation "Remove the first specified Var from the observed live set."
+   :expect {:pass false :missing :non-empty}}
+  {:id :unexpected-runtime-var
+   :operation "Add std.foundation/stale to the observed live set."
+   :expect {:pass false :extra [std.foundation/stale]}}
+  {:id :binding-mismatch
+   :operation "Change one manifest binding signature, status, or name."
+   :expect :semantic-surface-digest-change}]
+
+ :runtime-adapters
+ {:jvm-truffle
+  {:test hara.truffle.FoundationRuntimeCorpusTest
+   :command "mvn -f core/java/pom.xml -Ptruffle -Dtest=hara.truffle.FoundationRuntimeCorpusTest test"}
+  :rust-evaluator-bytecode
+  {:test specs_owned_foundation_behavioral_corpus_runs_in_the_native_runtime
+   :command "cargo test --manifest-path core/rust/Cargo.toml specs_owned_foundation_behavioral_corpus_runs_in_the_native_runtime -- --nocapture"}
+  :browser-wasm
+  {:test "core/rust/web/foundation-behavioral-conformance.spec.js"
+   :command "npx playwright test foundation-behavioral-conformance.spec.js"}}
+
+ :result-contract
+ {:required [:portable :capability-specific :inventory-only
+             :passed :failed :skipped]
+  :sum-rules
+  ["surface = portable + capability-specific + inventory-only"
+   "portable = passed + failed"
+   "skipped = capability-specific + inventory-only"]}}

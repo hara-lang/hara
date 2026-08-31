@@ -1,0 +1,695 @@
+{:document/id :hara/code-migration
+ :document/type :code-migration-spec
+ :document/version "alpha"
+ :document/status :draft
+ :document/title "Clojure and Foundation to Hara migration"
+ :document/summary
+ "Difference-first rules and automated promotion gates for migrating Foundation source and tests to native Hara."
+
+ :spec/conforms-to
+ {:spec/id :hara/code-migration-metaspec
+  :spec/version "alpha"}
+
+ :migration/authorities
+ {:clojure/version "1.12.0"
+  :foundation/repository "../reference/foundation-base"
+  :foundation/revision "f909a44ad504cc6c9f44248d59ec3148261a48d7"
+  :hara/specifications
+  [:hara/foundation :hara/native :hara/protocol :hara/foundation-annex]}
+
+ :migration/invariants
+ [{:requirement/id :migration/difference-only
+   :requirement/level :must
+   :requirement/text
+   "Catalog entries describe observable differences or required adaptations rather than duplicating unchanged Clojure syntax."}
+  {:requirement/id :migration/clean-regeneration
+   :requirement/level :must
+   :requirement/text
+   "After any catalog or engine correction, staged output is discarded and regenerated from the pinned source."}
+  {:requirement/id :migration/native-verification
+   :requirement/level :must
+   :requirement/text
+   "Generated source is evaluated and its focused test is run in separate fresh native Hara processes."}
+  {:requirement/id :migration/source-immutability
+   :requirement/level :must
+   :requirement/text
+   "Migration reads pinned Foundation source and tests as immutable inputs; all adaptations are owned by the catalog, recipes, or migration engine."}]
+
+ :migration/phases
+ [:namespace :dependency :definition :expression :test :cleanup :verification]
+
+ :migration/dispositions
+ [:direct-rewrite :rename :native-object :language-owned
+  :protocol-wrapper :root-wrapper :idiom :superseded
+  :exact-port :host-adapted :host-only :unsupported]
+
+ :migration/rules
+ [{:rule/id :foundation/std-lib-foundation
+   :rule/languages [:clojure :hara]
+   :rule/priority 100
+   :rule/layer :foundation
+   :rule/phase :dependency
+   :rule/kind :dependency
+   :rule/match std.lib.foundation
+   :rule/rewrite {:op :replace-namespace :namespace std.foundation}
+   :rule/safety :safe
+   :rule/disposition :root-wrapper
+   :rule/evidence {:source/path "src/std/lib/foundation.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/core-qualified
+   :rule/languages [:clojure :hara]
+   :rule/priority 101
+   :rule/layer :clojure
+   :rule/phase :dependency
+   :rule/kind :dependency
+   :rule/match clojure.core
+   :rule/rewrite {:op :replace-namespace :namespace std.foundation}
+   :rule/safety :safe
+   :rule/disposition :root-wrapper
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/set-root
+   :rule/languages [:clojure]
+   :rule/priority 102
+   :rule/layer :clojure
+   :rule/phase :dependency
+   :rule/kind :token-prefix
+   :rule/match clojure.set
+   :rule/rewrite {:op :replace-token-prefix :text "std.foundation"}
+   :rule/safety :safe
+   :rule/disposition :root-wrapper
+   :rule/evidence {:source/path "https://clojure.github.io/clojure/clojure.set-api.html"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/set-root
+   :rule/languages [:clojure :hara]
+   :rule/priority 103
+   :rule/layer :foundation
+   :rule/phase :dependency
+   :rule/kind :token-prefix
+   :rule/match std.foundation.set
+   :rule/rewrite {:op :replace-token-prefix :text "std.foundation"}
+   :rule/safety :safe
+   :rule/disposition :superseded
+   :rule/evidence {:source/path "core/lib/src/std/foundation.hal"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/disj-to-dissoc
+   :rule/languages [:clojure]
+   :rule/priority 104
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :function
+   :rule/match {:clojure {:text "disj"}}
+   :rule/rewrite nil
+   :rule/function
+   {:clojure {:match tool.migrate.common.clojure/match-disj
+              :rewrite tool.migrate.common.clojure/rewrite-disj}}
+   :rule/safety :safe
+   :rule/disposition :rename
+   :rule/message "Clojure core disj is represented by Hara dissoc."
+   :rule/evidence {:source/path "https://clojure.github.io/clojure/clojure.core-api.html#clojure.core/disj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/anonymous-function-reader
+   :rule/languages [:clojure :hara]
+   :rule/priority 200
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :dependency
+   :rule/match fn*
+   :rule/rewrite {:op :replace-symbol :symbol fn}
+   :rule/safety :safe
+   :rule/disposition :direct-rewrite
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/single-arity-defn
+   :rule/languages [:clojure]
+   :rule/priority 300
+   :rule/layer :clojure
+   :rule/phase :definition
+   :rule/kind :form-shape
+   :rule/match [defn name & [[parameters & body]]]
+   :rule/rewrite {:op :unwrap-single-arity}
+   :rule/safety :safe
+   :rule/disposition :direct-rewrite
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/thread-zero-arity-step
+   :rule/languages [:clojure]
+   :rule/priority 400
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :form-shape
+   :rule/match [thread-macro seed & [[callable]]]
+   :rule/rewrite {:op :unwrap-zero-arity-thread-step}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/iterator-first-pipeline
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :form-shape
+   :rule/match [->> [iterate move seed] [drop n] [take-while continue?]
+                [filter predicate] [first]]
+   :rule/rewrite {:op :iterator-first-call-pipeline}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/callable-predicate
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :dependency
+   :rule/match ifn?
+   :rule/rewrite {:op :replace-symbol :symbol fn?}
+   :rule/safety :safe
+   :rule/disposition :rename
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/std-lib-walk
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :dependency
+   :rule/kind :dependency
+   :rule/match std.lib.walk
+   :rule/rewrite {:op :replace-namespace :namespace std.foundation}
+   :rule/safety :safe
+   :rule/disposition :root-wrapper
+   :rule/evidence {:source/path "src/std/lib/walk.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/std-lib-collection
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :dependency
+   :rule/kind :dependency
+   :rule/match std.lib.collection
+   :rule/rewrite {:op :replace-namespace :namespace std.foundation}
+   :rule/safety :safe
+   :rule/disposition :root-wrapper
+   :rule/evidence {:source/path "src/std/lib/collection.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/hash-map-predicate
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :dependency
+   :rule/kind :dependency
+   :rule/match c/hash-map?
+   :rule/rewrite {:op :replace-symbol :symbol map?}
+   :rule/safety :safe
+   :rule/disposition :rename
+   :rule/evidence {:source/path "src/std/lib/collection.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/contains-predicate
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :dependency
+   :rule/kind :dependency
+   :rule/match contains?
+   :rule/rewrite {:op :replace-symbol :symbol has?}
+   :rule/safety :safe
+   :rule/disposition :rename
+   :rule/evidence {:source/path "src/std/block/check.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/native-result
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :expression
+   :rule/kind :form-shape
+   :rule/match [h/wrapped-or-query & arguments]
+   :rule/rewrite {:op :native-result-wrapper}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/native}}
+  {:rule/id :clojure/quoted-refer-metadata
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :test
+   :rule/kind :metadata-value
+   :rule/match :refer
+   :rule/rewrite {:op :quote-symbol}
+   :rule/safety :safe
+   :rule/disposition :direct-rewrite
+   :rule/evidence {:source/path "test"
+                   :target/path "core/lib/test"}}
+  {:rule/id :hara/namespace-overrides
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :namespace
+   :rule/kind :namespace-clause
+   :rule/match :refer-clojure
+   :rule/rewrite {:op :target-overrides}
+   :rule/safety :safe
+   :rule/disposition :language-owned
+   :rule/evidence {:source/path "src"
+                   :target/spec :hara/foundation}}
+  {:rule/id :hara/qualified-overrides
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :test
+   :rule/kind :symbol-pattern
+   :rule/match :target-overrides
+   :rule/rewrite {:op :qualify-with-target-alias}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "test/std/lib/zip_test.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/nil-sentinel
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :dependency
+   :rule/kind :dependency
+   :rule/match h/NIL
+   :rule/rewrite {:op :replace-symbol :symbol nil}
+   :rule/safety :safe
+   :rule/disposition :direct-rewrite
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/defrecord-native-struct
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :definition
+   :rule/kind :form-head
+   :rule/match defrecord
+   :rule/rewrite {:op :hook :hook/id :migration/defrecord-to-struct}
+   :rule/safety :review
+   :rule/disposition :native-object
+   :rule/evidence {:source/path "src"
+                   :target/spec :hara/native}}
+  {:rule/id :foundation/drop-host-printer
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :definition
+   :rule/kind :form-head
+   :rule/match [defmethod print-method]
+   :rule/rewrite {:op :hook :hook/id :migration/drop-host-printer}
+   :rule/safety :review
+   :rule/disposition :host-adapted
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/native}}
+  {:rule/id :clojure/named-recur
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :lexical-form
+   :rule/match [defn loop recur]
+   :rule/rewrite {:op :hook :hook/id :migration/recur-to-named-call}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/empty-catch-body
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :form-arity
+   :rule/match [catch Throwable binding]
+   :rule/rewrite {:op :append :form nil}
+   :rule/safety :safe
+   :rule/disposition :direct-rewrite
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/struct-merge
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :expression
+   :rule/kind :form-pattern
+   :rule/match [merge struct map]
+   :rule/rewrite {:op :hook :hook/id :migration/assoc-struct-entries}
+   :rule/safety :review
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "src/std/lib/zip.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/jvm-interop
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :expression
+   :rule/kind :symbol-pattern
+   :rule/match "(^\\.|^[A-Z][A-Za-z0-9.]*[/.])"
+   :rule/rewrite nil
+   :rule/safety :manual
+   :rule/disposition :host-adapted
+   :rule/evidence {:source/path "src"
+                   :target/spec :hara/native}}
+  {:rule/id :clojure/character-whitespace
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :form-pattern
+   :rule/match [Character/isWhitespace character]
+   :rule/rewrite {:op :native-string-blank}
+   :rule/safety :safe
+   :rule/disposition :host-adapted
+   :rule/evidence {:source/path "src/std/block/check.clj"
+                   :target/spec :hara/native}}
+  {:rule/id :clojure/character-literal
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :literal
+   :rule/match Character
+   :rule/rewrite {:op :delimiter-character-expression}
+   :rule/safety :safe
+   :rule/disposition :direct-rewrite
+   :rule/evidence {:source/path "src/std/block"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/nil-set
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :literal
+   :rule/match #{nil value}
+   :rule/rewrite {:op :set-from-vector}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "src/std/block/check.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/ratio-literal
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :literal
+   :rule/match Ratio
+   :rule/rewrite {:op :numeric-division}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "test/std/block/check_test.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/escaped-character-first
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :test
+   :rule/kind :form-pattern
+   :rule/match [first escaped-character-string]
+   :rule/rewrite {:op :native-character-literal}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "test/std/block/check_test.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/nil-membership
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :form-pattern
+   :rule/match [contains? nil-containing-set value]
+   :rule/rewrite {:op :nil-or-membership}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "src/std/block/check.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/map-entry-traversal
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :form-pattern
+   :rule/match [keep [fn [[key value]] body] map]
+   :rule/rewrite {:op :reduce-kv}
+   :rule/safety :safe
+   :rule/disposition :idiom
+   :rule/evidence {:source/path "src/std/block/check.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/native-number-taxonomy
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :definition
+   :rule/kind :form-pattern
+   :rule/match [def *token-checks* checks]
+   :rule/rewrite {:op :native-number-taxonomy}
+   :rule/safety :review
+   :rule/disposition :language-owned
+   :rule/evidence {:source/path "src/std/block/check.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :clojure/string-starts-with
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :clojure
+   :rule/phase :expression
+   :rule/kind :form-pattern
+   :rule/match [.startsWith value prefix]
+   :rule/rewrite {:op :native-string-starts-with}
+   :rule/safety :safe
+   :rule/disposition :host-adapted
+   :rule/evidence {:source/path "src/std/block/check.clj"
+                   :target/spec :hara/native}}
+  {:rule/id :foundation/swap-return
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :dependency
+   :rule/kind :dependency
+   :rule/match std.lib.atom/swap-return!
+   :rule/rewrite {:op :replace-symbol
+                  :symbol std.foundation/swap-return!}
+   :rule/safety :safe
+   :rule/disposition :language-owned
+   :rule/evidence {:source/path "src/std/lib/atom.clj"
+                   :target/path "core/lib/src/std/foundation.hal"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/resource-semantic-recipe
+   :rule/languages [:clojure :hara]
+   :rule/priority 1000
+   :rule/layer :foundation
+   :rule/phase :cleanup
+   :rule/kind :target-recipe
+   :rule/match std.lib.resource
+   :rule/rewrite {:op :semantic-recipe}
+   :rule/safety :review
+   :rule/disposition :host-adapted
+   :rule/evidence {:source/path "src/std/lib/resource.clj"
+                   :test/path "test/std/lib/resource_test.clj"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/context-semantic-recipe
+   :rule/languages [:clojure :hara]
+   :rule/priority 900
+   :rule/layer :foundation
+   :rule/phase :cleanup
+   :rule/kind :target-recipe
+   :rule/match [std.lib.context.registry std.lib.context.space]
+   :rule/rewrite {:op :semantic-recipe}
+   :rule/safety :review
+   :rule/disposition :host-adapted
+   :rule/evidence {:source/path "src/std/lib/context"
+                   :test/path "test/std/lib/context"
+                   :target/spec :hara/foundation}}
+  {:rule/id :foundation/jvm-interop-function
+   :rule/languages [:clojure :hara]
+   :rule/priority 901
+   :rule/layer :foundation
+   :rule/phase :expression
+   :rule/kind :function
+   :rule/match {:clojure {:text "jvm-interop"}
+                :hara {:text "host-interop"}}
+   :rule/rewrite nil
+   :rule/function
+   {:clojure {:match tool.migrate.policy.foundation.resolver/match-jvm-interop
+              :rewrite tool.migrate.policy.foundation.resolver/rewrite-jvm-interop}
+    :hara {:match tool.migrate.policy.foundation.resolver/match-jvm-interop
+           :rewrite tool.migrate.policy.foundation.resolver/rewrite-jvm-interop}}
+   :rule/safety :manual
+   :rule/disposition :host-adapted
+   :rule/evidence {:source/path "src"
+                   :target/spec :hara/native}}
+ ]
+
+ :migration/targets
+ [{:target/id :migration/std-lib-zip
+   :target/order 1
+   :target/status :candidate
+   :target/disposition :exact-port
+   :target/source-namespace std.lib.zip
+   :target/test-namespace std.lib.zip-test
+   :target/source-path "src/std/lib/zip.clj"
+   :target/test-path "test/std/lib/zip_test.clj"
+   :target/target-source-path "core/lib/src/std/lib/zip.hal"
+   :target/target-test-path "core/lib/test/std/lib/zip_test.hal"
+   :target/rules
+   [:hara/namespace-overrides
+    :hara/qualified-overrides
+    :foundation/defrecord-native-struct
+    :foundation/drop-host-printer
+    :foundation/struct-merge
+    :foundation/native-result
+    :clojure/single-arity-defn
+    :clojure/iterator-first-pipeline
+    :clojure/thread-zero-arity-step
+    :clojure/named-recur
+    :clojure/empty-catch-body]
+   :target/overrides [get find prewalk postwalk]
+   :target/test-alias zip
+   :target/struct-fields
+   {Zipper [context prefix display parent left right depth changed?]}
+   :target/requires [:hara/foundation :hara/native :hara/protocol]
+   :target/promotion
+   {:promotion/unresolved 0
+    :promotion/manual-fixups 0
+    :promotion/deterministic true
+    :promotion/source-evaluates true
+    :promotion/test-passes true}}
+  {:target/id :migration/std-block-check
+   :target/order 2
+   :target/status :candidate
+   :target/disposition :exact-port
+   :target/source-namespace std.block.check
+   :target/test-namespace std.block.check-test
+   :target/source-path "src/std/block/check.clj"
+   :target/test-path "test/std/block/check_test.clj"
+   :target/target-source-path "core/lib/src/std/block/check.hal"
+   :target/target-test-path "core/lib/test/std/block/check_test.hal"
+   :target/rules
+   [:clojure/single-arity-defn
+    :clojure/character-literal
+    :clojure/nil-set
+    :clojure/ratio-literal
+    :clojure/escaped-character-first
+    :clojure/nil-membership
+    :clojure/map-entry-traversal
+    :clojure/character-whitespace
+    :clojure/string-starts-with
+    :foundation/native-number-taxonomy]
+   :target/requires [:hara/foundation :hara/native]
+   :target/promotion
+   {:promotion/unresolved 0
+    :promotion/manual-fixups 0
+    :promotion/deterministic true
+    :promotion/source-evaluates true
+    :promotion/test-passes true
+    :promotion/checks 20}}
+  {:target/id :migration/std-block-kernel
+   :target/order 3
+   :target/status :planned
+   :target/disposition :exact-port
+   :target/namespaces
+   [std.block.base std.block.value std.block.type std.block.construct]
+   :target/requires [:migration/std-lib-zip :migration/std-block-check]}
+  {:target/id :migration/std-block-reader-parser
+   :target/order 4
+   :target/status :planned
+   :target/disposition :host-adapted
+   :target/namespaces [std.block.reader std.block.parse]
+   :target/requires [:migration/std-block-kernel]}
+  {:target/id :migration/std-block-navigate
+   :target/order 5
+   :target/status :planned
+   :target/disposition :exact-port
+   :target/namespaces [std.block.navigate]
+   :target/requires
+   [:migration/std-lib-zip :migration/std-block-reader-parser]}
+  {:target/id :migration/std-context-resource
+   :target/order 6
+   :target/status :candidate
+   :target/disposition :host-adapted
+   :target/source-namespace std.lib.resource
+   :target/test-namespace std.lib.resource-test
+   :target/target-namespace std.context.resource
+   :target/target-test-namespace std.context.resource-test
+   :target/source-path "src/std/lib/resource.clj"
+   :target/test-path "test/std/lib/resource_test.clj"
+   :target/target-source-path "core/lib/src/std/context/resource.hal"
+   :target/target-test-path "core/lib/test/std/context/resource_test.hal"
+   :target/source-recipe-path
+   "technology/hara/core/spec/code-migrate/recipes/std/context/resource.hal"
+   :target/test-recipe-path
+   "technology/hara/core/spec/code-migrate/recipes/std/context/resource_test.hal"
+   :target/rules
+   [:foundation/swap-return :foundation/resource-semantic-recipe]
+   :target/requires [:hara/foundation :std.lib.component]
+   :target/api-prefixes ["resource-" "spec-" "variant-"]
+   :target/superseded [res-api-tmpl]
+   :target/promotion
+   {:promotion/unresolved 0
+    :promotion/manual-fixups 0
+    :promotion/deterministic true
+    :promotion/source-evaluates true
+    :promotion/test-passes true
+    :promotion/checks 9}}
+  {:target/id :migration/std-context-registry
+   :target/order 7
+   :target/status :candidate
+   :target/disposition :host-adapted
+   :target/source-namespace std.lib.context.registry
+   :target/test-namespace std.lib.context.registry-test
+   :target/target-namespace std.context.registry
+   :target/target-test-namespace std.context.registry-test
+   :target/source-path "src/std/lib/context/registry.clj"
+   :target/test-path "test/std/lib/context/registry_test.clj"
+   :target/target-source-path "core/lib/src/std/context/registry.hal"
+   :target/target-test-path "core/lib/test/std/context/registry_test.hal"
+   :target/source-recipe-path
+   "technology/hara/core/spec/code-migrate/recipes/std/context/registry.hal"
+   :target/test-recipe-path
+   "technology/hara/core/spec/code-migrate/recipes/std/context/registry_test.hal"
+   :target/rules [:foundation/context-semantic-recipe]
+   :target/requires [:hara/foundation]
+   :target/promotion
+   {:promotion/unresolved 0
+    :promotion/manual-fixups 0
+    :promotion/deterministic true
+    :promotion/source-evaluates true
+    :promotion/test-passes true
+    :promotion/checks 2}}
+  {:target/id :migration/std-context-space
+   :target/order 8
+   :target/status :candidate
+   :target/disposition :host-adapted
+   :target/source-namespace std.lib.context.space
+   :target/test-namespace std.lib.context.space-test
+   :target/target-namespace std.context.space
+   :target/target-test-namespace std.context.space-test
+   :target/source-path "src/std/lib/context/space.clj"
+   :target/test-path "test/std/lib/context/space_test.clj"
+   :target/target-source-path "core/lib/src/std/context/space.hal"
+   :target/target-test-path "core/lib/test/std/context/space_test.hal"
+   :target/source-recipe-path
+   "technology/hara/core/spec/code-migrate/recipes/std/context/space.hal"
+   :target/test-recipe-path
+   "technology/hara/core/spec/code-migrate/recipes/std/context/space_test.hal"
+   :target/rules [:foundation/context-semantic-recipe]
+   :target/requires [:migration/std-context-registry :std.lib.component]
+   :target/native-structs [Space]
+   :target/promotion
+   {:promotion/unresolved 0
+    :promotion/manual-fixups 0
+    :promotion/deterministic true
+    :promotion/source-evaluates true
+    :promotion/test-passes true
+    :promotion/checks 2}}]
+
+ :migration/conformance
+ [{:conformance/id :migration/bootstrap-pairs
+   :conformance/path "conformance/bootstrap-pairs.edn"
+   :conformance/authority :executable-corpus}
+  {:conformance/id :migration/std-context-resource-pair
+   :conformance/path "conformance/resource-pair.edn"
+   :conformance/authority :promotion-evidence}
+  {:conformance/id :migration/std-context-registry-pair
+   :conformance/path "conformance/registry-pair.edn"
+   :conformance/authority :promotion-evidence}
+  {:conformance/id :migration/std-context-space-pair
+   :conformance/path "conformance/space-pair.edn"
+   :conformance/authority :promotion-evidence}]}

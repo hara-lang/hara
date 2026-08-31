@@ -1,0 +1,473 @@
+{:spec/version "0.0.0-alpha"
+ :spec/status :draft
+ :syntax :edn
+ :purpose :native-runtime-boundary
+
+ :language-builtins
+ {:status :accepted
+  :purpose :cross-runtime-accounting
+  :native-type false
+  :namespace nil
+  :evaluation [quote syntax-quote do if let letfn binding loop recur throw try fn]
+  :definitions [def declare var set! defmacro defstruct defmutable defprotocol
+                extend-type defmulti defmethod]
+  :namespaces [ns ns+ require alias]
+  :interop [new field .]
+  :rules
+  ["Builtins are evaluator and compiler forms, not Vars on a std.native.Builtins object."
+   "The accounting inventory is identical across conforming runtimes."
+   "Ordinary callable fundamentals belong to std.native.Base or canonical HAL source."]}
+
+ :naming
+ {:type-object "std.native.<Type>"
+  :method-var "std.native.<Type>/<method>"
+  :global-object "<Type>"
+  :global-method "<Type>/<method>"
+  :value-type-keyword ":std.native.<Type>"
+  :example {:type std.native.Maths
+            :method Maths/sin
+            :wrapper std.foundation/sin}
+  :constructor new
+  :type-observation type
+  :interface-prefix false}
+
+ :source-resolution
+ {:status :accepted
+  :model :builtin-static-object
+  :canonical-object "<Type>"
+  :canonical-method "<Type>/<method>"
+  :runtime-qualified-identity "std.native.<Type>"
+  :namespace-dependency false
+  :requireable false
+  :aliasable false
+  :qualified-source-spelling :noncanonical
+  :rules
+  ["Native type objects are installed in every namespace at startup."
+   "The std.native.<Type> name describes runtime identity; it is not a loadable source namespace."
+   "Source calls use <Type>/<method> directly."
+   "Require entries such as [std.native.Json :as json] are invalid and must be removed."
+   "Aliases such as json/read are normalized to Json/read by migration tooling."]}
+
+ :descriptor
+ {:kind :native-type
+  :callable false
+  :constructs-structs false
+  :display "#<native-type <qualified-name>>"
+  :identity :canonical-per-runtime
+  :protocols [IDisplay INamespaced IObjType]
+  :metadata {:required true
+             :affects-equality false}
+  :inventory :inspectable}
+
+ :inventory
+ {:status :accepted
+  :closed true
+  :source-of-truth :types
+  :counting
+  {:policy :derived
+   :type-count "count(:types)"
+   :method-count "sum(count(:methods) for each entry in :types)"
+   :rule "Consumers must derive both counts from :types and reject a recorded numeric override."}
+  :extra-types :forbidden
+  :extra-methods :forbidden}
+
+ :method-conformance
+ {:status :accepted
+  :platforms [:jvm-interpreter :truffle :rust-evaluator :rust-bytecode :browser-wasm]
+  :invocation :direct-canonical-method
+  :fixture "01-lang/001-language/draft/conformance/fixtures/native_behavioral.hal"
+  :case-catalog "01-lang/001-language/draft/conformance/native-method-cases.edn"
+  :authority :specs-owned
+  :classifications [:portable :capability-specific :inventory-only]
+  :counts :derived-from-executable-corpus
+  :closure
+  {:live-inventory :types
+   :classified-methods native-method-keys
+   :guard native-closure-report
+   :failure-on [:unclassified-addition :unclassified-removal :unclassified-rename]}
+  :reports
+  {:classifications native-classification-summary
+   :profile native-profile-report
+   :host-assertions native-host-assertion-report
+   :boundaries native-boundary-results}
+  :foundation-exposure [:hal-wrapper :foundation-primitive :native-only]
+  :raw-rust
+  {:scope :startup-descriptors
+   :method-parity false
+   :reason :source-libraries-and-capability-providers-are-not-bootstrapped}}
+
+ :startup-visibility
+ {:status :accepted
+  :platforms [:rust :raw-rust :truffle]
+  :canonical-object "std.native.<Type>"
+  :canonical-method-namespace "std.native.<Type>"
+  :global-alias "<Type>"
+  :global-aliases
+  [Maths Num Bits Kernel Sandbox Package String Bytes Crypto OS Process File Socket
+   Promise Coroutine Stream Arr Obj Runtime Printer Document Edn Json Host Work Test Command
+   RegExp Result Schema Exception Base Algo Iter]
+  :identity :same-native-type-object
+  :identity-example "(= Maths std.native.Maths std.foundation/Maths)"
+  :blank-namespaces true
+  :installed-with :global-protocol-aliases}
+
+ :translation-conformance
+ {:status :accepted
+  :implementation "lib/src/code/translate/rules.hal"
+  :test "rust/src/lib.rs#code_translate_resolves_required_namespace_aliases"
+  :coverage :all-inventory-types
+  :input
+  {:dependency "[std.native.<Type> :as native]"
+   :aliased-call "native/<method>"
+   :qualified-call "std.native.<Type>/<method>"}
+  :output
+  {:dependency :removed
+   :aliased-call "<Type>/<method>"
+   :qualified-call "<Type>/<method>"}
+  :requirements
+  [:inventory-is-closed
+   :every-type-has-global-object
+   :global-object-is-runtime-qualified-object
+   :native-dependencies-are-rejected
+   :aliased-calls-are-canonicalized
+   :qualified-calls-are-canonicalized
+   :translation-is-idempotent]}
+
+ :ownership
+ {:syntax :runtime-intrinsic
+  :protocol-methods :std.protocol
+  :portable-functions :hal
+  :host-operations :std.native
+  :foundation "Ordinary HAL wrappers over protocol or std.native calls."
+  :duplicate-protocol-methods false
+  :builtin-activation-clause false}
+
+ :document-model
+ {:status :accepted
+  :type Document
+  :representation :ordinary-hara-data
+  :canonical-tags
+  [:document/fragment :document/annotate :document/pass :document/escaped
+   :document/group :document/line :document/break :document/nest :document/align]
+  :annotations {:semantic true :text-rendering :transparent}
+  :renderers {:text {:status :implemented :option :width}
+              :html {:status :deferred}}
+  :visitor {:protocol IEncodeVisitor
+            :implementation std.foundation.pretty
+            :native-callbacks false}
+  :public-alias pretty
+  :removed-namespaces [std.pretty std.foundation.pretty.engine]}
+
+ :crypto
+ {:status :accepted
+  :type Crypto
+  :input :bytes
+  :implicit-string-encoding false
+  :digest-output :lowercase-hex
+  :hmac-output :lowercase-hex
+  :random-bytes {:result :bytes :maximum-size 1048576}
+  :secure-equal {:result :boolean :constant-time-for-equal-length-inputs true}
+  :keypair-result {:private :bytes :public :bytes}
+  :ed25519 {:private :seed-32
+            :public :raw-32
+            :signature :raw-64}
+  :x25519 {:private :raw-32
+           :public :raw-32
+           :shared-secret :raw-32
+           :reject-all-zero-shared-secret true}
+  :p256 {:private :unsigned-scalar-32
+         :public :sec1-compressed-33
+         :signature :ieee-p1363-64
+         :signature-hash :sha256
+         :signing :deterministic-rfc6979
+         :shared-secret :raw-x-coordinate-32}
+  :verification {:invalid-signature false
+                 :malformed-key :crypto-error}
+  :errors {:prefix "crypto/<method>:" :stable true}}
+
+
+ :file
+ {:status :accepted
+  :logical-paths
+  {:root "/"
+   :separator "/"
+   :relative-inputs true
+   :returns :canonical-absolute
+   :normalisation [:duplicate-separators :dot-segments :parent-segments]
+   :escape-above-root :file/outside-root
+   :host-paths :provider-private}
+  :effects
+  {:returns :promise
+   :argument-errors :synchronous
+   :capability-and-filesystem-errors :rejected-promise}
+  :entry-shape
+  {:path :string
+   :name :string
+   :type [:file :directory :symlink :other]
+   :size [:integer nil]
+   :modified-at :unix-epoch-milliseconds
+   :extensions {}}
+  :no-follow [:stat :entries :walk :copy]
+  :sorted-results [:entries :list :walk]
+  :write-default {:mode :create :parents? false}
+  :mkdir-default {:parents? true :exists-ok? true}
+  :delete-default {:missing-ok? false}
+  :copy-default {:replace? false :parents? false :preserve-modified? false}
+  :move-default {:replace? false :parents? false :atomic? false}
+  :temp-file-default {:prefix "tmp" :suffix ""}
+  :temp-directory-default {:prefix "tmp"}
+  :stable-error-data
+  [:error/code :file/operation :file/path :file/target]
+  :stable-error-codes
+  [:file/not-found :file/already-exists :file/invalid-path
+   :file/outside-root :file/denied :file/not-directory :file/is-directory
+   :file/directory-not-empty :file/permission-denied :file/unsupported :file/io]}
+
+ :types
+ [{:name Maths
+   :availability :implemented
+   :methods [abs acos acosh asin asinh atan atan2 atanh ceil cos cosh exp
+             floor pow sin sinh sqrt tan tanh]
+   :method-classification {:hal-wrapper :all}
+   :wrapper-source "lib/src/std/foundation.hal"}
+  {:name Num
+   :availability :implemented
+   :methods [long double parse-long parse-double]
+   :method-classification {:hal-wrapper :all}
+   :wrapper-source "lib/src/std/foundation.hal"}
+  {:name Bits
+   :availability :implemented
+   :methods [and or xor not shift-left shift-right]
+   :method-classification {:hal-wrapper :all}
+   :wrapper-source "lib/src/std/foundation.hal"}
+  {:name Kernel
+   :availability :capability-gated
+   :methods [session-create session-close session-list session-info session-eval
+             session-namespace session-complete resource-register resource-remove
+             resource-list filesystem-create filesystem-attach filesystem-detach
+             filesystem-info filesystem-close capabilities
+             package-build package-inspect package-install package-publish
+             package-registry-verify
+             tap-config-root tap-add tap-bootstrap tap-remove tap-list
+             tap-mirror-add tap-initialize tap-verify
+             snapshot-build snapshot-verify snapshot-inspect snapshot-diff]
+   :method-classification {:native-only :all}}
+  {:name Sandbox
+   :availability :capability-gated
+   :methods [open eval call cancel status close]
+   :method-classification {:hal-wrapper :all}
+   :wrapper-source "lib/src/std/lib/kernel.hal"}
+  {:name Package
+   :availability :capability-gated
+   :methods [catalog find ensure load unload state]
+   :method-classification {:hal-wrapper :all}
+   :wrapper-source "lib/src/code/project/package.hal"}
+  {:name String
+   :availability :implemented
+   :methods [length blank? includes? starts-with? ends-with? char-at slice
+             index-of last-index-of join split split-lines repeat replace
+             replace-first trim trim-left trim-right upper lower capitalize
+             decapitalize pad-left pad-right reverse encode-utf8 decode-utf8
+             to-fixed]
+   :method-classification {:hal-wrapper :all}
+   :wrapper-source "lib/src/std/foundation/string.hal"}
+  {:name Bytes
+   :availability :implemented
+   :methods [new count get set copy slice u8 s8]
+   :method-classification
+   {:hal-wrapper [count get set copy slice u8 s8]
+    :foundation-primitive [new]}
+   :wrapper-source "lib/src/std/foundation/bytes.hal"}
+  {:name Crypto
+   :availability :implemented
+   :methods [sha256 sha512 hmac-sha256 hmac-sha512 random-bytes secure-equal?
+             ed25519-keypair ed25519-public ed25519-sign ed25519-verify
+             x25519-keypair x25519-public x25519-shared
+             p256-keypair p256-public p256-sign p256-verify p256-shared]
+   :method-classification {:native-only :all}}
+  {:name OS
+   :availability :capability-gated
+   :methods [platform arch cwd env getenv time-ms time-ns]
+   :method-classification {:native-only :all}}
+  {:name Process
+   :availability :capability-gated
+   :methods [spawn alive? write close-input stdout stderr
+             stdout-stream stderr-stream wait kill]
+   :method-classification {:native-only :all}
+   :streaming
+   {:stdout-stream {:returns :stream :items :bytes :pending-limit 1}
+    :stderr-stream {:returns :stream :items :bytes :pending-limit 1}}}
+  {:name File
+   :availability :capability-gated
+   :methods [parent join resolve read write exists? stat entries list walk mkdir delete
+             copy move temp-file temp-directory]
+   :method-classification {:native-only :all}
+   :deprecated [parent join resolve walk]
+   :preferred-path-library std.fs.path}
+  {:name Socket
+   :availability :capability-gated
+   :methods [connect listen endpoint events next send close receive-stream]
+   :method-classification {:native-only :all}
+   :server-streaming
+   {:listen {:arguments [host port options callback]
+             :returns :socket-server
+             :port-zero :ephemeral
+             :callback-events [:open :data :close :error]}
+    :endpoint {:returns {:host :string :port :integer}}
+    :events {:handles [:socket-server :socket]
+             :returns :socket-stream
+             :delivery :callback-and-stream
+             :queue {:max-events 256
+                     :max-bytes 1048576
+                     :overflow :close-connection}}
+    :next {:returns :promise
+           :fulfills :socket-event
+           :pending-limit 1}
+    :receive-stream {:handles [:socket]
+                     :returns :stream
+                     :items :bytes
+                     :pending-limit 1}
+    :threading {:host-threads :raw-events-only
+                :hal-callbacks :evaluator-thread}}}
+  {:name Promise
+   :availability :implemented
+   :methods [run new from all delay]
+   :method-classification
+   {:hal-wrapper [run new from all delay]}
+   :wrapper-source "lib/src/std/foundation/promise.hal"}
+  {:name Coroutine
+   :availability :implemented
+   :methods [create yield await]
+   :method-classification {:hal-wrapper :all}
+   :wrapper-source "lib/src/std/foundation/coroutine.hal"}
+  {:name Stream
+   :availability :implemented
+   :methods [create generate next]
+   :method-classification {:hal-wrapper [generate]
+                           :native-only [create next]}
+   :wrapper-source "lib/src/std/foundation.hal"}
+  {:name Arr
+   :availability :implemented
+   :methods [new get set push-first push-last pop-first pop-last
+             insert remove clone slice map filter fold-left fold-right]
+   :method-classification {:foundation-primitive :all}}
+  {:name Obj
+   :availability :implemented
+   :methods [new get set has? delete clone assign keys vals pairs]
+   :method-classification {:foundation-primitive :all}}
+  {:name Runtime
+   :availability :implemented
+   :methods [load-string macroexpand-1 gensym ns-publics ns-aliases ns-find ns-create ns-name var-sym current snapshot vars namespaces
+             namespace module alias-state intern-var eval-in eval]
+   :method-classification
+   {:foundation-primitive [load-string macroexpand-1 gensym ns-publics ns-aliases ns-find ns-create ns-name var-sym]
+    :hal-wrapper [current snapshot vars namespaces namespace module alias-state
+                  intern-var eval-in eval]}
+   :wrapper-source "lib/src/std/foundation.hal"}
+  {:name Printer
+   :availability :implemented
+   :methods [p println capture]
+   :method-classification {:foundation-primitive :all}}
+  {:name Document
+   :availability :implemented
+   :methods [element text fragment annotate pass escaped group line break nest align
+             normalize valid? render]
+   :method-classification {:native-only :all}}
+  {:name Edn
+   :availability :implemented
+   :methods [read read-forms write pretty]
+   :method-classification {:native-only :all}}
+  {:name Json
+   :availability :implemented
+   :methods [read write pretty]
+   :method-classification {:native-only :all}}
+  {:name Host
+   :availability :capability-gated
+   :methods [call describe capabilities capability?]
+   :method-classification {:native-only :all}}
+  {:name Test
+   :availability :implemented
+   :methods [catalog config context events compare check register facts get remove purge reset
+             run-fact run summary result passed? actual expected failures failure-seq
+             failure-count failure failure?]
+   :method-classification {:native-only :all}}
+  {:name Command
+   :availability :implemented
+   :methods [create config install uninstall routes snapshot restore reset closed? close parse
+             dispatch run]
+   :method-classification {:native-only :all}}
+  {:name RegExp
+   :availability :implemented
+   :methods [compile pattern find? find matches replace split]
+   :method-classification
+   {:hal-wrapper [compile pattern find matches replace split]
+    :foundation-primitive [find?]}
+   :wrapper-source "lib/src/std/foundation.hal"}
+  {:name Result
+   :availability :implemented
+   :methods [create synchronize success? error? status data
+             error-value context with-context]
+   :method-classification {:native-only :all}
+   :dereference
+   {:protocol IDeref
+    :success :return-data
+    :error :throw-result-error
+    :reader-shorthand "@result"
+    :evidence
+    {:fixture "01-lang/001-language/draft/conformance/fixtures/native_behavioral.hal"
+     :cases [:result-deref-success :result-deref-error]}}}
+  {:name Schema
+   :availability :implemented
+   :methods [compile of kind form ast origin]
+   :method-classification {:native-only :all}}
+  {:name Exception
+   :availability :implemented
+   :methods [new message class]
+   :method-classification {:foundation-primitive :all}}
+  {:name Base
+   :availability :implemented
+   :methods [list vector vec set hash-map hash-set bytes atom pointer symbol
+             keyword uuid reduced unreduced hash apply resolve number? long?
+             satisfies? special-symbol? type instance?]
+   :method-classification
+   {:hal-wrapper [list vector vec set hash-map hash-set atom pointer symbol
+                  keyword uuid reduced unreduced hash apply resolve number? long?
+                  satisfies? special-symbol? type instance?]
+    :foundation-primitive [bytes]}
+   :wrapper-source "lib/src/std/foundation.hal"}
+  {:name Algo
+   :availability :implemented
+   :methods [deque ordered-map ordered-set priority-map queue sorted-map sorted-set
+             trie deque? ordered-map? ordered-set? priority-map? queue? sorted-map?
+             sorted-set? trie?]
+   :method-classification {:hal-wrapper :all}
+   :wrapper-source "lib/src/std/lib/collection.hal"}
+  {:name Iter
+   :availability :implemented
+   :methods [seq iter iter-finite? iter-materialize iter-next? iter-next
+             iter-close iter-concat iter-map iter-filter iter-take-while iter-drop-while
+             iter-mapcat iter-keep iter-interpose iter-interleave iter-every?
+             iter-any? iter-take iter-drop iter-zip iter-cycle
+             iter-partition-pair iter-partition-all iter-partition iter-range
+             iter-constantly iter-repeatedly iter-iterate]
+   :method-classification
+   {:foundation-primitive [seq iter iter-next? iter-next]
+    :native-only [iter-finite? iter-materialize iter-close iter-concat iter-map
+                  iter-filter iter-take-while iter-drop-while iter-mapcat
+                  iter-keep iter-interpose iter-interleave iter-every?
+                  iter-any? iter-take iter-drop iter-zip iter-cycle
+                  iter-partition-pair iter-partition-all iter-partition
+                  iter-range iter-constantly iter-repeatedly iter-iterate]}}
+  {:name Work
+   :availability :capability-gated
+   :methods [default-host current-run cancelled? check-cancelled deadline-nanos emit
+             submit-child on-close]
+   :method-classification {:native-only :all}
+  }]
+
+ :deferred
+ [{:type Random :reason :no-agreed-portable-surface}
+  {:type UUID :methods [new random] :reason :not-implemented-on-both-runtimes}
+  {:type OS :reason :runtime-parity-incomplete}
+  {:type Wrapped :reason :runtime-value-not-yet-implemented}
+  {:type Var :reason :var-operation-parity-incomplete}]}

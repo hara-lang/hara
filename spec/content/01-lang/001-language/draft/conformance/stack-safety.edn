@@ -1,0 +1,55 @@
+{:document/id :hal/conformance-stack-safety
+ :document/type :language-runtime-conformance
+ :document/version "alpha"
+ :document/status :draft
+ :conformance/authority :hara-specs-registry
+ :conformance/suite :hal/stack-safety
+ :conformance/summary
+ "Portable source cases for parser, source-analysis, evaluator, and backend workloads whose shape can expose native-stack growth."
+ :conformance/error-normalization
+ {:resource/stack-work-exhausted
+  {:category :resource/stack-work-exhausted
+   :meaning "The runtime stopped a bounded stack/work traversal without reporting a namespace cycle."
+   :runtime-messages ["stack overflow" "StackOverflowError" "stack-work-exhausted"]}}
+ :runtime/profiles
+ {:jvm {:adapter :jvm-truffle :numeric-limits :runtime-specific}
+  :rust {:adapter :rust-native :numeric-limits :runtime-specific}
+  :bytecode {:adapter :rust-bytecode :numeric-limits :runtime-specific}
+  :wasm {:adapter :wasm-hta :numeric-limits :runtime-specific}}
+ :cases
+ [{:id :parser/generated-flat-vector
+   :class :parser
+   :source "(count (read-string (str \"[\" (apply str (repeat 512 \"1 \")) \"]\")))"
+   :expect {:value 512}}
+  {:id :parser/generated-deep-vector
+   :class :parser
+   :source "(count (read-string (str (apply str (repeat 256 \"[\")) \"0\" (apply str (repeat 256 \"]\")))))"
+   :expect {:value 1}}
+  {:id :parser/comments-and-strings
+   :class :reader
+   :source "(count (read-string \"(do ; comment\\n \\\"([{}])\\\" ; tail\\n 42)\"))"
+   :expect {:value 3}}
+  {:id :parser/metadata
+   :class :reader
+   :source "(count (read-string \"^:tag [1 2 3]\"))"
+   :expect {:value 3}}
+  {:id :parser/map-and-set
+   :class :reader
+   :source "[(count (read-string \"{:a 1 :b 2 :c 3 :d 4 :e 5 :f 6 :g 7 :h 8}\")) (count (read-string \"#{1 2 3 4 5 6 7 8}\"))]"
+   :expect {:value [8 8]}}
+  {:id :parser/quoted-tree
+   :class :reader
+   :source "(count (second (read-string \"(quote (a b c d))\")))"
+   :expect {:value 4}}
+  {:id :source-analysis/generated-form
+   :class :source-analysis
+   :source "(count (read-string (str \"(do \" (apply str (repeat 512 \"0 \")) \"42)\")))"
+   :expect {:value 514}}
+  {:id :evaluator/loop-recur
+   :class :evaluator
+   :source "(loop [n 50000] (if (= n 0) 42 (recur (- n 1))))"
+   :expect {:value 42}}
+  {:id :parser/normalized-reader-error
+   :class :reader
+   :source "(read-string \"(\")"
+   :expect {:error :reader/eof :message "EOF while reading"}}]}

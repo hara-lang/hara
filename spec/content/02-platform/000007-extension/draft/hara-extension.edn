@@ -1,0 +1,102 @@
+{:document/id :hara/extension
+ :document/type :hara/tap-protocol
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "Hara extension declaration contract"
+ :document/summary
+ "Normative project.edn declarations for WASM and HTA providers, targets, assets, capabilities and remote artifact delivery."
+ :spec/conforms-to {:spec/id :hara/tap-protocol-metaspec
+                    :spec/version "0.0.0-alpha"}
+
+ :platform/roles
+ [{:role/id :hara.extension.role/author
+   :role/summary "Declares extension intent under :project/extensions in project.edn."}
+  {:role/id :hara.extension.role/builder
+   :role/summary "Builds, validates and normalizes extension bytes into package.edn."}
+  {:role/id :hara.extension.role/host
+   :role/summary "Selects a compatible target and enforces declared capabilities."}
+  {:role/id :hara.extension.role/provider
+   :role/summary "Implements a declared core.v1 or hta.v1 callable namespace."}]
+
+ :platform/entities
+ [{:entity/id :hara.extension/project-declaration
+   :entity/location [:project/extensions :namespace]
+   :entity/summary "Authored extension declaration within project.edn."
+   :entity/fields [:root :provider :abi :module :targets :assets :exports
+                   :capabilities :host-calls :handles]}
+  {:entity/id :hara.extension/package-declaration
+   :entity/location [:package.edn :extensions :namespace]
+   :entity/generated true
+   :entity/summary "Archive-relative normalized extension declaration."
+   :entity/fields [:root :provider :abi :module :targets :assets :exports
+                   :capabilities :host-calls :handles :files]}
+  {:entity/id :hara.extension/remote-artifact
+   :entity/location [:project/remote-artifacts :install-path]
+   :entity/summary "Digest-pinned HTTPS input mirrored or resolved before packaging."
+   :entity/fields [:url :sha256 :size :media-type :policy]}
+  {:entity/id :hara.extension/target
+   :entity/summary "Host-selected module entry point."
+   :entity/fields [:module :runtime]}
+  {:entity/id :hara.extension/export
+   :entity/summary "Generated Hara Var signature for a provider operation."
+   :entity/fields [:args :returns :async]}]
+
+ :extension/providers
+ {:wasm {:abis [:core.v1]
+         :summary "Import-free scalar WebAssembly exports invoked in-process."}
+  :hta {:abis [:hta.v1]
+        :summary "Stateful promise-returning provider driven through the Hara Transport Adaptor."}}
+
+ :platform/operations
+ [{:operation/id :hara.extension.operation/normalize
+   :operation/role :hara.extension.role/builder
+   :operation/input :hara.extension/project-declaration
+   :operation/output :hara.extension/package-declaration
+   :operation/failures [:invalid-provider :invalid-abi :unsafe-path
+                        :missing-module :missing-asset :duplicate-namespace]}
+  {:operation/id :hara.extension.operation/select-target
+   :operation/role :hara.extension.role/host
+   :operation/input [:hara.extension/package-declaration :hara.extension/host]
+   :operation/output :hara.extension/target
+   :operation/failures [:unsupported-host :missing-target :asset-unavailable]}
+  {:operation/id :hara.extension.operation/start
+   :operation/role :hara.extension.role/host
+   :operation/input :hara.extension/target
+   :operation/output :hara.extension/context
+   :operation/failures [:capability-denied :abi-mismatch :startup-failed]}
+  {:operation/id :hara.extension.operation/invoke
+   :operation/role :hara.extension.role/provider
+   :operation/input :hara.extension/request
+   :operation/output :hara.extension/result
+   :operation/failures [:unknown-export :invalid-arguments :remote-error
+                        :timeout :cancelled]}]
+
+ :platform/invariants
+ [{:requirement/id :hara.extension/project-only
+   :requirement/level :must
+   :requirement/text "Extension authoring occurs only under :project/extensions in project.edn; no separate extension descriptor is read or published."}
+  {:requirement/id :hara.extension/generated-package-map
+   :requirement/level :must
+   :requirement/text "The package builder embeds normalized archive-relative extension maps in package.edn and rejects declarations whose files escape the package root."}
+  {:requirement/id :hara.extension/ordinary-require
+   :requirement/level :must
+   :requirement/text "An extension exports an ordinary Hara namespace selected through require without exposing provider construction or transport operations at the call site."}
+  {:requirement/id :hara.extension/no-authority-on-load
+   :requirement/level :must
+   :requirement/text "Resolving or loading an extension declaration grants no authority; the host independently approves every requested capability and host call."}
+  {:requirement/id :hara.extension/target-neutral-source
+   :requirement/level :must
+   :requirement/text "Hara source does not branch on the host target; the host selects a declared compatible target while preserving values, errors, promises and export signatures."}
+  {:requirement/id :hara.extension/remote-integrity
+   :requirement/level :must
+   :requirement/text "A remote artifact is accepted only over HTTPS with an exact SHA-256 digest and byte size, and official releases mirror the verified bytes into the .harp by default."}
+  {:requirement/id :hara.extension/offline-cache
+   :requirement/level :must
+   :requirement/text "When an external artifact policy is explicitly allowed, reconciliation stores the verified bytes by digest and runtime loading uses only the local content-addressed object."}
+  {:requirement/id :hara.extension/import-free-hta
+   :requirement/level :must
+   :requirement/text "HTA modules remain import-free and communicate through the required exported mailbox lifecycle defined by the HTA transport specification."}]
+
+ :platform/conformance
+ [{:conformance/id :hara.extension/declarations
+   :conformance/path "conformance/extensions.edn"}]}

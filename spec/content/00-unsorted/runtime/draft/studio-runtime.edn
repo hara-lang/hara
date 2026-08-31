@@ -1,0 +1,537 @@
+{:document/id :hara/studio-runtime
+ :document/type :runtime-spec
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "HAL programmable Studio and node runtime"
+ :document/summary
+ "Normative kernel, session, filesystem, editor, canvas, audio graph, project, node, and wire contract."
+
+ :runtime/host-contract
+ {:spec :hara/host-runtime
+  :host-layer hara-web
+  :portable-substrate std.substrate
+  :related-substrate-spec :xt/substrate-base
+  :substrate-conformance-claim false
+  :product-layer greenways.studio
+  :studio-role :consumer}
+
+ :runtime/builtins
+ {:co {:qualified-prefix "co/"
+       :availability :all-runtime-contexts}
+  :node {:qualified-prefix "node/"
+         :availability :node-bound-document-contexts
+         :related-contract :xt/substrate-runtime-profiles
+         :conformance-claim false}}
+
+ :runtime/kernel
+ {:role :process-or-wasm-runtime-container
+  :default-session "ROOT"
+  :shared
+  [:immutable-runtime-code :registered-standard-library-source]
+  :session-registry
+  {:operations
+   [{:operation session/create :arguments [:session/id]}
+    {:operation session/list :arguments []}
+    {:operation session/info :arguments [:session/id]}
+    {:operation filesystem/create
+     :arguments [:filesystem/provider-descriptor]
+     :returns :filesystem/mount-id}
+    {:operation filesystem/info
+     :arguments [:filesystem/mount-id]}
+    {:operation filesystem/close
+     :arguments [:filesystem/mount-id]}
+    {:operation session/attach-filesystem
+     :arguments [:session/id :filesystem/mount-id]}
+    {:operation session/detach-filesystem
+     :arguments [:session/id]}
+    {:operation session/eval :arguments [:session/id :source]}
+    {:operation session/eval-bound :arguments [:session/id :source :bindings]}
+    {:operation session/complete :arguments [:session/id :prefix]}
+    {:operation session/close :arguments [:session/id]}]
+   :legacy-aliases
+   {:eval [:session/eval "ROOT"]
+    :eval-bound [:session/eval-bound "ROOT"]
+    :complete [:session/complete "ROOT"]}}}
+
+ :runtime/session
+ {:owns
+  [:environment :namespace-registry :module-load-state :protocols
+   :fibers :task-handles :document-generations :current-namespace
+   :project-cache :capabilities :filesystem-attachment]
+  :host-call-identity
+  [:kernel/id :session/id :task/id :filesystem/mount-id]
+  :close
+  [:cancel-tasks :reject-pending-host-calls :release-document-generations
+   :release-capabilities :detach-filesystem]
+  :isolation
+  "Closing or resetting one session MUST NOT mutate any other session in the same kernel."}
+
+ :runtime/filesystem-provider
+ {:identity
+  {:type :opaque-positive-u64
+   :hta1-range :signed-positive-i64
+   :allocation :kernel
+   :persistence :kernel-local-only}
+  :authority
+  {:kernel
+   [:allocate-mount-id :validate-session-attachment
+    :own-attachment-count :reject-close-while-attached]
+   :host
+   [:instantiate-provider :execute-file-operation]
+   :single-source-of-truth :kernel-mount-registry}
+  :provider-descriptors
+  [{:provider "memory"}
+   {:provider "indexeddb" :key :non-empty-persistent-key}
+   {:provider "native" :root :host-confined-root}]
+  :logical-paths
+  {:root "/"
+   :root-means :mounted-provider-root
+   :relative-input :accepted-and-resolved-from-root
+   :observable-form :canonical-absolute-logical-path
+   :separator "/"
+   :normalization [:collapse-duplicate-separators :remove-dot-segments :resolve-dot-dot]
+   :reject [:escape-above-root :tilde-expansion :host-working-directory
+            :windows-drive :host-specific-separator]
+   :host-path-conversion :provider-boundary-only}
+  :effect-contract
+  {:valid-call :returns-promise
+   :argument-and-type-errors :synchronous
+   :capability-and-filesystem-failures :promise-rejection
+   :exists-not-found false
+   :exists-other-failure :promise-rejection}
+  :operations
+  [:read :write :exists? :stat :entries :list :walk :mkdir :delete
+   :copy :move :temp-file :temp-directory]
+  :entry-metadata
+  {:required [:path :name :type :size :modified-at :extensions]
+   :path :canonical-absolute-logical-path
+   :type [:file :directory :symlink :other]
+   :size :regular-file-byte-count-or-nil
+   :modified-at :unix-epoch-milliseconds
+   :extensions :provider-extension-map
+   :follow-symbolic-links false}
+  :options
+  {:write {:mode [:create :replace :append] :parents? false}
+   :mkdir {:parents? true :exists-ok? true}
+   :delete {:missing-ok? false}
+   :copy {:replace? false :parents? false :preserve-modified? false}
+   :move {:replace? false :parents? false :atomic? false}
+   :temp-file {:prefix "tmp" :suffix ""}
+   :temp-directory {:prefix "tmp"}}
+  :stable-errors
+  [:file/not-found :file/already-exists :file/invalid-path :file/outside-root
+   :file/not-directory :file/is-directory :file/directory-not-empty
+   :file/permission-denied :file/unsupported :file/io]
+  :results
+  {:simple-mutation :canonical-logical-path
+   :recursive-copy :source-to-target-map
+   :recursive-delete :post-order-deleted-path-vector
+   :recursive-failure :reject-immediately-without-rollback-or-partial-success}
+  :no-follow
+  {:metadata true
+   :entries true
+   :walk true
+   :recursive-copy true
+   :recursive-delete true
+   :symlink-escape :rejected}
+  :browser
+  {:ephemeral :session-lifetime-memory
+   :persistent :explicit-keyed-indexeddb}
+  :native :host-confined-provider
+  :reattach
+  {:precondition
+   :no-active-evaluations-tasks-document-generations-or-pending-host-calls
+   :busy-error "SESSION_BUSY"
+   :validation :before-attachment-change
+   :failure :atomic
+   :success
+   [:preserve-session-id :preserve-language-state :preserve-project-cache
+    :detach-previous-mount :attach-new-mount]}
+  :lifetime
+  {:close-precondition :attachment-count-zero
+   :attached-error "FILESYSTEM_ATTACHED"
+   :session-close :detach-and-decrement
+   :kernel-close :close-all-registrations
+   :persistent-data-delete false}
+  :hal-api
+  {:native-object std.native.File
+   :portable-path std.fs.path
+   :portable-walk std.fs.walk
+   :portable-facade std.fs}
+  :compatibility
+  {:deprecated-native [:parent :join :resolve :list :walk]
+   :removed [:studio.fs :studio.space]}
+  :generic-store-role :non-filesystem-key-value-data}
+
+ :runtime/filesystem-conformance
+ [{:id :filesystem/unique-mount-ids
+   :given [:two-provider-creations]
+   :assert [:positive-integer-ids :ids-differ]}
+  {:id :filesystem/session-isolation
+   :given [:two-memory-mounts :two-sessions]
+   :assert [:writes-are-isolated]}
+  {:id :filesystem/shared-mount
+   :given [:one-mount :two-sessions]
+   :assert [:writes-are-shared]}
+  {:id :filesystem/reattach-preserves-runtime
+   :given [:defined-var :idle-session :second-mount]
+   :assert [:defined-var-remains-bound]}
+  {:id :filesystem/busy-reattach-rejected
+   :given [:pending-host-call :second-mount]
+   :assert-error "SESSION_BUSY"}
+  {:id :filesystem/refcounted-close
+   :given [:attached-mount]
+   :assert-error "FILESYSTEM_ATTACHED"}
+  {:id :filesystem/canonical-file-api
+   :given [:attached-mount]
+   :call
+   [File/read File/write File/exists? File/stat File/entries File/list
+    File/mkdir File/delete File/copy File/move File/temp-file File/temp-directory
+    std.fs/stat std.fs/entries std.fs/exists? std.fs/file? std.fs/directory?
+    std.fs/symlink? std.fs/read-bytes std.fs/write-bytes std.fs/create-directory
+    std.fs/temp-file std.fs/temp-directory std.fs/copy-single std.fs/copy
+    std.fs/copy-into std.fs/move std.fs/delete std.fs.walk/walk]
+   :assert
+   [:same-observable-results-on-native-and-browser
+    :effect-calls-return-promises
+    :canonical-logical-result-paths]}
+  {:id :filesystem/logical-path-confinement
+   :given [:attached-mount]
+   :assert
+   [:root-is-mounted-root :dot-and-duplicate-separators-collapse
+    :dot-dot-cannot-escape-root :host-path-syntax-is-rejected]}
+  {:id :filesystem/no-follow
+   :given [:directory-tree :symbolic-link-entry :escaping-symbolic-link]
+   :assert
+   [:metadata-reports-link :entries-do-not-follow :walk-does-not-follow
+    :recursive-copy-does-not-follow :recursive-delete-does-not-follow
+    :escaping-link-is-denied]}
+  {:id :filesystem/deterministic-recursion
+   :given [:directory-tree]
+   :assert
+   [:entries-are-sorted :walk-is-lexical
+    :copy-creates-parent-before-children
+    :delete-removes-children-before-parent]}
+  {:id :filesystem/safe-defaults
+   :given [:existing-target :non-empty-directory :missing-entry]
+   :assert
+   [:write-create-does-not-replace :copy-does-not-replace
+    :move-does-not-replace :delete-is-not-recursive
+    :missing-delete-rejects-unless-missing-ok]}]
+
+ :runtime/documentation-embedding
+ {:default
+  {:kernel :one-lazy-page-kernel
+   :session :one-private-session-per-live-embed
+   :filesystem :ephemeral-memory}
+  :attributes
+  {"data-hara-filesystem" :explicit-shared-indexeddb-key
+   "data-hara-kernel=isolated" :dedicated-worker-and-wasm-kernel}
+  :canvas-routing :originating-session
+  :ui-identity [:kernel-scope :session/id :filesystem/mount-id]}
+
+ :runtime/studio-editor
+ {:authorities
+  {:persisted-source
+   "The attached filesystem provider owns the last explicitly saved bytes."
+   :editor-buffer
+   "The editor owns the current unsaved bytes and dirty state."
+   :active-generation
+   "The document registry owns the last successfully activated ns+ generation."}
+  :document-id [:project/id :filesystem/mount-id :normalized-path]
+  :operations
+  {:open
+   {:reads :persisted-source
+    :unsaved-buffer-policy :require-explicit-discard-before-replacement}
+   :save
+   {:source :editor-buffer
+    :target :attached-filesystem-provider
+    :effect [:replace-persisted-source :clear-dirty-state]
+    :evaluation false}
+   :run-file
+   {:source :editor-buffer
+    :filesystem-write false
+    :dirty-state :unchanged
+    :ordinary-module :evaluate-in-selected-session
+    :anonymous-module
+    [:prepare-candidate-generation :start-candidate-node-tasks
+     :await-required-activation-gates :commit-candidate-generation]}
+   :run-form
+   {:source :explicit-selection-or-innermost-complete-form
+    :target :active-document-generation-when-present
+    :fallback :selected-session}
+   :complete
+   {:target :active-document-generation-when-present
+    :fallback :selected-session}}
+  :keyboard
+  {"Ctrl-or-Meta-S" :save
+   "Ctrl-or-Meta-E" :run-form
+   "Ctrl-or-Meta-Enter" :run-file}
+  :invariants
+  [{:id :editor/run-does-not-save
+    :text "Running a file or form MUST NOT modify persisted source or clear dirty state."}
+   {:id :editor/path-scoped-generation
+    :text "Document generations MUST include project, filesystem mount, and normalized path in their identity."}
+   {:id :editor/failed-candidate-retains-active
+    :text "A failed candidate MUST be discarded without replacing the active generation."}]}
+
+ :runtime/studio-canvas
+ {:identity
+  {:surface :host-canvas-element
+   :semantic-canvas-id :session-local-name
+   :owner :active-document-generation
+   :candidate :prepared-document-generation}
+  :ownership
+  {:per-physical-surface
+   {:committed-owner :at-most-one
+    :candidate-owner :at-most-one}
+   :operations
+   [:register :claim :stage :wait-for-first-render :commit :discard :release]
+   :replacement
+   [:cancel-pending-frame :reject-former-owner-render :release-resources]}
+  :activation
+  {:canvas-document-gate :candidate-first-successful-render
+   :success [:commit-document-generation :commit-canvas-owner]
+   :failure [:discard-document-generation :discard-canvas-candidate]
+   :pixel-atomicity
+   "The first candidate frame is the activation proof; hosts need not double-buffer the previous pixels."}
+  :frame
+  {:scheduler :host-animation-frame
+   :geometry :integer-css-pixels
+   :backing-store :css-size-times-device-pixel-ratio
+   :maximum-device-pixel-ratio 2
+   :input-delivery :exactly-once-on-next-frame}
+  :input
+  {:scope :session-canvas-runtime
+   :visible-only true
+   :queue-limit 128
+   :events [:keyboard :pointer]}
+  :close
+  [:remove-host-listeners :reject-pending-frames :release-webgl-resources
+   :clear-surface-ownership :clear-input-queue]}
+
+ :runtime/supersonic
+ {:hal-namespace gw.audio.supersonic
+  :host-service "gw.audio.supersonic"
+  :capability "audio/playback"
+  :operations
+  [{:symbol gw.audio.supersonic/start
+    :arguments [graph]
+    :returns :audio/graph-snapshot}
+   {:symbol gw.audio.supersonic/update
+    :arguments [graph-id node-id parameter value]
+    :returns :audio/graph-snapshot}
+   {:symbol gw.audio.supersonic/status
+    :arguments [graph-id]
+    :returns :audio/graph-snapshot}
+   {:symbol gw.audio.supersonic/stop
+    :arguments [graph-id]
+    :returns :audio/graph-snapshot}]
+  :graph
+  {:required ["graph/id" "nodes" "connections"]
+   :node-required ["id" "type"]
+   :node-ui-metadata ["label" "summary" "input" "output" "runtime"]
+   :parameters
+   {:values "params"
+    :controls ["parameter" "type" "label" "min" "max" "step" "integer" "choices"]
+    :types ["number" "boolean" "choice" "steps"]
+    :steps
+    {:representation :semitone-offset-or-nil-rest
+     :minimum-length 1
+     :maximum-length 64
+     :minimum-offset -48
+     :maximum-offset 48}}
+   :connection-required ["from" "to"]
+   :endpoint [node-id port-id]
+   :kinds ["audio" "analysis" "hta/latest" "host"]}
+  :authority
+  {:source "The active HAL document owns the graph descriptor."
+   :provider "The session-owned host provider owns executable audio resources and the live snapshot."
+   :ui "Interfaces MUST project the provider snapshot and MUST NOT maintain a parallel node or control schema."
+   :runtime-overlays "Parameter updates persist by graph, node, and parameter without rewriting HAL source."}
+  :replacement
+  {:validation :before-engine-prepare
+   :commit :whole-graph
+   :failure :retain-previous-generation}
+  :tune
+  {:root :midi-note
+   :default-steps-per-beat 2
+   :update-while-stopped :immediate
+   :update-while-playing :next-loop-boundary
+   :snapshot [:active-revision :pending]}
+  :browser
+  {:provider :hara-web
+   :dsp [:rust-wasm :web-audio]
+   :audio-start :explicit-user-gesture}
+  :portability
+  {:contract :provider-neutral
+   :native-and-truffle :deferred}
+  :compatibility
+  {:studio.audio :same-provider
+   :status :deprecated}}
+
+ :runtime/studio-embedding
+ {:layout
+  [:filesystem-tree :editor :repl-log :status-strip :optional-canvas]
+  :selected-target
+  [:kernel/id :session/id :filesystem/mount-id]
+  :private-document-sessions true
+  :host-routing
+  "Editor evaluation, filesystem calls, canvas calls, and input MUST route using the originating kernel and session identity."
+  :documentation-difference
+  "Generated Markdown may choose a compact per-embed layout, but it obeys the same session, filesystem, document-generation, and canvas contracts."}
+
+ :runtime/document-repl
+ {:target :active-document-generation
+  :operation :eval-form
+  :inherits [:namespace :aliases :vars :host-capabilities]
+  :history [:source :value-or-error]
+  :completion
+  {:context [:active-document :namespace-aliases :runtime-graph]
+   :candidates [:symbol :graph-id :node-id :parameter :choice :recipe]
+   :selection :insert-at-caret
+   :automatic-evaluation false}
+  :failed-document-policy :retain-previous-active-generation}
+
+ :runtime/anonymous-module
+ {:form ns+
+  :position :first-effective-top-level-form
+  :grammar "(ns+ clause*)"
+  :clauses :same-as-ns-except-name
+  :identity [:kernel/id :document/id :generation]
+  :public-registry false
+  :qualified-access false
+  :require-target false
+  :project-main false
+  :lifecycle
+  {:whole-file-run
+   [:allocate-candidate-generation
+    :evaluate-source
+    :prepare-node-scope
+    :atomically-activate-on-success
+    :cancel-and-release-previous-generation]
+   :failed-run
+   [:cancel-candidate-tasks
+    :release-candidate-module
+    :retain-previous-active-generation]
+   :form-run :reuse-active-generation
+   :document-close
+   [:cancel-pending-node-tasks
+    :unsubscribe-inputs
+    :reject-pending-calls
+    :remove-handlers
+    :release-private-module]}}
+
+ :runtime/node-module-ownership
+ {:related-substrate-contract :xt/substrate-node
+  :substrate-conformance-claim false
+  :public-identity :workspace/node-id
+  :binding
+  {:workspace-node :one-active-document-generation
+   :document-generation :one-private-ns+-module
+   :private-module :one-node-execution-scope}
+  :scope-owns
+  [:public-node-id
+   :workspace-space-id
+   :declared-ports
+   :capabilities
+   :task-supervisor
+   :input-subscriptions
+   :request-handlers
+   :pending-calls
+   :transport-context]
+  :invariants
+  [{:id :node/public-frame-identity
+    :text "Frames expose the workspace node ID, never the private module ID."}
+   {:id :node/atomic-generation
+    :text "Handlers, subscriptions, tasks, and module bindings activate as one generation."}
+   {:id :node/no-shared-anonymous-module
+    :text "Two node instances never share an ns+ module even when they use identical source."}
+   {:id :node/explicit-concurrency
+    :text "A node processes sequentially unless source starts additional node tasks."}]}
+
+ :runtime/document-protocol
+ [{:operation prepareDocument
+   :arguments [:kernel/id :document/id :source :node/id]
+   :effect :uncommitted-candidate-generation
+   :returns [:value :generation :module/id]}
+  {:operation commitDocument
+   :arguments [:candidate-generation]
+   :effect :atomically-replace-active-generation}
+  {:operation discardDocument
+   :arguments [:candidate-generation]
+   :effect :release-candidate-without-replacing-active}
+  {:operation evalDocument
+   :arguments [:kernel/id :document/id :source :node/id]
+   :effect :prepare-and-immediately-commit
+   :compatibility true
+   :returns [:value :generation :module/id]}
+  {:operation evalForm
+   :arguments [:kernel/id :document/id :source]
+   :effect :active-generation
+   :returns :value}
+  {:operation releaseDocument
+   :arguments [:kernel/id :document/id]
+   :effect :release-generation
+   :returns :released-count}]
+
+ :runtime/project
+ {:file "project.edn"
+  :required true
+  :loads-before "workspace.edn"
+  :required-keys
+  [:hara/type :hara/version :project/id :project/version
+   :project/source-paths :project/test-paths :project/extension-paths
+   :project/capabilities]
+  :optional-keys [:project/main]
+  :legacy-read-only ["project.hara"]}
+
+ :runtime/workspace
+ {:file "workspace.edn"
+  :required true
+  :directly-loadable true
+  :root :containing-directory
+  :required-keys
+  [:hara/type :hara/version :workspace/id :workspace/layout
+   :workspace/documents :workspace/areas :workspace/nodes
+   :workspace/connections :workspace/links :workspace/customizations]
+  :persistent
+  [:layout :areas :documents :nodes :ports :connections :links
+   :playlist-metadata :permitted-file-handle-keys]
+  :ephemeral
+  [:pixels :audio-buffers :kernel-values :anonymous-module-handles
+   :absolute-machine-paths]
+  :mutation
+  {:undo-redo true
+   :dirty-state true
+   :explicit-save true
+   :recovery-journal :automatic-local
+   :external-change-detection :content-hash
+   :conflict-policy :never-overwrite-silently
+   :serialization :canonical-edn}}
+
+ :runtime/wire
+ {:related-frame-spec :xt/substrate-frame
+  :related-request-spec :xt/substrate-request
+  :related-stream-spec :xt/substrate-stream-router
+  :related-transport-spec :xt/substrate-transport
+  :relationship :adapter-compatibility-not-conformance
+  :compatibility :existing-json-frames-remain-valid
+  :version "substrate.v1"
+  :studio-adapters
+  [:substrate.transport/direct :substrate.transport/hta1
+   :substrate.transport/structured-clone :substrate.transport/transferable
+   :substrate.transport/websocket]
+  :realtime-audio
+  {:uses-json false
+   :waits-for-visualizer false
+   :visualizer-delivery :latest
+   :emit-acknowledgement :downstream-queue-accepted}}
+
+ :runtime/security
+ {:capability-source "project.edn"
+  :local-media
+  {:requires-user-gesture true
+   :audio-data-persisted false
+   :machine-path-persisted false
+   :file-handle-permission :local-browser-store}}}
