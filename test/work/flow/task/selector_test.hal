@@ -1,0 +1,112 @@
+(ns work.flow.task.selector-test
+  (:require [work.flow.task.selector]))
+
+^{:refer work.flow.task.selector/selector-options}
+(Test/check
+ [{:name "preserves selector option arities"
+   :test (fn []
+           [(work.flow.task.selector/selector-options 'std {:parallel true})
+            (work.flow.task.selector/selector-options
+             {:selector 'std} {:timeout 10})
+            (work.flow.task.selector/selector-options
+             'std {:parallel true} {:root "."})])
+   :expected [{:selector 'std :parallel true}
+              {:selector 'std :timeout 10}
+              {:selector 'std :parallel true :environment {:root "."}}]}])
+
+^{:refer work.flow.task.selector/invocation-options}
+(Test/check
+ [{:name "normalises selector invocation positions and a domain selector key"
+   :test (fn []
+           [(work.flow.task.selector/invocation-options [])
+            (work.flow.task.selector/invocation-options ['std])
+            (work.flow.task.selector/invocation-options
+             ['std {:parallel true} {:root "."}] :namespace)])
+   :expected [{}
+              {:selector 'std}
+              {:selector 'std :parallel true :environment {:root "."}}]}])
+
+^{:refer work.flow.task.selector/matches?}
+(Test/check
+ [{:name "matches scalar collection regexp and callable selector shapes"
+   :test (fn []
+           [(work.flow.task.selector/matches? 'code 'code.test)
+            (work.flow.task.selector/matches? ['std 'code.test] 'code.test)
+            (work.flow.task.selector/matches? '(code test) 'code.test)
+            (work.flow.task.selector/matches? #{'code.test 'std.work} 'code.test)
+            (work.flow.task.selector/matches? (regexp "test") 'code.test)
+            (work.flow.task.selector/matches?
+             (fn [value] (= value :ready)) :ready)])
+   :expected [true true false true true true]}])
+
+^{:refer work.flow.task.selector/select}
+(Test/check
+ [{:name "filters a collection through the selector contract"
+   :test (fn []
+           (work.flow.task.selector/select 'code ['code.test 'std.test]))
+   :expected ['code.test]}])
+
+^{:refer work.flow.task.selector/collection-match?}
+(Test/check
+ [{:name "matches when any metadata value matches"
+   :test (fn []
+           [(work.flow.task.selector/collection-match? #{:web} #{:web :slow})
+            (work.flow.task.selector/collection-match? #{:db} #{:web :slow})])
+   :expected [true false]}])
+
+^{:refer work.flow.task.selector/filter-match?}
+(Test/check
+ [{:name "derives unit refer and namespace filter decisions"
+   :test (fn []
+           (work.flow.task.selector/filter-match?
+            {:unit #{:web :slow}
+             :refer 'sample.core/render
+             :namespace 'sample.core}
+            {:unit #{:web}
+             :refers ['sample.core/render]
+             :namespaces ['sample]}
+            false))
+   :expected [true true true]}])
+
+^{:refer work.flow.task.selector/include-match?}
+(Test/check
+ [{:name "includes only filters with all active dimensions"
+   :test (fn []
+           [(work.flow.task.selector/include-match?
+             {:unit #{:web} :namespace 'sample.core}
+             {:unit #{:web} :namespaces ['sample]})
+            (work.flow.task.selector/include-match?
+             {:unit #{:db} :namespace 'sample.core}
+             {:unit #{:web}})])
+   :expected [true false]}])
+
+^{:refer work.flow.task.selector/exclude-match?}
+(Test/check
+ [{:name "excludes when any active dimension matches"
+   :test (fn []
+           [(work.flow.task.selector/exclude-match?
+             {:unit #{:web} :namespace 'sample.core}
+             {:unit #{:web}})
+            (work.flow.task.selector/exclude-match?
+             {:unit #{:web} :namespace 'sample.core}
+             {:unit #{:db}})])
+   :expected [true false]}])
+
+^{:refer work.flow.task.selector/matches-options?}
+(Test/check
+ [{:name "applies include exclude and tagged default policies"
+   :test (fn []
+           [(work.flow.task.selector/matches-options?
+             {:unit #{:web :slow}
+              :refer 'sample.core/render
+              :namespace 'sample.core}
+             {:include [{:unit #{:web}}]})
+            (work.flow.task.selector/matches-options?
+             {:unit #{:web :slow}
+              :refer 'sample.core/render
+              :namespace 'sample.core}
+             {:include [{:unit #{:web}}]
+              :exclude [{:refers ['sample.core/render]}]})
+            (work.flow.task.selector/matches-options?
+             {:unit #{:web}} {})])
+   :expected [true false false]}])

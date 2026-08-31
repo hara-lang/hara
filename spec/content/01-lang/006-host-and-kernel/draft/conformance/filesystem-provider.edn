@@ -1,0 +1,145 @@
+{:format :hara.filesystem-provider/conformance
+ :version 1
+ :contract :hara/filesystem-provider
+ :providers [:memory :native :indexeddb :sftp :github :google-drive]
+ :cases
+ [{:id :filesystem/one-root-per-session
+   :applies-to :kernel
+   :operation :attach
+   :given {:session-mount nil :candidate-mount :mount-a}
+   :expect {:session-root "/" :session-mount :mount-a}}
+  {:id :filesystem/replacement-detaches-previous
+   :applies-to :kernel
+   :operation :attach
+   :given {:session-mount :mount-a :candidate-mount :mount-b}
+   :expect {:session-mount :mount-b
+            :mount-a-attachments :decremented-once
+            :mount-b-attachments :incremented-once}}
+  {:id :filesystem/attached-close-refused
+   :applies-to :kernel
+   :operation :close-mount
+   :given {:attachments 1}
+   :expect-error :filesystem/attached}
+  {:id :filesystem/provider-registration-trusted
+   :applies-to :factory-registry
+   :operation :register
+   :given {:caller :guest-runtime}
+   :expect-error :host/capability-denied}
+  {:id :filesystem/descriptor-redacts-secrets
+   :applies-to :all
+   :operation :descriptor
+   :given {:config {:credential-ref "profile"
+                    :access-token "secret"
+                    :private-key-path "/secret/key"}}
+   :expect-absent [:access-token :private-key-path :authorization-header
+                   :signed-url :password :passphrase]}
+  {:id :filesystem/valid-call-is-asynchronous
+   :applies-to :all
+   :operation :stat
+   :given {:path "/"}
+   :expect-immediate-type :promise}
+  {:id :filesystem/argument-errors-remain-synchronous
+   :applies-to :guest-adapter
+   :operation :read
+   :given {:path 42}
+   :expect-synchronous-error :native/invalid-argument}
+  {:id :filesystem/provider-errors-reject
+   :applies-to :all
+   :operation :read
+   :given {:path "/missing"}
+   :expect-promise-rejection :file/not-found}
+  {:id :filesystem/cancel-before-dispatch
+   :applies-to :all
+   :operation :read
+   :given {:path "/data" :context {:cancelled true}}
+   :expect-promise-rejection :file/cancelled}
+  {:id :filesystem/deadline-before-dispatch
+   :applies-to :all
+   :operation :read
+   :given {:path "/data" :context {:deadline :expired}}
+   :expect-promise-rejection :file/timeout}
+  {:id :filesystem/completion-cancel-race
+   :applies-to :all
+   :operation :read
+   :given {:completion-and-cancel :concurrent}
+   :expect {:settlements 1}}
+  {:id :filesystem/close-pending-operation
+   :applies-to :all
+   :operation :close
+   :given {:pending-operations 1}
+   :expect {:settlements 1 :provider-state :closed}}
+  {:id :filesystem/call-after-close
+   :applies-to :all
+   :operation :stat
+   :given {:provider-state :closed :path "/"}
+   :expect-promise-rejection :file/provider-closed}
+  {:id :filesystem/canonical-entry-order
+   :applies-to :all
+   :operation :entries
+   :given {:provider-pages [["/d/z" "/d/a"] ["/d/m"]]}
+   :expect ["/d/a" "/d/m" "/d/z"]}
+  {:id :filesystem/no-partial-page-result
+   :applies-to :all
+   :operation :entries
+   :given {:first-page ["/d/a"] :second-page-error :file/offline}
+   :expect-promise-rejection :file/offline}
+  {:id :filesystem/optional-modified-time
+   :applies-to [:github]
+   :operation :stat
+   :given {:path "/README.md"}
+   :expect {:modified-at nil}}
+  {:id :filesystem/stable-entry-identity
+   :applies-to [:indexeddb :github :google-drive]
+   :operation :rename
+   :given {:source "/old" :target "/new"}
+   :expect {:same-file-id true}}
+  {:id :filesystem/revision-conflict
+   :applies-to :revision-capable
+   :operation :write
+   :given {:path "/data" :expected-revision "old" :actual-revision "new"}
+   :expect-promise-rejection :file/conflict}
+  {:id :filesystem/no-last-writer-wins
+   :applies-to :revision-capable
+   :operation :write
+   :given {:concurrent-writers 2 :same-base true}
+   :expect {:successes 1 :conflicts 1}}
+  {:id :filesystem/unsupported-capability
+   :applies-to :all
+   :operation :atomic-move
+   :given {:capability-present false}
+   :expect-promise-rejection :file/unsupported}
+  {:id :filesystem/path-cannot-escape-root
+   :applies-to :all
+   :operation :stat
+   :given {:path "../../outside"}
+   :expect-synchronous-or-rejected-code :file/outside-root}
+  {:id :filesystem/symlink-no-follow
+   :applies-to :symlink-capable
+   :operation :walk
+   :given {:path "/link" :link-target "/outside"}
+   :expect {:entry-type :symlink :target-read false}}
+  {:id :filesystem/github-non-force-conflict
+   :applies-to [:github]
+   :operation :write
+   :given {:branch-head-moved true}
+   :expect-promise-rejection :file/conflict}
+  {:id :filesystem/google-drive-duplicate-name
+   :applies-to [:google-drive]
+   :operation :stat
+   :given {:parent-id "p" :name "same" :matches 2}
+   :expect-promise-rejection :file/ambiguous-path}
+  {:id :filesystem/sftp-host-key-required
+   :applies-to [:sftp]
+   :operation :open
+   :given {:host-key-policy nil}
+   :expect-error :file/authentication-failed}
+  {:id :filesystem/indexeddb-transaction-abort
+   :applies-to [:indexeddb]
+   :operation :move
+   :given {:injected-failure :after-target-write}
+   :expect {:source-present true :target-present false}}
+  {:id :filesystem/workspace-export-explicit
+   :applies-to [:google-drive]
+   :operation :read
+   :given {:item-type :google-document :export-policy :unsupported}
+   :expect-promise-rejection :file/unsupported}]}

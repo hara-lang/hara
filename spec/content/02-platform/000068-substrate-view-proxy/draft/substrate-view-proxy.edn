@@ -1,0 +1,150 @@
+{:document/id :xt/substrate-view-proxy
+ :document/type :xt-substrate-spec
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "XTalk substrate view and page-proxy contract"
+ :document/summary
+ "Defines the exact view IR, catalog grammar, state bindings, snapshots, subscriptions, action dispatch, demos, and page proxy."
+
+ :spec/conforms-to
+ {:spec/id :xt/substrate-metaspec :spec/version "0.0.0-alpha"}
+ :spec/family :xt/substrate
+ :spec/depends-on
+ [:xt/substrate-base :xt/substrate-node :xt/substrate-request
+  :xt/substrate-stream-router :xt/substrate-page-model]
+
+ :source/modules
+ [{:module/id :xt.substrate.view/core
+   :module/namespace "xt.substrate.view"
+   :module/path "../../../../../foundation-base/src-lang/xt/substrate/view.clj"}
+  {:module/id :xt.substrate.view/catalog
+   :module/namespace "xt.substrate.view-catalog"
+   :module/path "../../../../../foundation-base/src-lang/xt/substrate/view_catalog.clj"}
+  {:module/id :xt.substrate.view/demos
+   :module/namespace "xt.substrate.view-demos"
+   :module/path "../../../../../foundation-base/src-lang/xt/substrate/view_demos.clj"}
+  {:module/id :xt.substrate.view/page-proxy
+   :module/namespace "xt.substrate.page-proxy"
+   :module/path "../../../../../foundation-base/src-lang/xt/substrate/page_proxy.clj"}]
+
+ :view/constructors
+ [{:constructor/symbol "view-spec"
+   :constructor/arguments ["view-id" "bindings" "root"]
+   :constructor/result-fields ["version" "id" "bindings" "root"]
+   :constructor/version 1}
+  {:constructor/symbol "node"
+   :constructor/arguments ["component" "props" "children"]
+   :constructor/result-fields ["component" "props" "children"]}
+  {:constructor/symbol "action"
+   :constructor/arguments ["action-id" "payload"]
+   :constructor/result-fields ["action" "payload"]}
+  {:constructor/symbol "event-value"
+   :constructor/arguments ["path"]
+   :constructor/result-fields ["$" "path"]
+   :constructor/discriminator "event"}]
+
+ :view/binding-sources
+ ["local" "state" "model-output" "model-input"]
+ :view/state-container
+ {:state/path ["NodeSpace.state" "view" "view-id"]
+  :state/fields ["values" "revision"]
+  :state/default-revision 0}
+ :view/symbols
+ ["VERSION" "ViewSpec" "ViewNode" "ViewSnapshot" "ViewSubscription"
+  "view-spec" "node" "action" "event-value" "json-safe?"
+  "validate-binding" "validate-node" "validate-with" "validate"
+  "validate-portable" "state-container" "state-listener-key"
+  "model-listener-key" "state-get" "state-set" "binding-read"
+  "snapshot" "subscription-notify" "subscribe" "unsubscribe" "dispatch"]
+ :catalog/symbols
+ ["PLATFORM_PREFIX" "COMMON_PROPS" "COMPONENTS"
+  "platform-id?" "entry" "has-component?" "band" "portable?"
+  "variant-classes" "validate-action" "validate-prop-type"
+  "validate-props"]
+ :demo/symbols
+ ["VIEW-ID" "sink-section" "collect-ids" "has-val?"
+  "kitchen-sink-bindings"
+  "install-handlers" "kitchen-sink-render" "kitchen-sink-spec"
+  "web-escape-render" "web-escape-spec"]
+
+ :proxy/constants
+ {:constant/action-symbols
+  ["ACTION_GROUP_LIST" "ACTION_GROUP_OPEN" "ACTION_GROUP_CLOSE"
+   "ACTION_GROUP_UPDATE" "ACTION_MODEL_UPDATE"
+   "ACTION_MODEL_SET_INPUT" "ACTION_MODEL_TRIGGER"
+   "ACTION_MODEL_PROXY_CALL" "ACTION_GROUP_TRIGGER"]
+  :constant/actions
+  ["@page/group-list" "@page/group-open" "@page/group-close"
+   "@page/group-update" "@page/model-update" "@page/model-set-input"
+   "@page/model-trigger" "@page/model-proxy-call"
+   "@page/group-trigger"]
+  :constant/signal-symbols ["SIGNAL_OUTPUT" "SIGNAL_INPUT"]
+  :constant/signals ["page.model/output" "page.model/input"]
+  :constant/listener-symbols ["LISTENER_OUTPUT" "LISTENER_INPUT"]
+  :constant/listeners ["@/page-proxy/output" "@/page-proxy/input"]}
+ :proxy/symbols
+ ["model-serialize-input" "model-serialize-output" "model-serialize"
+  "group-snapshot" "model-get-output" "publish-model-output"
+  "publish-model-input" "ensure-model-listeners" "group-handle-list"
+  "group-handle-open" "group-handle-close" "group-handle-update"
+  "model-handle-update" "model-handle-set-input" "model-handle-trigger"
+  "group-handle-trigger" "model-handle-proxy-call" "install-handlers"
+  "model-create-proxy" "proxy-dispatch-op" "proxy-dispatcher"
+  "group-create-proxy" "model-apply-output" "model-apply-input"
+  "install-triggers" "install" "group-list-proxy" "group-open-proxy"
+  "group-close-proxy" "model-proxy-call" "group-sync-proxy"]
+
+ :spec/behavior
+ [{:behavior/id :xt.substrate.view/validation
+   :behavior/text "validate requires version 1, a string id, valid binding shapes, known catalog or fg/ components, JSON-safe props, and recursively valid children; validate-portable additionally rejects fg/ components."
+   :behavior/evidence :evidence/source-and-test}
+  {:behavior/id :xt.substrate.view/state
+   :behavior/text "state-set writes the path, increments the per-view revision, emits a keyed listener event, and returns the assigned value."
+   :behavior/evidence :evidence/source-and-test}
+  {:behavior/id :xt.substrate.view/snapshot
+   :behavior/text "snapshot reads each declared binding from local initial data, view state, model output, or model input."
+   :behavior/evidence :evidence/source-and-test}
+  {:behavior/id :xt.substrate.view/subscription
+   :behavior/text "subscribe validates the spec, deduplicates dependency listener keys, stores the initial snapshot, and increments subscription revision on notification; unsubscribe removes every key and empties keys."
+   :behavior/evidence :evidence/source-and-test}
+  {:behavior/id :xt.substrate.view/dispatch
+   :behavior/text "dispatch requires a string action id, projects event payloads when payload has $=event, and calls base-util/request with a one-element argument vector."
+   :behavior/evidence :evidence/source-and-test}
+  {:behavior/id :xt.substrate.proxy/install
+   :behavior/text "install registers nine page actions and the two model input/output triggers."
+   :behavior/evidence :evidence/source-and-test}
+  {:behavior/id :xt.substrate.proxy/synchronization
+   :behavior/text "Opening a proxy group requests a server snapshot, builds proxy models, subscribes to model signals, and uses proxy_dispatch for remote group/model operations; closing removes subscriptions and the local proxy group."
+   :behavior/evidence :evidence/source-and-test}]
+
+ :source/evidence
+ [{:evidence/id :xt.substrate.view/tests
+   :evidence/source
+   ["../../../../../foundation-base/src-lang/xt/substrate/view.clj"
+    "../../../../../foundation-base/src-lang/xt/substrate/view_catalog.clj"
+    "../../../../../foundation-base/src-lang/xt/substrate/view_demos.clj"
+    "../../../../../foundation-base/src-lang/xt/substrate/page_proxy.clj"]
+   :evidence/symbols
+   [:view/symbols :catalog/symbols :demo/symbols :proxy/symbols]
+   :evidence/tests
+   ["../../../../../foundation-base/test-lang/xt/substrate/view_test.clj"
+    "../../../../../foundation-base/test-lang/xt/substrate/view_catalog_test.clj"
+    "../../../../../foundation-base/test-lang/xt/substrate/view_demos_test.clj"
+    "../../../../../foundation-base/test-lang/xt/substrate/page_proxy_test.clj"]
+   :evidence/level :evidence/source-and-test}]
+
+ :spec/references
+ [{:reference/id :xt.substrate.view/source
+   :reference/path "../../../../../foundation-base/src-lang/xt/substrate/view.clj"
+   :reference/authority :normative}
+  {:reference/id :xt.substrate.view/catalog
+   :reference/path "../../../../../foundation-base/src-lang/xt/substrate/view_catalog.clj"
+   :reference/authority :normative}
+  {:reference/id :xt.substrate.view/proxy
+   :reference/path "../../../../../foundation-base/src-lang/xt/substrate/page_proxy.clj"
+   :reference/authority :normative}]
+
+ :spec/conformance
+ [{:conformance/id :xt.substrate/view-proxy
+   :conformance/path "conformance/view-proxy.edn"
+   :conformance/required true}]}

@@ -1,0 +1,443 @@
+{:document/id :hara/filesystem-provider
+ :document/type :filesystem-provider-spec
+ :document/version "alpha"
+ :document/status :draft
+ :document/title "Hara provider-neutral filesystem boundary"
+ :document/summary
+ "Trusted construction, lifecycle, asynchronous invocation, capability discovery, revision control, and conformance contract for filesystems mounted at a Session's logical root."
+
+ :spec/conforms-to
+ {:spec/id :hara/metaspec-metaspec
+  :spec/version "alpha"}
+
+ :filesystem/scope
+ {:scope/includes
+  #{:filesystem-factory-registry :filesystem-factory :mounted-filesystem
+    :session-mount-ownership :asynchronous-file-operations
+    :filesystem-call-context :filesystem-descriptor :filesystem-capabilities
+    :filesystem-entry-identity :filesystem-revisions
+    :filesystem-pagination :filesystem-errors :filesystem-close
+    :provider-conformance :secret-redaction}
+  :scope/excludes
+  #{:guest-provider-construction :multiple-session-roots
+    :cross-provider-copy :cross-provider-move :automatic-synchronisation
+    :offline-merge :streaming-file-handles :random-access-file-handles
+    :filesystem-watch-api :provider-credential-format
+    :synchronous-remote-graal-filesystems}}
+
+ :filesystem/invariants
+ [{:requirement/id :filesystem/public-surface-stable
+   :requirement/level :must
+   :requirement/text
+   "Provider polymorphism does not add backend-specific methods to std.native.File. The public File and std.lib.fs surfaces remain provider-neutral."}
+  {:requirement/id :filesystem/trusted-construction
+   :requirement/level :must
+   :requirement/text
+   "Only trusted Kernel or embedding code registers factories, resolves credentials, opens providers, and creates mount resources. Guest and sandboxed code receive only an attached filesystem capability."}
+  {:requirement/id :filesystem/one-session-root
+   :requirement/level :must
+   :requirement/text
+   "A Session has zero or one attached logical filesystem root. Every observable path is rooted at that provider's logical /."
+   }
+  {:requirement/id :filesystem/no-ambient-host-path
+   :requirement/level :must
+   :requirement/text
+   "Provider roots and host paths are interpreted only by the selected factory and mounted provider. A logical path cannot select an ambient host, account, repository, drive, database, or remote root."}
+  {:requirement/id :filesystem/asynchronous-effects
+   :requirement/level :must
+   :requirement/text
+   "Every valid filesystem effect returns an asynchronous value immediately, including local disk calls. Blocking provider work does not execute on the evaluator thread."}
+  {:requirement/id :filesystem/exactly-once-settlement
+   :requirement/level :must
+   :requirement/text
+   "Completion, cancellation, timeout, provider close, and transport failure race through one settlement gate. A call fulfills or rejects at most once."}
+  {:requirement/id :filesystem/no-semantic-weakening
+   :requirement/level :must
+   :requirement/text
+   "A provider that cannot honor an operation's replacement, append, atomicity, no-follow, revision, or preservation semantics rejects with :file/unsupported or a more specific stable error. It never silently substitutes weaker behavior."}
+  {:requirement/id :filesystem/no-follow
+   :requirement/level :must
+   :requirement/text
+   "Metadata, enumeration, traversal, copy, move, and deletion never follow symbolic links or provider shortcut equivalents. A provider that cannot prove mount confinement fails closed."}
+  {:requirement/id :filesystem/deterministic-results
+   :requirement/level :must
+   :requirement/text
+   "Public entries, list, and walk results use canonical logical paths and canonical lexical ordering regardless of provider page or backend ordering."}
+  {:requirement/id :filesystem/optimistic-conflicts
+   :requirement/level :must
+   :requirement/text
+   "When an expected revision is supplied, stale state rejects with :file/conflict. Providers never apply last-writer-wins after a failed revision check."}
+  {:requirement/id :filesystem/secret-redaction
+   :requirement/level :must
+   :requirement/text
+   "Credentials, access and refresh tokens, signed URLs, authorization headers, private keys and key paths, agent sockets, passwords, passphrases, and equivalent provider secrets never enter Hara values, descriptors, errors, traces, or logs."}
+  {:requirement/id :filesystem/attached-close-refused
+   :requirement/level :must
+   :requirement/text
+   "Kernel refuses to close a mount while any Session or Sandbox attachment remains. Detach and owner close release attachment accounting exactly once."}]
+
+ :filesystem/ownership
+ {:ownership/hierarchy
+  [Kernel FilesystemProviderRegistry MountRegistry FilesystemMount Session Runtime]
+  :ownership/registry
+  {:owner Kernel
+   :component FilesystemProviderRegistry
+   :entries {:filesystem-kind IFilesystemFactory}
+   :registration :trusted-embedding-only
+   :duplicate-registration :reject-incompatible}
+  :ownership/mounts
+  {:owner Kernel
+   :component MountRegistry
+   :entries {:mount-id IFilesystem}
+   :attachment-owners #{:session-id :sandbox-id}
+   :sharing :explicit
+   :close-while-attached :reject}
+  :ownership/session
+  {:root-count #{0 1}
+   :attachment-path "/"
+   :runtime-binding :attached-filesystem-only
+   :host-filesystem-authority-implied false}
+  :ownership/guest
+  {:provider-registry-visible false
+   :factory-visible false
+   :credential-resolution-visible false
+   :mounted-capability-visible-via std.native.File}}
+
+ :filesystem/interfaces
+ {:interface/factory
+  {:name IFilesystemFactory
+   :role :trusted-provider-construction
+   :methods [kind validate open]
+   :open-result :asynchronous-filesystem-handle
+   :inputs [:filesystem-open-context :validated-opaque-config]
+   :outputs [:mounted-filesystem :redacted-descriptor]
+   :forbidden-outputs
+   [:credential :token :signed-url :private-key :provider-client
+    :database-handle :ssh-channel :http-client]}
+  :interface/filesystem
+  {:name IFilesystem
+   :role :opened-scoped-filesystem-capability
+   :methods
+   [descriptor capabilities stat read write entries-page mkdir delete copy move close]
+   :method-context :filesystem-call-context
+   :path-domain :canonical-logical-path
+   :result :asynchronous
+   :provider-object-transferable false}
+  :interface/guest-adapter
+  {:name std.native.File
+   :operations
+   [read write exists? stat entries list walk mkdir delete copy move
+    temp-file temp-directory]
+   :derived
+   {:exists? :stat-not-found-projection
+    :list :entries-path-projection
+    :walk :deterministic-paged-traversal
+    :temp-file :exclusive-create-with-bounded-retry
+    :temp-directory :exclusive-mkdir-with-bounded-retry}
+   :pure-compatibility [parent join resolve]
+   :provider-specific-methods :forbidden}}
+
+ :filesystem/open-context
+ {:open/context
+  {:kernel-id :opaque-kernel-id
+   :request-id :opaque-trace-id
+   :credential-resolver :trusted-host-service
+   :scheduler :runtime-io-scheduler
+   :policy :embedding-policy
+   :limits :filesystem-limits}
+  :open/specification
+  {:representation :immutable-portable-data
+   :required [:kind]
+   :provider-owned-validation true
+   :unknown-keys :reject-unless-provider-specifies-extension-map
+   :credential-references :opaque-non-secret-identifiers
+   :forbidden-values
+   [:credential :token :signed-url :private-key :password :passphrase
+    :provider-object :file-descriptor :socket :process :function :var
+    :promise :stream :mutable-value :live-handle]}
+  :open/examples
+  [{:kind :native :root "/workspace"}
+   {:kind :indexeddb :database "hara" :namespace "workspace-v1"}
+   {:kind :sftp :connection-ref "ssh:production" :root "/srv/application"}
+   {:kind :github :credential-ref "github:hara-installation"
+    :repository "hara-lang/hara" :ref "heads/main" :root "/" :mode :commit}
+   {:kind :google-drive :credential-ref "google:primary"
+    :root-id "drive-folder-id"}]}
+
+ :filesystem/call-context
+ {:call/context
+  {:deadline :monotonic-deadline-or-nil
+   :cancellation :shared-cancellation-token
+   :trace-id :opaque-non-secret-string-or-nil
+   :limits :operation-limits}
+  :call/immediate-return true
+  :call/deadline-before-dispatch :file/timeout
+  :call/cancel-before-dispatch :file/cancelled
+  :call/cancel-hook :same-provider-operation
+  :call/late-completion :ignored-after-terminal-settlement
+  :call/blocking-work :runtime-io-scheduler
+  :call/browser-work :embedding-event-loop
+  :call/replay
+  {:reads :bounded-provider-policy
+   :idempotent-mutations :only-after-exact-state-verification
+   :ambiguous-mutations :never-automatic}}
+
+ :filesystem/descriptor
+ {:descriptor/shape
+  {:kind :keyword
+   :display :safe-string
+   :read-only? :boolean
+   :capabilities :filesystem-capability-set
+   :revision #{:string nil}
+   :extensions :redacted-map}
+  :descriptor/stability :mount-lifetime
+  :descriptor/attachment-count :kernel-filesystem-info-only
+  :descriptor/forbidden
+  [:credential :token :authorization-header :signed-url :private-key
+   :private-key-path :password :passphrase :agent-socket :provider-client
+   :database-handle :ssh-session :http-client]}
+
+ :filesystem/capabilities
+ {:capability/catalog
+  #{:read :write :entries :mkdir :delete :copy :move :append
+    :atomic-move :preserve-modified :revision-check :transactions :watch}
+  :capability/mount-level
+  "The mounted descriptor declares operations and semantics the provider can ever honor in this mode."
+  :capability/entry-level
+  "An entry may expose current-user item permissions beneath :extensions. Entry permissions can further restrict but never broaden mount capabilities."
+  :capability/method-presence :all-methods-present
+  :capability/unsupported-result :file/unsupported
+  :capability/no-inference
+  "Provider kind alone is insufficient to infer append, atomic move, revision, transaction, or watch support."}
+
+ :filesystem/entries
+ {:entry/shape
+  {:path :canonical-logical-path
+   :name :string
+   :type #{:file :directory :symlink :other}
+   :size #{:non-negative-integer nil}
+   :modified-at #{:unix-epoch-milliseconds nil}
+   :extensions :map}
+  :entry/reserved-extensions
+  {:file/id #{:string nil}
+   :file/revision #{:string nil}
+   :provider/capabilities #{:filesystem-capability-set nil}}
+  :entry/identity
+  {:logical-path :provider-projection
+   :stable-id :file/id
+   :renames-may-preserve-id true}
+  :entry/timestamps
+  {:missing :nil
+   :fabricated-timestamps :forbidden
+   :git-tree-policy :nil}
+  :entry/symlinks
+  {:reported-as :symlink
+   :follow false
+   :provider-shortcuts :same-no-follow-policy}}
+
+ :filesystem/pagination
+ {:page/request
+  {:token #{:opaque-provider-token nil}
+   :limit :positive-bounded-integer}
+  :page/result
+  {:entries :entry-vector
+   :next-token #{:opaque-provider-token nil}}
+  :page/token-visible-to-guest false
+  :page/public-adapter
+  {:consume-until :next-token-nil
+   :partial-result-on-failure false
+   :sort :canonical-logical-path
+   :deduplicate :stable-id-when-present-otherwise-path}
+  :page/provider-truncation
+  "A provider must continue through backend truncation or reject. It never reports a truncated page sequence as a complete public directory."}
+
+ :filesystem/operations
+ {:operation/primitives
+  {:stat {:result :entry}
+   :read {:result :bytes}
+   :write {:result :file-mutation}
+   :entries-page {:result :entry-page}
+   :mkdir {:result :file-mutation}
+   :delete {:result :file-mutation}
+   :copy {:result :file-mutation}
+   :move {:result :file-mutation}
+   :close {:result :nil}}
+  :operation/mutation-result
+  {:path :canonical-logical-path
+   :revision #{:string nil}
+   :mount-revision #{:string nil}
+   :extensions :redacted-map}
+  :operation/options
+  {:expected-revision #{:string nil}
+   :expected-target-revision #{:string nil}}
+  :operation/public-return-compatibility
+  "std.native.File continues to fulfill with the path and entry shapes owned by 003-native. Mutation revision data may be retained by the provider or exposed only through an explicitly versioned result extension until the public contract is revised."
+  :operation/cross-provider-copy false
+  :operation/cross-provider-move false
+  :operation/partial-mutation
+  {:single-provider-primitive :provider-atomicity-contract
+   :portable-recursive-operation :existing-fail-fast-no-rollback-contract}}
+
+ :filesystem/revisions
+ {:revision/entry :file/revision
+  :revision/mount :descriptor-revision
+  :revision/optional true
+  :revision/capability :revision-check
+  :revision/mutation-options [:expected-revision :expected-target-revision]
+  :revision/stale-error :file/conflict
+  :revision/last-writer-wins false
+  :revision/same-base-validation
+  "All supplied expectations for one provider primitive are checked against one coherent provider base state."
+  :revision/provider-examples
+  {:indexeddb :transactional-node-version
+   :sftp :attributes-derived-token-when-reliable
+   :github :blob-tree-and-commit-sha
+   :google-drive :head-revision-or-version-token}}
+
+ :filesystem/lifecycle
+ {:lifecycle/states [:opening :open :closing :closed :failed]
+  :lifecycle/open-result :asynchronous
+  :lifecycle/close-idempotent true
+  :lifecycle/close
+  {:new-calls :file/provider-closed
+   :pending-calls :settle-or-cancel-exactly-once
+   :resources :release-provider-owned-resources
+   :attachments :kernel-must-detach-before-close}
+  :lifecycle/session-detach
+  {:runtime-binding-removed true
+   :provider-closed false
+   :attachment-count-decremented-once true}
+  :lifecycle/session-close :detach-then-release-session
+  :lifecycle/sandbox-close :detach-then-release-private-session}
+
+ :filesystem/errors
+ {:error/type ExceptionInfo
+  :error/code-key :ex/code
+  :error/common-data
+  {:ex/class :keyword
+   :file/operation :keyword
+   :file/path #{:canonical-logical-path nil}
+   :file/target #{:canonical-logical-path nil}
+   :file/provider #{:keyword nil}
+   :file/revision #{:string nil}
+   :file/retryable? :boolean
+   :file/provider-code #{:string :keyword nil}}
+  :error/codes
+  [:file/not-found :file/already-exists :file/invalid-path
+   :file/outside-root :file/denied :file/not-directory :file/is-directory
+   :file/directory-not-empty :file/permission-denied :file/unsupported
+   :file/conflict :file/auth-required :file/authentication-failed
+   :file/rate-limited :file/quota-exceeded :file/offline :file/timeout
+   :file/cancelled :file/ambiguous-path :file/provider-closed :file/io]
+  :error/provider-message-non-semantic true
+  :error/provider-code-diagnostic-only true
+  :error/secrets-redacted true}
+
+ :filesystem/factory-errors
+ {:error/type ExceptionInfo
+  :error/code-key :ex/code
+  :error/codes
+  [:filesystem/invalid-spec :filesystem/provider-not-found
+   :filesystem/provider-unavailable :filesystem/open-failed
+   :filesystem/not-found :filesystem/attached]
+  :error/secret-redaction true}
+
+ :filesystem/providers
+ {:provider/native
+  {:kind :native
+   :root :trusted-host-path
+   :blocking-io :runtime-io-scheduler
+   :timestamps :available-when-host-provides
+   :no-follow :required}
+  :provider/memory
+  {:kind :memory
+   :purpose [:reference-conformance :tests]
+   :transactions :implementation-defined-single-process
+   :stable-revisions :required-for-conflict-fixtures}
+  :provider/indexeddb
+  {:kind :indexeddb
+   :authority :trusted-browser-host
+   :direct-import-free-wasm false
+   :transactions :required-for-multi-record-mutations
+   :quota-error :file/quota-exceeded}
+  :provider/sftp
+  {:kind :sftp
+   :transport :ssh-sftp-subsystem
+   :remote-shell false
+   :host-key-verification :mandatory-trusted-policy
+   :capabilities :negotiated
+   :root-confinement :fail-closed}
+  :provider/github
+  {:kind :github
+   :immutable-commit-mode :read-only
+   :writable-mode :branch-commit
+   :ref-update :non-forced
+   :branch-moved-error :file/conflict
+   :modified-at nil
+   :symlinks :no-follow
+   :submodules :other}
+  :provider/google-drive
+  {:kind :google-drive
+   :root :stable-folder-id
+   :paths :parent-and-name-projection
+   :duplicate-name-error :file/ambiguous-path
+   :item-capabilities :required-before-mutation
+   :workspace-document-default :unsupported
+   :workspace-export :explicit-trusted-policy}}
+
+ :filesystem/graal-boundary
+ {:graal/filesystem-role :synchronous-local-source-adapter
+  :graal/remote-provider-spi false
+  :graal/indexeddb-provider false
+  :graal/materialisation
+  "Remote source loading requires an explicit asynchronous materialisation or cache step. A remote provider is never disguised as a blocking java.nio Path or Graal FileSystem."}
+
+ :filesystem/conformance
+ [{:conformance/id :filesystem/provider-contract
+   :conformance/path "conformance/filesystem-provider.edn"
+   :conformance/authority :normative}
+  {:conformance/id :filesystem/native-public-surface
+   :conformance/path "../../003-native/draft/native-spec.edn"
+   :conformance/authority :normative}
+  {:conformance/id :filesystem/host-kernel-ownership
+   :conformance/path "host-kernel-spec.edn"
+   :conformance/authority :normative}]
+
+ :filesystem/boundaries
+ [{:boundary/owner :hara/native
+   :boundary/owns
+   [:std.native.File-methods :guest-argument-shapes :guest-result-shapes
+    :logical-path-contract :guest-error-shape]}
+  {:boundary/owner :hara/host-kernel
+   :boundary/owns
+   [:factory-registry :trusted-open :mount-registry :session-attachment
+    :sandbox-attachment :credential-resolution :attachment-accounting]}
+  {:boundary/owner :hara/filesystem-provider
+   :boundary/owns
+   [:factory-interface :filesystem-interface :call-context :descriptor
+    :capabilities :pagination :revisions :close :provider-conformance]}
+  {:boundary/owner :hara/async
+   :boundary/owns
+   [:promise-and-coroutine-semantics]}
+  {:boundary/owner :provider-implementation
+   :boundary/owns
+   [:backend-api-mapping :connection-pooling :cache-invalidation
+    :backend-pagination :backend-retry-policy]}
+  {:boundary/owner :credential-service
+   :boundary/owns
+   [:interactive-authentication :token-refresh :private-key-loading
+    :secret-storage]}]
+
+ :filesystem/references
+ [{:reference/id :filesystem/native-surface
+   :reference/path "../../003-native/draft/native-spec.edn"
+   :reference/authority :normative}
+  {:reference/id :filesystem/host-kernel
+   :reference/path "host-kernel-spec.edn"
+   :reference/authority :normative}
+  {:reference/id :filesystem/async
+   :reference/path "../../007-async/draft/async-spec.md"
+   :reference/authority :normative}
+  {:reference/id :filesystem/hara-implementation
+   :reference/path "../../../../hara/core/rust/src/file.rs"
+   :reference/authority :implementation}]}

@@ -1,0 +1,120 @@
+(ns work.core-test
+  (:require [work.core]))
+
+(defn fixture-bundle
+  []
+  (work.core/bundle
+   (Work/pure "fixture/id")
+   {"fixture/id" (fn [input] input)}))
+
+^{:refer work.core/targets?}
+(Test/check
+ [{:name "accepts only maps of callable targets"
+   :test (fn []
+           [(work.core/targets? {"fixture/id" (fn [input] input)})
+            (work.core/targets? {"fixture/id" :not-callable})])
+   :expected [true false]}])
+
+^{:refer work.core/bundle?}
+(Test/check
+ [{:name "recognises the definition bundle shape without executing its plan"
+   :test (fn []
+           [(work.core/bundle? {:work/plan {} :work/targets {}})
+            (work.core/bundle? {:work/targets {}})])
+   :expected [true false]}])
+
+^{:refer work.core/assert-bundle}
+(Test/check
+ [{:name "validates a canonical native plan before use"
+   :test (fn []
+           [(work.core/bundle? (work.core/assert-bundle (fixture-bundle)))
+            (try
+              (work.core/assert-bundle {:work/plan {} :work/targets {}})
+              false
+              (catch error true))])
+   :expected [true true]}])
+
+^{:refer work.core/bundle}
+(Test/check
+ [{:name "retains local targets outside the canonical portable plan"
+   :test (fn []
+           [(Work/plan? (work.core/plan (fixture-bundle)))
+            (fn? (get (work.core/targets (fixture-bundle)) "fixture/id"))])
+   :expected [true true]}])
+
+^{:refer work.core/plan}
+(Test/check
+ [{:name "projects the canonical plan"
+   :test (fn [] (Work/plan? (work.core/plan (fixture-bundle))))
+   :expected true}])
+
+^{:refer work.core/targets}
+(Test/check
+ [{:name "projects the process-local target table"
+   :test (fn [] (vec (keys (work.core/targets (fixture-bundle)))))
+   :expected ["fixture/id"]}])
+
+^{:refer work.core/merge-targets}
+(Test/check
+ [{:name "merges disjoint bundle targets"
+   :test (fn []
+           (vec
+            (keys
+             (work.core/merge-targets
+              [(fixture-bundle)
+               (work.core/bundle
+                (Work/pure "fixture/other")
+                {"fixture/other" (fn [input] input)})]))))
+   :expected ["fixture/id" "fixture/other"]}])
+
+^{:refer work.core/chain}
+(Test/check
+ [{:name "composes portable plans while retaining every target"
+   :test (fn []
+           (let [bundle (work.core/chain [(fixture-bundle)])]
+             [(Work/plan? (work.core/plan bundle))
+              (vec (keys (work.core/targets bundle)))]))
+   :expected [true ["fixture/id"]]}])
+
+^{:refer work.core/bind-targets}
+(Test/check
+ [{:name "binds local targets into a native registry"
+   :test (fn []
+           (let [registry (work.core/bind-targets
+                           (Work/new-registry)
+                           (work.core/targets (fixture-bundle)))]
+             (Work/target-names registry)))
+   :expected ["fixture/id"]}])
+
+^{:refer work.core/prepare}
+(Test/check
+ [{:name "creates opaque native registry and runtime values"
+   :test (fn []
+           (let [prepared (work.core/prepare (fixture-bundle))]
+             [(Base/type (:work/registry prepared))
+              (Base/type (:work/runtime prepared))]))
+   :expected [:std.native.WorkRegistry :std.native.WorkRuntime]}])
+
+^{:refer work.core/reset}
+(Test/check
+ [{:name "idempotently clears prepared runtime targets"
+   :test (fn []
+           (let [prepared (work.core/prepare (fixture-bundle))]
+             (work.core/reset prepared)
+             (work.core/reset prepared)
+             (Work/target-names (:work/registry prepared))))
+   :expected []}])
+
+^{:refer work.core/evaluate}
+(Test/check
+ [{:name "returns a native promise for bundle evaluation"
+   :test (fn []
+           (Base/type (work.core/evaluate (fixture-bundle) 7)))
+   :expected :std.native.Promise}])
+
+^{:refer work.core/submit}
+(Test/check
+ [{:name "submits a bundle as a native WorkRun"
+   :test (fn []
+           (Base/type (work.core/submit (fixture-bundle) 7)))
+   :expected :std.native.WorkRun}])

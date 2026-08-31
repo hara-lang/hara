@@ -1,0 +1,164 @@
+(ns work.flow.task.command-task-test
+  (:require [work.flow.task.command-task]))
+
+(defn fixture-options
+  ([] (fixture-options {}))
+  ([overrides]
+   (merge {:id :fixture
+           :run (fn [value context] {:status :return :data (* value 2)})}
+          overrides)))
+
+^{:refer work.flow.task.command-task/assert-options}
+(Test/check
+ [{:name "requires a map id and callable run handler"
+   :test (fn [] [(= :fixture (:id (work.flow.task.command-task/assert-options (fixture-options))))
+                 (try (work.flow.task.command-task/assert-options {:id :fixture}) false
+                      (catch error true))])
+   :expected [true true]}])
+
+^{:refer work.flow.task.command-task/normalise-options}
+(Test/check
+ [{:name "supplies version and record-on-error defaults"
+   :test (fn [] (select-keys (work.flow.task.command-task/normalise-options (fixture-options))
+                              [:id :version :on-error]))
+   :expected {:id :fixture :version 1 :on-error :record}}])
+
+^{:refer work.flow.task.command-task/input-value}
+(Test/check
+ [{:name "uses a configured input projection"
+   :test (fn [] [(work.flow.task.command-task/input-value (fixture-options) 2)
+                 (work.flow.task.command-task/input-value
+                  (fixture-options {:input (fn [subject context] (+ subject 1))}) 2)])
+   :expected [2 3]}])
+
+^{:refer work.flow.task.command-task/item-metadata}
+(Test/check
+ [{:name "uses metadata projection or an empty map"
+   :test (fn [] [(work.flow.task.command-task/item-metadata (fixture-options) :subject)
+                 (work.flow.task.command-task/item-metadata
+                  (fixture-options {:item/meta (fn [subject context] {:item/id :metadata})})
+                  :subject)])
+   :expected [{} {:item/id :metadata}]}])
+
+^{:refer work.flow.task.command-task/subject-item-id}
+(Test/check
+ [{:name "reads an item id only from map subjects"
+   :test (fn [] [(work.flow.task.command-task/subject-item-id {:item/id :subject})
+                 (work.flow.task.command-task/subject-item-id :subject)])
+   :expected [:subject nil]}])
+
+^{:refer work.flow.task.command-task/item-id}
+(Test/check
+ [{:name "prefers metadata item keys then subject item keys then command id"
+   :test (fn [] [(work.flow.task.command-task/item-id (fixture-options) {:item/id :subject} 2 {:item/id :metadata})
+                 (work.flow.task.command-task/item-id (fixture-options) {:item/id :subject} 2 {})
+                 (work.flow.task.command-task/item-id (fixture-options) :subject 2 {})])
+   :expected [:metadata :subject :fixture]}])
+
+^{:refer work.flow.task.command-task/item-base}
+(Test/check
+ [{:name "combines metadata with a stable item id and input"
+   :test (fn [] (work.flow.task.command-task/item-base
+                 (fixture-options {:item/meta (fn [subject context] {:tag :fast})})
+                 {:item/id :subject} 2))
+   :expected {:tag :fast :item/id :subject :item/input 2}}])
+
+^{:refer work.flow.task.command-task/prepare-value}
+(Test/check
+ [{:name "runs optional pre-processing"
+   :test (fn [] [(work.flow.task.command-task/prepare-value (fixture-options) 2)
+                 (work.flow.task.command-task/prepare-value
+                  (fixture-options {:pre (fn [value] (+ value 1))}) 2)])
+   :expected [2 3]}])
+
+^{:refer work.flow.task.command-task/invoke-value}
+(Test/check
+ [{:name "calls the task handler with command subject context"
+   :test (fn [] (work.flow.task.command-task/invoke-value
+                 (fixture-options {:run (fn [value context] [value (:command/subject context)])})
+                 2 :subject))
+   :expected [2 :subject]}])
+
+^{:refer work.flow.task.command-task/complete-value}
+(Test/check
+ [{:name "runs optional post-processing"
+   :test (fn [] [(work.flow.task.command-task/complete-value (fixture-options) 2)
+                 (work.flow.task.command-task/complete-value
+                  (fixture-options {:post (fn [value] (+ value 1))}) 2)])
+   :expected [2 3]}])
+
+^{:refer work.flow.task.command-task/output-record}
+(Test/check
+ [{:name "projects successful output only"
+   :test (fn [] [(work.flow.task.command-task/output-record
+                 (fixture-options {:output (fn [value] (+ value 1))})
+                 {:status :return :data 2})
+                 (work.flow.task.command-task/output-record
+                  (fixture-options {:output (fn [value] (+ value 1))})
+                  {:status :error :data 2})])
+   :expected [{:status :return :data 3} {:status :error :data 2}]}])
+
+^{:refer work.flow.task.command-task/display-value}
+(Test/check
+ [{:name "uses display projection only for successful records"
+   :test (fn [] [(work.flow.task.command-task/display-value
+                 (fixture-options {:display (fn [value] (str "v=" value))})
+                 {:status :return :data 2})
+                 (work.flow.task.command-task/display-value (fixture-options)
+                                                             {:status :error :data :bad})])
+   :expected ["v=2" {:status :error :data :bad}]}])
+
+^{:refer work.flow.task.command-task/successful-record}
+(Test/check
+ [{:name "records prepared output and display values"
+   :test (fn [] (work.flow.task.command-task/successful-record
+                 (fixture-options {:run (fn [value context] value)
+                                   :pre (fn [value] (+ value 1))
+                                   :post (fn [value] (+ value 1))
+                                   :output (fn [value] (* value 10))
+                                   :display (fn [value] (str "d=" value))})
+                 {:item/id :fixture :item/input 2} :subject 2))
+   :expected {:item/id :fixture :item/input 2 :status :return :data 40
+              :item/prepared 3 :item/display "d=40"}}])
+
+^{:refer work.flow.task.command-task/execute-record}
+(Test/check
+ [{:name "converts handler failures to result records by default"
+   :test (fn [] (:status
+                 (work.flow.task.command-task/execute-record
+                  (fixture-options {:run (fn [value context] (throw (ex :generic {} :ex/message "broken")))})
+                  {:item/id :fixture :item/input 2} :subject 2)))
+   :expected :error}])
+
+^{:refer work.flow.task.command-task/run-item}
+(Test/check
+ [{:name "runs an atomic tasklet subject"
+   :test (fn [] (select-keys (work.flow.task.command-task/run-item
+                              (fixture-options {:run (fn [value context] value)})
+                              {:item/id :subject})
+                              [:item/id :item/input :status :data]))
+   :expected {:item/id :subject :item/input {:item/id :subject}
+              :status :return}}])
+
+^{:refer work.flow.task.command-task/target-id}
+(Test/check
+ [{:name "derives stable native Work target names"
+   :test (fn [] (work.flow.task.command-task/target-id (fixture-options)))
+   :expected "work.flow.task.command-task/1/:fixture"}])
+
+^{:refer work.flow.task.command-task/compile}
+(Test/check
+ [{:name "compiles a portable plan with a local task target"
+   :test (fn [] (let [bundle (work.flow.task.command-task/compile (fixture-options))]
+                 [(Work/plan? (:work/plan bundle))
+                  (work.flow.task.command-task/task-work? bundle)
+                  (vec (keys (:work/targets bundle)))]))
+   :expected [true true ["work.flow.task.command-task/1/:fixture"]]}])
+
+^{:refer work.flow.task.command-task/task-work?}
+(Test/check
+ [{:name "recognises only tasklet bundles"
+   :test (fn [] [(work.flow.task.command-task/task-work?
+                 (work.flow.task.command-task/compile (fixture-options)))
+                 (work.flow.task.command-task/task-work? {})])
+   :expected [true false]}])

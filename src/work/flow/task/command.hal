@@ -1,0 +1,75 @@
+(ns work.flow.task.command
+  (:require [work.core]))
+
+(defn request-input
+  "Projects std.native.Command's parsed request into one task input map."
+  [request]
+  {:command/request request
+   :command/options (:options request)
+   :command/arguments (:arguments request)
+   :command/context (:context request)})
+
+(defn error-status?
+  [value]
+  (and (map? value)
+       (or (= :error (:status value)) (= :critical (:status value)))))
+
+(defn response
+  "Converts a task result into Command's closed portable response envelope."
+  [value]
+  {:stdout (if (error-status? value) "" (str value))
+   :stderr (if (error-status? value) (str value) "")
+   :exit (if (error-status? value) 1 0)})
+
+(defn ^{:public true} route
+  "Creates a native Command route whose handler evaluates a task definition bundle.
+   Command owns argv parsing; the task receives normalized options, arguments,
+   and context through request-input."
+  [options bundle]
+  (let [id (:id options)
+        path (:path options)
+        desc (:desc options)]
+    (if (not (keyword? id))
+      (throw (ex :argument {:command/id id}
+                 :ex/message "Task command route requires a keyword id")))
+    (if (not (vector? path))
+      (throw (ex :argument {:command/path path}
+                 :ex/message "Task command route requires a path vector")))
+    (if (not (string? desc))
+      (throw (ex :argument {:command/desc desc}
+                 :ex/message "Task command route requires a description")))
+    (work.core/assert-bundle bundle)
+    {:id id
+     :path path
+     :aliases (or (:aliases options) [])
+     :desc desc
+     :options (or (:options options) [])
+     :arguments (or (:arguments options) [])
+     :passthrough? (if (:passthrough? options) true false)
+     :handler (fn [request]
+                (response (deref (work.core/evaluate bundle (request-input request)))))}))
+
+(defn ^{:public true} install
+  "Installs one task route into an existing native Command application."
+  [app options bundle]
+  (Command/install app (route options bundle)))
+
+(defn ^{:public true} create
+  "Creates a native Command application and installs task route definitions."
+  [config definitions]
+  (let [app (Command/create config)]
+    (reduce
+     (fn [command definition]
+       (install command (:command/options definition) (:command/bundle definition))
+       command)
+     app
+     definitions)))
+
+(defn ^{:public true} run
+  [app argv context]
+  (Command/run app {:argv argv :context (or context {})}))
+
+(defn ^{:public true} reset
+  "Idempotently removes all task routes from a Command application."
+  [app]
+  (Command/reset app))

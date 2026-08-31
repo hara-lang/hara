@@ -1,0 +1,339 @@
+{:document/id :hara/package
+ :document/type :hara/tap-protocol
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "Hara project and package contract"
+ :document/summary
+ "Normative single-manifest project, dependency resolution, deterministic package build, prebuilt route-artifact selection, release and installation contract."
+ :spec/conforms-to {:spec/id :hara/tap-protocol-metaspec
+                    :spec/version "0.0.0-alpha"}
+
+ :platform/roles
+ [{:role/id :hara.package.role/author
+   :role/summary "Declares all project, package, build and extension intent in project.edn."}
+  {:role/id :hara.package.role/resolver
+   :role/summary "Resolves declared dependencies and remote artifacts into project.lock.edn."}
+  {:role/id :hara.package.role/builder
+   :role/summary "Compiles release artifacts and builds one deterministic .harp."}
+  {:role/id :hara.package.role/registry
+   :role/summary "Accepts immutable releases authorized by GitHub-governed publisher identity."}
+  {:role/id :hara.package.role/runtime
+   :role/summary "Selects, verifies, loads and closes package resources and prebuilt route artifacts."}]
+
+ :platform/entities
+ [{:entity/id :hara.package/project
+   :entity/path "project.edn"
+   :entity/authored true
+   :entity/summary "The only contributor-authored manifest for a Hara project."
+   :entity/required-fields [:hara/type :hara/version :project/id
+                            :project/version :project/source-paths
+                            :project/test-paths :project/extension-paths
+                            :project/capabilities]
+   :entity/optional-fields [:project/main :project/default-profile
+                            :project/profiles :project/runtime-profiles
+                            :project/artifact-paths
+                            :project/archive-root :project/dependencies
+                            :project/package :project/build
+                            :project/extensions :project/remote-artifacts]}
+  {:entity/id :hara.package/lock
+   :entity/path "project.lock.edn"
+   :entity/generated true
+   :entity/summary "Exact package, registry revision and remote-artifact resolution."
+   :entity/fields [:lock/format :runtime-sections :registries :packages
+                   :remote-artifacts]}
+  {:entity/id :hara.package/archive-index
+   :entity/path "package.edn"
+   :entity/generated true
+   :entity/summary "Immutable data-only index generated inside a .harp archive."
+   :entity/fields [:harp/format :package :files :resources :extensions
+                   :wasm-imports :flavors :schema/catalog
+                   :dependencies :descriptor :remote-artifacts :integrity]}
+  {:entity/id :hara.package/runtime-variant
+   :entity/summary "One prebuilt artifact selected only for its exact language loading route."
+   :entity/required-fields [:variant/artifact :variant/required-capabilities]
+   :entity/optional-fields [:variant/dependencies :variant/host-calls
+                            :variant/exports :variant/lifecycle]
+   :entity/containers [:wasm-imports :flavors]}
+  {:entity/id :hara.package/runtime-artifact
+   :entity/summary "A digest-bound prebuilt JAR, Wasm module, or HTA module."
+   :entity/required-fields [:artifact/type :artifact/path :artifact/sha256
+                            :artifact/target :artifact/abi
+                            :artifact/entry-point]
+   :entity/types [:jar :wasm :hta]}
+  {:entity/id :hara.package/runtime-selection
+   :entity/summary "The deterministic result of exact language-route selection and preflight."
+   :entity/fields [:selection/route :selection/source
+                   :selection/module-or-flavor :selection/artifact
+                   :selection/dependencies :selection/capabilities
+                   :selection/host-calls :selection/exports]}
+  {:entity/id :hara.package/release
+   :entity/summary "Immutable accepted package coordinate, version and archive digest."
+   :entity/fields [:release/coordinate :release/version :release/commit
+                   :release/project-sha256 :release/archive-sha256
+                   :release/attestation]}]
+
+ :project/fields
+ {:hara/type {:value :project}
+  :hara/version {:type :semver}
+  :project/id {:type :coordinate}
+  :project/version {:type :semver}
+  :project/source-paths {:type :relative-path-vector}
+  :project/test-paths {:type :relative-path-vector}
+  :project/extension-paths {:type :relative-path-vector}
+  :project/artifact-paths {:type :relative-path-vector}
+  :project/archive-root {:type :relative-path}
+  :project/capabilities {:type :set}
+  :project/dependencies {:type :dependency-map}
+  :project/runtime-profiles {:type :runtime-profile-map}
+  :project/package {:type :package-options}
+  :project/build {:type :build-declaration}
+  :project/extensions {:type :extension-map}
+  :project/remote-artifacts {:type :remote-artifact-map}}
+
+ :package-artifact/fields
+ {:package
+  {:required [:identity :version]
+   :optional [:provenance]
+   :provenance/required-when-route-artifacts [:repository :commit]}
+  :files
+  {:type :path-map
+   :entry/required [:sha256 :size]}
+  :wasm-imports
+  {:type :logical-module-map
+   :entry/required [:variant/artifact :variant/required-capabilities]
+   :artifact-types [:wasm :hta]}
+  :flavors
+  {:type :host-flavor-map
+   :reserved-keys [:wasm]
+   :entry/required [:variant/artifact :variant/required-capabilities]
+   :artifact-types [:jar]}
+  :variant/artifact
+  {:type :map
+   :required [:artifact/type :artifact/path :artifact/sha256
+              :artifact/target :artifact/abi :artifact/entry-point]}
+  :variant/route
+  {:type :map
+   :artifact-type-to-route {:wasm :import
+                            :hta :require
+                            :jar :flavor}}
+  :variant/required-capabilities {:type :set}
+  :variant/host-calls {:type :set}
+  :variant/exports {:type :set}
+  :variant/dependencies {:type :map}
+  :variant/lifecycle
+  {:type :map
+   :fields [:lifecycle/load :lifecycle/close
+            :lifecycle/session-isolation :lifecycle/async
+            :lifecycle/cancellation]
+   :required-values {:lifecycle/load :idempotent
+                     :lifecycle/close :idempotent
+                     :lifecycle/session-isolation true}}}
+
+ :platform/operations
+ [{:operation/id :hara.package.operation/check
+   :operation/role :hara.package.role/builder
+   :operation/input :hara.package/project
+   :operation/output :hara.package/check-report
+   :operation/failures [:invalid-edn :invalid-field :unsafe-path
+                        :duplicate-namespace :invalid-extension]}
+  {:operation/id :hara.package.operation/sync
+   :operation/role :hara.package.role/resolver
+   :operation/input :hara.package/project
+   :operation/output :hara.package/lock
+   :operation/failures [:registry-unavailable :version-conflict
+                        :runtime-profile-conflict :stale-runtime-lock
+                        :artifact-unavailable :integrity-mismatch]}
+  {:operation/id :hara.package.operation/build
+   :operation/role :hara.package.role/builder
+   :operation/input [:hara.package/project :hara.package/lock]
+   :operation/output :hara.harp/archive
+   :operation/failures [:unresolved-lock :compile-failed :build-failed
+                        :missing-output :nondeterministic-output]}
+  {:operation/id :hara.package.operation/publish
+   :operation/role :hara.package.role/registry
+   :operation/input :hara.package/signed-project-intent
+   :operation/output :hara.package/release
+   :operation/failures [:unauthorized :source-mismatch :project-mismatch
+                        :archive-conflict :release-conflict]}
+  {:operation/id :hara.package.operation/select-route-artifact
+   :operation/role :hara.package.role/runtime
+   :operation/input [:hara.package/archive-index :hara.package/load-route
+                     :hara.package/runtime-requirements]
+   :operation/output :hara.package/runtime-selection
+   :operation/failures [:package/invalid-manifest
+                        :package/duplicate-wasm-import
+                        :package/duplicate-flavor
+                        :package/missing-wasm-import
+                        :package/missing-require-artifact
+                        :package/missing-flavor
+                        :package/artifact-type-mismatch
+                        :package/target-mismatch
+                        :package/abi-mismatch
+                        :package/capability-denied
+                        :package/host-call-denied]}
+  {:operation/id :hara.package.operation/verify-artifact
+   :operation/role :hara.package.role/runtime
+   :operation/input [:hara.package/runtime-selection :hara.package/archive-bytes]
+   :operation/output :hara.package/verified-runtime-selection
+   :operation/failures [:package/missing-artifact
+                        :package/digest-mismatch
+                        :package/size-mismatch]}
+  {:operation/id :hara.package.operation/initialize-artifact
+   :operation/role :hara.package.role/runtime
+   :operation/input [:hara.package/verified-runtime-selection
+                     :hara.package/session]
+   :operation/output :hara.package/provider-registration
+   :operation/failures [:package/initialization-failed
+                        :package/registration-failed]}
+  {:operation/id :hara.package.operation/close-artifact
+   :operation/role :hara.package.role/runtime
+   :operation/input :hara.package/provider-registration
+   :operation/output :hara.package/closed-registration
+   :operation/failures [:package/close-failed]}
+  {:operation/id :hara.package.operation/load
+   :operation/role :hara.package.role/runtime
+   :operation/input [:hara.package/lock :hara.package/namespace]
+   :operation/output :hara.package/namespace
+   :operation/failures [:missing-package :hash-mismatch
+                        :incompatible-hir :capability-denied]}
+  {:operation/id :hara.package.operation/ensure
+   :operation/role :hara.package.role/runtime
+   :operation/input [:hara.package/lock :hara.package/coordinate]
+   :operation/output :hara.package/mounted-graph
+   :operation/failures [:missing-package :hash-mismatch
+                        :incompatible-hir :capability-denied]}
+  {:operation/id :hara.package.operation/unload
+   :operation/role :hara.package.role/runtime
+   :operation/input [:hara.package/coordinate :hara.package/unload-options]
+   :operation/output :hara.package/unloaded-coordinates
+   :operation/failures [:missing-package :active-dependent
+                        :current-namespace :capability-denied]}]
+
+ :platform/invariants
+ [{:requirement/id :hara.package/single-authored-manifest
+   :requirement/level :must
+   :requirement/text "project.edn is the sole contributor-authored manifest for project identity, dependencies, packaging, builds, extensions and remote artifacts."}
+  {:requirement/id :hara.package/generated-documents
+   :requirement/level :must
+   :requirement/text "project.lock.edn and the package.edn inside a .harp are generated outputs and are never parallel authoring surfaces."}
+  {:requirement/id :hara.package/data-only
+   :requirement/level :must
+   :requirement/text "project.edn and package.edn are EDN data parsed without evaluating HAL, loading classes or modules, constructing host objects, or granting host authority."}
+  {:requirement/id :hara.package/exact-lock
+   :requirement/level :must
+   :requirement/text "The lock records exact versions, registry revisions, source commits, archive digests and remote-artifact digests needed for reproducible loading."}
+  {:requirement/id :hara.package/reconcile-before-runtime
+   :requirement/level :must
+   :requirement/text "Network reconciliation completes before evaluation; require resolves only the mounted local graph and never downloads code."}
+  {:requirement/id :hara.package/source-and-hir
+   :requirement/level :must
+   :requirement/text "Packages may carry HAL, HIR and EDN resources; a compatible verified HIR is preferred and HAL remains the portable fallback when included."}
+  {:requirement/id :hara.package/wasm-import-host-boundary
+   :requirement/level :must
+   :requirement/text "(:import ...) is reserved for Wasm modules. A package declares shared Wasm modules under :wasm-imports, keyed by logical module name; :wasm is never a host flavor."}
+  {:requirement/id :hara.package/host-flavor-boundary
+   :requirement/level :must
+   :requirement/text "Host-native artifacts are declared under :flavors, keyed by host-reserved flavor such as :jvm or :dotnet. Host import specifications belong inside the corresponding (:flavor :jvm [...]) clause and never in :import."}
+  {:requirement/id :hara.package/shared-wasm-loader
+   :requirement/level :must
+   :requirement/text "Every supported host loads the same verified Wasm import module bytes selected by logical module name, digest, target, ABI, capabilities, host calls and lifecycle metadata; host flavor artifacts are selected independently."}
+  {:requirement/id :hara.package/no-wasm-flavor
+   :requirement/level :must
+   :requirement/text "A manifest or namespace declaration using :wasm as a flavor is rejected with a stable diagnostic; Wasm is an artifact/provider boundary, not a host implementation."}
+  {:requirement/id :hara.package/no-install-execution
+   :requirement/level :must
+   :requirement/text "Installing a .harp verifies and extracts bytes but does not execute build hooks, lifecycle scripts, package code, Cargo, Maven, javac, rustc, or another compiler or build tool."}
+  {:requirement/id :hara.package/schema-catalog-admission
+   :requirement/level :must
+   :requirement/text "When package.edn declares :schema/catalog, its format, archive-relative path and SHA-256 digest must agree with :files, and the complete catalog bytes must pass the canonical std.typed.catalog.document verifier before build, publication, installation, activation or provider registration. Packages without the field remain valid; catalog admission failures are atomic and produce deterministic diagnostics."}
+  {:requirement/id :hara.package/immutable-release
+   :requirement/level :must
+   :requirement/text "An accepted coordinate and version is bound permanently to one source commit, one project.edn digest and one archive digest."}
+  {:requirement/id :hara.package/github-governance
+   :requirement/level :must
+   :requirement/text "Contributor identity and repository authority are established through GitHub identity and exact repository identifiers; accepted management changes remain Git records."}
+  {:requirement/id :hara.package/runtime-profile-shape
+   :requirement/level :must
+   :requirement/text "Runtime-specific project intent is declared only below :project/runtime-profiles, keyed by :jvm or :rust, using :runtime/source-paths, :runtime/test-paths, :runtime/extension-paths, :runtime/native-source-paths, :runtime/target-path, and :runtime/dependencies."}
+  {:requirement/id :hara.package/runtime-profile-auto-selection
+   :requirement/level :must
+   :requirement/text "JVM commands select the :jvm project profile and native Rust commands select the :rust project profile automatically; ordinary commands do not expose a project runtime-profile selection flag."}
+  {:requirement/id :hara.package/runtime-profile-effective-paths
+   :requirement/level :must
+   :requirement/text "Effective HAL source, test, and extension roots are the ordered shared roots followed by the selected runtime profile additions; native source roots and target paths belong only to the selected runtime profile."}
+  {:requirement/id :hara.package/runtime-profile-namespace-isolation
+   :requirement/level :must
+   :requirement/text "A namespace may have different implementations in disjoint runtime-only roots, but duplicate declarations within one effective runtime profile are rejected and package resource metadata records runtime ownership."}
+  {:requirement/id :hara.package/runtime-profile-build-orthogonality
+   :requirement/level :must
+   :requirement/text "Build profiles under :project/profiles remain orthogonal to runtime profiles and never select or rewrite :project/runtime-profiles."}
+  {:requirement/id :hara.package/runtime-profile-legacy-hard-cut
+   :requirement/level :must
+   :requirement/text "The top-level :jvm/source-paths, :jvm/dependencies, and :jvm/target-path keys are invalid; diagnostics identify their replacements under :project/runtime-profiles :jvm."}
+  {:requirement/id :hara.package/runtime-profile-dependency-merge
+   :requirement/level :must
+   :requirement/text "Shared :project/dependencies are merged with the selected profile's :hara declarations; conflicting requirements fail closed, Maven versions are exact, and Hara declarations use semantic-version requirements."}
+  {:requirement/id :hara.package/runtime-profile-lock-sections
+   :requirement/level :must
+   :requirement/text "project.lock.edn stores independent runtime-keyed sections with normalized declaration digests and complete exact dependency graphs; synchronizing the active runtime preserves every inactive section atomically."}
+  {:requirement/id :hara.package/runtime-profile-locked-modes
+   :requirement/level :must
+   :requirement/text "Locked and frozen execution reject an absent, stale, incomplete, or manifest-divergent active runtime section, while offline execution performs no network access."}
+  {:requirement/id :hara.package/runtime-profile-package-mount
+   :requirement/level :must
+   :requirement/text "Before evaluation, the active locked graph is mounted read-only; package builds retain shared and runtime-specific resources, profile-scoped indexes, and the exact multi-runtime lockfile."}
+  {:requirement/id :hara.package/language-route-selection
+   :requirement/level :must
+   :requirement/text "(:import ...) selects only a direct :wasm artifact from :wasm-imports; (:require ...) selects portable Hara or generated :hta Wasm; and (:flavor :jvm [...]) selects only a :jar from :flavors :jvm. No route is rewritten into another route."}
+  {:requirement/id :hara.package/portable-package-compatibility
+   :requirement/level :must
+   :requirement/text "A package with portable HAL/HIR resources and no :wasm-imports or :flavors remains valid and resolves without a native artifact."}
+  {:requirement/id :hara.package/route-artifact-identity
+   :requirement/level :must
+   :requirement/text "One package identity and version may declare independent entries in :wasm-imports and :flavors; duplicate logical imports or duplicate host flavors are invalid, and :wasm is reserved rather than a host flavor."}
+  {:requirement/id :hara.package/exact-route-selection
+   :requirement/level :must
+   :requirement/text "Selection uses only the exact language route: a missing :import module fails with :package/missing-wasm-import, a missing HTA :require artifact fails with :package/missing-require-artifact, and a missing :jvm flavor fails with :package/missing-flavor; none falls back to another route."}
+  {:requirement/id :hara.package/route-artifact-types
+   :requirement/level :must
+   :requirement/text "A direct :import selects only :artifact/type :wasm, :require selects only :artifact/type :hta when using a generated provider, and an explicit :flavor :jvm import selects only :artifact/type :jar. Other route/type pairs are invalid."}
+  {:requirement/id :hara.package/artifact-file-binding
+   :requirement/level :must
+   :requirement/text "Every selected artifact path is a safe archive-relative file in :files, and :artifact/sha256 exactly equals that file entry's sha256 digest."}
+  {:requirement/id :hara.package/artifact-verification-before-load
+   :requirement/level :must
+   :requirement/text "The runtime verifies the selected artifact bytes, target, ABI, required capabilities, and host-call allowlist before class loading, module instantiation, provider registration, or package code execution."}
+  {:requirement/id :hara.package/route-dependency-isolation
+   :requirement/level :must
+   :requirement/text "Shared dependencies remain package-wide. :variant/dependencies are visible only to the selected route artifact and never leak into another route graph."}
+  {:requirement/id :hara.package/provenance-required-for-route-artifacts
+   :requirement/level :must
+   :requirement/text "A package declaring :wasm-imports or :flavors records immutable source repository and commit provenance in the :package map; registration fails before loading when provenance is absent or inconsistent with the verified release."}
+  {:requirement/id :hara.package/jvm-trusted-registration
+   :requirement/level :must
+   :requirement/text "A verified JVM JAR selected by an explicit (:flavor :jvm [...]) import is opened in an isolated trusted loader, resolves only declared dependencies, registers its declared entry point atomically, and discards the loader and partial registration on initialization failure."}
+  {:requirement/id :hara.package/wasm-host-authority
+   :requirement/level :must
+   :requirement/text "A verified direct Wasm :import or generated HTA :require module receives only declared host calls. Direct :import rejects capability and host-call requirements unless its host contract grants them; undeclared calls, raw sockets, credentials, native handles, and ambient host authority are unavailable."}
+  {:requirement/id :hara.package/wasm-lifecycle
+   :requirement/level :must
+   :requirement/text "Wasm/HTA async operations have explicit completion and cancellation; package handles are session-scoped; load and close are idempotent; close cancels outstanding work and releases handles before reporting completion."}
+  {:requirement/id :hara.package/failure-isolation
+   :requirement/level :must
+   :requirement/text "Digest, ABI, target, capability, host-call, initialization, cancellation, and close failures are stable package errors and do not expose partial registration to another package or session."}
+  {:requirement/id :hara.package/runtime-neutral-descriptor
+   :requirement/level :must
+   :requirement/text "Portable descriptors contain only ordinary data and stable operation, error, capability, and lifecycle identifiers; they never contain credentials, classloaders, raw sockets, native pointers, or live handles."}
+  {:requirement/id :hara.package/canonical-route-metadata
+   :requirement/level :must
+   :requirement/text "Manifest validation and canonicalization are deterministic and idempotent. Logical import names, host flavors, paths, dependency coordinates, capabilities, host calls, and exports have one normalized ordering and representation."}]
+
+ :platform/conformance
+ [{:conformance/id :hara.package/projects
+   :conformance/path "conformance/projects.edn"}
+  {:conformance/id :hara.package/coordinates
+   :conformance/path "conformance/coordinates.edn"}
+  {:conformance/id :hara.package/releases
+   :conformance/path "conformance/releases.edn"}
+  {:conformance/id :hara.package/catalog-admission
+   :conformance/path "conformance/catalog-admission.edn"}]}

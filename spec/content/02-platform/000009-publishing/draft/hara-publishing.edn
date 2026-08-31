@@ -1,0 +1,132 @@
+{:document/id :hara/publishing
+ :document/type :hara/tap-protocol
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "Hara self-publishing protocol"
+ :document/summary
+ "Normative GitHub identity, project.edn intake, isolated package build, protected finalization and accepted Git record contract."
+ :spec/conforms-to {:spec/id :hara/tap-protocol-metaspec
+                    :spec/version "0.0.0-alpha"}
+
+ :platform/roles
+ [{:role/id :hara.publishing.role/publisher
+   :role/summary "Selects an immutable Git commit whose project.edn declares the release."}
+  {:role/id :hara.publishing.role/portal
+   :role/summary "Uses GitHub sign-in to verify the contributor and submit a registry change."}
+  {:role/id :hara.publishing.role/identity
+   :role/summary "Binds a GitHub identity to a proven publisher key and issues short-lived publication authorization."}
+  {:role/id :hara.publishing.role/builder
+   :role/summary "Builds the exact project in an untrusted environment without protected credentials."}
+  {:role/id :hara.publishing.role/finalizer
+   :role/summary "Revalidates, attests, uploads immutable objects and proposes accepted records."}
+  {:role/id :hara.publishing.role/registry
+   :role/summary "Makes accepted records authoritative through protected Git."}]
+
+ :platform/entities
+ [{:entity/id :hara.publishing/intent
+   :entity/summary "Publisher-authorized release request bound to project.edn at an exact commit."
+   :entity/fields [:intent/format :intent/tap :intent/coordinate
+                   :intent/version :intent/repository :intent/tag
+                   :intent/commit :intent/project-sha256 :intent/recipe-sha256
+                   :intent/identity-revision]}
+  {:entity/id :hara.publishing/publisher-key
+   :entity/summary "Root-policy publisher key bound to a stable GitHub subject and narrowly scoped coordinates."
+   :entity/fields [:publisher/key-id :publisher/public-key
+                   :publisher/github-subject :publisher/scopes
+                   :publisher/revoked]}
+  {:entity/id :hara.publishing/publication-authorization
+   :entity/summary "One-time, short-lived identity assertion binding a publisher key and GitHub identity to one immutable intent."
+   :entity/fields [:authorization/format :authorization/key-id
+                   :authorization/github-subject :authorization/intent-sha256
+                   :authorization/expires-at :authorization/nonce
+                   :authorization/identity-revision]}
+  {:entity/id :hara.publishing/attestation
+   :entity/summary "Protected CI statement binding project input, lock and final archive bytes."
+   :entity/fields [:attestation/intent-sha256 :attestation/builder
+                   :attestation/project-sha256 :attestation/lock-sha256
+                   :attestation/outputs :attestation/identity-revision]}
+  {:entity/id :hara.publishing/release-record
+   :entity/summary "Accepted immutable package release."
+   :entity/fields [:release/coordinate :release/version :release/commit
+                   :release/project-sha256 :release/archive-sha256
+                   :release/attestation]}]
+
+ :platform/operations
+ [{:operation/id :hara.publishing.operation/sign-in
+   :operation/role :hara.publishing.role/portal
+   :operation/input :github/oauth-code
+   :operation/output :hara.publishing/session
+   :operation/failures [:oauth-denied :identity-unavailable]}
+  {:operation/id :hara.publishing.operation/enroll-key
+   :operation/role :hara.publishing.role/identity
+   :operation/input :hara.publishing.publisher-key-proof
+   :operation/output :hara.publishing/grant-status
+   :operation/failures [:invalid-key-proof :identity-mismatch :grant-pending
+                        :key-revoked]}
+  {:operation/id :hara.publishing.operation/authorize-publication
+   :operation/role :hara.publishing.role/identity
+   :operation/input :hara.publishing.intent
+   :operation/output :hara.publishing.publication-authorization
+   :operation/failures [:grant-pending :grant-denied :authorization-expired]}
+  {:operation/id :hara.publishing.operation/submit
+   :operation/role :hara.publishing.role/portal
+   :operation/input :hara.publishing/project-selection
+   :operation/output :hara.publishing/request-status
+   :operation/failures [:invalid-project :unauthorized-repository
+                        :tag-mismatch :duplicate-conflict]}
+  {:operation/id :hara.publishing.operation/build
+   :operation/role :hara.publishing.role/builder
+   :operation/input :hara.publishing/intent
+   :operation/output :hara.publishing/build-output
+   :operation/failures [:source-mismatch :project-mismatch :lock-mismatch
+                        :artifact-mismatch :build-failed
+                        :nondeterministic-output]}
+  {:operation/id :hara.publishing.operation/finalize
+   :operation/role :hara.publishing.role/finalizer
+   :operation/input :hara.publishing/build-output
+   :operation/output :hara.publishing/release-record
+   :operation/failures [:revalidation-failed :object-conflict
+                        :registry-conflict]}]
+
+ :platform/invariants
+ [{:requirement/id :hara.publishing/github-identity
+   :requirement/level :must
+   :requirement/text "The portal uses GitHub sign-in for contributor identity and a narrowly scoped GitHub App for repository authorization and registry pull requests."}
+  {:requirement/id :hara.publishing/publisher-key-proof
+   :requirement/level :must
+   :requirement/text "A publisher proves possession of an Ed25519 private key over a fresh device challenge before that public key can be bound to a GitHub subject."}
+  {:requirement/id :hara.publishing/scoped-grants
+   :requirement/level :must
+   :requirement/text "A root-signed identity policy grants publisher keys only exact coordinates or a GitHub owner's namespace; protected namespaces require review and the policy signature must verify before use."}
+  {:requirement/id :hara.publishing/publication-authorization
+   :requirement/level :must
+   :requirement/text "Each submission carries a one-time, short-lived identity authorization bound to the canonical intent digest, publisher key, GitHub subject and signed identity-policy revision."}
+  {:requirement/id :hara.publishing/project-authority
+   :requirement/level :must
+   :requirement/text "Publication reads all release, package, build, extension and remote-artifact intent from project.edn at the selected commit."}
+  {:requirement/id :hara.publishing/exact-source
+   :requirement/level :must
+   :requirement/text "The signed source tag resolves to the declared commit, defaults to the bare project version unless project.edn declares a release-tag override, the canonical repository identity and exact project.edn digest are signed or portal-attested."}
+  {:requirement/id :hara.publishing/credential-separation
+   :requirement/level :must
+   :requirement/text "Untrusted intake and build jobs cannot access registry mutation, object-store write or finalizer signing credentials."}
+  {:requirement/id :hara.publishing/reproducible
+   :requirement/level :must
+   :requirement/text "The builder resolves project.edn, verifies project.lock.edn, mirrors digest-pinned remote inputs and produces a deterministic .harp."}
+  {:requirement/id :hara.publishing/accepted-git-only
+   :requirement/level :must
+   :requirement/text "Only accepted intents, attestations, generated package indexes and release records enter authoritative registry Git."}
+  {:requirement/id :hara.publishing/git-commit-point
+   :requirement/level :must
+   :requirement/text "A release becomes visible only after its protected registry change is merged."}
+  {:requirement/id :hara.publishing/idempotent
+   :requirement/level :must
+   :requirement/text "Repeating an identical accepted request returns the existing release; the same coordinate and version with different content is rejected."}]
+
+ :platform/conformance
+ [{:conformance/id :hara.publishing/intents
+   :conformance/path "conformance/intents.edn"}
+  {:conformance/id :hara.publishing/identity
+   :conformance/path "conformance/identity.edn"}
+  {:conformance/id :hara.publishing/finalization
+   :conformance/path "conformance/finalization.edn"}]}

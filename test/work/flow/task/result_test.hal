@@ -1,0 +1,104 @@
+(ns work.flow.task.result-test
+  (:require [work.flow.task.result]))
+
+(def fixture-records
+  [{:status :return :data 7 :elapsed 5 :changed true :inserts 2 :write true}
+   {:status :warn :data :notice :elapsed 2}
+   {:status :error :data :bad :elapsed 1 :deletes 3}])
+
+(def fixture-batch
+  {:items [{:item/id :one} {:item/id :two} {:item/id :three}]
+   :results (vec (map (fn [record] {:item/value record}) fixture-records))})
+
+^{:refer work.flow.task.result/status}
+(Test/check
+ [{:name "accepts only the stable result statuses"
+   :test (fn [] [(work.flow.task.result/status {:status :warn})
+                 (work.flow.task.result/status {:status :unknown})
+                 (work.flow.task.result/status :raw)])
+   :expected [:warn :return :return]}])
+
+^{:refer work.flow.task.result/normalise}
+(Test/check
+ [{:name "normalises records and scalar result values"
+   :test (fn [] [(work.flow.task.result/normalise :one {:status :warn :data 1})
+                 (work.flow.task.result/normalise :two 2)])
+   :expected [{:item/id :one :status :warn :data 1}
+              {:item/id :two :status :return :data 2}]}])
+
+^{:refer work.flow.task.result/error-record}
+(Test/check
+ [{:name "turns an error value into a portable error record"
+   :test (fn [] (work.flow.task.result/error-record :one :broken))
+   :expected {:item/id :one :status :error :error ":broken"}}])
+
+^{:refer work.flow.task.result/records}
+(Test/check
+ [{:name "projects manifest item values in order"
+   :test (fn [] (work.flow.task.result/records (:results fixture-batch)))
+   :expected [{:status :return :data 7 :elapsed 5 :changed true :inserts 2 :write true}
+              {:status :warn :data :notice :elapsed 2}
+              {:status :error :data :bad :elapsed 1 :deletes 3}]}])
+
+^{:refer work.flow.task.result/with-status}
+(Test/check
+ [{:name "selects only requested statuses"
+   :test (fn [] (work.flow.task.result/with-status fixture-records [:warn :error]))
+   :expected [{:status :warn :data :notice :elapsed 2}
+              {:status :error :data :bad :elapsed 1 :deletes 3}]}])
+
+^{:refer work.flow.task.result/group}
+(Test/check
+ [{:name "groups ordinary warning and failing records"
+   :test (fn [] (work.flow.task.result/group fixture-records))
+   :expected {:results [{:status :return :data 7 :elapsed 5 :changed true :inserts 2 :write true}]
+              :warnings [{:status :warn :data :notice :elapsed 2}]
+              :errors [{:status :error :data :bad :elapsed 1 :deletes 3}]}}])
+
+^{:refer work.flow.task.result/visible-result?}
+(Test/check
+ [{:name "keeps successful values unless the ignore predicate suppresses them"
+   :test (fn [] [(work.flow.task.result/visible-result? nil {:status :return :data :keep})
+                 (work.flow.task.result/visible-result? (fn [value] (= value :hide))
+                                                        {:status :return :data :hide})
+                 (work.flow.task.result/visible-result? nil {:status :warn :data :notice})])
+   :expected [true false false]}])
+
+^{:refer work.flow.task.result/project-result}
+(Test/check
+ [{:name "applies output projection only when configured"
+   :test (fn [] [(work.flow.task.result/project-result nil {:data 7})
+                 (work.flow.task.result/project-result (fn [value] (+ value 1)) {:data 7})])
+   :expected [{:data 7} {:data 8}]}])
+
+^{:refer work.flow.task.result/aggregate}
+(Test/check
+ [{:name "applies named selectors reducers and initials"
+   :test (fn []
+           (work.flow.task.result/aggregate
+            {:fixed 1}
+            {:elapsed {:select (fn [record] (:elapsed record))
+                       :reduce + :initial 0}}
+            fixture-records))
+   :expected {:fixed 1 :elapsed 8}}])
+
+^{:refer work.flow.task.result/summarise}
+(Test/check
+ [{:name "summarises result counts visible results and elapsed time"
+   :test (fn [] (:summary (work.flow.task.result/summarise fixture-batch)))
+   :expected {:items 3 :results 1 :warnings 1 :errors 1 :cumulative 8}}])
+
+^{:refer work.flow.task.result/transform-summary}
+(Test/check
+ [{:name "adds transformation counters to the base summary"
+   :test (fn [] (:summary (work.flow.task.result/transform-summary fixture-batch {})))
+   :expected {:items 3 :results 1 :warnings 1 :errors 1 :cumulative 8
+              :changed 1 :inserts 2 :deletes 3 :written 1 :verified 0}}])
+
+^{:refer work.flow.task.result/package}
+(Test/check
+ [{:name "keeps all selects one key or projects selected keys"
+   :test (fn [] [(work.flow.task.result/package {:a 1 :b 2} :all)
+                 (work.flow.task.result/package {:a 1 :b 2} :a)
+                 (work.flow.task.result/package {:a 1 :b 2} [:b :a])])
+   :expected [{:a 1 :b 2} 1 {:a 1 :b 2}]}])

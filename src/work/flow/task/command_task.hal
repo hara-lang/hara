@@ -1,0 +1,124 @@
+(ns work.flow.task.command-task
+  (:require [work.core]
+            [work.flow.task.result :as result]))
+
+(def schema-id "work.flow.task.command-task/1")
+
+(defn assert-options
+  [options]
+  (if (not (map? options))
+    (throw (ex :argument {:options options}
+               :ex/message "Unit task command options must be a map")))
+  (if (nil? (:id options))
+    (throw (ex :dependency {} :ex/message "Unit task command requires an id")))
+  (if (not (fn? (:run options)))
+    (throw (ex :dependency {:id (:id options)}
+               :ex/message "Unit task command requires a run function")))
+  options)
+
+(defn normalise-options
+  [options]
+  (merge {:version 1 :on-error :record} (assert-options options)))
+
+(defn input-value
+  [options subject]
+  (let [input-function (:input options)]
+    (if input-function (input-function subject {}) subject)))
+
+(defn item-metadata
+  [options subject]
+  (let [metadata-function (:item/meta options)]
+    (if metadata-function (or (metadata-function subject {}) {}) {})))
+
+(defn subject-item-id
+  [subject]
+  (if (and (map? subject) (has? subject :item/id)) (:item/id subject) nil))
+
+(defn item-id
+  [options subject value metadata]
+  (let [item-key (:item-key options)]
+    (or (:item/id metadata)
+        (if item-key (item-key value) nil)
+        (subject-item-id subject)
+        (:id options))))
+
+(defn item-base
+  [options subject value]
+  (let [metadata (item-metadata options subject)
+        id (item-id options subject value metadata)]
+    (assoc (assoc metadata :item/id id) :item/input value)))
+
+(defn prepare-value
+  [options value]
+  (let [pre (:pre options)] (if pre (pre value) value)))
+
+(defn invoke-value
+  [options value subject]
+  ((:run options) value {:command/subject subject}))
+
+(defn complete-value
+  [options value]
+  (let [post (:post options)] (if post (post value) value)))
+
+(defn output-record
+  [options record]
+  (let [output (:output options)]
+    (if (and output (= :return (:status record)))
+      (assoc record :data (output (:data record)))
+      record)))
+
+(defn display-value
+  [options record]
+  (if (= :return (:status record))
+    (let [display (:display options)]
+      (if display (display (:data record)) (:data record)))
+    record))
+
+(defn successful-record
+  [options base subject value]
+  (let [prepared (prepare-value options value)
+        raw (invoke-value options prepared subject)
+        completed (complete-value options raw)
+        normalised (merge base (result/normalise (:item/id base) completed))
+        projected (output-record options normalised)]
+    (assoc projected :item/prepared prepared :item/display (display-value options projected))))
+
+(defn execute-record
+  [options base subject value]
+  (if (= :fail (:on-error options))
+    (successful-record options base subject value)
+    (try
+      (successful-record options base subject value)
+      (catch error
+        (merge base (result/error-record (:item/id base) error))))))
+
+(defn ^{:public true} run-item
+  "Runs one tasklet subject without embedding its process-local handler in WorkPlan data."
+  [options subject]
+  (let [value (input-value options subject)
+        base (item-base options subject value)]
+    (execute-record options base subject value)))
+
+(defn target-id
+  [options]
+  (str schema-id "/" (:id options)))
+
+(defn ^{:public true} compile
+  "Compiles an atomic tasklet to a portable Work plan plus a local target table."
+  [raw-options]
+  (let [options (normalise-options raw-options)
+        target (target-id options)]
+    (assoc
+     (work.core/bundle (Work/step target)
+                       {target (fn [subject] (run-item options subject))})
+     :task/schema schema-id
+     :task/options options)))
+
+(def ^{:public true} tasklet compile)
+(def ^{:public true} unit tasklet)
+
+(defn ^{:public true} task-work?
+  [value]
+  (and (work.core/bundle? value) (= schema-id (:task/schema value))))
+
+(def ^{:public true} tasklet? task-work?)

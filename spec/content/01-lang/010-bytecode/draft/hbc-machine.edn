@@ -1,0 +1,70 @@
+{:document/id :hal/hbc-machine
+ :document/type :portable-machine-spec
+ :document/version "0-alpha"
+ :document/status :draft
+ :document/title "HBC synchronous machine semantics"
+ :document/summary
+ "Backend-neutral observable semantics for an authenticated and structurally validated HBC program. Implementations need not share internal frames, slots, dispatch code, or optimization tiers."
+
+ :precondition
+ {:artifact :hal/hbc0-wire
+  :rule "Authentication, decoding, and structural validation complete before the machine may mutate namespaces, globals, frames, host state, or scheduler state."
+  :failure "Malformed and incompatible artifacts are artifact errors, not guest exceptions."}
+
+ :state
+ {:program "immutable decoded functions, constants, type tables and entry index"
+  :namespace-registry "selected runtime registry; an owning namespace is selected before entry"
+  :frames "ordered active calls, each with instruction pointer, locals, captures, operand stack and handler state"
+  :globals "runtime Vars resolved through the selected namespace registry"
+  :result "one ordinary Hara value or one structured execution error"}
+
+ :frame-laws
+ {:entry "execution starts at the program entry function with arity zero"
+  :stack "each instruction has a fixed operand effect; underflow and inconsistent join heights are invalid before execution"
+  :locals "parameters precede captures and body locals; every slot access is in range"
+  :return "return requires exactly one operand, removes the current frame, and pushes the value to its caller or yields the terminal result"
+  :calls "callee expression precedes arguments; arity is checked before entering the callee"
+  :closures "captures are copied by value when the closure is created; globals remain late-bound Vars"
+  :control "jumps target instruction boundaries in the same function; truth follows ordinary Hara truthiness"}
+
+ :globals-and-namespaces
+ {:get "resolve and dereference a Var in the current namespace, aliases, or a qualified namespace"
+  :def "intern in the owning namespace and return the defined value"
+  :set "replace the root of an existing Var and return the replacement"
+  :var "return the Var identity rather than its root value"
+  :declare "establish forward visibility without inventing a value"
+  :transaction "tool.vm execution restores the selected registry snapshot when compilation or execution fails"}
+
+ :exceptions
+ {:throw "raises one guest value"
+  :search "choose the innermost covering handler, then matching catches in encoded order"
+  :catch "bind the guest value or runtime error representation in the declared local slot"
+  :finally "runs on normal and exceptional exits; a failure in finally replaces the pending outcome"
+  :unwind "when no handler matches, pop frames until one matches or return a structured execution error"}
+
+ :validation-invariants
+ [:entry-in-range :non-empty-functions :constant-indices-in-range
+  :local-indices-in-range :prototype-indices-in-range :capture-counts-match
+  :source-map-length-matches-code :jump-targets-in-range
+  :unique-stack-height-at-every-reachable-instruction :no-stack-underflow
+  :declared-max-stack-matches-computed :return-height-is-one
+  :handler-ranges-valid-and-properly-nested :handler-slots-in-range
+  :global-name-constants-are-strings :metadata-constants-have-required-shapes
+  :schema-declarations-match-callable-arities]
+
+ :observable-semantics
+ {:values "ordinary Hara values use the shared value, equality, display and numeric laws"
+  :primitives "primitive ids name shared Hara value operations; a backend may inline them only without changing errors or values"
+  :mutation "named mutable values preserve reference identity and left-to-right receiver/value evaluation"
+  :unsupported "a backend rejects an unsupported operation explicitly and never evaluates HBC bytes as source"
+  :equivalence "conforming backends agree on returned value or structured error category and on committed namespace effects"}
+
+ :conformance
+ {:identity :hal/hbc-machine-conformance
+  :path "conformance/bytecode-vm.edn"
+  :requirement "The corpus is independent of codec implementation; runners may compile its source fixtures only to obtain validated programs, then compare machine outcomes."}
+
+ :extensions
+ {:suspension :hal/hbc-suspension
+  :backend-profiles :hal/hbc-backend-profiles
+  :rule "Extensions do not change HBC0 envelope identity or persist live host identities."}}

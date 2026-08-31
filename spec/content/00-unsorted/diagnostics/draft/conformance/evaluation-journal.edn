@@ -1,0 +1,44 @@
+{:corpus/id :hal/evaluation-journal
+ :corpus/version "0.0.0-alpha"
+ :journal/schema "hal.evaluation-journal/0-alpha"
+ :defaults {:limit/events 10000 :limit/depth 100 :limit/value-characters 1000}
+ :cases
+ [{:case/id :literal/success
+   :source "42"
+   :events [[:evaluation/start]]
+   :result {:value/type "integer" :value/display "42" :value/truncated false}}
+  {:case/id :function/nested
+   :source "(do (defn inner [x] (+ x 1)) (defn outer [x] (inner x)) (outer 41))"
+   :required-kinds [:evaluation/start :operation/enter :operation/enter :operation/return :operation/return]
+   :assert #{:strict-sequence :parent-links :depth :result-42}}
+  {:case/id :function/anonymous
+   :source "((fn [x] (+ x 1)) 41)"
+   :required-kinds [:evaluation/start :operation/enter :operation/return]}
+  {:case/id :macro/expansion
+   :source "(if-not false 42)"
+   :required-kinds [:evaluation/start :macro/expand]}
+  {:case/id :failure/function
+   :source "((fn [] (/ 1 0)))"
+   :required-kinds [:evaluation/start :operation/enter :evaluation/error]
+   :status :error}
+  {:case/id :failure/nested
+   :source "(do (defn fail [] (/ 1 0)) (defn call [] (fail)) (call))"
+   :required-kinds [:evaluation/start :operation/enter :operation/enter :evaluation/error]
+   :assert #{:parent-links :no-required-return-after-failure}}
+  {:case/id :preview/truncated
+   :source "\"abcdef\""
+   :limits {:limit/value-characters 4}
+   :result {:value/type "string" :value/display "\"ab…" :value/truncated true}}
+  {:case/id :limit/events
+   :source "((fn [x] x) 42)"
+   :limits {:limit/events 1}
+   :required-kinds [:evaluation/start :journal/truncated]
+   :assert #{:evaluation-completes :single-truncation-event}}
+  {:case/id :limit/depth
+   :source "(do (defn f [x] (if (= x 0) 42 (f (- x 1)))) (f 3))"
+   :limits {:limit/depth 1}
+   :required-kinds [:evaluation/start :journal/truncated]
+   :assert #{:evaluation-completes :single-truncation-event}}
+  {:case/id :disabled/equivalence
+   :source "(let [x 19] (+ x 23))"
+   :assert #{:journal-disabled-result-equivalent :journal-disabled-error-equivalent}}]}

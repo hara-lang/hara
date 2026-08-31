@@ -1,0 +1,125 @@
+(ns work.flow.task.result)
+
+(def +statuses+ #{:return :warn :error :critical})
+
+(defn status
+  [value]
+  (if (and (map? value) (has? +statuses+ (:status value)))
+    (:status value)
+    :return))
+
+(defn ^{:public true} normalise
+  "Normalises an action value into a stable command result record."
+  [item-id value]
+  (if (map? value)
+    (merge {:item/id item-id :status (status value)} value)
+    {:item/id item-id :status :return :data value}))
+
+(defn ^{:public true} error-record
+  [item-id error]
+  {:item/id item-id :status :error :error (str error)})
+
+(defn records
+  [manifest]
+  (vec (map (fn [item] (:item/value item)) manifest)))
+
+(defn with-status
+  [values statuses]
+  (vec
+   (filter (fn [value]
+             (reduce (fn [matched expected]
+                       (or matched (= expected (:status value))))
+                     false statuses))
+           values)))
+
+(defn group
+  [values]
+  {:results (with-status values [:return])
+   :warnings (with-status values [:warn])
+   :errors (with-status values [:error :critical])})
+
+(defn visible-result?
+  [ignore record]
+  (and (= :return (:status record))
+       (not (if ignore (ignore (:data record)) false))))
+
+(defn project-result
+  [output record]
+  (if output
+    (assoc record :data (output (:data record)))
+    record))
+
+(defn aggregate
+  "Applies named {:select fn :reduce fn :initial value} aggregations."
+  [summary aggregations values]
+  (reduce
+   (fn [output entry]
+     (let [key (nth entry 0)
+           spec (nth entry 1)
+           selected (:select spec)
+           reducer (:reduce spec)
+           initial (:initial spec)]
+       (assoc output key
+              (reduce (fn [current value]
+                        (let [next (selected value)]
+                          (if (nil? next) current (reducer current next))))
+                      initial values))))
+   summary
+   (or aggregations {})))
+
+(defn ^{:public true} summarise
+  ([batch]
+   (summarise batch {}))
+  ([batch options]
+   (let [values (records (:results batch))
+         grouped (group values)
+         visible (vec
+                  (map (fn [record]
+                         (project-result (:output options) record))
+                       (filter (fn [record]
+                                 (visible-result? (:ignore options) record))
+                               values)))
+         base {:items (count (:items batch))
+               :results (count visible)
+               :warnings (count (:warnings grouped))
+               :errors (count (:errors grouped))
+               :cumulative
+               (reduce (fn [total record]
+                         (+ total (or (:elapsed record) 0)))
+                       0 values)}
+         summary (aggregate base (:aggregate options) values)
+         finalise (:finalise options)]
+     {:items (vec (map (fn [item] (:item/id item)) (:items batch)))
+      :records values
+      :results visible
+      :warnings (:warnings grouped)
+      :errors (:errors grouped)
+      :summary (if finalise (finalise summary values) summary)})))
+
+(defn ^{:public true} transform-summary
+  [batch options]
+  (summarise
+   batch
+   (merge
+    {:aggregate
+     {:changed {:select (fn [record] (if (:changed record) 1 0))
+                :reduce + :initial 0}
+      :inserts {:select (fn [record] (or (:inserts record) 0))
+                :reduce + :initial 0}
+      :deletes {:select (fn [record] (or (:deletes record) 0))
+                :reduce + :initial 0}
+      :written {:select (fn [record] (if (:write record) 1 0))
+                :reduce + :initial 0}
+      :verified {:select (fn [record] (if (:verified record) 1 0))
+                 :reduce + :initial 0}}}
+    options)))
+
+(defn ^{:public true} package
+  "Projects a command bundle without changing execution semantics."
+  [bundle selection]
+  (if (= :all selection)
+    bundle
+    (if (keyword? selection)
+      (get bundle selection)
+      (reduce (fn [output key] (assoc output key (get bundle key)))
+              {} selection))))

@@ -53,6 +53,71 @@
               :primary {:project "."}
               :archives []}}])
 
+^{:refer std.lib.package/specs-project}
+(Test/check
+ [{:name "declares an artifact-only project for the specification corpus"
+   :test (fn []
+           (std.lib.package/specs-project "0.1.0"))
+   :expected {:hara/type :project
+              :hara/version "1.0.0"
+              :project/id 'hara/foundation.specs
+              :project/version "0.1.0"
+              :project/source-paths []
+              :project/test-paths []
+              :project/extension-paths []
+              :project/artifact-paths ["content"]
+              :project/capabilities #{:file :kernel}
+              :project/dependencies {}}}])
+
+^{:refer std.lib.package/build-specs}
+(Test/check
+ [{:name "delegates the complete artifact project to the native HARP builder"
+   :test (fn []
+           (let [output "/target/hara-specs-test.harp"]
+             (IPromise/then
+              (File/delete output {:missing-ok? true})
+              (fn [_]
+                (IPromise/finally
+                 (Promise/run
+                  (fn []
+                    (let [archive (std.lib.package/build-specs "spec" "target/hara-specs-test.harp")]
+                      [archive
+                       (string? (Package/inspect archive))])))
+                 (fn []
+                   (File/delete output {:missing-ok? true})))))))
+   :expected ["target/hara-specs-test.harp" true]}])
+
+^{:refer std.lib.package/build-specs}
+(Test/check
+ [{:name "preserves curated catalogue and conformance payload boundaries"
+   :test (fn []
+           (let [output "/target/hara-specs-curation-test.harp"]
+             (IPromise/then
+              (File/delete output {:missing-ok? true})
+              (fn [_]
+                (IPromise/finally
+                 (Promise/run
+                  (fn []
+                    (let [archive (std.lib.package/build-specs "spec" "target/hara-specs-curation-test.harp")
+                          manifest (Package/inspect archive)]
+                      [(String/includes? manifest "content/registry-index.json")
+                       (String/includes? manifest "content/01-lang/009-halc/draft/conformance/complete.hal")
+                       (String/includes? manifest "00-unsorted/contrib")
+                       (String/includes? manifest "99-archive")])))
+                 (fn []
+                   (File/delete output {:missing-ok? true})))))))
+   :expected [true true false false]}])
+
+^{:refer std.lib.package/read-spec-content}
+(Test/check
+ [{:name "fails with a structured boundary when the specification HARP is not mounted"
+   :test (fn []
+           (try
+             (std.lib.package/read-spec-content "content/01-lang/000-metaspec/draft/metaspec-metaspec.edn")
+             false
+             (catch _ true)))
+   :expected true}])
+
 ^{:refer std.lib.package/seal-project}
 (Test/check
  [{:name "builds and verifies a one-file executable with its HARP payload"
@@ -72,4 +137,4 @@
                        (:executable/format verified)])))
                  (fn []
                    (File/delete output {:missing-ok? true})))))))
-   :expected ["hara-executable/v1" 'hara.command/main 1 "hara-executable/v1"]}])
+   :expected ["hara-executable/v1" 'hara.command/main 2 "hara-executable/v1"]}])

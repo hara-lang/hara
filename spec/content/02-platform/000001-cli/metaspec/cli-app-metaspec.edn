@@ -1,0 +1,207 @@
+{:document/id :hara/cli-app-metaspec
+ :document/type :hara/artifact-specification
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "Hara CLI application meta-specification"
+ :document/summary
+ "Normative schema for deterministic, data-defined command-line applications and route manifests."
+
+ :spec/conforms-to {:spec/id :hara/artifact-metaspec
+                    :spec/version "0.0.0-alpha"}
+ :spec/artifact-kind :hara/cli-application-specification
+
+ :spec/forms
+ [{:form/id :hara.cli/app
+   :form/head :cli/application
+   :form/cardinality :one
+   :form/grammar [:document/metadata :cli/apps :cli/routes :cli/options
+                  :cli/outcomes :cli/handlers]}
+  {:form/id :hara.cli/route
+   :form/head :route/path
+   :form/cardinality :one-or-more
+   :form/grammar [:route/id :route/path :route/handler :route/execution
+                  :route/tier :route/arguments :route/options]}]
+
+ :spec/entities
+ [{:entity/id :hara.cli/application
+   :entity/schema :hara.cli.schema/application}
+  {:entity/id :hara.cli/route
+   :entity/schema :hara.cli.schema/route}
+  {:entity/id :hara.cli/option
+   :entity/schema :hara.cli.schema/option}
+  {:entity/id :hara.cli/handler
+   :entity/schema :hara.cli.schema/handler}
+  {:entity/id :hara.cli/outcome
+   :entity/schema :hara.cli.schema/outcome}]
+
+ :spec/relations
+ [{:relation/id :hara.cli/application-routes
+   :relation/from :hara.cli/application
+   :relation/to :hara.cli/route
+   :relation/cardinality :one-to-many}
+  {:relation/id :hara.cli/route-handler
+   :relation/from :hara.cli/route
+   :relation/to :hara.cli/handler
+   :relation/cardinality :many-to-one}
+  {:relation/id :hara.cli/route-options
+   :relation/from :hara.cli/route
+   :relation/to :hara.cli/option
+   :relation/cardinality :many-to-many}]
+
+ :spec/codecs
+ [{:codec/id :hara.cli/canonical-edn
+   :codec/from :hara/cli-application-specification
+   :codec/to :edn/data
+   :codec/laws [:hara.cli.law/deterministic-order
+                :hara.cli.law/no-executable-handler-values]}]
+
+ :spec/checkers
+ [{:checker/id :hara.cli/manifest-structure
+   :checker/input :hara/cli-application-specification
+   :checker/output :hara/verification-report}
+  {:checker/id :hara.cli/route-references
+   :checker/input :hara/cli-application-specification
+   :checker/output :hara/verification-report}
+  {:checker/id :hara.cli/alias-ambiguity
+   :checker/input :hara/cli-application-specification
+   :checker/output :hara/verification-report}]
+
+ :spec/laws
+ [{:law/id :hara.cli.law/deterministic-order
+   :law/expression
+   "Application, route, option, alias and outcome ordering is preserved from canonical EDN."}
+  {:law/id :hara.cli.law/longest-prefix
+   :law/expression
+   "Routing selects the matching canonical path or alias with the greatest segment count."}
+  {:law/id :hara.cli.law/alias-equivalence
+   :law/expression
+   "A compatibility alias normalises to the same stable route ID as its canonical route."}
+  {:law/id :hara.cli.law/no-executable-handler-values
+   :law/expression
+   "A handler reference is a qualified keyword resolved only by a closed host registry."}]
+
+ :spec/conformance
+ [{:conformance/id :hara.cli/routes
+   :conformance/path "conformance/routes.edn"}
+  {:conformance/id :hara.cli/options
+   :conformance/path "conformance/options.edn"}
+  {:conformance/id :hara.cli/outcomes
+   :conformance/path "conformance/outcomes.edn"}]
+
+ :meta/document-schema
+ {:schema/id :hara.cli.schema/application-specification
+  :schema/type :map
+  :schema/required
+  [:document/id :document/type :document/version :document/status
+   :document/title :document/summary :spec/conforms-to
+   :cli/apps :cli/routes :cli/options :cli/outcomes :cli/handlers]
+  :schema/properties
+  {:document/id {:schema/ref :hara.cli.schema/qualified-keyword}
+   :document/type {:schema/value :hara/cli-application}
+   :document/version {:schema/ref :hara.cli.schema/version}
+   :document/status {:schema/ref :hara.cli.schema/status}
+   :document/title {:schema/ref :hara.cli.schema/string}
+   :document/summary {:schema/ref :hara.cli.schema/string}
+   :spec/conforms-to {:schema/ref :hara.cli.schema/spec-reference}
+   :cli/apps {:schema/items :hara.cli.schema/application}
+   :cli/routes {:schema/items :hara.cli.schema/route}
+   :cli/options {:schema/items :hara.cli.schema/option}
+   :cli/outcomes {:schema/items :hara.cli.schema/outcome}
+   :cli/handlers {:schema/items :hara.cli.schema/handler}}}
+
+ :meta/schemas
+ [{:schema/id :hara.cli.schema/qualified-keyword
+   :schema/type :keyword
+   :schema/constraint :qualified}
+  {:schema/id :hara.cli.schema/string
+   :schema/type :string
+   :schema/min-length 1}
+  {:schema/id :hara.cli.schema/version
+   :schema/type :string
+   :schema/pattern "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"}
+  {:schema/id :hara.cli.schema/status
+   :schema/type :enum
+   :schema/values [:draft :candidate :stable :deprecated]}
+  {:schema/id :hara.cli.schema/spec-reference
+   :schema/type :map
+   :schema/required [:spec/id :spec/version]}
+  {:schema/id :hara.cli.schema/application
+   :schema/type :map
+   :schema/required [:app/id :app/summary :app/routes]}
+  {:schema/id :hara.cli.schema/route
+   :schema/type :map
+   :schema/required [:route/id :route/path :route/handler :route/execution
+                     :route/tier :route/summary :route/arguments
+                     :route/options :route/formats]}
+  {:schema/id :hara.cli.schema/argument
+   :schema/type :map
+   :schema/required [:argument/id :argument/cardinality :argument/type]}
+  {:schema/id :hara.cli.schema/option
+   :schema/type :map
+   :schema/required [:option/id :option/names :option/type :option/scope]}
+  {:schema/id :hara.cli.schema/handler
+   :schema/type :map
+   :schema/required [:handler/id :handler/input :handler/output
+                     :handler/registry]}
+  {:schema/id :hara.cli.schema/outcome
+   :schema/type :map
+   :schema/required [:outcome/id :outcome/exit]}
+  {:schema/id :hara.cli.schema/request
+   :schema/type :map
+   :schema/required [:request/route :request/arguments :request/options
+                     :request/runtime :request/cwd :request/capabilities]}
+  {:schema/id :hara.cli.schema/result
+   :schema/type :map
+   :schema/required [:result/outcome :result/data :result/messages]}]
+
+ :meta/cross-references
+ [{:reference/id :hara.cli.reference/app-routes
+   :reference/from :app/routes
+   :reference/to :route/id}
+  {:reference/id :hara.cli.reference/route-handler
+   :reference/from :route/handler
+   :reference/to :handler/id}
+  {:reference/id :hara.cli.reference/route-options
+   :reference/from :route/options
+   :reference/to :option/id}]
+
+ :meta/requirements
+ [{:requirement/id :hara.cli/qualified-identifiers
+   :requirement/level :must
+   :requirement/text "Applications, routes, options, handlers and outcomes use stable qualified keyword IDs."}
+  {:requirement/id :hara.cli/closed-handler-registry
+   :requirement/level :must
+   :requirement/text "Handler IDs resolve only through a runtime-owned closed built-in registry."}
+  {:requirement/id :hara.cli/no-executable-values
+   :requirement/level :must-not
+   :requirement/text "Route documents contain Vars, host functions, class names or other executable values."}
+  {:requirement/id :hara.cli/unambiguous-aliases
+   :requirement/level :must
+   :requirement/text "No canonical path or alias resolves to more than one route."}
+  {:requirement/id :hara.cli/public-runtime-parity
+   :requirement/level :must
+   :requirement/text "Every public route is implemented by each supported peer runtime."}
+  {:requirement/id :hara.cli/structured-outcomes
+   :requirement/level :must
+   :requirement/text "Finite handlers return ordinary data with a stable outcome ID before rendering."}]
+
+ :metaspec/generation
+ {:generation/input
+  {:input/type :hara.cli/generation-request
+   :input/required [:request/apps :request/routes :request/options
+                    :request/outcomes :request/handlers]}
+  :generation/output
+  {:output/type :hara/cli-application
+   :output/format :edn
+   :output/required [:document/id :document/type :document/version
+                     :cli/apps :cli/routes :cli/options
+                     :cli/outcomes :cli/handlers]}
+  :generation/process
+  [:generate-draft :lint :repair-lint-findings :verify
+   :repair-verification-findings :emit-canonical-edn]
+  :generation/acceptance
+  {:acceptance/status :pass
+   :acceptance/required-summary
+   {:summary/fail 0 :summary/unknown 0 :summary/blocked 0}
+   :acceptance/no-unresolved-references true
+   :acceptance/canonical-edn true}}}

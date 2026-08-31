@@ -1,0 +1,159 @@
+{:document/id :hal/hbc0-wire
+ :document/type :portable-format-spec
+ :document/version "0-alpha"
+ :document/status :draft
+ :document/title "HBC0 portable executable-module wire format"
+ :document/summary
+ "Runtime-neutral, deterministic and authenticated encoding of a validated Hara bytecode program. This document is the codec contract; execution semantics are owned by :hal/hbc-machine."
+
+ :format
+ {:identity :hbc
+  :magic "HBC0"
+  :extension ".hbc"
+  :byte-order :big-endian
+  :envelope [:magic/u8x4 :payload-length/u32 :payload/bytes :payload-sha256/u8x32]
+  :length-rule "payload-length is the exact unsigned byte count between the eight-byte header and the SHA-256 digest; overflow, truncation, mismatch, or trailing bytes is invalid"
+  :authentication "SHA-256 is computed over the payload only and compared before payload decoding or runtime mutation"
+  :compatibility "Opcode numbers are append-only within HBC0. An incompatible envelope or field-order change requires a new four-byte magic. Readers never guess a version from payload shape."}
+
+ :scalars
+ {:u8 "one unsigned byte"
+  :u16 "two-byte unsigned big-endian integer"
+  :u32 "four-byte unsigned big-endian integer"
+  :u64 "eight-byte unsigned big-endian integer"
+  :i64 "eight-byte two's-complement signed big-endian integer"
+  :bool "u8 0 or 1; every other value is invalid"
+  :many "u32 count followed by exactly count elements"
+  :bytes "u32 byte count followed by exactly that many bytes"
+  :string "bytes containing canonical UTF-8; malformed UTF-8 is invalid"
+  :optional "u8 0 for absent or u8 1 followed by the encoded value"
+  :hta-value "one length-delimited canonical HTA value; runtime-only values are not encodable"}
+
+ :metadata
+ {:map "u32 entry count followed by key/value metadata values"
+  :tags
+  {0 :nil
+   1 [:boolean :bool]
+   2 [:integer :i64]
+   3 [:float-bits :u64]
+   4 [:big-integer :string]
+   5 [:decimal :string]
+   6 [:character-code-point :u32]
+   7 [:regex :string]
+   8 [:tagged :tag/string :value/metadata]
+   9 [:string :string]
+   10 [:keyword :string]
+   11 [:symbol :string]
+   12 [:vector [:many :metadata]]
+   13 [:list [:many :metadata]]
+   14 [:set [:many :metadata]]
+   15 [:map [:many [:tuple :metadata :metadata]]]}
+  :invalid "unknown tags, invalid booleans, invalid Unicode scalar values, malformed nested values, and truncated values reject the artifact"}
+
+ :schemas
+ {:map "u32 count of name/string plus schema pairs; names are encoded in ascending order and duplicates are invalid"
+  :form "one canonical printed Hara form encoded as string; the reader must parse the complete string"
+  :tags
+  {0 [:primitive :name/string]
+   1 [:reference :name/string]
+   2 [:union [:many :schema]]
+   3 [:vector :item/schema]
+   4 [:tuple [:many :schema]]
+   5 [:map [:many [:tuple :field-name/form :value/schema]]]
+   6 [:function [:many [:tuple [:fixed [:many :schema]]
+                                [:rest [:optional :schema]]
+                                :output/schema]]]
+   7 [:enum [:many :form]]
+   8 [:extension :head/string [:arguments [:many :form]]]
+   9 [:unknown :surface/form]}
+  :invalid "unknown tags, duplicate names, invalid forms, or malformed nested schema values reject the artifact"}
+
+ :payload
+ [{:field :entry :encoding :u16}
+  {:field :namespace :encoding [:optional :string]}
+  {:field :constants :encoding [:many :hta-value]}
+  {:field :var-metadata :encoding [:many :metadata-map]}
+  {:field :schema-types :encoding :sorted-schema-map}
+  {:field :function-types :encoding :sorted-schema-map}
+  {:field :inferred-function-types :encoding :sorted-schema-map}
+  {:field :functions :encoding [:many :function]}]
+
+ :canonical-ordering
+ {:schema-maps "encode entries in ascending Unicode string order by fully qualified name"
+  :metadata "preserve the canonical metadata entry order produced by the Hara metadata codec"
+  :vectors "preserve semantic vector order"
+  :sets-and-maps "constant values use canonical HTA ordering"
+  :duplicate-rule "a decoded name-indexed table containing the same name more than once is invalid"}
+
+ :function
+ [{:field :name :encoding [:optional :string]}
+  {:field :async :encoding :bool}
+  {:field :arity :encoding :u16}
+  {:field :variadic :encoding :bool}
+  {:field :capture-count :encoding :u16}
+  {:field :local-count :encoding :u16}
+  {:field :max-stack :encoding :u16}
+  {:field :code :encoding [:many :instruction]}
+  {:field :source-map :encoding [:many [:optional [:tuple :offset/u32 :line/u32 :column/u32]]]}
+  {:field :handlers :encoding [:many :handler]}]
+
+ :handler
+ [:start/u32 :end/u32 :depth/u16
+  [:catches [:many [:tuple :class/string :binding/u16 :target/u32]]]
+  [:finally [:optional :u32]]
+  [:pending-value [:optional :u16]]
+  [:pending-error [:optional :u16]]]
+
+ :instructions
+ {:operand-free {1 :nil 2 :true 3 :false 6 :pop 13 :throw 14 :rethrow
+                 22 :instance-of 24 :return 26 :await 27 :host-call 28 :dup
+                 35 :to-vector 46 :yield}
+  :u32 {0 :constant 8 :jump 9 :jump-if-false 15 :get-global 17 :set-global
+        18 :var-global 19 :declare-global 38 :builtin-value 39 :dynamic-bind
+        40 :dynamic-unbind 41 :defprotocol 42 :extend-type 43 :defmulti
+        44 :defmethod 48 :mutable-field-get 49 :mutable-field-set}
+  :u16 {4 :load-local 5 :store-local 29 :build-vector 30 :build-map
+        31 :build-set 33 :build-list 34 :concat-list}
+  :compound
+  {7 [:primitive/u8 :argc/u8]
+   10 [:prototype/u16 :captures/u8]
+   11 [:argc/u8]
+   12 [:prototype/u16 :argc/u8]
+   16 [:name/u32 [:metadata [:optional :u16]]]
+   20 [:name/u32 :fields/u32]
+   23 [:name/u32 :count/u8]
+   25 [:primitive/u8 :local/u16 :constant/u32]
+   32 [:name/u32 [:metadata [:optional :u16]]]
+   37 [:primitive/u8]
+   45 [:method/u32 :argc/u8]
+   47 [:name/u32 :fields/u32]}
+  :retired {21 {:former-op :struct-field
+                :required-error "bytecode artifact uses retired StructField opcode 21; rebuild required"}}
+  :unassigned [36]
+  :unknown-rule "Every unassigned or unknown opcode is invalid; assigned numbers are never reused."}
+
+ :primitive-ids
+ {0 :add 1 :subtract 2 :multiply 3 :divide 4 :remainder 5 :equal
+  6 :less 7 :less-or-equal 8 :greater 9 :greater-or-equal 10 :count
+  11 :get 12 :meta 13 :nth 14 :assoc 15 :first 16 :rest 17 :second
+  18 :to-mutable 19 :to-persistent 20 :number? 21 :array-new
+  22 :array-get 23 :array-set 24 :object-new 25 :object-get 26 :object-set}
+
+ :acceptance
+ {:order [:envelope :checksum :payload-decode :structural-validation]
+  :atomic true
+  :side-effects false
+  :limits "Readers enforce bounded collection, function, instruction, local, stack, argument and capture counts before allocation or execution."
+  :invalid "Bad magic, length, checksum, boolean, UTF-8, HTA value, schema, opcode, operand, index, handler, source map, duplicate, or trailing byte rejects the complete artifact."}
+
+ :conformance
+ {:golden :hal/hbc0-golden
+  :malformed :hal/hbc0-malformed
+  :machine :hal/hbc-machine-conformance
+  :path "conformance/bytecode-vm.edn"}
+
+ :boundary
+ {:input "HBC0 contains executable modules, never HAL source or live runtime objects."
+  :halc :hal/halc-format
+  :machine :hal/hbc-machine
+  :package "Multiple validated HBC0 modules may be assembled as HBC[] -> HBX; HBX is not an instruction format."}}

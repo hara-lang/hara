@@ -1,0 +1,457 @@
+{:document/id :hara/lsp-base
+ :document/type :lsp-profile
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "Hara Language Server Protocol base profile"
+ :document/summary
+ "Defines the portable editor-facing protocol, analysis facts, namespace resolution, capabilities, safety rules, and conformance obligations for a Hara language server."
+
+ :spec/conforms-to
+ {:spec/id :microsoft/language-server-protocol
+  :spec/version "0.0.0-alpha"}
+
+ :spec/scope
+ {:scope/includes
+  [:lsp/transport
+   :lsp/lifecycle
+   :lsp/document-synchronization
+   :lsp/workspace-discovery
+   :lsp/analysis-facts
+   :lsp/diagnostics
+   :lsp/completion
+   :lsp/navigation
+   :lsp/refactoring
+   :lsp/semantic-tokens
+   :lsp/code-actions]
+  :scope/excludes
+  [:lsp/runtime-evaluation
+   :lsp/debug-adapter-protocol
+   :lsp/repl-session-management
+   :lsp/package-installation
+   :lsp/lossy-formatting]
+  :scope/implementation-note
+  "The profile describes observable behaviour. Java, Truffle, std.typed, and std.logic.kanren are implementation choices except where their contracts are named explicitly."}
+
+ :spec/invariants
+ [{:requirement/id :hara.lsp/protocol-fidelity
+   :requirement/level :must
+   :requirement/text
+   "Every standard request, response, notification, error, position, range, capability, and lifecycle transition follows Language Server Protocol 3.18."}
+  {:requirement/id :hara.lsp/capability-honesty
+   :requirement/level :must
+   :requirement/text
+   "The server advertises only capabilities it implements for the active workspace and client capability set."}
+  {:requirement/id :hara.lsp/version-consistency
+   :requirement/level :must
+   :requirement/text
+   "Every document result is computed from one identified document version, and results made stale by a newer version are discarded."}
+  {:requirement/id :hara.lsp/no-analysis-evaluation
+   :requirement/level :must-not
+   :requirement/text
+   "Opening, parsing, indexing, completing, hovering, navigating, or diagnosing a document evaluates project top-level forms or invokes ambient host authority."}
+  {:requirement/id :hara.lsp/resolution-before-presentation
+   :requirement/level :must
+   :requirement/text
+   "Symbol-bearing features use the same lexical and namespace resolver rather than presenting raw global runtime inventories."}
+  {:requirement/id :hara.lsp/incomplete-source-tolerance
+   :requirement/level :must
+   :requirement/text
+   "The server remains responsive and returns partial safe results while a document contains incomplete or malformed source."}]
+
+ :spec/section-order
+ [:hara.lsp/protocol
+  :hara.lsp/documents
+  :hara.lsp/workspaces
+  :hara.lsp/analysis
+  :hara.lsp/namespaces
+  :hara.lsp/diagnostics
+  :hara.lsp/completion
+  :hara.lsp/intelligence
+  :hara.lsp/refactoring
+  :hara.lsp/security
+  :hara.lsp/conformance]
+
+ :spec/sections
+ [{:section/id :hara.lsp/protocol
+   :section/title "Protocol and lifecycle"
+   :section/summary
+   "Fixes the interoperable wire profile and server lifecycle."
+   :section/requirements
+   [{:requirement/id :hara.lsp.protocol/json-rpc
+     :requirement/level :must
+     :requirement/text "The server uses the JSON-RPC 2.0 message model defined by Language Server Protocol 3.18."}
+    {:requirement/id :hara.lsp.protocol/stdio
+     :requirement/level :must
+     :requirement/text "The server supports Language Server Protocol framing over standard input and standard output."}
+    {:requirement/id :hara.lsp.protocol/stdio-clean
+     :requirement/level :must-not
+     :requirement/text "The server writes logs, banners, stack traces, or non-protocol bytes to standard output."}
+    {:requirement/id :hara.lsp.protocol/lifecycle
+     :requirement/level :must
+     :requirement/text "The server implements initialize, initialized, shutdown, and exit with the protocol-defined ordering and failure behaviour."}
+    {:requirement/id :hara.lsp.protocol/cancellation
+     :requirement/level :must
+     :requirement/text "Long-running requests observe $/cancelRequest and terminate without publishing partial state as current."}
+    {:requirement/id :hara.lsp.protocol/progress
+     :requirement/level :should
+     :requirement/text "Workspace indexing reports work-done progress when the client supports it."}
+    {:requirement/id :hara.lsp.protocol/custom-methods
+     :requirement/level :must-not
+     :requirement/text "The base profile requires custom methods for evaluation, REPL sessions, or runtime control."}]}
+
+  {:section/id :hara.lsp/documents
+   :section/title "Documents, positions, and synchronization"
+   :section/summary
+   "Defines versioned source overlays and position semantics."
+   :section/requirements
+   [{:requirement/id :hara.lsp.document/text-sync
+     :requirement/level :must
+     :requirement/text "The server supports didOpen, incremental didChange, didClose, and didSave text-document notifications."}
+    {:requirement/id :hara.lsp.document/overlay
+     :requirement/level :must
+     :requirement/text "An open document is analyzed from the client-provided unsaved text overlay rather than a stale filesystem copy."}
+    {:requirement/id :hara.lsp.document/version
+     :requirement/level :must
+     :requirement/text "Changes and derived analysis snapshots are associated with monotonically advancing client document versions."}
+    {:requirement/id :hara.lsp.document/position-encoding
+     :requirement/level :must
+     :requirement/text "The server negotiates a Language Server Protocol position encoding and supports UTF-16 code-unit positions."}
+    {:requirement/id :hara.lsp.document/ranges
+     :requirement/level :must
+     :requirement/text "Ranges are zero-based, end-exclusive, and converted losslessly between negotiated protocol positions and source byte offsets."}
+    {:requirement/id :hara.lsp.document/full-spans
+     :requirement/level :must
+     :requirement/text "Reader and analyzer facts retain start and end positions for forms, tokens, definitions, references, and diagnostics."}
+    {:requirement/id :hara.lsp.document/stale-results
+     :requirement/level :must-not
+     :requirement/text "The server publishes diagnostics or returns edits computed for an older document version as though they apply to the current version."}]}
+
+  {:section/id :hara.lsp/workspaces
+   :section/title "Workspace and project model"
+   :section/summary
+   "Defines project discovery, source roots, indexing, and multi-root isolation."
+   :section/requirements
+   [{:requirement/id :hara.lsp.workspace/folders
+     :requirement/level :must
+     :requirement/text "The server supports workspace folders and keeps indexes, configuration, and analysis contexts isolated by workspace."}
+    {:requirement/id :hara.lsp.workspace/project-file
+     :requirement/level :must
+     :requirement/text "A workspace project is discovered from project.edn; project.hal may be accepted as a legacy project descriptor."}
+    {:requirement/id :hara.lsp.workspace/source-roots
+     :requirement/level :must
+     :requirement/text "Source and test roots come from project configuration, with lib/src and lib/test used only as repository-layout defaults when applicable."}
+    {:requirement/id :hara.lsp.workspace/file-events
+     :requirement/level :must
+     :requirement/text "Create, change, delete, and rename file events update the project index without requiring a server restart."}
+    {:requirement/id :hara.lsp.workspace/symbol-index
+     :requirement/level :must
+     :requirement/text "The workspace index records namespaces, definitions, references, documentation, signatures, schemas or types, source ranges, and source URIs."}
+    {:requirement/id :hara.lsp.workspace/determinism
+     :requirement/level :must
+     :requirement/text "Given equal workspace files, configuration, overlays, and requests, indexing and result ordering are deterministic."}]}
+
+  {:section/id :hara.lsp/analysis
+   :section/title "Analysis contract"
+   :section/summary
+   "Defines the shared immutable facts consumed by all language features."
+   :section/requirements
+   [{:requirement/id :hara.lsp.analysis/snapshot
+     :requirement/level :must
+     :requirement/text "Analysis produces an immutable snapshot identified by workspace, document URI, and document version."}
+    {:requirement/id :hara.lsp.analysis/facts
+     :requirement/level :must
+     :requirement/text
+     "The snapshot contains forms, lexical scopes, bindings, namespaces, aliases, imports, definitions, uses, resolved targets, documentation, signatures, and available schema or type facts."}
+    {:requirement/id :hara.lsp.analysis/shared-resolver
+     :requirement/level :must
+     :requirement/text "Completion, hover, definition, references, rename, symbols, semantic tokens, and diagnostics consume shared resolver facts."}
+    {:requirement/id :hara.lsp.analysis/std-typed
+     :requirement/level :should
+     :requirement/text
+     "std.typed supplies portable schema inference, checking, and type facts when available; absence of std.typed does not disable syntactic or namespace features."}
+    {:requirement/id :hara.lsp.analysis/std-logic
+     :requirement/level :may
+     :requirement/text
+     "std.logic.kanren may query normalized analysis relations for cross-file or relational features, but basic lookup and resolution do not require a logic engine."}
+    {:requirement/id :hara.lsp.analysis/recovery
+     :requirement/level :must
+     :requirement/text "Reader recovery preserves every safe fact preceding or following a local syntax error and marks uncertain facts rather than inventing resolutions."}
+    {:requirement/id :hara.lsp.analysis/side-effects
+     :requirement/level :must-not
+     :requirement/text "Analysis loads executable project namespaces or invokes macros whose expansion is not explicitly modeled as safe static data."}]}
+
+  {:section/id :hara.lsp/namespaces
+   :section/title "Namespace and symbol resolution"
+   :section/summary
+   "Defines visible symbols and prevents host or foundation inventories from leaking through unrelated qualifiers."
+   :section/requirements
+   [{:requirement/id :hara.lsp.namespace/lexical-order
+     :requirement/level :must
+     :requirement/text
+     "Unqualified resolution considers lexical bindings before current-namespace definitions, explicit refers, aliases, and defined language-level implicit imports."}
+    {:requirement/id :hara.lsp.namespace/qualified
+     :requirement/level :must
+     :requirement/text
+     "For prefix alias/, completion and resolution use only the namespace named by alias and never append a process-global native or foundation symbol inventory."}
+    {:requirement/id :hara.lsp.namespace/current
+     :requirement/level :must
+     :requirement/text "For prefix namespace/, completion uses the named namespace when it exists and respects its public visibility rules."}
+    {:requirement/id :hara.lsp.namespace/alias-declarations
+     :requirement/level :must
+     :requirement/text "Namespace aliases and referred symbols are derived from the document namespace declaration and project index."}
+    {:requirement/id :hara.lsp.namespace/protocols
+     :requirement/level :must
+     :requirement/text
+     "Definitions and members declared under std.protocol and every std.protocol.* namespace participate in indexing, completion, hover, definition, references, symbols, semantic tokens, and rename under the same visibility rules as other Hara definitions."}
+    {:requirement/id :hara.lsp.namespace/foundation
+     :requirement/level :must
+     :requirement/text
+     "std.foundation and native symbols are offered only when visible through the language's implicit-import rules or an explicit require, refer, import, or fully qualified prefix."}
+    {:requirement/id :hara.lsp.namespace/unresolved-alias
+     :requirement/level :must
+     :requirement/text "An unknown alias followed by / yields no fabricated qualified candidates and may produce a missing-alias diagnostic or import code action."}
+    {:requirement/id :hara.lsp.namespace/private
+     :requirement/level :must-not
+     :requirement/text "Private definitions from another namespace are returned as accessible completion or rename targets."}]}
+
+  {:section/id :hara.lsp/diagnostics
+   :section/title "Diagnostics"
+   :section/summary
+   "Defines parse, resolution, arity, schema, and project diagnostics."
+   :section/requirements
+   [{:requirement/id :hara.lsp.diagnostic/publish
+     :requirement/level :must
+     :requirement/text "The server publishes diagnostics for open documents and clears them when the cause disappears or the document closes."}
+    {:requirement/id :hara.lsp.diagnostic/core
+     :requirement/level :must
+     :requirement/text "Core diagnostics include reader errors, duplicate definitions, unresolved symbols, unresolved namespace aliases, invalid binding shapes, and statically known arity errors."}
+    {:requirement/id :hara.lsp.diagnostic/typed
+     :requirement/level :should
+     :requirement/text "When std.typed facts are available, diagnostics include schema or type mismatches without suppressing core diagnostics."}
+    {:requirement/id :hara.lsp.diagnostic/identity
+     :requirement/level :must
+     :requirement/text "Each diagnostic has a stable Hara code, precise range, severity, source, and sufficient data for any associated code action."}
+    {:requirement/id :hara.lsp.diagnostic/no-cascade
+     :requirement/level :should
+     :requirement/text "The server suppresses secondary diagnostics whose only cause is an earlier uncertain or malformed form."}]}
+
+  {:section/id :hara.lsp/completion
+   :section/title "Completion and signatures"
+   :section/summary
+   "Defines context-sensitive, namespace-correct completion."
+   :section/requirements
+   [{:requirement/id :hara.lsp.completion/method
+     :requirement/level :must
+     :requirement/text "The server implements textDocument/completion and completionItem/resolve."}
+    {:requirement/id :hara.lsp.completion/context
+     :requirement/level :must
+     :requirement/text
+     "Candidates reflect cursor scope, syntactic position, namespace, qualifier, visibility, prefix, and available schema or expected-type facts."}
+    {:requirement/id :hara.lsp.completion/categories
+     :requirement/level :must
+     :requirement/text
+     "Candidates include applicable lexical bindings, definitions, namespace aliases, namespaces, special forms, macros, functions, protocols, protocol members, keywords, and statically known fields."}
+    {:requirement/id :hara.lsp.completion/qualified-replacement
+     :requirement/level :must
+     :requirement/text "For alias/prefix, the edit replaces only the member prefix unless the client request requires a wider edit."}
+    {:requirement/id :hara.lsp.completion/metadata
+     :requirement/level :must
+     :requirement/text "Completion items carry an appropriate kind and stable identity; resolved items provide documentation, signature, source namespace, and schema or type when known."}
+    {:requirement/id :hara.lsp.completion/ranking
+     :requirement/level :should
+     :requirement/text "Ranking prefers exact prefixes, lexical bindings, current-namespace definitions, explicitly imported names, and expected-type matches before broader visible names."}
+    {:requirement/id :hara.lsp.completion/import-edit
+     :requirement/level :should
+     :requirement/text "A completion from an unrequired namespace may include an additional text edit that adds a non-conflicting require or alias."}
+    {:requirement/id :hara.lsp.signature/help
+     :requirement/level :must
+     :requirement/text "The server implements textDocument/signatureHelp from resolved call targets, arglists, protocol signatures, and schema or type facts."}
+    {:requirement/id :hara.lsp.completion/no-noise
+     :requirement/level :must-not
+     :requirement/text "Candidates unrelated to the resolved qualifier or lexical context are returned merely because they exist in the host runtime."}]}
+
+  {:section/id :hara.lsp/intelligence
+   :section/title "Navigation and semantic intelligence"
+   :section/summary
+   "Defines read-only IDE features over the common analysis graph."
+   :section/requirements
+   [{:requirement/id :hara.lsp.hover/support
+     :requirement/level :must
+     :requirement/text "textDocument/hover returns the resolved symbol's qualified name, kind, signature, documentation, and schema or type when known."}
+    {:requirement/id :hara.lsp.definition/support
+     :requirement/level :must
+     :requirement/text "textDocument/definition navigates a resolved use, alias, namespace, protocol, or protocol member to its defining range."}
+    {:requirement/id :hara.lsp.references/support
+     :requirement/level :must
+     :requirement/text "textDocument/references returns definition and use locations for the same resolved identity and honors includeDeclaration."}
+    {:requirement/id :hara.lsp.symbols/document
+     :requirement/level :must
+     :requirement/text "textDocument/documentSymbol returns hierarchical source symbols with selection and enclosing ranges."}
+    {:requirement/id :hara.lsp.symbols/workspace
+     :requirement/level :must
+     :requirement/text "workspace/symbol searches the project index by name, qualified name, namespace, and kind."}
+    {:requirement/id :hara.lsp.highlight/support
+     :requirement/level :should
+     :requirement/text "textDocument/documentHighlight identifies reads, writes, and declarations of the resolved identity in the active document."}
+    {:requirement/id :hara.lsp.folding/support
+     :requirement/level :should
+     :requirement/text "textDocument/foldingRange returns structural ranges for collections, declarations, and comment blocks."}
+    {:requirement/id :hara.lsp.selection/support
+     :requirement/level :should
+     :requirement/text "textDocument/selectionRange follows token, form, enclosing form, and top-level declaration structure."}
+    {:requirement/id :hara.lsp.semantic-tokens/full
+     :requirement/level :must
+     :requirement/text "The server implements full-document semantic tokens with a stable legend for declarations, references, namespaces, types or schemas, protocols, functions, macros, parameters, variables, properties, keywords, numbers, strings, and comments."}
+    {:requirement/id :hara.lsp.semantic-tokens/delta
+     :requirement/level :should
+     :requirement/text "The server implements semantic token deltas when it can preserve result identifiers across compatible snapshots."}]}
+
+  {:section/id :hara.lsp/refactoring
+   :section/title "Edits, refactoring, and formatting"
+   :section/summary
+   "Constrains edits to resolved identities and source-preserving transformations."
+   :section/requirements
+   [{:requirement/id :hara.lsp.rename/prepare
+     :requirement/level :must
+     :requirement/text "textDocument/prepareRename rejects unresolved, generated, implicit, native, private-inaccessible, and otherwise non-renamable targets."}
+    {:requirement/id :hara.lsp.rename/support
+     :requirement/level :must
+     :requirement/text "textDocument/rename edits declarations and uses of one resolved identity across the workspace."}
+    {:requirement/id :hara.lsp.rename/collisions
+     :requirement/level :must
+     :requirement/text "Rename rejects changes that create a lexical, namespace, alias, visibility, or protocol-member collision."}
+    {:requirement/id :hara.lsp.rename/versioned-edits
+     :requirement/level :must
+     :requirement/text "Workspace edits use versioned document edits for open documents."}
+    {:requirement/id :hara.lsp.code-action/core
+     :requirement/level :must
+     :requirement/text "textDocument/codeAction provides safe quick fixes for diagnostics when a unique edit is known, including adding a require or alias for an unresolved qualified symbol."}
+    {:requirement/id :hara.lsp.code-action/resolve
+     :requirement/level :should
+     :requirement/text "Expensive code actions are resolved lazily with codeAction/resolve."}
+    {:requirement/id :hara.lsp.formatting/lossless
+     :requirement/level :must
+     :requirement/text "A server advertises document, range, or on-type formatting only when its syntax representation preserves comments, reader forms, metadata, and user data without semantic change."}
+    {:requirement/id :hara.lsp.formatting/base-optional
+     :requirement/level :may
+     :requirement/text "Formatting is optional in the base profile."}]}
+
+  {:section/id :hara.lsp/security
+   :section/title "Trust, configuration, and failure isolation"
+   :section/summary
+   "Ensures ordinary editor activity cannot silently execute a workspace."
+   :section/requirements
+   [{:requirement/id :hara.lsp.security/no-top-level-eval
+     :requirement/level :must-not
+     :requirement/text "The server evaluates top-level project code as a consequence of normal Language Server Protocol requests."}
+    {:requirement/id :hara.lsp.security/no-ambient-authority
+     :requirement/level :must-not
+     :requirement/text "Static analysis performs network access, process execution, package installation, or writes outside explicit cache locations."}
+    {:requirement/id :hara.lsp.security/trusted-extensions
+     :requirement/level :must
+     :requirement/text "Executable analyzer plugins, macro expanders, and lint hooks are disabled until explicitly enabled by trusted workspace configuration."}
+    {:requirement/id :hara.lsp.security/configuration
+     :requirement/level :must
+     :requirement/text "Configuration changes are validated, scoped to their workspace, and cannot weaken client trust without an explicit user-controlled setting."}
+    {:requirement/id :hara.lsp.security/failure-isolation
+     :requirement/level :must
+     :requirement/text "A failed document analysis, plugin, or workspace index operation cannot terminate the protocol process or corrupt another workspace snapshot."}]}
+
+  {:section/id :hara.lsp/conformance
+   :section/title "Conformance"
+   :section/summary
+   "Defines observable evidence required of a base-profile implementation."
+   :section/requirements
+   [{:requirement/id :hara.lsp.conformance/protocol
+     :requirement/level :must
+     :requirement/text "A conforming server passes the lifecycle, framing, cancellation, synchronization, position, and capability-negotiation cases."}
+    {:requirement/id :hara.lsp.conformance/features
+     :requirement/level :must
+     :requirement/text "A conforming server passes every required feature case for each capability it advertises."}
+    {:requirement/id :hara.lsp.conformance/namespace-isolation
+     :requirement/level :must
+     :requirement/text "Conformance includes alias-qualified completion cases proving that native, foundation, and unrelated namespace symbols do not leak into results."}
+    {:requirement/id :hara.lsp.conformance/protocol-namespaces
+     :requirement/level :must
+     :requirement/text "Conformance includes indexing and intelligence cases for std.protocol and std.protocol.* protocol definitions and members."}
+    {:requirement/id :hara.lsp.conformance/repeatability
+     :requirement/level :must
+     :requirement/text "Repeated test runs over identical snapshots produce equivalent ordered results after protocol fields intended to vary are normalized."}]}]
+
+ :lsp/capability-profile
+ {:capability/required
+  [:text-document/synchronization
+   :text-document/publish-diagnostics
+   :text-document/completion
+   :completion-item/resolve
+   :text-document/signature-help
+   :text-document/hover
+   :text-document/definition
+   :text-document/references
+   :text-document/document-symbol
+   :workspace/symbol
+   :text-document/prepare-rename
+   :text-document/rename
+   :text-document/semantic-tokens-full
+   :text-document/code-action]
+  :capability/recommended
+  [:text-document/document-highlight
+   :text-document/folding-range
+   :text-document/selection-range
+   :text-document/semantic-tokens-delta
+   :code-action/resolve]
+  :capability/conditional
+  [:text-document/formatting
+   :text-document/range-formatting
+   :text-document/on-type-formatting]}
+
+ :lsp/analysis-relations
+ [{:relation/id :hara.lsp.fact/document
+   :relation/attributes
+   [:fact/workspace :fact/uri :fact/version :fact/text-hash]}
+  {:relation/id :hara.lsp.fact/form
+   :relation/attributes
+   [:fact/form-id :fact/uri :fact/range :fact/parent :fact/kind]}
+  {:relation/id :hara.lsp.fact/namespace
+   :relation/attributes
+   [:fact/namespace :fact/uri :fact/range]}
+  {:relation/id :hara.lsp.fact/alias
+   :relation/attributes
+   [:fact/namespace :fact/alias :fact/target-namespace :fact/range]}
+  {:relation/id :hara.lsp.fact/definition
+   :relation/attributes
+   [:fact/symbol-id :fact/qualified-name :fact/kind :fact/visibility
+    :fact/uri :fact/range :fact/selection-range]}
+  {:relation/id :hara.lsp.fact/reference
+   :relation/attributes
+   [:fact/reference-id :fact/name :fact/scope :fact/uri :fact/range
+    :fact/resolved-symbol-id :fact/certainty]}
+  {:relation/id :hara.lsp.fact/signature
+   :relation/attributes
+   [:fact/symbol-id :fact/parameters :fact/return :fact/documentation]}
+  {:relation/id :hara.lsp.fact/diagnostic
+   :relation/attributes
+   [:fact/uri :fact/version :fact/code :fact/severity :fact/range
+    :fact/message :fact/related]}]
+
+ :spec/references
+ [{:reference/id :hara.lsp.reference/lsp-3-18
+   :reference/kind :external-standard
+   :reference/path "https://microsoft.github.io/language-server-protocol/specifications/lsp/3.18/specification/"
+   :reference/authority :normative
+   :reference/description "Language Server Protocol 3.18 specification."}
+  {:reference/id :hara.lsp.reference/hal-language
+   :reference/kind :language-contract
+   :reference/path "../../../01-lang/001-language/draft/hal-langspec.edn"
+   :reference/authority :normative
+   :reference/description "Portable HAL data and source reader contract."}
+  {:reference/id :hara.lsp.reference/conformance
+   :reference/kind :conformance
+   :reference/path "conformance/lsp-base.edn"
+   :reference/authority :evidence
+   :reference/description "Portable base-profile conformance scenarios."}]
+
+ :spec/conformance
+ [{:conformance/id :hara.lsp/base-cases
+   :conformance/path "conformance/lsp-base.edn"
+   :conformance/required true}]}

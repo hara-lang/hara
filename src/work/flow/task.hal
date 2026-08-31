@@ -1,0 +1,68 @@
+(ns work.flow.task
+  (:require [work.core]
+            [work.flow :as flow]
+            [work.flow.task.command :as command]
+            [work.flow.task.command-task :as tasklet]
+            [work.flow.task.selector :as selector]))
+
+(def path [:task])
+
+(def default-task-options
+  {:on-error :record})
+
+(defn profile-definition-options
+  [profile]
+  (let [options (:workflow/options profile)
+        defaults (or (:defaults options) {})
+        direct (dissoc options :defaults)]
+    (flow/merge-options defaults direct)))
+
+(defn ^{:public true} normalise
+  [profile qualified-name raw-definition]
+  (if (not (map? raw-definition))
+    (throw (ex :argument {:workflow/name qualified-name :workflow/definition raw-definition}
+               :ex/message "Task workflow definition must be a map")))
+  (let [options (profile-definition-options profile)
+        definition (flow/merge-options options raw-definition)]
+    (if (or (:task/id definition) (:id definition))
+      definition
+      (assoc definition :id qualified-name))))
+
+(defn ^{:public true} compile
+  "Compiles a task definition into a portable Work plan and local target table."
+  ([definition]
+   (tasklet/compile definition))
+  ([profile definition]
+   (tasklet/compile definition)))
+
+(def ^{:public true} task compile)
+
+(defn ^{:public true} invoke
+  "Evaluates a compiled task bundle. Command routes use the same bundle through
+   work.flow.task.command, so argv parsing remains native."
+  [bundle input]
+  (work.core/evaluate bundle input))
+
+(def ^{:public true} selector-options selector/selector-options)
+(def ^{:public true} invocation-options selector/invocation-options)
+
+(defn ^{:public true} command-route
+  [options bundle]
+  (command/route options bundle))
+
+(defn reconcile
+  [profile previous candidate definition]
+  candidate)
+
+(def ^{:public true} flow
+  {:flow/path path
+   :flow/version 1
+   :flow/product :work
+   :flow/defaults {:defaults default-task-options}
+   :flow/merge flow/merge-options
+   :flow/normalise normalise
+   :flow/compile compile
+   :flow/reconcile reconcile
+   :flow/invoke invoke})
+
+(flow/register flow)

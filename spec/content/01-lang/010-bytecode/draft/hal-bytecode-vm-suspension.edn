@@ -1,0 +1,273 @@
+{:document/id :hal/bytecode-vm-suspension
+ :document/type :runtime-implementation-spec-extension
+ :document/version "alpha"
+ :document/status :draft
+ :document/title "Rust HAL bytecode VM suspension and resumability"
+ :document/summary
+ "Process-local suspension contract for the Rust bytecode VM: await, yield, async function results, cancellation, exception resumption, host Promise interop, and coexistence with the tree evaluator. This extends the staged VM implementation contract without making continuations portable artifacts."
+
+ :document/extends
+ {:document/id :hal/bytecode-vm
+  :document/version "alpha"
+  :issue 204}
+
+ :vm/suspension
+ {:status :implemented-experimental
+  :ownership :rust-runtime
+  :feature "bytecode-vm"
+  :entry-points [VmFiber/start VmFiber/start-call VmFiber/poll VmFiber/resume
+                 VmFiber/resume-yield VmFiber/cancel]
+  :rule
+  "A bytecode run may return, fail, suspend on an ordinary Promise, or yield a guest value. Suspension parks the existing Machine in a VmFiber. The machine is resumed in place; source is not reparsed, bytecode is not recompiled, and call frames are not reconstructed from guest data."
+  :serializability
+  {:kind :process-local
+   :portable false
+   :artifact false
+   :rule
+   "A parked machine may contain runtime Values, Vars, native callables, Promise listeners, provider handles, and scheduler references. It is not HBC0, HALC, HTA, or a durable workflow checkpoint. Persistent workflow state belongs to a separate work/runtime contract."}}
+
+ :vm/outcomes
+ {:type :VmOutcome
+  :variants
+  [{:variant :returned
+    :payload :Value
+    :meaning "The entry function completed normally."}
+   {:variant :failed
+    :payload :VmError
+    :meaning "No covering guest handler accepted the error."}
+   {:variant :suspended
+    :payload :Promise
+    :meaning "Execution reached Await with a pending Promise."}
+   {:variant :yielded
+    :payload :Value
+    :meaning "Execution reached Yield and transferred one guest value to the driver."}]
+  :dispatch-rule
+  "Await and Yield are ordinary instruction-dispatch exits. Adding these outcomes does not create a second instruction loop or a CPS transformation of bytecode."}
+
+ :vm/fiber-state
+ {:type :VmFiberState
+  :states
+  [{:state :running :terminal false}
+   {:state :suspended :terminal false}
+   {:state :yielded :terminal false :payload :Value}
+   {:state :completed :terminal true :payload :Value}
+   {:state :failed :terminal true :payload :VmError}
+   {:state :cancelled :terminal true}]
+  :transition-rules
+  [:start-runs-until-one-vm-outcome
+   :resume-is-valid-only-from-suspended
+   :resume-yield-is-valid-only-from-yielded
+   :poll-drains-ready-async-children-before-checking-the-awaited-promise
+   :cancel-is-idempotent-after-a-terminal-state
+   :completed-failed-and-cancelled-fibers-never-run-again]}
+
+ :vm/captured-machine-state
+ {:owner :VmFiber
+  :machine-fields
+  [:program
+   :current-function
+   :instruction-pointer
+   :current-frame
+   :operand-stack
+   :saved-call-frames
+   :reusable-local-vectors
+   :reusable-argument-vectors
+   :vm-global-callable-map
+   :async-scheduler
+   :pending-children
+   :ready-child-resumptions
+   :optional-jit-state]
+  :frame-fields
+  [:locals :stack-base :return-address :handler-visible-hidden-slots]
+  :rule
+  "The complete active call chain, lexical locals, operand values, exception pending slots, and current instruction are retained by ownership. Suspension does not clone the namespace registry or flatten frames into maps."
+  :exception-shape
+  "The parked frame and stack have the same shape validated for ordinary execution. Await remains the current instruction until a non-pending Promise state is applied. Yield remains the current instruction until the driver supplies a resume value."}
+
+ :vm/await
+ {:instruction :Await
+  :stack-effect 0
+  :input :Promise
+  :non-promise-error "await expects a promise"
+  :states
+  {:pending
+   {:outcome :suspended
+    :instruction-pointer :unchanged
+    :stack "The Promise remains on top of the operand stack."
+    :pending "The same Promise is exposed by VmFiber/pending."}
+   :fulfilled
+   {:outcome :continue
+    :instruction-pointer :next
+    :stack "Replace the Promise with its fulfilled Value."
+    :rule "A Promise already fulfilled when Await executes never leaves the running path."}
+   :rejected
+   {:outcome :raise
+    :instruction-pointer :await-site
+    :stack "Remove the Promise before unwinding."
+    :rule
+    "Resume rejection enters the ordinary Machine error path at the Await source position. Catch selection, finally execution, and cross-frame unwind are identical to a synchronous guest failure."}}
+  :resume
+  {:pending "Remain suspended and return the same pending Promise."
+   :fulfilled "Replace, advance, and continue running."
+   :rejected "Raise through the static handler tables and continue at a matching catch/finally target or fail."}}
+
+ :vm/yield
+ {:instruction :Yield
+  :stack-effect 0
+  :execute
+  {:outcome :yielded
+   :rule "Pop and expose the yielded guest Value without advancing the instruction pointer."}
+  :resume
+  {:input :Value
+   :rule
+   "Push the driver-supplied resume Value, advance past Yield, and continue in the same machine. The yield expression evaluates to the supplied resume Value."}
+  :driver-boundary
+  "Yield has no implicit scheduler. A host or HAL coroutine driver decides when and with which Value to resume."}
+
+ :vm/functions
+ {:suspension-discovery
+  {:explicit "A function carrying ^:async has :async-function true."
+   :inferred
+   "A non-async function whose body contains await or yield may suspend the current machine only when execution reaches that instruction. It returns a direct Value when every reached await is already settled."
+   :nested
+   "Each nested function body is analysed independently; an await inside a nested function does not mark its lexical parent async unless the parent calls a suspending path at runtime."}
+  :async-call
+  {:return :Promise
+   :rule
+   "Calling a prototype marked async-function creates a child Machine owned by the shared async scheduler and immediately pushes one stable result Promise in the caller."
+   :fast-path
+   "A child that completes or fails before suspension settles the returned Promise before the caller observes it. Async calls always preserve the Promise return shape even on this fast path."
+   :pending-path
+   "A child that suspends remains registered with the scheduler. Promise settlement queues a child resumption; polling the parent drains those resumptions and settles the result Promise."}
+  :ordinary-call
+  "A non-async suspending function uses the caller's explicit VM frame stack. Pending Await suspends the whole active machine; it does not allocate a result Promise merely because suspension is possible."}
+
+ :vm/cancellation
+ {:fiber
+  {:operation :VmFiber/cancel
+   :result "true only for the first transition from a non-terminal state"
+   :rule
+   "If the fiber is suspended, notify cancellation on the currently awaited Promise, release cached JIT ownership, clear the pending slot, and enter the terminal cancelled state."}
+  :async-result
+  {:operation :Promise/cancel
+   :rule
+   "The Promise returned by an async bytecode call owns a cancellation hook. Cancelling it requests cancellation of the pending child and propagates notification to the host Promise currently awaited by that child."
+   :state "The result Promise rejects with the shared cancelled rejection identity."}
+  :finally-policy
+  "Cancellation notification is a host control signal, not an implicit guest throw injected into an arbitrary instruction. Guest finally behavior is guaranteed for fulfilled and rejected Await resumption. Cancellation-driven cleanup beyond Promise hooks must be expressed by the owning host or a future structured-concurrency contract."
+
+ :vm/exceptions-and-finally
+ {:fulfilled-resume
+  "Normal continuation after Await remains inside the original protected range. Leaving the range executes compiler-generated finally control flow exactly as it would without suspension."
+  :rejected-resume
+  "Promise rejection calls the same raise path as synchronous instruction failure at the Await site. The machine searches the current function's static try table, then saved caller frames, preserving catch order, hidden pending slots, and finally replacement semantics."
+  :yield
+  "Yield does not unwind and does not leave a protected range. Handler state remains parked until resumption."
+  :required-evidence
+  [:await-in-try-fulfilled-runs-finally
+   :await-in-try-rejected-runs-finally-before-catch-or-failure
+   :await-across-nested-call-frames
+   :yield-and-resume-inside-a-protected-region
+   :error-thrown-after-resume-retains-source-position]}
+
+ :vm/host-promise-interop
+ {:shared-value :Value/Promise
+  :host-call
+  {:instruction :HostCall
+   :arguments [:service :method :argument-vector]
+   :return :Promise
+   :rule
+   "The provider boundary returns the runtime's ordinary Promise Value. Await does not know whether the Promise originated in HAL, a native provider, Wasmtime embedding, or a browser host."}
+  :native
+  {:driver "Native hosts settle Promise through the Rust provider API and call VmFiber/poll or resume with the observed PromiseState."
+   :threading "The VM contract does not require Send or cross-thread machine movement; hosts marshal settlement into the owning event loop."}
+  :wasm32
+  {:driver "Browser hosts settle the same Rust Promise through wasm-bindgen entry points or the host broker and then poll the owning runtime session."
+   :rule
+   "JavaScript Promise identity is not stored in HBC0. The browser adapter owns JS callbacks and settles the guest Promise; the VM observes only PromiseState."}
+  :rejection
+  "Native and browser providers must preserve one message and cancellation classification when converting host rejection into PromiseState."}
+
+ :vm/coexistence
+ {:tree-evaluator
+  {:type :EvalFiber
+   :status :retained
+   :rule
+   "The existing CPS evaluator remains the default source evaluator and keeps its own continuations. Implementing VmFiber does not rewrite or alias EvalFiber state."}
+  :bytecode
+  {:type :VmFiber
+   :status :opt-in
+   :rule
+   "Compiled execution uses explicit VM frames and a parked Machine. It shares Value, Promise, provider, namespace, catch matching, and error boundaries with the evaluator, but not evaluator continuation objects."}
+  :selection
+  "The embedding entry point selects source evaluation or prepared bytecode explicitly. There is no silent fallback between the two paths during one run."
+
+ :vm/validation
+ {:await
+  [:instruction-has-static-zero-stack-effect
+   :runtime-top-value-must-be-promise
+   :resume-requires-current-instruction-await]
+  :yield
+  [:instruction-has-static-zero-stack-effect
+   :execution-requires-one-stack-value
+   :resume-requires-current-instruction-yield]
+  :async-prototype
+  [:async-flag-is-persisted-with-function-prototype
+   :artifact-decoding-validates-the-same-program-before-execution]
+  :state-safety
+  [:invalid-resume-does-not-advance-the-machine
+   :terminal-fiber-cannot-be-resumed
+   :malformed-programs-fail-validation-before-a-fiber-is-created]}
+
+ :vm/conformance
+ {:corpus "conformance/bytecode-vm-suspension.edn"
+  :consumer "Rust integration and VM unit tests"
+  :lanes
+  [:fulfilled-fast-path
+   :pending-await-resume
+   :rejected-await-unwind
+   :nested-frame-suspension
+   :async-result-promise
+   :cancellation-propagation
+   :yield-resume
+   :native-host-call
+   :wasm32-host-promise]
+  :comparison
+  {:reference :EvalFiber
+   :semantic
+   "Where both evaluators support the same HAL form, displayed values, catch/finally effects, rejection messages, and cancellation classification must agree."
+   :performance
+   "Measurements compare retained bytes, allocations, and resume time but are evidence, not semantic thresholds."}}
+
+ :vm/benchmark-matrix
+ [{:id :await/fulfilled
+   :measure [:call-time :allocations]
+   :description "Await an already fulfilled Promise."}
+  {:id :await/pending-once
+   :measure [:suspend-time :retained-bytes :resume-time :allocations]
+   :description "Suspend once and resume with one scalar Value."}
+  {:id :await/nested
+   :measure [:suspend-time :retained-bytes :resume-time]
+   :description "Suspend below multiple explicit VM frames."}
+  {:id :yield/repeated
+   :measure [:yield-time :resume-time :allocations]
+   :description "Repeated driver-controlled yield and resume."}
+  {:id :async/child
+   :measure [:spawn-time :settlement-time :allocations]
+   :description "Async child returns a result Promise and awaits one host Promise."}]
+
+ :vm/non-goals
+ [:default-evaluator-replacement
+  :persistent-continuation-artifact
+  :distributed-machine-migration
+  :async-io-protocol-definition
+  :structured-concurrency-tree
+  :workflow-checkpointing]
+
+ :vm/promotion-conditions
+ [:spec-and-opcodes-agree
+  :native-host-promise-tests-pass
+  :wasm32-host-promise-tests-pass
+  :fulfilled-rejected-and-yield-finally-cases-pass
+  :cancellation-policy-is-documented-and-tested
+  :fiber-versus-vm-cost-evidence-is-recorded]}

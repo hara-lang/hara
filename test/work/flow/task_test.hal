@@ -1,0 +1,61 @@
+(ns work.flow.task-test
+  (:require [work.flow :as flow]
+            [work.flow.task]
+            [work.flow.task.command-task]))
+
+(defn fixture-profile
+  []
+  {:workflow/path [:task]
+   :workflow/flow work.flow.task/flow
+   :workflow/options {:defaults {:on-error :fail}
+                      :on-error :record}})
+
+(defn fixture-definition
+  []
+  {:run (fn [value context] value)})
+
+^{:refer work.flow.task/profile-definition-options}
+(Test/check
+ [{:name "merges task profile defaults with direct options"
+   :test (fn [] (work.flow.task/profile-definition-options (fixture-profile)))
+   :expected {:on-error :record}}])
+
+^{:refer work.flow.task/normalise}
+(Test/check
+ [{:name "adds the qualified name when task definitions omit an id"
+   :test (fn [] (select-keys (work.flow.task/normalise (fixture-profile) :fixture/task
+                                                      (fixture-definition))
+                              [:id :on-error]))
+   :expected {:id :fixture/task :on-error :record}}])
+
+^{:refer work.flow.task/compile}
+(Test/check
+ [{:name "compiles task definitions to native Work bundles"
+   :test (fn [] (let [bundle (work.flow.task/compile (assoc (fixture-definition) :id :fixture/task))]
+                 [(Work/plan? (:work/plan bundle))
+                  (work.flow.task.command-task/task-work? bundle)]))
+   :expected [true true]}])
+
+^{:refer work.flow.task/invoke}
+(Test/check
+ [{:name "evaluates compiled task bundles"
+   :test (fn [] (let [bundle (work.flow.task/compile {:id :fixture
+                                                        :run (fn [value context] (* value 2))})]
+                 (:data (deref (work.flow.task/invoke bundle 3)))))
+   :expected 6}])
+
+^{:refer work.flow.task/command-route}
+(Test/check
+ [{:name "adapts compiled tasks to native Command routes"
+   :test (fn [] (let [route (work.flow.task/command-route
+                             {:id :fixture :path ["fixture"] :desc "Fixture"}
+                             (work.flow.task/compile {:id :fixture
+                                                      :run (fn [value context] value)}))]
+                 [(:id route) (:path route) (fn? (:handler route))]))
+   :expected [:fixture ["fixture"] true]}])
+
+^{:refer work.flow.task/reconcile}
+(Test/check
+ [{:name "uses the latest compiled candidate"
+   :test (fn [] (work.flow.task/reconcile (fixture-profile) :previous :candidate :definition))
+   :expected :candidate}])

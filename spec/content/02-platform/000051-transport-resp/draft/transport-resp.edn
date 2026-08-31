@@ -1,0 +1,277 @@
+{:document/id :hara/transport-resp
+ :document/type :transport-contract
+ :document/version "0.0.0-alpha"
+ :document/status :draft
+ :document/title "Hara RESP broker protocol"
+ :document/summary
+ "Defines the RESP2 wire encoding, connection lifecycle, versioned broker dialects, operations, replies, errors, limits, and client boundary for remote Hara sessions."
+
+ :spec/scope
+ {:scope/includes
+  [:resp/wire
+   :resp/limits
+   :resp/connection-lifecycle
+   :resp/version-negotiation
+   :resp/broker-operations
+   :resp/legacy-dialect
+   :resp/streaming-dialect
+   :resp/errors
+   :resp/diagnostics
+   :resp/client]
+  :scope/excludes
+  [:resp/authentication
+   :resp/tls
+   :resp/access-control
+   :resp/resp3-push
+   :resp/cross-process-namespace-transactions]
+  :scope/intended-use :local-development}
+
+ :spec/invariants
+ [{:requirement/id :hara.resp/resp2-wire
+   :requirement/level :must
+   :requirement/text "All wire values use RESP2 encoding even when protocol dialect 4 or later is negotiated."}
+  {:requirement/id :hara.resp/crlf
+   :requirement/level :must
+   :requirement/text "Wire headers and line values terminate with CRLF."}
+  {:requirement/id :hara.resp/request-array
+   :requirement/level :must
+   :requirement/text "A request is a RESP array whose elements decode as simple strings, bulk strings, or integers."}
+  {:requirement/id :hara.resp/connection-isolation
+   :requirement/level :must
+   :requirement/text "Connections are served concurrently and maintain independent attached-session and negotiated-version state."}
+  {:requirement/id :hara.resp/shared-broker
+   :requirement/level :must
+   :requirement/text "Connections share one broker, and definitions are visible to connections evaluating in the same session."}]
+
+ :resp/wire-types
+ [{:wire/type :resp/simple-string
+   :wire/prefix "+"
+   :wire/payload :utf8-line
+   :wire/null false}
+  {:wire/type :resp/error
+   :wire/prefix "-"
+   :wire/payload :utf8-line
+   :wire/null false}
+  {:wire/type :resp/integer
+   :wire/prefix ":"
+   :wire/payload :signed-i64-decimal
+   :wire/null false}
+  {:wire/type :resp/bulk-string
+   :wire/prefix "$"
+   :wire/payload :length-prefixed-bytes
+   :wire/null-encoding "$-1\r\n"}
+  {:wire/type :resp/array
+   :wire/prefix "*"
+   :wire/payload :count-prefixed-values
+   :wire/null-encoding "*-1\r\n"}]
+
+ :resp/limits
+ {:limit/line-bytes 65536
+  :limit/bulk-bytes 67108864
+  :limit/array-depth 64
+  :limit/array-elements 65536
+  :limit/exceeded-result :connection/error}
+
+ :resp/line-rules
+ {:line/encoding :utf-8
+  :line/forbidden-code-points [13 10]
+  :line/encoder-action :reject}
+
+ :resp/connection
+ {:connection/default-session "ROOT"
+  :connection/default-version 3
+  :connection/order
+  [:connection/connect
+   :connection/optional-hello
+   :connection/operations
+   :connection/quit
+   :connection/close]
+  :connection/quit-reply "+OK"}
+
+ :resp/hello
+ {:hello/operation "HELLO"
+  :hello/arguments [:hello/optional-version]
+  :hello/no-argument-version 3
+  :hello/legacy-version-maximum 3
+  :hello/streaming-version-minimum 4
+  :hello/reply-shape :resp/flat-key-value-array
+  :hello/reply-keys ["SERVER" "INSTANCE" "PROTOCOL" "ROOT"]}
+
+ :resp/operations
+ [{:operation/name "EVAL"
+   :operation/legacy-arguments [:session/name :hara/source]
+   :operation/v4-arguments [:request/id :hara/source :source/origin?]
+   :operation/source-origin
+   ["FILE" :source/file "LINE" :source/line "COLUMN" :source/column]
+   :operation/effect :broker/evaluate}
+  {:operation/name "COMPLETE"
+   :operation/legacy-arguments [:completion/prefix]
+   :operation/v4-arguments [:request/id :completion/prefix]
+   :operation/effect :broker/complete}
+  {:operation/name "SESSION NEW"
+   :operation/legacy-arguments [:session/name]
+   :operation/v4-arguments [:request/id :session/name]
+   :operation/effect :session/create}
+  {:operation/name "SESSION LIST"
+   :operation/legacy-arguments []
+   :operation/v4-arguments [:request/id]
+   :operation/effect :session/list}
+  {:operation/name "SESSION ATTACH"
+   :operation/legacy-arguments [:session/name]
+   :operation/v4-arguments [:request/id :session/name]
+   :operation/effect :session/attach}
+  {:operation/name "SESSION DETACH"
+   :operation/legacy-arguments []
+   :operation/v4-arguments [:request/id]
+   :operation/effect :session/attach-root}
+  {:operation/name "SESSION INFO"
+   :operation/legacy-arguments []
+   :operation/v4-arguments [:request/id]
+   :operation/effect :session/describe}
+  {:operation/name "SESSION CLOSE"
+   :operation/legacy-arguments [:session/name]
+   :operation/v4-arguments [:request/id :session/name]
+   :operation/effect :session/close}
+  {:operation/name "COMMANDS"
+   :operation/legacy-arguments []
+   :operation/v4-arguments [:request/id]
+   :operation/effect :broker/list-operations}
+  {:operation/name "INFO"
+   :operation/legacy-arguments []
+   :operation/v4-arguments [:request/id]
+   :operation/effect :broker/describe}
+  {:operation/name "QUIT"
+   :operation/legacy-arguments []
+   :operation/v4-arguments []
+   :operation/effect :connection/close}]
+
+ :resp/dialects
+ [{:dialect/id :resp/legacy
+   :dialect/versions {:version/maximum 3}
+   :dialect/replies-per-request 1
+   :dialect/success :resp/bulk-string
+   :dialect/failure :resp/error
+   :dialect/eval-session :request/explicit}
+  {:dialect/id :resp/streaming
+   :dialect/versions {:version/minimum 4}
+   :dialect/replies-per-request 2
+   :dialect/request-id-position 1
+   :dialect/missing-request-id "?"
+   :dialect/success-envelope
+   [["RESULT" :request/id :result/display]
+    ["DONE" :request/id "OK"]]
+   :dialect/error-envelope
+   [["ERROR" :request/id :error/code :error/message :error/diagnostic?]
+    ["DONE" :request/id "ERROR"]]
+   :dialect/eval-session :connection/attached}]
+
+ :resp/errors
+ [{:error/code "BAD_REQUEST"
+   :error/meaning "Malformed request shape, missing argument, or unknown SESSION action."}
+  {:error/code "EVAL_ERROR"
+   :error/meaning "Evaluation raised."}
+  {:error/code "NO_SESSION"
+   :error/meaning "The named or attached session does not exist."}
+  {:error/code "UNKNOWN_OP"
+   :error/meaning "The requested operation is unknown."}
+  {:error/code "INTERNAL_ERROR"
+   :error/meaning "The broker failed independently of request evaluation."}]
+
+ :resp/diagnostics
+ {:diagnostic/version 1
+  :diagnostic/transport :optional-v4-error-trailing-field
+  :diagnostic/legacy :absent
+  :diagnostic/shape
+  ["VERSION" :diagnostic/version
+   "MESSAGE" :error/message
+   "EXCEPTION" :exception?
+   "PRIMARY" :diagnostic/location?
+   "EXCERPT" :diagnostic/excerpt?
+   "FRAMES" :diagnostic/frames]
+  :diagnostic/exception-shape
+  ["MESSAGE" :exception/message
+   "CLASS" :exception/class?
+   "CODE" :exception/code?
+   "DATA" :exception/data-display
+   "CAUSE" :exception/cause?
+   "THROWS" :exception/throw-locations]
+  :diagnostic/frame-shape
+  ["FUNCTION" :frame/function
+   "NAMESPACE" :frame/namespace?
+   "FILE" :frame/file?
+   "LINE" :frame/line?
+   "COLUMN" :frame/column?]
+  :diagnostic/location-shape
+  ["FILE" :location/file?
+   "LINE" :location/line?
+   "COLUMN" :location/column?]
+  :diagnostic/excerpt-shape ["START-LINE" :excerpt/start-line "TEXT" :excerpt/text]
+  :diagnostic/data-max-bytes 16384
+  :diagnostic/excerpt-context-lines 2
+  :diagnostic/no-environment-disclosure true}
+
+ :resp/client
+ {:client/namespace std.resp.client
+  :client/loading :explicit-require
+  :client/blocking true
+  :client/functions
+  [connect call write read pipeline open? close]
+  :client/capability :network
+  :client/default-bulk-decoding :utf-8-string
+  :client/bytes-option {:client/decode-bulk :bytes}}
+
+ :spec/requirements
+ [{:requirement/id :hara.resp.request/bad-shape
+   :requirement/level :must
+   :requirement/text "A request with a non-array shape or a non-text-decodable element returns BAD_REQUEST."}
+  {:requirement/id :hara.resp.request/unknown-operation
+   :requirement/level :must
+   :requirement/text "An unknown operation returns UNKNOWN_OP."}
+  {:requirement/id :hara.resp.session/missing
+   :requirement/level :must
+   :requirement/text "Attaching to or using a missing session returns NO_SESSION."}
+  {:requirement/id :hara.resp.legacy/single-reply
+   :requirement/level :must
+   :requirement/text "A legacy request produces exactly one reply."}
+  {:requirement/id :hara.resp.streaming/two-reply
+   :requirement/level :must
+   :requirement/text "A streaming request produces a result or error envelope followed by its DONE envelope."}
+  {:requirement/id :hara.resp.streaming/error-diagnostic-compatibility
+   :requirement/level :must
+   :requirement/text "Protocol 4 clients must accept a four-field ERROR envelope; a server may append one versioned diagnostic value as a fifth field for evaluation errors."}
+  {:requirement/id :hara.resp.diagnostic/bounded-readable-data
+   :requirement/level :must
+   :requirement/text "Diagnostic exception data is a bounded readable display, at most 16384 UTF-8 bytes, and must not include environment or process dumps."}
+  {:requirement/id :hara.resp.diagnostic/source-origin
+   :requirement/level :should
+   :requirement/text "Editor clients should send FILE, LINE, and COLUMN after EVAL source so a primary diagnostic location and a two-line-context excerpt can be returned."}
+  {:requirement/id :hara.resp.quit/close
+   :requirement/level :must
+   :requirement/text "QUIT returns +OK and then closes the connection."}]
+
+ :spec/references
+ [{:reference/id :hara.resp.reference/readme
+   :reference/kind :rendered
+   :reference/path "README.md"
+   :reference/authority :informative
+   :reference/description "Human-readable protocol tables and examples."}
+  {:reference/id :hara.resp.reference/rust
+   :reference/kind :implementation
+   :reference/path "../../../../rust/src/resp.rs"
+   :reference/authority :evidence
+   :reference/description "Rust reference implementation."}
+  {:reference/id :hara.resp.reference/cli
+   :reference/kind :related-contract
+   :reference/path "../../000001-cli/draft/hara-cli.edn"
+   :reference/authority :normative
+   :reference/description "CLI listen and connect routes."}
+  {:reference/id :hara.resp.reference/conformance
+   :reference/kind :conformance
+   :reference/path "conformance/transport-resp.edn"
+   :reference/authority :evidence
+   :reference/description "Truffle and Rust RESP validation criteria and parity gates."}]
+
+ :spec/conformance
+ [{:conformance/id :hara.resp/transport-cases
+   :conformance/path "conformance/transport-resp.edn"
+   :conformance/required true}]}

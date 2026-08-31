@@ -1,0 +1,388 @@
+{:document/id :hara/host-kernel
+ :document/type :host-kernel-spec
+ :document/version "alpha"
+ :document/status :draft
+ :document/title "Hara host and kernel boundary"
+ :document/summary
+ "Runtime authority contract between a Hara evaluator and its embedding host: kernel and session identity, capability grants, provider dispatch, settlement, and the boundary map to the surrounding specification layers."
+
+ :spec/conforms-to
+ {:spec/id :hara/metaspec-metaspec
+  :spec/version "alpha"}
+
+ :host-kernel/scope
+ {:scope/includes
+  #{:kernel-identity :session-identity :session-lifecycle :grant-resolution
+    :provider-dispatch :host-descriptor :settlement-semantics
+    :host-error-codes :resource-registry :session-transfer-rules
+    :sandbox-spec :sandbox-lifecycle :sandbox-provider-registry
+    :sandbox-settlement :embedding-wire-contract :boundary-map}
+  :scope/excludes
+  #{:guest-descriptor-surface :foundation-facades :substrate-transport
+    :provider-implementations :product-shell-interfaces}}
+
+ :host-kernel/invariants
+ [{:requirement/id :host-kernel/single-authority
+   :requirement/level :must
+   :requirement/text
+   "Capability invocation, grants, kernels, sessions, package activation, and provider dispatch have exactly one normative owner: this layer. Other documents reference these semantics but do not restate them."}
+  {:requirement/id :host-kernel/no-ambient-authority
+   :requirement/level :must
+   :requirement/text
+   "Loading, requiring, or aliasing a namespace grants no file, network, process, host-call, reflection, or compilation authority. Authority enters only through session grants."}
+  {:requirement/id :host-kernel/session-scoped-grants
+   :requirement/level :must
+   :requirement/text
+   "Capability grants are resolved per [:kernel/id :session/id]. Two sessions in one runtime may observe different host/capabilities results."}
+  {:requirement/id :host-kernel/deny-ungranted
+   :requirement/level :must
+   :requirement/text
+   "A service, method, or resource that is not in the session grant set is denied by default."}
+  {:requirement/id :host-kernel/lazy-discovery
+   :requirement/level :must
+   :requirement/text
+   "std.native and std.native.Host report :loaded immediately; inspecting them forces no provider discovery or package activation."}
+  {:requirement/id :host-kernel/no-live-transfer
+   :requirement/level :must
+   :requirement/text
+   "Host facades, provider handles, promises, streams, and sockets are live session values and are rejected by session transfer."}
+  {:requirement/id :host-kernel/settlement-preserves-ex-info
+   :requirement/level :must
+   :requirement/text
+   "A rejected host call settles as a rejected promise whose ex-info value, including its :error/code, remains observable through promise catch, deref, session evaluation, and host transport settlement."}
+  {:requirement/id :host-kernel/revoke-on-close
+   :requirement/level :must
+   :requirement/text
+   "Closing a session revokes all of its grants and settles or cancels its outstanding host calls."}
+  {:requirement/id :host-kernel/atomic-resources
+   :requirement/level :must
+   :requirement/text
+   "Resource registration is atomic per batch: a failed batch registers no resources."}
+  {:requirement/id :host-kernel/private-sandbox-session
+   :requirement/level :must
+   :requirement/text
+   "A sandbox owns one private Session that is never inserted into the ordinary Session registry or returned by session enumeration."}
+  {:requirement/id :host-kernel/restricted-sandbox-runtime
+   :requirement/level :must
+   :requirement/text
+   "A sandbox Runtime cannot resolve or inspect Kernel, Sandbox, parent Session or Runtime identity, mounts, development resources, providers, privileged native descriptors, or parent and application namespaces."}
+  {:requirement/id :host-kernel/sealed-sandbox-inputs
+   :requirement/level :must
+   :requirement/text
+   "Sandbox specifications and bundles are immutable portable data. Provider objects, paths, processes, sockets, file descriptors, Vars, functions, mutable values, and live handles never enter a SandboxSpec."}]
+
+ :host-kernel/kernel
+ {:kernel/identity :kernel/id
+  :kernel/descriptor :std.native.Kernel
+  :kernel/capability :kernel
+  :kernel/role
+  "A kernel owns a set of sessions and the resource registry they share. It is the unit of resource accounting; it is not itself an authority boundary. The guest-visible Kernel descriptor and its capability id are owned by 003-native; this layer owns what its methods enforce."
+  :kernel/grants
+  #{:session-control :resource-control :filesystem-handles}
+  :kernel/registries
+  [SessionRegistry MountRegistry DevelopmentResourceCatalog BundleCatalog
+   SandboxProviderRegistry SandboxRegistry]
+  :kernel/registry-separation
+  {:ordinary-sessions SessionRegistry
+   :mount-attachments MountRegistry
+   :mutable-development-sources DevelopmentResourceCatalog
+   :immutable-digest-bundles BundleCatalog
+   :trusted-provider-factories SandboxProviderRegistry
+   :opaque-live-sandboxes SandboxRegistry}
+  :kernel/enforcement
+  {:session-control
+   "session-create, session-close, session-list, session-info, session-eval, session-namespace, session-complete"
+   :resource-control
+   "resource-register, resource-remove, resource-list"
+   :filesystem-handles
+   "filesystem-create, filesystem-attach, filesystem-detach, filesystem-info, filesystem-close"}}
+
+ :host-kernel/sessions
+ {:session/identity [:kernel/id :session/id]
+  :session/lifecycle [:create :active :closed]
+  :session/isolation :per-session
+  :session/facade
+  "Each session receives a distinct Host facade identity. Within one session Host, std.native.Host, and std.foundation/Host resolve to that one identity."
+  :session/close :revoke-all-session-grants
+  :session/transfer
+  "Values cross between sessions only through an explicit transfer that rejects live values. Portable data moves; authority never does."}
+
+ :host-kernel/sandboxes
+ {:sandbox/descriptor :std.native.Sandbox
+  :sandbox/capability :sandbox
+  :sandbox/grants #{:sandbox-control}
+  :sandbox/public-lifecycle [open eval call cancel status close]
+  :sandbox/id
+  {:representation :opaque-positive-process-local-id
+   :forbidden-meanings [:host-path :process-id :socket :file-descriptor :session-id]}
+  :sandbox/evaluation-id
+  {:visibility :internal
+   :allocation :one-per-eval-or-call
+   :purpose :shared-explicit-and-promise-cancellation}
+  :sandbox/spec
+  {:protocol "hara.sandbox/0-alpha"
+   :exact-keys
+   [:protocol :provider :runtime :entry-namespace :bundles :mount
+    :provider-options :limits]
+   :provider :registered-provider-name
+   :runtime :registered-runtime-profile
+   :entry-namespace :symbol
+   :bundles [{:digest :sha256-string :format :registered-bundle-format}]
+   :mount #{:opaque-session-mount-id nil}
+   :provider-options :provider-validated-immutable-map
+   :limits
+   {:source-bytes :positive-integer
+    :result-bytes :positive-integer
+    :output-bytes :positive-integer
+    :evaluation-ms :positive-integer
+    :memory-bytes :positive-integer
+    :active-evaluations 1}
+   :unknown-keys :reject
+   :freeze-before-registration true
+   :forbidden-values
+   [:host-path :process-id :socket :file-descriptor :provider-object
+    :application-handle :var :function :promise :stream :mutable-value
+    :live-handle]}
+  :sandbox/provider
+  {:registration :trusted-kernel-embedding-only
+   :selection :spec-provider-name
+   :open-input :resolved-frozen-spec
+   :backend-responsibilities
+   [:launch :supervision :limits :transport :cancellation :termination]
+   :application-semantics :forbidden}
+  :sandbox/private-session
+  {:ordinary-enumeration false
+   :runtime-profile :sandbox-restricted
+   :namespace-registry :new-empty-runtime-local-registry
+   :development-resource-propagation false
+   :mount-attachment-owner :sandbox-id
+   :release-on [:open-failure :cancel :provider-failure :close]}
+  :sandbox/call
+  {:callable :qualified-symbol
+   :arguments :immutable-portable-vector
+   :invocation :resolved-var-value-call
+   :source-concatenation false}
+  :sandbox/concurrency
+  {:active-evaluations 1
+   :second-evaluation :sandbox/busy}
+  :sandbox/status
+  {:public-keys
+   [:sandbox/id :sandbox/provider :sandbox/state :sandbox/secure
+    :sandbox/evaluation-active :sandbox/error]
+   :states [:open :running :cancelling :cancelled :failed]
+   :forbidden-keys
+   [:session/id :process/id :socket/path :file-descriptor :host/path
+    :runtime :provider-instance]}
+  :sandbox/terminal-events
+  [:cancelled :timeout :transport-failed :provider-failed :limit-exceeded
+   :result-not-transferable]
+  :sandbox/terminal-reuse false
+  :sandbox/close
+  {:active-evaluation :cancel-and-wait
+   :provider-resource-release true
+   :mount-detach true
+   :private-session-release true
+   :registry-removal true
+   :subsequent-operations :sandbox/not-found}}
+
+ :host-kernel/sandbox-settlement
+ {:settlement/success :raw-portable-value
+  :settlement/hara-result :unchanged-value
+  :settlement/failure :rejected-promise
+  :settlement/value :ex-info
+  :settlement/code-key :error/code
+  :settlement/cancellable-methods [eval call]
+  :settlement/cancellation
+  {:promise-hook :same-internal-evaluation-id
+   :explicit-cancel :same-internal-evaluation-id
+   :idle-result false
+   :first-request-starts-termination true
+   :later-requests-observe-terminal-result true}}
+
+ :host-kernel/grants
+ {:grant/sources [:project/capabilities :embedding-policy]
+  :grant/available-meaning :provider-installed
+  :grant/granted-meaning :project-policy-intersected-with-available
+  :grant/default :deny-ungranted
+  :grant/descriptor-keys
+  {:version-key :host/version
+   :version "hara.host.v1"
+   :available-key :host/available
+   :granted-key :host/granted
+   :limits-key :host/limits}
+  :grant/results
+  {:capabilities-result :session-granted
+   :capability-result :membership-in-session-grant}}
+
+ :host-kernel/dispatch
+ {:dispatch/pipeline
+  [:resolve-session :require-grant :validate-method-and-arguments
+   :invoke-provider]
+  :dispatch/stages
+  [{:stage/id :resolve-session
+    :stage/summary
+    "Locate the calling session and its grant set; unknown or closed sessions fail here."}
+   {:stage/id :require-grant
+    :stage/summary
+    "Require that the requested service is a member of the session grant set."}
+   {:stage/id :validate-method-and-arguments
+    :stage/summary
+    "Require that the provider exposes the method and the arguments conform to its declared shape."}
+   {:stage/id :invoke-provider
+    :stage/summary
+    "Hand the call to the provider instance owned by the embedding host; the evaluator never calls host APIs directly."}]}
+
+ :host-kernel/settlement
+ {:settlement/transport :rejected-promise
+  :settlement/value :ex-info
+  :settlement/code-key :error/code
+  :settlement/observability
+  [:promise-catch :deref :session-evaluation :host-transport-settlement]
+  :settlement/cancellation :host/call-cancelled}
+
+ :host-kernel/errors
+ {:error/codes
+  [:host/unavailable :host/capability-unavailable :host/capability-denied
+   :host/method-unavailable :host/call-failed :host/call-cancelled
+   :sandbox/invalid-spec :sandbox/provider-not-found
+   :sandbox/provider-unavailable :sandbox/bundle-not-found
+   :sandbox/bundle-digest-mismatch :sandbox/mount-not-found
+   :sandbox/not-found :sandbox/busy :sandbox/cancelled :sandbox/timeout
+   :sandbox/limit-exceeded :sandbox/evaluation-failed
+   :sandbox/result-not-transferable :sandbox/transport-failed
+   :sandbox/provider-failed]
+  :error/boundary-rule
+  "Capability checks at the guest method boundary raise the :native/* errors owned by 003-native. Rejections produced inside provider dispatch settle as rejected promises carrying the :host/* or :sandbox/* ex-info codes owned by this layer. A call that passes the guest boundary and fails in dispatch never rethrows as :native/capability-denied."
+  :error/sandbox-metadata
+  [:sandbox/id :sandbox/provider :sandbox/limit :sandbox/state]
+  :error/host-internals-forbidden
+  [:host/path :process/id :socket/path :file-descriptor :provider-instance]}
+
+ :host-kernel/embeddings
+ {:embedding/browser
+  {:embedding/owner :hara-web
+   :embedding/source-root "rust/web/host/"
+   :embedding/wire-event
+   [:host-call :call/id :task/id :session/id
+    :filesystem/mount-id-or-nil :service :method :arguments]
+   :embedding/authority-split
+   "The evaluator emits calls and receives settlements. JavaScript owns browser APIs, provider instances, project policy, verified package bytes, and session-scoped grants."
+   :embedding/atomic-resource-target "register-resources"}
+  :embedding/native
+  {:embedding/provider-side :runtime-embedding
+   :embedding/same-contract true
+   :embedding/filesystem :host-confined-root
+   :embedding/socket :native-provider
+   :embedding/unavailable-result :rejected-promise}
+  :embedding/secure-linux-sandbox
+  {:embedding/provider :hoplite-process
+   :embedding/security-boundary :separate-process
+   :embedding/required-controls
+   [:peer-credentials :mode-0600-endpoint :preopened-capabilities
+    :resource-limits :no-new-privileges :seccomp :kill-and-reap]
+   :embedding/secure-claim :all-controls-installed
+   :embedding/other-platforms :provider-unavailable}
+  :embedding/in-process-sandbox
+  {:embedding/purpose :cross-runtime-conformance
+   :embedding/secure false}}
+
+ :host-kernel/boundaries
+ [{:boundary/neighbor :hal/language
+   :boundary/layer "001-language"
+   :boundary/neighbor-owns
+   "EDN data, the reader, values, truth, equality. Evaluation and runtime behaviour are out of its scope by its own declaration."
+   :boundary/this-layer-owns
+   "Nothing in the data contract; this layer begins where evaluation meets an embedding."}
+  {:boundary/neighbor :hara/protocol
+   :boundary/layer "002-protocol"
+   :boundary/neighbor-owns
+   "std.protocol.* descriptors, dispatch, and IExInfo as the guest error protocol."
+   :boundary/this-layer-owns
+   "The ex-info payloads and error codes that flow through IExInfo from host settlement."}
+  {:boundary/neighbor :hara/native
+   :boundary/layer "003-native"
+   :boundary/neighbor-owns
+   "The guest-visible Host, Kernel, and Sandbox descriptors, their method names and arities, the capability id catalog (:file :network :kernel :sandbox :host-call), check-time, runtime profiles, and the :native/* error ids."
+   :boundary/this-layer-owns
+   "The enforcement semantics behind the capability-gated methods: grant resolution, dispatch, settlement, and the :host/* error codes."}
+  {:boundary/neighbor :hara/foundation-annex
+   :boundary/layer "005-foundation-annex"
+   :boundary/neighbor-owns
+   "The std.foundation.host and std.foundation.kernel capability facades, plus the explicitly required std.sandbox facade and their public Vars."
+   :boundary/this-layer-owns
+   "What those facades observe: session-granted capabilities, descriptor contents, and dispatch outcomes. Facade namespaces never widen a grant."}
+  {:boundary/neighbor :hara/substrate
+   :boundary/layer "02-platform"
+   :boundary/neighbor-owns
+   "std.substrate transport-neutral nodes, frames, request/response, streams, and routing."
+   :boundary/this-layer-owns
+   "Host capability use only at adapters that cross an embedding boundary; substrate itself holds no host authority."}
+  {:boundary/neighbor :hara/product-shells
+   :boundary/layer :external
+   :boundary/neighbor-owns
+   "Editors, REPL views, visualizations, and management interfaces (for example greenways.studio)."
+   :boundary/this-layer-owns
+   "All capability semantics; product shells consume sessions and grants but implement none of them."}]
+
+ :host-kernel/references
+ [{:reference/id :host-kernel/host-runtime-source
+   :reference/path "../../../00-unsorted/runtime/draft/host-runtime.edn"
+   :reference/authority :historical
+   :reference/description
+   "Unsorted source document this layer promotes; once adopted, its normative entries live here."}
+  {:reference/id :host-kernel/native-spec
+   :reference/path "../../003-native/draft/native-spec.edn"
+   :reference/authority :normative
+   :reference/description
+   "Guest descriptor surface and capability id catalog."}
+  {:reference/id :host-kernel/foundation-annex
+   :reference/path "../../005-foundation-annex/draft/foundation-annex.edn"
+   :reference/authority :normative
+   :reference/description
+   "std.foundation.host and std.foundation.kernel capability facades."}
+  {:reference/id :host-kernel/jvm-session-broker
+   :reference/path "../../../../java/src/main/java/hara/truffle/SessionKernel.java"
+   :reference/authority :implementation}
+  {:reference/id :host-kernel/jvm-conformance-suite
+   :reference/path "../../../../java/src/test/java/hara/truffle/HaraHostSessionConformanceTest.java"
+   :reference/authority :evidence
+   :reference/description
+   "Executes the host/session boundary cases; currently pinned to the historical source path."}]
+
+ :host-kernel/conformance
+ [{:conformance/id :host/type-identity
+   :conformance/assert
+   "(= Host std.native.Host std.foundation/Host)"}
+  {:conformance/id :host/session-local-facade
+   :conformance/assert
+   "Each session receives a distinct Host facade identity while all three Host names within that session resolve to that one identity."}
+  {:conformance/id :host/namespace-loaded
+   :conformance/assert
+   "std.native and std.native.Host report :loaded immediately and inspection does not force provider discovery or package activation."}
+  {:conformance/id :host/no-special-form
+   :conformance/assert
+   "host/call resolves only through an explicitly required HAL namespace."}
+  {:conformance/id :host/session-grants
+   :conformance/assert
+   "Two sessions may observe different host/capabilities results."}
+  {:conformance/id :host/no-live-transfer
+   :conformance/assert
+   "Host facades, provider handles, promises, streams, and sockets are rejected by session transfer."}
+  {:conformance/id :host/rejected-ex-info
+   :conformance/assert
+   "Rejected Host promises preserve ex-info identity and one of the normative :host/* error codes through catch, deref, and session evaluation."}
+  {:conformance/id :host/atomic-resources
+   :conformance/assert
+   "A failed batch registers no resources."}
+  {:conformance/id :sandbox/private-session
+   :conformance/assert
+   "Opening a sandbox creates a private Session that never appears in ordinary Session enumeration and is released on every terminal path."}
+  {:conformance/id :sandbox/restricted-runtime
+   :conformance/assert
+   "Sandboxed code cannot resolve Kernel, Sandbox, privileged native descriptors, provider bindings, parent identity, mounts, development resources, or parent and application namespaces."}
+  {:conformance/id :sandbox/cancellable-lifecycle
+   :conformance/assert
+   "Java and Rust agree for open, eval, value-call, explicit cancel, Promise cancel, status, and close, including cancellation races and terminal cleanup."}
+  {:conformance/id :sandbox/secure-provider
+   :conformance/assert
+   "The Hoplite provider reports secure only on Linux after peer authentication, pre-opened capability confinement, resource limits, no-new-privileges, seccomp, and deterministic kill-and-reap are active; unsupported platforms fail closed."}]}
