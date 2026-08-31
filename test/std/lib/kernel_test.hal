@@ -1,0 +1,186 @@
+(ns std.lib.kernel-test
+  (:require [std.lib.kernel :as kernel]))
+
+(defn sandbox-error-code
+  [function]
+  (try
+   (deref (function))
+   (catch error (:ex/code (ex-data error)))))
+
+(defn unavailable-error
+  [function]
+  (try
+   (function)
+   (catch error (str error))))
+
+(defn contains-string?
+  [values target]
+  (not (nil? (first (filter (fn [value] (= value target)) values)))))
+
+^{:refer std.lib.kernel/sandbox-open}
+(Test/check [{:name "rejects malformed sandbox specifications"
+              :test (fn [] (sandbox-error-code (fn [] (kernel/sandbox-open {}))))
+              :expected :sandbox/invalid-spec}])
+
+^{:refer std.lib.kernel/sandbox-eval}
+(Test/check [{:name "rejects evaluation for unknown sandbox ids"
+              :test (fn [] (sandbox-error-code (fn [] (kernel/sandbox-eval 1 "(+ 1 2)"))))
+              :expected :sandbox/not-found}])
+
+^{:refer std.lib.kernel/sandbox-call}
+(Test/check [{:name "rejects calls for unknown sandbox ids"
+              :test (fn [] (sandbox-error-code
+                            (fn [] (kernel/sandbox-call 1 'std.native.Base/type [[1]]))))
+              :expected :sandbox/not-found}])
+
+^{:refer std.lib.kernel/sandbox-cancel}
+(Test/check [{:name "rejects cancellation for unknown sandbox ids"
+              :test (fn [] (sandbox-error-code (fn [] (kernel/sandbox-cancel 1))))
+              :expected :sandbox/not-found}])
+
+^{:refer std.lib.kernel/sandbox-status}
+(Test/check [{:name "reports unknown sandbox status synchronously"
+              :test (fn []
+                      (try
+                       (kernel/sandbox-status 1)
+                       (catch error (str error))))
+              :expected "sandbox/not-found: 1"}])
+
+^{:refer std.lib.kernel/sandbox-close}
+(Test/check [{:name "rejects close for unknown sandbox ids"
+              :test (fn [] (sandbox-error-code (fn [] (kernel/sandbox-close 1))))
+              :expected :sandbox/not-found}])
+
+^{:refer std.lib.kernel/session-create}
+(Test/check [{:name "creates a named session and exposes its info"
+              :test (fn []
+                      (let [name "kernel-create"]
+                        (try
+                         (kernel/session-create name)
+                         (kernel/session-info name)
+                         (finally (kernel/session-close name)))))
+              :expected {:name "kernel-create"
+                         :namespace 'user
+                         :state :idle
+                         :filesystem nil}}])
+
+^{:refer std.lib.kernel/session-close}
+(Test/check [{:name "closes a created session"
+              :test (fn []
+                      (let [name "kernel-close"]
+                        (kernel/session-create name)
+                        (kernel/session-close name)
+                        (contains-string? (kernel/session-list) name)))
+              :expected false}])
+
+^{:refer std.lib.kernel/session-list}
+(Test/check [{:name "lists a created session before cleanup"
+              :test (fn []
+                      (let [name "kernel-list"]
+                        (try
+                         (kernel/session-create name)
+                         (contains-string? (kernel/session-list) name)
+                         (finally (kernel/session-close name)))))
+              :expected true}])
+
+^{:refer std.lib.kernel/session-info}
+(Test/check [{:name "reports deterministic created-session metadata"
+              :test (fn []
+                      (let [name "kernel-info"]
+                        (try
+                         (kernel/session-create name)
+                         (kernel/session-info name)
+                         (finally (kernel/session-close name)))))
+              :expected {:name "kernel-info"
+                         :namespace 'user
+                         :state :idle
+                         :filesystem nil}}])
+
+^{:refer std.lib.kernel/session-eval}
+(Test/check [{:name "evaluates code within a named session"
+              :test (fn []
+                      (let [name "kernel-eval"]
+                        (try
+                         (kernel/session-create name)
+                         (kernel/session-eval name "(+ 40 2)")
+                         (finally (kernel/session-close name)))))
+              :expected 42}])
+
+^{:refer std.lib.kernel/session-namespace}
+(Test/check [{:name "returns a created session namespace"
+              :test (fn []
+                      (let [name "kernel-namespace"]
+                        (try
+                         (kernel/session-create name)
+                         (kernel/session-namespace name)
+                         (finally (kernel/session-close name)))))
+              :expected 'user}])
+
+^{:refer std.lib.kernel/session-complete}
+(Test/check [{:name "returns no completions for an impossible prefix"
+              :test (fn []
+                      (let [name "kernel-complete"]
+                        (try
+                         (kernel/session-create name)
+                         (kernel/session-complete name "zz-not-present")
+                         (finally (kernel/session-close name)))))
+              :expected []}])
+
+^{:refer std.lib.kernel/resource-register}
+(Test/check [{:name "registers a source resource"
+              :test (fn []
+                      (let [name "kernel/resource-register.hal"]
+                        (try
+                         (kernel/resource-register name "(ns kernel.resource.register)")
+                         (contains-string? (kernel/resource-list) name)
+                         (finally (kernel/resource-remove name)))))
+              :expected true}])
+
+^{:refer std.lib.kernel/resource-remove}
+(Test/check [{:name "removes a registered source resource"
+              :test (fn []
+                      (let [name "kernel/resource-remove.hal"]
+                        (kernel/resource-register name "(ns kernel.resource.remove)")
+                        (kernel/resource-remove name)
+                        (contains-string? (kernel/resource-list) name)))
+              :expected false}])
+
+^{:refer std.lib.kernel/resource-list}
+(Test/check [{:name "lists registered source resources before cleanup"
+              :test (fn []
+                      (let [name "kernel/resource-list.hal"]
+                        (try
+                         (kernel/resource-register name "(ns kernel.resource.list)")
+                         (contains-string? (kernel/resource-list) name)
+                         (finally (kernel/resource-remove name)))))
+              :expected true}])
+
+^{:refer std.lib.kernel/filesystem-create}
+(Test/check [{:name "reports unavailable filesystem creation"
+              :test (fn [] (unavailable-error (fn [] (kernel/filesystem-create))))
+              :expected "filesystem-create is unavailable in the runtime broker"}])
+
+^{:refer std.lib.kernel/filesystem-attach}
+(Test/check [{:name "reports unavailable filesystem attachment"
+              :test (fn [] (unavailable-error (fn [] (kernel/filesystem-attach))))
+              :expected "filesystem-attach is unavailable in the runtime broker"}])
+
+^{:refer std.lib.kernel/filesystem-detach}
+(Test/check [{:name "reports unavailable filesystem detachment"
+              :test (fn [] (unavailable-error (fn [] (kernel/filesystem-detach))))
+              :expected "filesystem-detach is unavailable in the runtime broker"}])
+
+^{:refer std.lib.kernel/filesystem-info}
+(Test/check [{:name "reports unavailable filesystem inspection"
+              :test (fn [] (unavailable-error (fn [] (kernel/filesystem-info))))
+              :expected "filesystem-info is unavailable in the runtime broker"}])
+
+^{:refer std.lib.kernel/filesystem-close}
+(Test/check [{:name "reports unavailable filesystem closing"
+              :test (fn [] (unavailable-error (fn [] (kernel/filesystem-close))))
+              :expected "filesystem-close is unavailable in the runtime broker"}])
+
+^{:refer std.lib.kernel/capabilities}
+(Test/check [{:name "reports native kernel capability support"
+              :test (fn [] (kernel/capabilities))
+              :expected {:sessions true :resources true :filesystems false}}])

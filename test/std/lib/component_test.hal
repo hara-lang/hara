@@ -1,0 +1,60 @@
+(ns std.lib.component-test
+  (:require [std.lib.component :as component]))
+
+(defstruct component-fixture [events property])
+
+(extend-type component-fixture IComponent
+  (props [fixture]
+    {:value {:get (fn [] (deref (:property fixture)))
+             :set (fn [value] (reset! (:property fixture) value))}
+     :read-only {:get (fn [] :fixed)}})
+  (status [fixture] :ready)
+  (started? [fixture] false)
+  (stopped? [fixture] false)
+  (start [fixture] (do (swap! (:events fixture) conj :start) fixture))
+  (stop [fixture] (do (swap! (:events fixture) conj :stop) fixture))
+  (kill [fixture] (do (swap! (:events fixture) conj :kill) fixture))
+  (remote? [fixture] false))
+
+(defn fixture []
+  (std.lib.component-test/component-fixture (atom []) (atom 1)))
+
+^{:refer std.lib.component/props}
+(Test/check [{:name "delegates property descriptors to IComponent"
+              :test (fn [] (set (keys (component/props (fixture)))) )
+              :expected #{:value :read-only}}])
+
+^{:refer std.lib.component/status}
+(Test/check [{:name "delegates lifecycle status" :test (fn [] (component/status (fixture))) :expected :ready}])
+^{:refer std.lib.component/started?}
+(Test/check [{:name "delegates started predicate" :test (fn [] (component/started? (fixture))) :expected false}])
+^{:refer std.lib.component/stopped?}
+(Test/check [{:name "delegates stopped predicate" :test (fn [] (component/stopped? (fixture))) :expected false}])
+^{:refer std.lib.component/remote?}
+(Test/check [{:name "delegates remote predicate" :test (fn [] (component/remote? (fixture))) :expected false}])
+^{:refer std.lib.component/run-hooks}
+(Test/check [{:name "threads lifecycle hooks in listed order"
+              :test (fn [] (component/run-hooks [] {:a (fn [v] (conj v :a)) :b (fn [v] (conj v :b))} [:a :b]))
+              :expected [:a :b]}])
+^{:refer std.lib.component/wrap-start}
+(Test/check [{:name "wraps setup start phases" :test (fn [] ((component/wrap-start (fn [v] (conj v :start)) []) [])) :expected [:start]}])
+^{:refer std.lib.component/wrap-stop}
+(Test/check [{:name "wraps stop teardown phases" :test (fn [] ((component/wrap-stop (fn [v] (conj v :stop)) []) [])) :expected [:stop]}])
+^{:refer std.lib.component/merged-options}
+(Test/check [{:name "merges invocation options over metadata defaults"
+              :test (fn [] (component/merged-options (with-meta (fixture) {:component/options {:a 1 :b 2}}) {:b 3}))
+              :expected {:a 1 :b 3}}])
+^{:refer std.lib.component/start}
+(Test/check [{:name "starts through protocol" :test (fn [] (let [v (fixture)] (component/start v) @(:events v))) :expected [:start]}])
+^{:refer std.lib.component/stop}
+(Test/check [{:name "stops through protocol" :test (fn [] (let [v (fixture)] (component/stop v) @(:events v))) :expected [:stop]}])
+^{:refer std.lib.component/kill}
+(Test/check [{:name "kills through protocol" :test (fn [] (let [v (fixture)] (component/kill v) @(:events v))) :expected [:kill]}])
+^{:refer std.lib.component/all-props}
+(Test/check [{:name "lists property keys" :test (fn [] (set (component/all-props (fixture)))) :expected #{:value :read-only}}])
+^{:refer std.lib.component/get-prop}
+(Test/check [{:name "reads descriptor getters" :test (fn [] (component/get-prop (fixture) :value)) :expected 1}])
+^{:refer std.lib.component/set-prop}
+(Test/check [{:name "writes descriptor setters" :test (fn [] (let [v (fixture)] [(component/set-prop v :value 42) (component/get-prop v :value)])) :expected [42 42]}])
+^{:refer std.lib.component/with-component}
+(Test/check [{:name "always stops on a thrown body" :test (fn [] (let [v (fixture)] (try (component/with-component [running v] (throw "body failed")) (catch error nil)) @(:events v))) :expected [:start :stop]}])

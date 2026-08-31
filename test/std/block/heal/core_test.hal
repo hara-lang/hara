@@ -1,0 +1,223 @@
+(ns std.block.heal.core-test
+  (:require [std.block.heal.core :as core]
+            [std.block.heal.parse :as parse]
+            [std.lib.format.diff :as diff]))
+
+^{:refer std.block.heal.core/group-min-col}
+(Test/check [{:name "finds the next populated indentation column"
+              :test (fn []
+                      [(core/group-min-col [{:col 6} {} {:col 8}] 0)
+                       (core/group-min-col [{:col 1}] 1)])
+              :expected [6 nil]}])
+
+^{:refer std.block.heal.core/group-entries}
+(Test/check [{:name "splits entries whenever the active column starts again"
+              :test (fn []
+                      (core/group-entries [{:col 2 :line 1}
+                                           {:line 2}
+                                           {:col 2 :line 3}]
+                                          2))
+              :expected [[{:col 2 :line 1} {:line 2}]
+                         [{:col 2 :line 3}]]}])
+
+^{:refer std.block.heal.core/group-blocks-single}
+(Test/check [{:name "creates a parent block with recursively grouped children"
+              :test (fn []
+                      (core/group-blocks-single
+                       [{:line 1 :col 1 :type :open :char "("}
+                        {:line 2 :col 3 :type :open :char "["}]
+                       1))
+              :expected {:lead {:line 1 :col 1 :type :open :char "("}
+                         :line [1 2]
+                         :level 1
+                         :col 1
+                         :children [{:lead {:line 2 :col 3 :type :open :char "["}
+                                     :line [2 2]
+                                     :level 0
+                                     :col 3
+                                     :last true}]}}])
+
+^{:refer std.block.heal.core/group-blocks-multi}
+(Test/check [{:name "marks the final root block"
+              :test (fn []
+                      (core/group-blocks-multi
+                       [{:line 1 :col 1 :type :open :char "("}
+                        {:line 2 :col 3 :type :open :char "["}]))
+              :expected [{:lead {:line 1 :col 1 :type :open :char "("}
+                          :line [1 2]
+                          :level 1
+                          :col 1
+                          :last true
+                          :children [{:lead {:line 2 :col 3 :type :open :char "["}
+                                      :line [2 2]
+                                      :level 0
+                                      :col 3
+                                      :last true}]}]}])
+
+^{:refer std.block.heal.core/group-blocks-prep-entries}
+(Test/check [{:name "keeps a code start before opening delimiters on its row"
+              :test (fn []
+                      (core/group-blocks-prep-entries
+                       [{:type :open :line 1 :char "("}]
+                       [{:line 1 :char "x"} {:line 2 :char "y"}]))
+              :expected [{:line 1 :char "x"}
+                         {:type :open :line 1 :char "("}
+                         {:line 2 :char "y"}]}])
+
+^{:refer std.block.heal.core/group-blocks-prep}
+(Test/check [{:name "returns raw lines with parsed starts and delimiters"
+              :test (fn []
+                      (let [info (core/group-blocks-prep "(x)")]
+                        [(:lines info)
+                         (count (:entries info))
+                         (:type (first (:entries info)))]))
+              :expected [["(x)"] 1 :open]}])
+
+^{:refer std.block.heal.core/group-blocks}
+(Test/check [{:name "builds a root block for an opening delimiter"
+              :test (fn []
+                      (let [block (first (core/group-blocks "(x)"))]
+                        [(:line block)
+                         (:col block)
+                         (get-in block [:lead :char])
+                         (:last block)]))
+              :expected [[1 1] 1 "(" true]}])
+
+^{:refer std.block.heal.core/get-block-lines}
+(Test/check [{:name "extracts a region while retaining its source column"
+              :test (fn []
+                      [(core/get-block-lines ["abc" "def"] [1 2] 2)
+                       (core/get-block-lines ["abc"] [1 1] 2 3)
+                       (try
+                         (core/get-block-lines ["abc"] [1 2] 2 1)
+                         false
+                         (catch error true))])
+              :expected [[" bc" "def"] [" bc"] true]}])
+
+^{:refer std.block.heal.core/create-block-scan}
+(Test/check [{:name "creates an offset scan from a block range"
+              :test (fn []
+                      (core/create-block-scan {:line [1 2] :col 2 :last true}
+                                              ["(ab" " cd)"]))
+              :expected {:offset 0
+                         :snippet " ab\n cd)"
+                         :line [1 2]
+                         :col 2
+                         :end-col nil
+                         :last true}}])
+
+^{:refer std.block.heal.core/tighter-scan?}
+(Test/check [{:name "accepts only strictly narrower windows"
+              :test (fn []
+                      (let [scan {:line [1 2] :col 1 :end-col nil}]
+                        [(core/tighter-scan? scan [1 1] 3 8)
+                         (core/tighter-scan? scan [1 2] 1 2147483647)]))
+              :expected [true false]}])
+
+^{:refer std.block.heal.core/create-close-hint-scan}
+(Test/check [{:name "uses a later correct close to narrow an open-error scan"
+              :test (fn []
+                      (let [content "(foo (+ 1 2] 3))"
+                            lines   (str/split-lines content)
+                            block   (first (core/group-blocks content))
+                            scan    (core/create-block-scan block lines)
+                            interim (parse/parse (:snippet scan))
+                            result  (core/create-close-hint-scan
+                                     block lines scan interim
+                                     (vec (filter (comp not :correct?) interim)))]
+                        [(:line result) (:col result) (:end-col result)]))
+              :expected [[1 1] 6 15]}])
+
+^{:refer std.block.heal.core/localize-close-hint-scan}
+(Test/check [{:name "leaves child-block scans at their indentation boundary"
+              :test (fn []
+                      (let [content "(foo\n  (bar baz qux]\n  zot))"
+                            lines   (str/split-lines content)
+                            block   (-> (core/group-blocks content) first :children last)
+                            result  (core/localize-close-hint-scan block lines)]
+                        [(get-in result [:scan :line])
+                         (get-in result [:scan :col])
+                         (get-in result [:scan :end-col])
+                         (count (:errors result))]))
+              :expected [[2 2] 3 nil 2]}])
+
+^{:refer std.block.heal.core/check-errored-suspect}
+(Test/check [{:name "flags leftover close errors that split a final form"
+              :test (fn []
+                      (let [lines ["(foo) (bar))"]
+                            scan  (core/create-block-scan
+                                   {:col 1 :last true :line [1 1]} lines)]
+                        (core/check-errored-suspect
+                         scan lines [{:col 12 :line 1 :type :close}])))
+              :expected true}])
+
+^{:refer std.block.heal.core/get-errored-loop}
+(Test/check [{:name "returns the local block and unmatched close error"
+              :test (fn []
+                      (let [lines ["(x))"]
+                            block {:lead {:char "(" :col 1 :line 1
+                                          :style :paren :type :open}
+                                   :line [1 1] :level 0 :col 1 :last true}
+                            result (core/get-errored-loop block lines)]
+                        [(get-in result [:at :line])
+                         (get-in result [:errors 0 :char])
+                         (get-in result [:errors 0 :line])
+                         (:lines result)]))
+              :expected [[1 1] ")" 1 ["(x))"]]}])
+
+^{:refer std.block.heal.core/get-errored-raw}
+(Test/check [{:name "collects errors from every supplied block"
+              :test (fn []
+                      (let [lines ["(x))"]
+                            block {:lead {:char "(" :col 1 :line 1
+                                          :style :paren :type :open}
+                                   :line [1 1] :level 0 :col 1 :last true}
+                            result (core/get-errored-raw lines [block])]
+                        [(count result)
+                         (get-in result [0 :errors 0 :char])
+                         (get-in result [0 :at :col])]))
+              :expected [1 ")" 1]}])
+
+^{:refer std.block.heal.core/get-errored}
+(Test/check [{:name "finds unmatched closes in a complete content string"
+              :test (fn []
+                      (let [result (core/get-errored "(x))")]
+                        [(count result)
+                         (get-in result [0 :errors 0 :char])
+                         (get-in result [0 :at :line])]))
+              :expected [1 ")" [1 1]]}])
+
+^{:refer std.block.heal.core/heal-content-complex-edits}
+(Test/check [{:name "removes the final close in a close-open-close sequence"
+              :test (fn []
+                      (core/heal-content-complex-edits
+                       {:at {:lead {:style :paren}}}
+                       [{:type :close :style :paren :depth -1}
+                        {:type :open}
+                        {:type :close :line 2 :col 3}]))
+              :expected [{:action :remove :line 2 :col 3}]}])
+
+^{:refer std.block.heal.core/heal-content-single-pass}
+(Test/check [{:name "repairs a single mismatched closing delimiter"
+              :test (fn [] (core/heal-content-single-pass "(foo]"))
+              :expected "(foo)"}])
+
+^{:refer std.block.heal.core/heal-content}
+(Test/check [{:name "converges repeated repair passes and preserves valid content"
+              :test (fn []
+                      [(core/heal-content "(foo]")
+                       (core/heal-content "(foo)")])
+              :expected ["(foo)" "(foo)"]}])
+
+^{:refer std.block.heal.core/wrap-print-diff}
+(Test/check [{:name "wraps a transformer while returning its transformed content"
+              :test (fn []
+                      ((core/wrap-print-diff (fn [content] (str content "!"))) "x"))
+              :expected "x!"}])
+
+^{:refer std.block.heal.core/wrap-diff}
+(Test/check [{:name "wraps a transformer as a structured diff"
+              :test (fn []
+                      (= (diff/diff "a" "b")
+                         ((core/wrap-diff (fn [_] "b")) "a")))
+              :expected true}])

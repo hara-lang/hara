@@ -1,0 +1,57 @@
+(ns std.config.global
+  (:require [std.config.common :as common]))
+
+(def +session+
+  (atom {}))
+
+(defn ^{:public true} environment
+  [context]
+  (or (:env context)
+      (:config/env context)
+      {}))
+
+(defn ^{:public true} current-project
+  "Returns explicitly supplied project configuration. Native Hara does not
+   depend on the archive-only code.project discovery library."
+  [context]
+  (or (:project context)
+      (:config/project context)
+      {}))
+
+(defn ^{:public true} session
+  []
+  (deref +session+))
+
+(defn ^{:public true} swap-session!
+  "Updates portable session overrides."
+  [function & arguments]
+  (apply swap! +session+ function arguments))
+
+(defn ^{:public true} reset-session!
+  "Idempotently restores portable session overrides to their empty baseline."
+  []
+  (reset! +session+ {})
+  nil)
+
+(defn ^{:public true} global-all
+  [context]
+  (common/merge-all
+   [(environment context)
+    (current-project context)
+    (session)]))
+
+(defn ^{:public true} global
+  "Returns portable global configuration. Session overrides project data, and
+   project data overrides explicit environment data."
+  ([]
+   (global :all {}))
+  ([kind]
+   (global kind {}))
+  ([kind context]
+   (case kind
+     :env (environment context)
+     :project (current-project context)
+     :session (session)
+     :all (global-all context)
+     (throw
+      (ex :generic {:source kind} :ex/message "Unknown global configuration source")))))

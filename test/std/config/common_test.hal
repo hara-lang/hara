@@ -1,0 +1,139 @@
+(ns std.config.common-test
+  (:require [std.config.common :as common]))
+
+^{:refer std.config.common/merge-all}
+(Test/check [{:name "merges nested configuration maps left to right"
+              :test (fn [] (common/merge-all [{:service {:host "localhost"}}
+                                               {:service {:port 8080}}]))
+              :expected {:service {:host "localhost" :port 8080}}}])
+
+^{:refer std.config.common/unsupported-feature}
+(Test/check [{:name "creates a structured deferred-feature error"
+              :test (fn []
+                      (let [data (ex-data (common/unsupported-feature :yaml :type))]
+                        [(:error/type data) (:feature data)
+                         (:feature/category data) (:feature/status data)]))
+              :expected [:std.config/unsupported-feature :yaml :type :host-adapted]}])
+
+^{:refer std.config.common/assert-portable-options}
+(Test/check [{:name "passes supported options and rejects deferred types"
+              :test (fn []
+                      [(common/assert-portable-options {:type :json :default {}})
+                       (let [data (try
+                                    (common/assert-portable-options {:type :yaml})
+                                    nil
+                                    (catch error (ex-data error)))]
+                         [(:error/type data) (:feature data)])])
+              :expected [{:type :json :default {}}
+                         [:std.config/unsupported-feature :yaml]]}])
+
+^{:refer std.config.common/read-text}
+(Test/check [{:name "reads UTF-8 fixture text"
+              :test (fn [] (common/read-text "test-fixtures/std-config/nested/message.txt"))
+              :expected "hello from file\n"}])
+
+^{:refer std.config.common/absolute-path?}
+(Test/check [{:name "recognizes Unix and drive-letter absolute paths"
+              :test (fn [] [(common/absolute-path? "/tmp/example.edn")
+                            (common/absolute-path? "C:\\temp\\example.edn")
+                            (common/absolute-path? "nested/example.edn")])
+              :expected [true true false]}])
+
+^{:refer std.config.common/candidate-paths}
+(Test/check [{:name "orders parent root and raw include candidates"
+              :test (fn []
+                      [(common/candidate-paths "child.edn"
+                                               {:config/parent "test-fixtures/std-config/nested"
+                                                :root "test-fixtures/std-config"})
+                       (common/candidate-paths "/tmp/child.edn" {})])
+              :expected [[(File/join "test-fixtures/std-config/nested" "child.edn")
+                          (File/join "test-fixtures/std-config" "child.edn")
+                          "child.edn"]
+                         ["/tmp/child.edn"]]}])
+
+^{:refer std.config.common/first-existing}
+(Test/check [{:name "returns the first existing path"
+              :test (fn []
+                      (common/first-existing
+                       ["test-fixtures/std-config/missing.edn"
+                        "test-fixtures/std-config/root.edn"]))
+              :expected "test-fixtures/std-config/root.edn"}])
+
+^{:refer std.config.common/resolve-file}
+(Test/check [{:name "returns existing files and reports missing candidates"
+              :test (fn []
+                      [(common/resolve-file "root.edn"
+                                            {:root "test-fixtures/std-config"})
+                       (let [data (try
+                                    (common/resolve-file "missing.edn"
+                                                         {:root "test-fixtures/std-config"})
+                                    nil
+                                    (catch error (ex-data error)))]
+                         [(:error/type data) (:path data)
+                          (:candidates data)])])
+              :expected [(File/join "test-fixtures/std-config" "root.edn")
+                         [:std.config/missing-file
+                          "missing.edn"
+                          [(File/join "test-fixtures/std-config" "missing.edn")
+                           "missing.edn"]]]}])
+
+^{:refer std.config.common/extension-type}
+(Test/check [{:name "infers JSON and EDN extensions with a fallback"
+              :test (fn [] [(common/extension-type "config.json" :text)
+                            (common/extension-type "config.edn" :text)
+                            (common/extension-type "config.txt" :text)])
+              :expected [:json :edn :text]}])
+
+^{:refer std.config.common/path-parts}
+(Test/check [{:name "normalizes dotted keys and collection paths"
+              :test (fn [] [(common/path-parts :service.host)
+                            (common/path-parts 'service.port)
+                            (common/path-parts "service.name")
+                            (common/path-parts [:service :id])
+                            (common/path-parts :project/id)])
+              :expected [[:service :host]
+                         [:service :port]
+                         [:service :name]
+                         [:service :id]
+                         [:project/id]]}])
+
+^{:refer std.config.common/compatible-get}
+(Test/check [{:name "retrieves keyword and string key variants"
+              :test (fn [] [(common/compatible-get {:port 8080} "port")
+                            (common/compatible-get {"host" "localhost"} :host)
+                            (common/compatible-get 42 :host)])
+              :expected [8080 "localhost" nil]}])
+
+^{:refer std.config.common/compatible-get-in}
+(Test/check [{:name "walks mixed string and keyword nested maps"
+              :test (fn []
+                      (common/compatible-get-in
+                       {"service" {:port 8080}}
+                       "service.port"))
+              :expected 8080}])
+
+^{:refer std.config.common/select-content}
+(Test/check [{:name "selects nested keys and excludes top-level keys"
+              :test (fn []
+                      [(common/select-content {:service {:host "localhost" :port 8080}}
+                                              {:in :service :keys [:host]})
+                       (common/select-content {:host "localhost" :secret "x"}
+                                              {:exclude [:secret]})])
+              :expected [{:host "localhost"} {:host "localhost"}]}])
+
+^{:refer std.config.common/contains-value?}
+(Test/check [{:name "recognizes values in an include stack"
+              :test (fn [] [(common/contains-value? ["a.edn" "b.edn"] "b.edn")
+                            (common/contains-value? ["a.edn"] "c.edn")])
+              :expected [true false]}])
+
+^{:refer std.config.common/replace-first}
+(Test/check [{:name "replaces only the first formatting token"
+              :test (fn [] [(common/replace-first "%s/%s" "%s" "left")
+                            (common/replace-first "plain" "%s" "left")])
+              :expected ["left/%s" "plain"]}])
+
+^{:refer std.config.common/format-values}
+(Test/check [{:name "formats values into percent-s placeholders"
+              :test (fn [] (common/format-values "http://%s:%s" ["localhost" 8080]))
+              :expected "http://localhost:8080"}])

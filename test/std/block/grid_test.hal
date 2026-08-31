@@ -1,0 +1,218 @@
+(ns std.block.grid-test
+  (:require [std.block.base :as base]
+            [std.block.construct :as construct]
+            [std.block.grid :refer :all]))
+
+(defn migration-test-check
+  [test expected]
+  (let [actual (test)]
+    (std.native.Test/result
+     "archive migration check"
+     actual
+     expected
+     (std.native.Test/compare actual expected))))
+
+(defn block-strings
+  [blocks]
+  (mapv base/block-representation blocks))
+
+^{:refer std.block.grid/bind-length}
+(Test/check
+ [{:name "defines the continuation bind indent width"
+   :test (fn [] bind-length)
+   :expected 2}]
+ migration-test-check)
+^{:refer std.block.grid/indent-length}
+(Test/check
+ [{:name "defines the default structural indent width"
+   :test (fn [] indent-length)
+   :expected 1}]
+ migration-test-check)
+
+^{:refer std.block.grid/void-block?}
+(Test/check
+ [{:name "recognizes void blocks only"
+   :test (fn [] [(void-block? (construct/space)) (void-block? (construct/token 1))])
+   :expected [true false]}]
+ migration-test-check)
+
+^{:refer std.block.grid/linebreak-block?}
+(Test/check
+ [{:name "recognizes newline void blocks"
+   :test (fn [] [(linebreak-block? (construct/newline)) (linebreak-block? (construct/space))])
+   :expected [true false]}]
+ migration-test-check)
+
+^{:refer std.block.grid/linespace-block?}
+(Test/check
+ [{:name "recognizes horizontal whitespace blocks"
+   :test (fn [] [(linespace-block? (construct/space)) (linespace-block? (construct/newline))])
+   :expected [true false]}]
+ migration-test-check)
+
+^{:refer std.block.grid/comment-block?}
+(Test/check
+ [{:name "recognizes comment blocks"
+   :test (fn [] [(comment-block? (construct/comment "; note")) (comment-block? (construct/token 1))])
+   :expected [true false]}]
+ migration-test-check)
+
+^{:refer std.block.grid/expression-block?}
+(Test/check
+ [{:name "recognizes token and container expressions but not voids"
+   :test (fn [] [(expression-block? (construct/token 1))
+                 (expression-block? (construct/container :list []))
+                 (expression-block? (construct/space))])
+   :expected [true true false]}]
+ migration-test-check)
+
+^{:refer std.block.grid/trim-left}
+(Test/check
+ [{:name "removes leading void blocks and retains later values"
+   :test (fn [] (block-strings (trim-left [(construct/space) (construct/newline) (construct/token :a) (construct/space)])))
+   :expected [":a" "␣"]}]
+ migration-test-check)
+
+^{:refer std.block.grid/trim-right}
+(Test/check
+ [{:name "removes trailing void blocks and retains earlier values"
+   :test (fn [] (block-strings (trim-right [(construct/space) (construct/token :a) (construct/newline) (construct/space)])))
+   :expected ["␣" ":a"]}]
+ migration-test-check)
+
+^{:refer std.block.grid/split-lines}
+(Test/check
+ [{:name "starts each subsequent line with its retained newline block"
+   :test (fn []
+           (mapv block-strings
+                 (split-lines [(construct/token :a) (construct/token :b)
+                               (construct/newline) (construct/token :c)])))
+   :expected [[":a" ":b"] ["\\n" ":c"]]}]
+ migration-test-check)
+
+^{:refer std.block.grid/remove-starting-spaces}
+(Test/check
+ [{:name "removes line-start horizontal spaces after retained newlines"
+   :test (fn []
+           (mapv block-strings
+                 (remove-starting-spaces [[(construct/newline) (construct/space) (construct/space) (construct/token :a)]
+                                          [(construct/token :b) (construct/space)]])))
+   :expected [["\\n" ":a"] [":b" "␣"]]}]
+ migration-test-check)
+
+^{:refer std.block.grid/adjust-comments}
+(Test/check
+ [{:name "inserts a newline after a comment lacking one"
+   :test (fn [] (block-strings (adjust-comments [(construct/comment "; note") (construct/token :a)])))
+   :expected ["; note" "\\n" ":a"]}
+  {:name "does not duplicate an existing newline after a comment"
+   :test (fn [] (block-strings (adjust-comments [(construct/comment "; note") (construct/newline)])))
+   :expected ["; note" "\\n"]}]
+ migration-test-check)
+
+^{:refer std.block.grid/blank-line?}
+(Test/check
+ [{:name "accepts a newline followed solely by void blocks"
+   :test (fn [] [(blank-line? [(construct/newline) (construct/space)])
+                 (blank-line? [(construct/newline) (construct/token :a)])
+                 (blank-line? [])])
+   :expected [true false false]}]
+ migration-test-check)
+
+^{:refer std.block.grid/remove-extra-linebreaks}
+(Test/check
+ [{:name "collapses a run of blank lines to one retained blank line"
+   :test (fn []
+           (mapv block-strings
+                 (remove-extra-linebreaks [[(construct/token :a)]
+                                           [(construct/newline)]
+                                           [(construct/newline)]
+                                           [(construct/newline)]
+                                           [(construct/token :b)]])))
+   :expected [[":a"] ["\\n"] [":b"]]}]
+ migration-test-check)
+
+^{:refer std.block.grid/grid-scope}
+(Test/check
+ [{:name "decrements numeric scope entries while retaining nested selectors"
+   :test (fn [] (grid-scope [{0 1} 1 [0 2]]))
+   :expected [{0 1} 0 [0 2]]}]
+ migration-test-check)
+
+^{:refer std.block.grid/grid-rules}
+(Test/check
+ [{:name "derives defaults, parent scope, and configured list rules"
+   :test (fn []
+           [(grid-rules :list nil nil nil)
+            (grid-rules :vector nil nil nil)
+            (grid-rules :list (quote add) [1] nil)
+            (grid-rules :list (quote if) nil {(quote if) {:indent 1 :bind 1 :scope [0]}})])
+   :expected [{:indent 0 :bind 0 :scope []}
+              {:indent 0 :bind 0 :scope [0]}
+              {:indent 1 :bind 0 :scope [0]}
+              {:indent 1 :bind 1 :scope [0]}]}]
+ migration-test-check)
+
+^{:refer std.block.grid/expression-count}
+(Test/check
+ [{:name "counts only expression blocks on a line"
+   :test (fn [] (expression-count [(construct/space) (construct/token :a) (construct/container :vector [])]))
+   :expected 2}]
+ migration-test-check)
+
+^{:refer std.block.grid/indent-bind}
+(Test/check
+ [{:name "returns the line index that completes the requested binding expressions"
+   :test (fn []
+           (let [lines [[(construct/token (quote if-let))]
+                        [(construct/newline)]
+                        [(construct/newline) (construct/token :binding)]
+                        [(construct/newline) (construct/token :body)]]]
+             [(indent-bind lines 1) (indent-bind lines 0)]))
+   :expected [2 0]}]
+ migration-test-check)
+
+^{:refer std.block.grid/indent-lines}
+(Test/check
+ [{:name "inserts binding and body indentation after each newline"
+   :test (fn []
+           (let [lines [[(construct/token (quote if-let))]
+                        [(construct/newline)]
+                        [(construct/newline) (construct/token :binding)]
+                        [(construct/newline) (construct/token :body)]]]
+             (mapv block-strings (indent-lines lines 1 {:indent 1 :bind 1}))))
+   :expected [["if-let"]
+              ["\\n" "␣" "␣" "␣" "␣"]
+              ["\\n" "␣" "␣" "␣" "␣" ":binding"]
+              ["\\n" "␣" "␣" ":body"]]}]
+ migration-test-check)
+
+^{:refer std.block.grid/flatten-lines}
+(Test/check
+ [{:name "concatenates line vectors in source order"
+   :test (fn [] (block-strings (flatten-lines [[(construct/token :a)] [(construct/newline) (construct/token :b)]])))
+   :expected [":a" "\\n" ":b"]}]
+ migration-test-check)
+
+^{:refer std.block.grid/skip-void-index}
+(Test/check
+ [{:name "moves past contiguous void blocks and stops at an expression"
+   :test (fn []
+           (let [blocks [(construct/space) (construct/newline) (construct/token :a)]]
+             [(skip-void-index blocks 0) (skip-void-index blocks 2)]))
+   :expected [2 2]}]
+ migration-test-check)
+
+^{:refer std.block.grid/grid}
+(Test/check
+ [{:name "inserts configured indentation after a collection newline"
+   :test (fn []
+           (let [container (construct/container :list
+                                                 [(construct/token (quote if))
+                                                  (construct/newline)
+                                                  (construct/space)
+                                                  (construct/token :body)])
+                 result (grid container 1 {:rules {(quote if) {:indent 1}}})]
+             (block-strings (:children result))))
+   :expected ["if" "\\n" "␣" "␣" "␣" ":body"]}]
+ migration-test-check)

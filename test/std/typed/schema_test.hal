@@ -1,0 +1,180 @@
+(ns std.typed.schema-test
+  (:require [std.foundation.bootstrap :as bootstrap]
+            [std.typed.registry :as registry]
+            [std.typed.schema :as schema]))
+
+;; This suite is generated from the source bootstrap inventory, then completed
+;; with semantic assertions for the portable validation contract.
+
+(def +nodes+
+  (registry/local
+   'demo
+   {'Node [:map
+           [:value :int]
+           [:next [:maybe 'Node]]]}))
+
+(def +cycle+
+  (registry/local 'cycle {'A 'B 'B 'A}))
+
+(defmethod schema/validate-normal :fixture/exact [normal value path]
+  (cond
+    (= (:value normal) value) []
+    :else [{:finding/type :fixture/mismatch :finding/path path}]))
+
+^{:refer std.typed.schema/reference-form?}
+(Test/check
+ [{:name "recognizes exact var reference forms"
+   :test (fn [] [(schema/reference-form? (list 'var 'demo/Node))
+                 (schema/reference-form? 'demo/Node)])
+   :expected [true false]}])
+
+^{:refer std.typed.schema/normalize-dispatch}
+(Test/check
+ [{:name "selects native schema, reference, vector, and primitive normalization"
+   :test (fn [] [(schema/normalize-dispatch :int)
+                 (schema/normalize-dispatch (list 'var 'demo/Node))
+                 (schema/normalize-dispatch [:vector :str])])
+   :expected [:primitive :reference :vector]}])
+
+^{:refer std.typed.schema/normalize}
+(Test/check
+ [{:name "normalizes maps collections unions and integer width alternatives"
+   :test (fn []
+           [(schema/normalize [:vector {:min-count 1} :int])
+            (schema/normalize [:maybe :str])
+            (schema/normalize :integer)])
+   :expected [{:kind :vector
+               :item {:kind :primitive :name :int}
+               :properties {:min-count 1}}
+              {:kind :union
+               :types [{:kind :primitive :name :str}
+                       {:kind :primitive :name :nil}]}
+              {:kind :union
+               :types [{:kind :primitive :name :long}
+                       {:kind :primitive :name :bigint}]}]}])
+
+^{:refer std.typed.schema/normalize-with}
+(Test/check
+ [{:name "qualifies bare symbols through the supplied immutable registry"
+   :test (fn [] (schema/normalize-with 'Node +nodes+))
+   :expected {:kind :reference :name 'demo/Node}}])
+
+^{:refer std.typed.schema/normalize-field}
+(Test/check
+ [{:name "retains optional field properties"
+   :test (fn [] (schema/normalize-field [:name {:optional true} :str]))
+   :expected {:name :name
+              :type {:kind :primitive :name :str}
+              :properties {:optional true}}}])
+
+^{:refer std.typed.schema/collection-parts}
+(Test/check
+ [{:name "separates collection properties from its item surface"
+   :test (fn [] (schema/collection-parts [:set {:distinct true} :keyword]))
+   :expected {:properties {:distinct true} :item :keyword}}])
+
+^{:refer std.typed.schema/ampersand-index}
+(Test/check
+ [{:name "finds only the first variadic marker"
+   :test (fn [] [(schema/ampersand-index [:str '& :any])
+                 (schema/ampersand-index [:str :int])])
+   :expected [1 nil]}])
+
+^{:refer std.typed.schema/normalize-inputs}
+(Test/check
+ [{:name "normalizes fixed and variadic function inputs"
+   :test (fn [] (schema/normalize-inputs [:str '& :any]))
+   :expected {:fixed [{:kind :primitive :name :str}]
+              :rest {:kind :primitive :name :any}}}])
+
+^{:refer std.typed.schema/reference-names}
+(Test/check
+ [{:name "collects references from nested schemas"
+   :test (fn [] (schema/reference-names [:map [:node (list 'var 'demo/Node)]]))
+   :expected ['demo/Node]}])
+
+^{:refer std.typed.schema/resolve-reference}
+(Test/check
+ [{:name "resolves an exact named schema"
+   :test (fn [] (:kind (schema/resolve-reference 'Node +nodes+)))
+   :expected :map}])
+
+^{:refer std.typed.schema/resolve-recursive}
+(Test/check
+ [{:name "retains recursive named edges while resolving the outer schema"
+   :test (fn [] [(-> (schema/resolve-recursive 'Node +nodes+) :kind)
+                 (schema/unresolved-references 'Node +nodes+)])
+   :expected [:map []]}])
+
+^{:refer std.typed.schema/primitive-valid?}
+(Test/check
+ [{:name "distinguishes integer and string primitive values"
+   :test (fn [] [(schema/primitive-valid? :int 2)
+                 (schema/primitive-valid? :int 2.0)
+                 (schema/primitive-valid? :str "two")])
+   :expected [true false true]}])
+
+^{:refer std.typed.schema/validate-properties}
+(Test/check
+ [{:name "emits named property findings"
+   :test (fn [] (mapv :finding/type
+                       (schema/validate-properties
+                        {:properties {:min-count 3 :distinct true}}
+                        [1 1]
+                        [])))
+   :expected [:std.typed.schema/property-violation
+              :std.typed.schema/property-violation]}])
+
+^{:refer std.typed.schema/validate-normal}
+(Test/check
+ [{:name "remains extensible through defmethod"
+   :test (fn [] (schema/validate-normal {:kind :fixture/exact :value 42} 41 []))
+   :expected [{:finding/type :fixture/mismatch :finding/path []}]}])
+
+^{:refer std.typed.schema/validate}
+(Test/check
+ [{:name "returns precise map, collection, reference, and cycle findings"
+   :test (fn []
+           [(mapv :finding/type (schema/validate [:map {:closed true} [:name :str]] {}))
+            (-> (schema/validate [:vector :int] [1 "two"]) first :finding/path)
+            (:finding/type (first (schema/validate 'Missing 1 +nodes+)))
+            (:finding/type (first (schema/validate 'A 1 +cycle+)))])
+   :expected [[:std.typed.schema/missing-key]
+              [1]
+              :std.typed.schema/unresolved-reference
+              :std.typed.schema/cyclic-reference]}])
+
+^{:refer std.typed.schema/valid?}
+(Test/check
+ [{:name "accepts finite recursive values and rejects incompatible descendants"
+   :test (fn []
+           [(schema/valid? 'Node {:value 1 :next {:value 2 :next nil}} +nodes+)
+            (schema/valid? 'Node {:value 1 :next {:value "two" :next nil}} +nodes+)])
+   :expected [true false]}])
+
+^{:refer std.typed.schema/compatible?}
+(Test/check
+ [{:name "recognizes overlapping unions"
+   :test (fn [] [(schema/compatible? [:maybe :int] :nil)
+                 (schema/compatible? :int :str)])
+   :expected [true false]}])
+
+^{:refer std.typed.schema/project-arities}
+(Test/check
+ [{:name "projects fixed and variadic function contracts"
+   :test (fn [] (schema/project-arities [:fn [:str '& :any] :str]))
+   :expected [{:kind :fn
+               :inputs {:fixed [{:kind :primitive :name :str}]
+               :rest {:kind :primitive :name :any}}
+               :output {:kind :primitive :name :str}}]}])
+
+^{:refer std.foundation.bootstrap/scaffold}
+(Test/check
+ [{:name "bootstraps the typed schema public seams"
+   :test (fn []
+           (let [preview (bootstrap/scaffold 'std.typed.schema ""
+                                             {:test-namespace 'fixture.schema-test
+                                              :alias 'schema})]
+             [(:changed preview)
+              (empty? (:missing (:coverage preview)))]))
+   :expected [true true]}])

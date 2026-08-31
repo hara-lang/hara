@@ -1,0 +1,119 @@
+(ns std.lib.context.registry
+  (:config {:role :internal}))
+
+(def +null+
+  {:context :null
+   :rt {:default {:key :default
+                  :create (fn [config] (runtime-null-type))
+                  :config {}}}})
+
+(defstruct runtime-null-type [])
+
+(extend-type runtime-null-type IContext
+  (call [runtime & args] (vec args)))
+
+(extend-type runtime-null-type IComponent
+  (props [runtime] {})
+  (status [runtime] :started)
+  (started? [runtime] true)
+  (stopped? [runtime] false)
+  (start [runtime] runtime)
+  (stop [runtime] runtime)
+  (kill [runtime] runtime)
+  (remote? [runtime] false))
+
+(extend-type runtime-null-type IContextLifeCycle
+  (has-module? [runtime module] false)
+  (setup-module [runtime module] runtime)
+  (teardown-module [runtime module] runtime)
+  (has-pointer? [runtime pointer] false)
+  (setup-pointer [runtime pointer] runtime)
+  (teardown-pointer [runtime pointer] runtime))
+
+(def +rt-null+ (std.lib.context.registry/runtime-null-type))
+
+(defn ^{:public true} rt-null? [value]
+  (instance? runtime-null-type value))
+
+(def ^{:dynamic true} *registry* (atom {}))
+
+(defn ^{:public true} registry-merge-runtime [base override]
+  (assoc (merge base override)
+         :config (merge (:config base) (:config override))))
+
+(defn ^{:public true} registry-merge-config [base override]
+  (let [base-runtimes (:rt base)
+        runtimes (reduce
+                  (fn [output pair]
+                    (assoc output
+                           (key pair)
+                           (registry-merge-runtime
+                            (get base-runtimes (key pair) {})
+                            (val pair))))
+                  base-runtimes
+                  (:rt override))]
+    (assoc (merge base override) :rt runtimes)))
+
+(defn ^{:public true} registry-list []
+  (keys (deref *registry*)))
+
+(defn ^{:public true} registry-install
+  ([context] (registry-install context {}))
+  ([context config]
+   (let [entry (registry-merge-config +null+ (assoc config :context context))]
+     (swap! *registry* assoc context entry)
+     entry)))
+
+(defn ^{:public true} registry-uninstall [context]
+  (let [entry (get (deref *registry*) context)]
+    (swap! *registry* dissoc context)
+    entry))
+
+(defn ^{:public true} registry-get [context]
+  (or (get (deref *registry*) context)
+      (throw (ex :generic {:context context :options (registry-list)} :ex/message "No context available"))))
+
+(defn ^{:public true} registry-rt-list
+  ([] (reduce
+       (fn [output pair]
+         (assoc output (first pair) (keys (:rt (second pair)))))
+       {}
+       (deref *registry*)))
+  ([context] (keys (:rt (registry-get context)))))
+
+(defn ^{:public true} registry-rt-add [context config]
+  (let [key (:key config)]
+    (swap! *registry* assoc-in [context :rt key] config)
+    config))
+
+(defn ^{:public true} registry-rt-remove [context key]
+  (let [value (get-in (deref *registry*) [context :rt key])]
+    (swap! *registry* update-in [context :rt] dissoc key)
+    value))
+
+(defn ^{:public true} registry-rt
+  ([context] (registry-rt context nil))
+  ([context key]
+   (let [key (or key :default)
+         entry (registry-get context)
+         runtime (get-in entry [:rt key])]
+     (if runtime
+       (registry-merge-runtime (dissoc entry :rt) runtime)
+       (throw (ex :host {:context context :rt key
+                        :options (keys (:rt entry))} :ex/message "No runtime installed"))))))
+
+(defn ^{:public true} registry-scratch [context]
+  (:scratch (registry-get context)))
+
+(defn ^{:public true} registry-scratch-set [context scratch]
+  (swap! *registry* assoc-in [context :scratch] scratch)
+  scratch)
+
+(def +init+ (registry-install :null {:scratch +rt-null+}))
+
+(defn ^{:public true} reset-registry!
+  "Restores the registry to the built-in null runtime baseline."
+  []
+  (reset! *registry* {})
+  (registry-install :null {:scratch +rt-null+})
+  nil)

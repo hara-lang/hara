@@ -1,0 +1,108 @@
+(ns std.lib.format.progress)
+
+(def +progress-defaults+
+  {:throttle 20
+   :bar {:width 50
+         :complete "="
+         :incomplete " "
+         :marker "="}})
+
+(defn ^{:public true} replace-center
+  "Replaces the center of a background string with text."
+  [background text]
+  (let [text-start (quot (- (count background) (count text)) 2)
+        text-end (+ text-start (count text))]
+    (str (str/slice background 0 text-start)
+         text
+         (str/slice background text-end (count background)))))
+
+(defn ^{:public true} progress-bar-string
+  "Converts a progress percentage to a formatted bar string."
+  [current total {:keys [width complete incomplete marker]}]
+  (let [threshold (long (* (/ (double current) (double total)) width))
+        text (str " " current "/" total " ")
+        chars (loop [index 0 output []]
+                (if (< index width)
+                  (recur
+                   (inc index)
+                   (conj output
+                         (if (< index threshold)
+                           complete
+                           (if (= index threshold) marker incomplete))))
+                  output))]
+    (replace-center (str/join "" chars) text)))
+
+(defn ^{:public true} progress-spinner-string
+  "Converts progress to a rotating spinner character."
+  [current total]
+  (if (= current total)
+    ""
+    (get ["/" "-" "\\" "|"] (mod current 4))))
+
+(defn ^{:public true} progress-eta
+  "Calculates the estimated time remaining for a task."
+  [total progress elapsed]
+  (long (floor (* (- (/ (double total) (double progress)) 1) elapsed))))
+
+(defstruct Progress [options baseline state])
+
+(defn ^{:public true} progress
+  "Creates a stateful progress meter with a resettable baseline."
+  ([] (progress nil))
+  ([initial] (progress initial nil))
+  ([initial options]
+   (let [now (quot (time-ms) 1000)
+         defaults {:start-time now
+                   :update-time now
+                   :total 100
+                   :current 0
+                   :label ""}
+         baseline (merge defaults (or initial {}))]
+     (Progress (merge +progress-defaults+ (or options {}))
+               baseline
+               (atom baseline)))))
+
+(defn ^{:public true} progress-reset!
+  "Restores a progress meter to the baseline supplied at creation."
+  [meter]
+  (reset! (:state meter) (:baseline meter)))
+
+(defn ^{:public true} progress-string
+  "Creates a string representation of a progress meter."
+  ([meter]
+   (progress-string (deref (:state meter)) (:options meter)))
+  ([{:keys [total current label] :as state} {:keys [bar]}]
+   (str (if (empty? label) "" (str label " "))
+        "["
+        (progress-bar-string current total bar)
+        "] "
+        (progress-eta total current (- (:update-time state)
+                                       (:start-time state)))
+        "s "
+        (progress-spinner-string current total))))
+
+(defn ^{:public true} progress-update
+  "Updates a progress meter, capping current at total."
+  ([meter] (progress-update meter 1))
+  ([meter number]
+   (swap! (:state meter)
+          (fn [{:keys [total current] :as state}]
+            (let [now (quot (time-ms) 1000)
+                  next-current (+ current number)
+                  next-current (if (< next-current total)
+                                 next-current
+                                 total)]
+              (assoc state
+                     :update-time now
+                     :current next-current))))))
+
+(defn ^{:public true} progress-test
+  "Runs a deterministic progress-meter demonstration and returns its output."
+  []
+  (let [meter (progress {:total 3})]
+    (loop [index 0]
+      (if (= index 3)
+        (progress-string meter)
+        (do
+          (progress-update meter)
+          (recur (inc index)))))))

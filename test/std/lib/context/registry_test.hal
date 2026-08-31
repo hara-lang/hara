@@ -1,0 +1,34 @@
+(ns std.lib.context.registry-test
+  (:require [std.lib.context.registry :as registry]))
+
+(defn isolated [function]
+  (try (registry/reset-registry!) (function) (finally (registry/reset-registry!))))
+
+^{:refer std.lib.context.registry/rt-null?}
+(Test/check [{:name "recognizes null runtime instances" :test (fn [] (registry/rt-null? registry/+rt-null+)) :expected true}])
+^{:refer std.lib.context.registry/reset-registry!}
+(Test/check [{:name "resets registry idempotently to null baseline" :test (fn [] (isolated (fn [] (registry/registry-install :demo) (registry/reset-registry!) (registry/reset-registry!) [(set (registry/registry-list)) (set (registry/registry-rt-list :null))]))) :expected [#{:null} #{:default}]}])
+^{:refer std.lib.context.registry/registry-merge-runtime}
+(Test/check [{:name "merges runtime config recursively one level" :test (fn [] (registry/registry-merge-runtime {:config {:a 1}} {:config {:b 2}})) :expected {:config {:a 1 :b 2}}}])
+^{:refer std.lib.context.registry/registry-merge-config}
+(Test/check [{:name "merges named runtime config" :test (fn [] (get-in (registry/registry-merge-config {:rt {:default {:config {:a 1}}}} {:rt {:default {:config {:b 2}}}}) [:rt :default :config])) :expected {:a 1 :b 2}}])
+^{:refer std.lib.context.registry/registry-list}
+(Test/check [{:name "lists installed contexts" :test (fn [] (isolated (fn [] (registry/registry-install :demo) (set (registry/registry-list))))) :expected #{:null :demo}}])
+^{:refer std.lib.context.registry/registry-install}
+(Test/check [{:name "installs contexts with default runtime" :test (fn [] (isolated (fn [] (:context (registry/registry-install :demo))))) :expected :demo}])
+^{:refer std.lib.context.registry/registry-uninstall}
+(Test/check [{:name "uninstalls and returns contexts" :test (fn [] (isolated (fn [] (registry/registry-install :demo) (:context (registry/registry-uninstall :demo))))) :expected :demo}])
+^{:refer std.lib.context.registry/registry-get}
+(Test/check [{:name "gets installed contexts" :test (fn [] (isolated (fn [] (registry/registry-install :demo) (:context (registry/registry-get :demo))))) :expected :demo}])
+^{:refer std.lib.context.registry/registry-rt-list}
+(Test/check [{:name "lists installed runtime keys" :test (fn [] (set (registry/registry-rt-list :null))) :expected #{:default}}])
+^{:refer std.lib.context.registry/registry-rt-add}
+(Test/check [{:name "adds runtime configuration" :test (fn [] (isolated (fn [] (registry/registry-install :demo) (:key (registry/registry-rt-add :demo {:key :other})))) ) :expected :other}])
+^{:refer std.lib.context.registry/registry-rt-remove}
+(Test/check [{:name "removes runtime configuration" :test (fn [] (isolated (fn [] (registry/registry-install :demo) (registry/registry-rt-add :demo {:key :other}) (:key (registry/registry-rt-remove :demo :other))))) :expected :other}])
+^{:refer std.lib.context.registry/registry-rt}
+(Test/check [{:name "resolves merged runtime configuration" :test (fn [] (isolated (fn [] (registry/registry-install :demo {:rt {:default {:key :default :config {:x 1}}}}) (:config (registry/registry-rt :demo)))) ) :expected {:x 1}}])
+^{:refer std.lib.context.registry/registry-scratch}
+(Test/check [{:name "reads context scratch state" :test (fn [] (registry/registry-scratch :null)) :expected registry/+rt-null+}])
+^{:refer std.lib.context.registry/registry-scratch-set}
+(Test/check [{:name "sets context scratch state" :test (fn [] (isolated (fn [] (registry/registry-scratch-set :null {:x 1}) (registry/registry-scratch :null)))) :expected {:x 1}}])

@@ -1,0 +1,77 @@
+(ns std.config-test
+  (:require [std.config :as config]
+            [std.config.global :as global]
+            [std.config.resolve :as resolve]))
+
+^{:refer std.config/resolve}
+(Test/check [{:name "publishes configuration resolution"
+              :test (fn [] (config/resolve [:format ["x%s" 1]]))
+              :expected "x1"}])
+
+^{:refer std.config/load}
+(Test/check [{:name "publishes inferred file loading"
+              :test (fn []
+                      (config/load "nested/deeper.edn"
+                                   {:root "test-fixtures/std-config"}))
+              :expected {:value 42}}])
+
+^{:refer std.config/global}
+(Test/check [{:name "publishes global source selection"
+              :test (fn [] (config/global :env {:env {:mode :environment}}))
+              :expected {:mode :environment}}])
+
+^{:refer std.config/get-session}
+(Test/check [{:name "publishes session reads"
+              :test (fn []
+                      (let [before (global/session)]
+                        (try
+                         (config/clear-session)
+                         (config/swap-session assoc :mode :session)
+                         (config/get-session)
+                         (finally (reset! global/+session+ before)))))
+              :expected {:mode :session}}])
+
+^{:refer std.config/swap-session}
+(Test/check [{:name "publishes session updates"
+              :test (fn []
+                      (let [before (global/session)]
+                        (try
+                         (config/clear-session)
+                         (config/swap-session assoc :mode :session)
+                         (config/global :session)
+                         (finally (reset! global/+session+ before)))))
+              :expected {:mode :session}}])
+
+^{:refer std.config/clear-session}
+(Test/check [{:name "publishes idempotent session clearing"
+              :test (fn []
+                      (let [before (global/session)]
+                        (try
+                         (config/swap-session assoc :mode :session)
+                         [(config/clear-session) (config/get-session)
+                          (config/clear-session) (config/get-session)]
+                         (finally (reset! global/+session+ before)))))
+              :expected [nil {} nil {}]}])
+
+^{:refer std.config/register-directive}
+(Test/check [{:name "publishes directive registration"
+              :test (fn []
+                      (try
+                       (resolve/reset-registries!)
+                       (config/register-directive
+                        :test/double
+                        (fn [form _ _] (* 2 (nth form 1))))
+                       (config/resolve [:test/double 21])
+                       (finally (resolve/reset-registries!))))
+              :expected 42}])
+
+^{:refer std.config/register-type}
+(Test/check [{:name "publishes type decoder registration"
+              :test (fn []
+                      (try
+                       (resolve/reset-registries!)
+                       (config/register-type :test/suffix
+                                             (fn [content] (str content "!")))
+                       (resolve/resolve-content "hello" {:type :test/suffix})
+                       (finally (resolve/reset-registries!))))
+              :expected "hello!"}])

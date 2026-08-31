@@ -1,0 +1,64 @@
+(ns lang.protocol.compiler-test
+  (:require [lang.protocol.compiler :as compiler]))
+
+(defstruct CompilerFixture [tag])
+
+(extend-type CompilerFixture compiler/INormalizer
+  (normalize-form [fixture raw context] [(:tag fixture) :normalize raw context]))
+(extend-type CompilerFixture compiler/IEntryFormatter
+  (format-entry [fixture entry selected context] [(:tag fixture) :format entry selected context]))
+(extend-type CompilerFixture compiler/IEntryHydrator
+  (hydrate-entry [fixture entry input selected context] [(:tag fixture) :hydrate entry input selected context]))
+(extend-type CompilerFixture compiler/IStager
+  (stage-form [fixture input selected context] [(:tag fixture) :stage input selected context]))
+(extend-type CompilerFixture compiler/IInferencer
+  (infer-form [fixture canonical selected context] {:tag (:tag fixture) :form canonical}))
+(extend-type CompilerFixture compiler/ILinter
+  (lint-form [fixture canonical inference selected context] [{:tag (:tag fixture) :form canonical :inference inference}]))
+(extend-type CompilerFixture compiler/IRewriter
+  (rewrite-form [fixture phase form selected context] [(:tag fixture) :rewrite phase form selected context]))
+(extend-type CompilerFixture compiler/IEmitter
+  (emit-form [fixture rewritten selected context] [(:tag fixture) :emit rewritten selected context]))
+(extend-type CompilerFixture compiler/ICompiler
+  (compile-form [fixture raw selected context] [(:tag fixture) :compile raw selected context]))
+(extend-type CompilerFixture compiler/IEntryCompiler
+  (compile-entry [fixture entry selected context] [(:tag fixture) :compile-entry entry selected context]))
+(extend-type CompilerFixture compiler/IEntryPublisher
+  (publish-entry [fixture entry contributions context] [(:tag fixture) :publish entry contributions context]))
+
+(def fixture (CompilerFixture :fixture))
+(def selected {:coordinate {:grammar/id :js :grammar/version 1}})
+
+^{:refer lang.protocol.compiler/normalize-form}
+(Test/check [{:name "dispatches normalizer, formatter, hydrator, and staging contracts"
+              :test (fn [] [(compiler/normalize-form fixture '(+ 1 2) {})
+                            (compiler/format-entry fixture {:op 'def} selected {})
+                            (compiler/hydrate-entry fixture {:op 'def} '(def a 1) selected {})
+                            (compiler/stage-form fixture '(+ 1 2) selected {})])
+              :expected [[:fixture :normalize '(+ 1 2) {}]
+                         [:fixture :format {:op 'def} selected {}]
+                         [:fixture :hydrate {:op 'def} '(def a 1) selected {}]
+                         [:fixture :stage '(+ 1 2) selected {}]]}])
+
+^{:refer lang.protocol.compiler/infer-form}
+(Test/check [{:name "keeps inference and linting as independent protocol phases"
+              :test (fn [] (let [inference (compiler/infer-form fixture '(+ 1 2) selected {})]
+                            [inference (compiler/lint-form fixture '(+ 1 2) inference selected {})]))
+              :expected [{:tag :fixture :form '(+ 1 2)}
+                         [{:tag :fixture :form '(+ 1 2) :inference {:tag :fixture :form '(+ 1 2)}}]]}])
+
+^{:refer lang.protocol.compiler/rewrite-form}
+(Test/check [{:name "dispatches rewriting and emission with the selected grammar"
+              :test (fn [] [(compiler/rewrite-form fixture :canonical '(+ 1 2) selected {})
+                            (compiler/emit-form fixture '(+ 1 2) selected {})])
+              :expected [[:fixture :rewrite :canonical '(+ 1 2) selected {}]
+                         [:fixture :emit '(+ 1 2) selected {}]]}])
+
+^{:refer lang.protocol.compiler/compile-form}
+(Test/check [{:name "dispatches form, entry, and publication boundaries"
+              :test (fn [] [(compiler/compile-form fixture '(+ 1 2) selected {:mode :form})
+                            (compiler/compile-entry fixture {:op 'def} selected {:mode :entry})
+                            (compiler/publish-entry fixture {:id 'a} [{:kind :schema}] {:mode :commit})])
+              :expected [[:fixture :compile '(+ 1 2) selected {:mode :form}]
+                         [:fixture :compile-entry {:op 'def} selected {:mode :entry}]
+                         [:fixture :publish {:id 'a} [{:kind :schema}] {:mode :commit}]]}])

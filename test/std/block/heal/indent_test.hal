@@ -1,0 +1,102 @@
+(ns std.block.heal.indent-compact-candidate-test
+  (:require [std.block.heal.indent :as indent]
+            [std.block.heal.parse :as parse]))
+
+(def close-entry {:index 0 :type :open :depth 0 :col 1 :line 1 :char "("})
+(def close-current {:index 1 :type :open :depth 0 :col 3 :line 2 :char "("})
+(def close-delimiters [close-entry close-current])
+(def open-current {:index 0 :type :open :depth 0 :col 3 :line 1 :char "("})
+(def open-entry {:index 1 :type :open :depth 1 :col 2 :line 2 :char "("})
+(def open-delimiters [open-current open-entry])
+(def open-line-lu {1 [open-current] 2 [open-entry]})
+
+^{:refer std.block.heal.indent/flag-close-heavy-function}
+(Test/check [{:name "flags a same-depth opening delimiter at greater indentation"
+              :test (fn [] (indent/flag-close-heavy-function close-current close-entry))
+              :expected [close-current true]}])
+
+^{:refer std.block.heal.indent/flag-close-heavy-single}
+(Test/check [{:name "collects the next premature close candidate"
+              :test (fn [] (indent/flag-close-heavy-single close-delimiters close-entry))
+              :expected [close-current]}])
+
+^{:refer std.block.heal.indent/flag-close-heavy}
+(Test/check [{:name "groups close-heavy candidates by their opening index"
+              :test (fn [] (indent/flag-close-heavy close-delimiters))
+              :expected [[0 [close-current]]]}])
+
+^{:refer std.block.heal.indent/flag-open-heavy-function}
+(Test/check [{:name "flags a shallower prior delimiter that is further indented"
+              :test (fn [] [(indent/flag-open-heavy-function open-current open-entry)
+                            (indent/flag-open-heavy-function nil open-entry)])
+              :expected [[open-current false] [nil true]]}])
+
+^{:refer std.block.heal.indent/flag-open-heavy-single}
+(Test/check [{:name "collects the prior indentation mismatch for one opening delimiter"
+              :test (fn [] (indent/flag-open-heavy-single open-delimiters open-line-lu open-entry))
+              :expected [open-current]}])
+
+^{:refer std.block.heal.indent/flag-open-heavy-raw}
+(Test/check [{:name "returns raw open-heavy candidates in reverse traversal order"
+              :test (fn [] (indent/flag-open-heavy-raw open-delimiters open-line-lu))
+              :expected [[1 [open-current]]]}])
+
+^{:refer std.block.heal.indent/flagged-candidates-merge-common}
+(Test/check [{:name "keeps the final candidate for each common delimiter group"
+              :test (fn [] (indent/flagged-candidates-merge-common
+                            [[4 [open-current]] [3 [open-entry]] [5 [open-current]]]))
+              :expected [[3 [open-entry]] [5 [open-current]]]}])
+
+^{:refer std.block.heal.indent/flagged-candidates-filter-run}
+(Test/check [{:name "keeps the shortest candidate runs by default"
+              :test (fn [] (indent/flagged-candidates-filter-run
+                            [[1 [open-current]] [2 [open-current open-entry]]]))
+              :expected [[1 [open-current]]]}])
+
+^{:refer std.block.heal.indent/flagged-candidates-invert-lookup}
+(Test/check [{:name "maps each delimiter index to its earliest candidate bound"
+              :test (fn [] (indent/flagged-candidates-invert-lookup
+                            [[4 [{:index 2} {:index 3}]] [1 [{:index 2}]]]))
+              :expected {2 1 3 4}}])
+
+^{:refer std.block.heal.indent/flag-open-heavy}
+(Test/check [{:name "combines raw open-heavy candidates into grouped repairs"
+              :test (fn []
+                      (let [[bound entries]
+                            (first
+                             (indent/flag-open-heavy
+                              (parse/parse "\n(defn\n (do\n   (it)\n (this)\n (this))")))
+                            entry (first entries)]
+                        [bound (:index entry) (:pair-id entry)
+                         (:line entry) (:col entry) (:depth entry) (:char entry)]))
+              :expected [4 1 3 3 2 1 "("]}])
+
+^{:refer std.block.heal.indent/find-indent-last-close}
+(Test/check [{:name "finds the closest prior closing delimiter within bounds"
+              :test (fn [] (indent/find-indent-last-close
+                            [{:index 0 :type :open}
+                             {:index 1 :type :close :line 2 :col 5}]
+                            2 0))
+              :expected {:index 1 :type :close :line 2 :col 5}}])
+
+^{:refer std.block.heal.indent/build-insert-edit}
+(Test/check [{:name "renders closing characters for every opening delimiter"
+              :test (fn [] (indent/build-insert-edit {:line 4 :col 7}
+                                                      [{:char "("} {:char "["}]))
+              :expected {:action :insert :line 4 :col 7 :new-char ")]"}}])
+
+^{:refer std.block.heal.indent/build-insert-edits}
+(Test/check [{:name "uses a prior closing delimiter as the insertion location"
+              :test (fn [] (vec (indent/build-insert-edits
+                                  [{:index 0 :type :close :line 1 :col 5}]
+                                  [[1 [{:index 0 :char "("}]]]
+                                  "code")))
+              :expected [{:action :insert :line 1 :col 5 :new-char ")"}]}])
+
+^{:refer std.block.heal.indent/build-remove-edits}
+(Test/check [{:name "turns a bounded prior close into a removal edit"
+              :test (fn [] (vec (indent/build-remove-edits
+                                  [{:index 0 :type :open}
+                                   {:index 1 :type :close :line 2 :col 6}]
+                                  [[0 [{:index 2}]]])))
+              :expected [{:action :remove :line 2 :col 6}]}])

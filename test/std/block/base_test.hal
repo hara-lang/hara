@@ -1,0 +1,207 @@
+(ns std.block.base-test
+  (:require [std.block.base]
+            [std.block.protocol]))
+
+(defstruct BaseFixture [kind tag text length width height prefixed suffixed verified value children])
+
+(extend-type BaseFixture std.block.protocol/IBlock
+  (block-type [block] (:kind block))
+  (block-tag [block] (:tag block))
+  (block-string [block] (:text block))
+  (block-length [block] (:length block))
+  (block-width [block] (:width block))
+  (block-height [block] (:height block))
+  (block-prefixed [block] (:prefixed block))
+  (block-suffixed [block] (:suffixed block))
+  (block-verify [block] (:verified block))
+  (block-info [_] {:fixture true}))
+
+(extend-type BaseFixture std.block.protocol/IBlockModifier
+  (block-modify [_ accumulator input] [accumulator input]))
+
+(extend-type BaseFixture std.block.protocol/IBlockExpression
+  (block-value [block] (:value block))
+  (block-value-string [block] (str (:value block))))
+
+(extend-type BaseFixture std.block.protocol/IBlockContainer
+  (block-children [block] (:children block))
+  (replace-children [block children]
+    (BaseFixture (:kind block) (:tag block) (:text block)
+                 (:length block) (:width block) (:height block)
+                 (:prefixed block) (:suffixed block) (:verified block)
+                 (:value block) children)))
+
+^{:refer std.block.base/block?}
+(Test/check
+ [{:name "recognizes protocol-backed blocks only"
+   :test (fn [] [(std.block.base/block? (BaseFixture :token :number "42" 2 2 1 false false :valid 42 []))
+                 (std.block.base/block? 42)])
+   :expected [true false]}])
+
+^{:refer std.block.base/expression?}
+(Test/check
+ [{:name "recognizes token and container expressions but not void blocks"
+   :test (fn []
+           [(std.block.base/expression? (BaseFixture :token :number "42" 2 2 1 false false :valid 42 []))
+            (std.block.base/expression? (BaseFixture :container :vector "[42]" 4 4 1 false false :valid nil []))
+            (std.block.base/expression? (BaseFixture :void :linespace " " 1 1 1 false false :valid nil []))])
+   :expected [true true false]}])
+
+^{:refer std.block.base/void?}
+(Test/check
+ [{:name "recognizes only void blocks"
+   :test (fn [] [(std.block.base/void? (BaseFixture :void :linespace " " 1 1 1 false false :valid nil []))
+                 (std.block.base/void? (BaseFixture :token :number "42" 2 2 1 false false :valid 42 []))])
+   :expected [true false]}])
+
+^{:refer std.block.base/token?}
+(Test/check
+ [{:name "recognizes only token blocks"
+   :test (fn [] [(std.block.base/token? (BaseFixture :token :number "42" 2 2 1 false false :valid 42 []))
+                 (std.block.base/token? (BaseFixture :container :vector "[42]" 4 4 1 false false :valid nil []))])
+   :expected [true false]}])
+
+^{:refer std.block.base/container?}
+(Test/check
+ [{:name "recognizes only container blocks"
+   :test (fn [] [(std.block.base/container? (BaseFixture :container :vector "[42]" 4 4 1 false false :valid nil []))
+                 (std.block.base/container? (BaseFixture :token :number "42" 2 2 1 false false :valid 42 []))])
+   :expected [true false]}])
+
+^{:refer std.block.base/modifier?}
+(Test/check
+ [{:name "recognizes only modifier blocks"
+   :test (fn [] [(std.block.base/modifier? (BaseFixture :modifier :quote "'" 1 1 1 false false :valid nil []))
+                 (std.block.base/modifier? (BaseFixture :token :number "42" 2 2 1 false false :valid 42 []))])
+   :expected [true false]}])
+
+^{:refer std.block.base/block-type}
+(Test/check
+ [{:name "delegates a block type to the protocol"
+   :test (fn [] (std.block.base/block-type (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected :token}])
+
+^{:refer std.block.base/block-tag}
+(Test/check
+ [{:name "delegates a block tag to the protocol"
+   :test (fn [] (std.block.base/block-tag (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected :number}])
+
+^{:refer std.block.base/block-string}
+(Test/check
+ [{:name "delegates a block's source string to the protocol"
+   :test (fn [] (std.block.base/block-string (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected "42"}])
+
+^{:refer std.block.base/representation-value}
+(Test/check
+ [{:name "recursively converts block representations while preserving scalar data"
+   :test (fn []
+           (let [token (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])
+                 void (BaseFixture :void :linespace " " 1 1 1 false false :valid nil [])
+                 list-block (BaseFixture :container :list "(42)" 4 4 1 false false :valid nil [token void])
+                 vector-block (BaseFixture :container :vector "[42]" 4 4 1 false false :valid nil [token void])
+                 map-block (BaseFixture :container :map "{}" 2 2 1 false false :valid {:kept true} [token])]
+             [(std.block.base/representation-value void)
+              (std.block.base/representation-value token)
+              (std.block.base/representation-value list-block)
+              (std.block.base/representation-value vector-block)
+              (std.block.base/representation-value map-block)
+              (std.block.base/representation-value {:item token})
+              (std.block.base/representation-value [void token])]))
+   :expected [(symbol "␣") 42 (list 42 (symbol "␣")) [42 (symbol "␣")]
+              {:kept true} {:item 42} [(symbol "␣") 42]]}])
+
+^{:refer std.block.base/block-representation}
+(Test/check
+ [{:name "renders void, token, container, structured, vector, and scalar values"
+   :test (fn []
+           (let [token (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])
+                 void (BaseFixture :void :linespace " " 1 1 1 false false :valid nil [])
+                 vector-block (BaseFixture :container :vector "[42]" 4 4 1 false false :valid nil [token])]
+             [(std.block.base/block-representation void)
+              (std.block.base/block-representation token)
+              (std.block.base/block-representation vector-block)
+              (std.block.base/block-representation {:tag :line :lines [token]})
+              (std.block.base/block-representation [token])
+              (std.block.base/block-representation 42)]))
+   :expected ["␣" "42" "[42]" "{:tag :line, :lines [42]}" "[42]" "42"]}])
+
+^{:refer std.block.base/block-info}
+(Test/check
+ [{:name "returns stable presentation metadata"
+   :test (fn [] (std.block.base/block-info (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected {:type :token :tag :number :string "42" :height 1 :width 2}}])
+
+^{:refer std.block.base/block-length}
+(Test/check
+ [{:name "delegates a block length to the protocol"
+   :test (fn [] (std.block.base/block-length (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected 2}])
+
+^{:refer std.block.base/block-width}
+(Test/check
+ [{:name "delegates a block width to the protocol"
+   :test (fn [] (std.block.base/block-width (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected 2}])
+
+^{:refer std.block.base/block-height}
+(Test/check
+ [{:name "delegates a block height to the protocol"
+   :test (fn [] (std.block.base/block-height (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected 1}])
+
+^{:refer std.block.base/block-prefixed}
+(Test/check
+ [{:name "delegates leading-prefix state to the protocol"
+   :test (fn [] (std.block.base/block-prefixed (BaseFixture :token :number "42" 2 2 1 true false :valid 42 [])))
+   :expected true}])
+
+^{:refer std.block.base/block-suffixed}
+(Test/check
+ [{:name "delegates trailing-suffix state to the protocol"
+   :test (fn [] (std.block.base/block-suffixed (BaseFixture :token :number "42" 2 2 1 false true :valid 42 [])))
+   :expected true}])
+
+^{:refer std.block.base/block-verify}
+(Test/check
+ [{:name "delegates a block verification result to the protocol"
+   :test (fn [] (std.block.base/block-verify (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected :valid}])
+
+^{:refer std.block.base/block-value}
+(Test/check
+ [{:name "delegates an expression value to the protocol"
+   :test (fn [] (std.block.base/block-value (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected 42}])
+
+^{:refer std.block.base/block-value-string}
+(Test/check
+ [{:name "delegates a printable expression value to the protocol"
+   :test (fn [] (std.block.base/block-value-string (BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])))
+   :expected "42"}])
+
+^{:refer std.block.base/block-children}
+(Test/check
+ [{:name "delegates a container's children to the protocol"
+   :test (fn []
+           (std.block.base/block-children
+            (BaseFixture :container :vector "[42]" 4 4 1 false false :valid nil
+                         [(BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])])))
+   :expected [(BaseFixture :token :number "42" 2 2 1 false false :valid 42 [])]}])
+
+^{:refer std.block.base/block-modify}
+(Test/check
+ [{:name "delegates modifier input and accumulator to the protocol"
+   :test (fn [] (std.block.base/block-modify (BaseFixture :modifier :quote "'" 1 1 1 false false :valid nil []) :acc :input))
+   :expected [:acc :input]}])
+
+^{:refer std.block.base/replace-children}
+(Test/check
+ [{:name "replaces children and normalizes the input sequence to a vector"
+   :test (fn []
+           (std.block.base/block-children
+            (std.block.base/replace-children
+             (BaseFixture :container :vector "[42]" 4 4 1 false false :valid nil [])
+             (list 1 2))))
+   :expected [1 2]}])

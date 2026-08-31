@@ -1,0 +1,88 @@
+(ns std.config.global-test
+  (:require [std.config.global :as global]))
+
+^{:refer std.config.global/environment}
+(Test/check [{:name "prefers explicit environment maps"
+              :test (fn []
+                      [(global/environment {:env {:mode :env}})
+                       (global/environment {:config/env {:mode :config}})
+                       (global/environment {})])
+              :expected [{:mode :env} {:mode :config} {}]}])
+
+^{:refer std.config.global/current-project}
+(Test/check [{:name "uses explicit project configuration without discovery"
+              :test (fn []
+                      [(global/current-project {:project {:project/id 'demo}})
+                       (global/current-project {:config/project {:project/id 'nested}})
+                       (global/current-project {})])
+              :expected [{:project/id 'demo} {:project/id 'nested} {}]}])
+
+^{:refer std.config.global/session}
+(Test/check [{:name "reads session overrides and restores the prior baseline"
+              :test (fn []
+                      (let [before (global/session)]
+                        (try
+                         (global/reset-session!)
+                         (swap! global/+session+ assoc :profile :session)
+                         (global/session)
+                         (finally (reset! global/+session+ before)))))
+              :expected {:profile :session}}])
+
+^{:refer std.config.global/swap-session!}
+(Test/check [{:name "updates session overrides and restores the baseline"
+              :test (fn []
+                      (let [before (global/session)]
+                        (try
+                         (global/reset-session!)
+                         (global/swap-session! assoc :profile :session)
+                         (global/session)
+                         (finally (reset! global/+session+ before)))))
+              :expected {:profile :session}}])
+
+^{:refer std.config.global/reset-session!}
+(Test/check [{:name "resets session state idempotently"
+              :test (fn []
+                      (let [before (global/session)]
+                        (try
+                         (swap! global/+session+ assoc :profile :session)
+                         [(global/reset-session!)
+                          (global/session)
+                          (global/reset-session!)
+                          (global/session)]
+                         (finally (reset! global/+session+ before)))))
+              :expected [nil {} nil {}]}])
+
+^{:refer std.config.global/global-all}
+(Test/check [{:name "merges environment project and session by precedence"
+              :test (fn []
+                      (let [before (global/session)]
+                        (try
+                         (reset! global/+session+ {:mode :session :session true})
+                         (global/global-all
+                          {:env {:mode :environment :env true}
+                           :project {:mode :project :project true}})
+                         (finally (reset! global/+session+ before)))))
+              :expected {:mode :session :env true :project true :session true}}])
+
+^{:refer std.config.global/global}
+(Test/check [{:name "selects each global source and rejects an unknown source"
+              :test (fn []
+                      (let [before (global/session)]
+                        (try
+                         (reset! global/+session+ {:mode :session})
+                         [(global/global :env {:env {:mode :environment}})
+                          (global/global :project {:project {:mode :project}})
+                          (global/global :session)
+                          (global/global :all {:env {:env true}
+                                               :project {:project true}})
+                          (let [data (try
+                                       (global/global :unknown {})
+                                       nil
+                                       (catch error (ex-data error)))]
+                            (:source data))]
+                         (finally (reset! global/+session+ before)))))
+              :expected [{:mode :environment}
+                         {:mode :project}
+                         {:mode :session}
+                         {:env true :project true :mode :session}
+                         :unknown]}])

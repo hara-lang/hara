@@ -1,0 +1,131 @@
+(ns lang.common.preprocess-resolve-test
+  (:require [lang.common.preprocess-resolve :as resolve]))
+
+^{:refer lang.common.preprocess-resolve/fail}
+(Test/check
+ [{:name "throws archived resolution failures with supplied data"
+   :test (fn []
+           (try
+             (resolve/fail "fixture failure" {:input :fixture})
+             :missing
+             (catch error [(ex-message error) (:input (ex-data error))])))
+   :expected ["fixture failure" :fixture]}])
+
+^{:refer lang.common.preprocess-resolve/get-fragment}
+(Test/check
+ [{:name "finds linked fragments and expands defrun entries into bodies"
+   :test (fn []
+           [(resolve/get-fragment 'alias/item
+                                  {'library {:fragment {'item :fragment}}}
+                                  {:module {:id 'current :link {'alias 'library}}})
+            (resolve/get-fragment 'library/run
+                                  {'library {:code {'run {:op-key :defrun
+                                                          :form '(defrun run :first :second)}}}}
+                                  {:module {:id 'current :link {}}})])
+   :expected [:fragment '(do :first :second)]}])
+
+^{:refer lang.common.preprocess-resolve/process-namespaced-resolve}
+(Test/check
+ [{:name "resolves linked and local module symbols to a stable full symbol"
+   :test (fn []
+           [(resolve/process-namespaced-resolve
+             'alias/item
+             {'library {}}
+             {:module {:id 'current :link {'alias 'library}}})
+            (resolve/process-namespaced-resolve
+             '-/item
+             {'current {}}
+             {:module {:id 'current :link {}}})])
+   :expected [['library 'item 'library/item]
+              ['current 'item 'current/item]]}])
+
+^{:refer lang.common.preprocess-resolve/resolve-module-entry}
+(Test/check
+ [{:name "selects code before fragment and header entries"
+   :test (fn []
+           [(resolve/resolve-module-entry 'library 'code
+                                          {'library {:code {'code :code}
+                                                     :fragment {'code :fragment}
+                                                     :header {'code :header}}}
+                                          {})
+            (resolve/resolve-module-entry 'library 'fragment
+                                          {'library {:fragment {'fragment :fragment}
+                                                     :header {'fragment :header}}}
+                                          {})
+            (resolve/resolve-module-entry 'library 'header
+                                          {'library {:header {'header :header}}}
+                                          {})])
+   :expected [[:code :code] [:fragment :fragment] [:header :header]]}])
+
+^{:refer lang.common.preprocess-resolve/process-code-entry}
+(Test/check
+ [{:name "records ordinary code dependencies and rejects suppressed module code"
+   :test (fn []
+           (let [deps (atom #{})]
+             [(resolve/process-code-entry {:op :defn} 'library/item 'library
+                                          {:suppress {}} deps)
+              (deref deps)
+              (try
+                (resolve/process-code-entry {:op :defn :id 'item} 'library/item 'library
+                                            {:suppress {'library true}} deps)
+                :missing
+                (catch error :thrown))]))
+   :expected ['library/item #{'library/item} :thrown]}])
+
+^{:refer lang.common.preprocess-resolve/fragment-template-args}
+(Test/check
+ [{:name "derives standalone template arguments after archive docs and attributes"
+   :test (fn []
+           (let [template (with-meta (fn [] nil) {:arglists '([left right])})]
+             [(resolve/fragment-template-args
+               '(defn sample "docs" {:private true} [ignored]) template)
+              (resolve/fragment-template-args
+               '(defn sample [fallback]) (fn [] nil))]))
+   :expected [['left 'right] ['fallback]]}])
+
+^{:refer lang.common.preprocess-resolve/process-fragment-entry}
+(Test/check
+ [{:name "returns plain fragment forms while recording fragment dependencies"
+   :test (fn []
+           (let [deps (atom #{})]
+             [(resolve/process-fragment-entry {:form '(fragment-body)}
+                                              'library/piece 'library 'library/piece deps identity)
+              (deref deps)]))
+   :expected ['(fragment-body) #{'library/piece}]}])
+
+^{:refer lang.common.preprocess-resolve/process-namespaced-symbol}
+(Test/check
+ [{:name "returns a resolved code symbol and records its code dependency"
+   :test (fn []
+           (let [deps (atom #{})
+                 fragments (atom #{})]
+             [(resolve/process-namespaced-symbol
+               'alias/item
+               {'library {:code {'item {:op :defn :id 'item}}}}
+               {:module {:id 'current :link {'alias 'library}}
+                :entry {:id 'caller}}
+               deps fragments identity)
+              (deref deps)
+              (deref fragments)]))
+   :expected ['library/item #{'library/item} #{}]}])
+
+^{:refer lang.common.preprocess-resolve/process-standard-symbol}
+(Test/check
+ [{:name "records native imports by local root symbol"
+   :test (fn []
+           (let [natives (atom {})]
+             [(resolve/process-standard-symbol
+               'console.log
+               {:module {:native-lu {'console :node}}}
+               natives)
+              (deref natives)]))
+   :expected ['console.log {:node #{'console}}]}])
+
+^{:refer lang.common.preprocess-resolve/find-natives}
+(Test/check
+ [{:name "finds native roots used inside quoted archive forms"
+   :test (fn []
+           (resolve/find-natives
+            {:form '(quote (console.log untouched))}
+            {:module {:native-lu {'console :node}}}))
+   :expected {:node #{'console}}}])

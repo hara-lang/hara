@@ -1,0 +1,76 @@
+(ns std.lib.format.terminal-test
+  (:require [std.lib.format.terminal]))
+
+^{:refer std.lib.format.terminal/render-cell}
+(Test/check
+ [{:name "renders ANSI cells only when requested and nonempty"
+   :test (fn []
+           [(std.lib.format.terminal/render-cell
+             {:cell/text "index" :cell/role :index} {:ansi true})
+            (std.lib.format.terminal/render-cell
+             {:cell/text "timeout" :cell/role :timeout} {:ansi true})
+            (std.lib.format.terminal/render-cell
+             {:cell/text "elapsed" :cell/role :bold} {})
+            (std.lib.format.terminal/render-cell
+             {:cell/text "" :cell/role :success} {:ansi true})])
+   :expected ["\u001b[34mindex\u001b[0m"
+              "\u001b[35mtimeout\u001b[0m"
+              "elapsed"
+              ""]}])
+
+^{:refer std.lib.format.terminal/render-line}
+(Test/check
+ [{:name "renders line roles and per-cell roles"
+   :test (fn []
+           [(std.lib.format.terminal/render-line
+             {:line/text "hello" :line/role :success} {})
+            (std.lib.format.terminal/render-line
+             {:line/text "hello" :line/role :success} {:ansi true})
+            (std.lib.format.terminal/render-line
+             {:line/text "" :line/role :success} {:ansi true})
+            (std.lib.format.terminal/render-line
+             {:line/text "1/2  timeout  4ms"
+              :line/cells [{:cell/text "1/2" :cell/role :index}
+                           {:cell/text "  " :cell/role :default}
+                           {:cell/text "timeout" :cell/role :timeout}
+                           {:cell/text "  4ms" :cell/role :bold}]}
+             {:ansi true})])
+   :expected ["hello"
+              "\u001b[32mhello\u001b[0m"
+              ""
+              "\u001b[34m1/2\u001b[0m  \u001b[35mtimeout\u001b[0m\u001b[1m  4ms\u001b[0m"]}])
+
+^{:refer std.lib.format.terminal/render-lines}
+(Test/check
+ [{:name "renders entries in order as plain or ANSI text"
+   :test (fn []
+           [(std.lib.format.terminal/render-lines
+             [{:line/text "ok" :line/role :success}
+              {:line/text "warn" :line/role :warning}])
+            (std.lib.format.terminal/render-lines
+             [{:line/text "ok" :line/role :success}
+              {:line/text "warn" :line/role :warning}]
+             {:ansi true})])
+   :expected [["ok" "warn"]
+              ["\u001b[32mok\u001b[0m" "\u001b[33mwarn\u001b[0m"]]}])
+
+^{:refer std.lib.format.terminal/render}
+(Test/check
+ [{:name "joins rendered lines with newlines"
+   :test (fn []
+           [(std.lib.format.terminal/render
+             [{:line/text "one"} {:line/text "two"}])
+            (std.lib.format.terminal/render
+             [{:line/text "one" :line/role :error}] {:ansi true})])
+   :expected ["one\ntwo" "\u001b[31mone\u001b[0m"]}])
+
+^{:refer std.lib.format.terminal/emit-lines}
+(Test/check
+ [{:name "emits rendered lines through an injected sink"
+   :test (fn []
+           (let [output (atom [])
+                 count (std.lib.format.terminal/emit-lines
+                        [{:line/text "one"} {:line/text "two"}]
+                        {:emit (fn [text] (swap! output conj text))})]
+             [count (deref output)]))
+   :expected [2 ["one" "two"]]}])

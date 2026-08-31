@@ -1,0 +1,147 @@
+(ns lang.common.registry-test
+  (:require [lang.common.grammar :as common]
+            [lang.common.grammar-api :as grammar]
+            [lang.common.registry :as registry]))
+
+^{:refer lang.common.registry/registry}
+(Test/check
+ [{:name "grammar registry loads"
+   :test (fn [] (registry/registry))
+   :expected (registry/registry)}
+  {:name "grammar registry installs a profile source"
+   :test (fn [] (let [source (grammar/profile {:profile/id :fixture :profile/version 1
+                                                :profile/operators {}})
+                      value (registry/install (registry/registry) source)]
+                  [(registry/find value [:profile :fixture 1])
+                   (registry/versions value :fixture)]))
+   :expected [{:profile/id :fixture :profile/version 1 :profile/operators {}
+               :source/kind :profile :source/id :fixture :source/version 1}
+              []]}
+  {:name "grammar registry resolves a template and profile definition"
+   :test (fn [] (let [template (grammar/emit-template
+                                {:template/id :fixture :template/version 1
+                                 :template/value {:token {:nil "nil"}}})
+                      profile (grammar/profile
+                               {:profile/id :fixture :profile/version 1
+                                :profile/operators {:add {:op :add :symbol #{'+} :raw "+"}}})
+                      definition (grammar/definition
+                                  {:grammar/id :fixture :grammar/version 1 :grammar/release "test"
+                                   :grammar/emit-template {:template/id :fixture :template/version 1}
+                                   :grammar/profiles [{:profile/id :fixture :profile/version 1}]})
+                      catalog (registry/install (registry/install (registry/install (registry/registry) template)
+                                                                  profile)
+                                                definition)
+                      resolved (registry/resolve catalog {:grammar/id :fixture :grammar/version 1})]
+                  [(get-in resolved [:grammar :token :nil])
+                  (:raw (get-in resolved [:grammar :reserved '+]))]))
+   :expected ["nil" "+"]}
+  {:name "grammar registry resolves parent facets and declared extensions"
+   :test (fn [] (let [template (grammar/emit-template
+                                {:template/id :fixture :template/version 1
+                                 :template/value {:token {:nil "nil"}}})
+                      profile (grammar/profile
+                               {:profile/id :fixture :profile/version 1
+                                :profile/operators {:add {:op :add :symbol #{'+} :raw "+"}}})
+                      parent (grammar/definition
+                              {:grammar/id :parent :grammar/version 1 :grammar/release "parent"
+                               :grammar/emit-template {:template/id :fixture :template/version 1}
+                               :grammar/profiles [{:profile/id :fixture :profile/version 1}]})
+                      child (grammar/definition
+                             {:grammar/id :child :grammar/version 1 :grammar/release "child"
+                              :grammar/parent {:grammar/id :parent :grammar/version 1}
+                              :operators {:override {:add {:raw "child"}}}
+                              :grammar/facets {:typed {:grammar/sections [[:lint [:no-eval]]]}}
+                              :grammar/facet-order [:typed]})
+                      catalog (registry/install
+                               (registry/install
+                                (registry/install
+                                 (registry/install (registry/registry) template)
+                                 profile)
+                                parent)
+                               child)
+                      resolved (registry/resolve catalog
+                                                 {:grammar/id :child :grammar/version 1
+                                                  :grammar/facets [:typed]})]
+                  [(:raw (get-in resolved [:grammar :reserved '+]))
+                   (get-in resolved [:extensions :lint])
+                   (get-in resolved [:coordinate :grammar/facets])]))
+   :expected ["child" [:no-eval] [:typed]]}
+  {:name "grammar materializer applies declared lint extensions"
+   :test (fn [] (grammar/apply-customization
+                 {:operators {} :template {} :rewrite {} :extensions {}}
+                 {:grammar/sections [[:lint [:no-eval]]]}))
+   :expected {:operators {} :template {} :rewrite {}
+              :extensions {:lint [:no-eval]}}}
+  {:name "grammar facet selection and application terminate over one facet"
+   :test (fn [] (let [source {:source/kind :grammar :source/id :fixture :source/version 1
+                              :grammar/facets {:typed {:grammar/sections [[:lint [:no-eval]]]}}
+                              :grammar/facet-order [:typed]}]
+                 [(grammar/selected-facets source [:typed])
+                  (grammar/apply-facets
+                   {:operators {} :template {} :rewrite {} :extensions {}}
+                   source
+                   [:typed])]))
+   :expected [[:typed]
+              {:operators {} :template {} :rewrite {}
+               :extensions {:lint [:no-eval]}}]}
+  {:name "grammar fingerprint terminates for a definition with facets"
+   :test (fn [] (let [source {:grammar/facets {:typed {:grammar/sections [[:lint [:no-eval]]]}}
+                              :grammar/facet-order [:typed]}]
+                 (string? (grammar/fingerprint source))))
+   :expected true}
+  {:name "grammar finalization terminates for a faceted state"
+   :test (fn [] (let [source {:source/kind :grammar :source/id :fixture :source/version 1
+                              :grammar/id :fixture :grammar/version 1 :grammar/release "test"
+                              :grammar/facets {:typed {:grammar/sections [[:lint [:no-eval]]]}}
+                              :grammar/facet-order [:typed]}
+                      state (grammar/apply-facets
+                             {:operators {:add {:op :add :symbol #{'+} :raw "+"}}
+                              :template {} :rewrite {} :extensions {} :provenance []}
+                             source
+                             [:typed])]
+                  [(grammar/materialization-identity source [:typed])
+                   (grammar/resolve-rewrite (:rewrite state))
+                   (common/grammar :fixture (common/to-reserved (:operators state)) (:template state))
+                   (string? (grammar/fingerprint source))
+                   (string? (grammar/fingerprint
+                             {:coordinate (grammar/materialization-identity source [:typed])
+                              :provenance [[:grammar :fixture 1] {:facet :typed}]}) )
+                   (string? (grammar/fingerprint
+                             {:coordinate (grammar/materialization-identity source [:typed])
+                              :provenance [[:grammar :fixture 1] {:facet :typed}]
+                              :definition source}))]))
+   :expected [{:grammar/id :fixture :grammar/version 1 :grammar/release "test"
+               :grammar/facets [:typed]}
+              {}
+              {:polis/type :polis/grammar :tag :fixture
+               :reserved {'+ {:op :add :symbol #{'+} :raw "+"}}
+               :sections #{} :macros #{} :structure {:block #{} :def #{} :fn #{}}}
+              true true true]}])
+
+^{:refer lang.common.registry/GrammarRegistry}
+(Test/check
+ [{:name "grammar registry has immutable query replace remove and version operations"
+   :test (fn [] (let [profile-a (grammar/profile {:profile/id :fixture :profile/version 1
+                                                   :profile/operators {}})
+                      profile-b (grammar/profile {:profile/id :fixture :profile/version 2
+                                                   :profile/operators {}})
+                      definition (grammar/definition {:grammar/id :fixture :grammar/version 1
+                                                     :grammar/release "one"})
+                      base (registry/install (registry/install (registry/install (registry/registry)
+                                                                  profile-a)
+                                                        profile-b)
+                                             definition)
+                      replaced (registry/replace base
+                                                 (assoc definition :grammar/release "two"))
+                      removed (registry/remove replaced [:profile :fixture 1])]
+                 [(instance? lang.common.registry/GrammarRegistry base)
+                  (registry/query-match? profile-a {:source/kind :profile :source/id :fixture})
+                  (registry/query-match? profile-a {:source/version 2})
+                  (count (registry/list base {:source/kind :profile}))
+                  (registry/versions base :fixture)
+                  (:grammar/release (registry/find replaced [:grammar :fixture 1]))
+                  (registry/find removed [:profile :fixture 1])
+                  (try (registry/install base profile-a) false (catch _ true))
+                  (try (registry/replace base profile-a) false (catch _ true))
+                  (try (registry/remove base [:profile :missing 1]) false (catch _ true))]))
+   :expected [true true false 2 [1] "two" nil true false true]}])

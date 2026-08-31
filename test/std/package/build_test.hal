@@ -1,0 +1,251 @@
+(ns std.package.build-test
+  (:require [std.package.build :as build]))
+
+^{:refer std.package.build/executable-config}
+(Test/check
+ [{:name "accepts a complete executable declaration"
+   :test (fn []
+           (build/executable-config
+            {:project/executable {:entry 'demo/main
+                                  :output "target/demo"
+                                  :primary {:project "."}
+                                  :archives []}}))
+   :expected {:entry 'demo/main
+              :output "target/demo"
+              :primary {:project "."}
+              :archives []}}
+  {:name "rejects a declaration without an executable map"
+   :test (fn []
+           (try
+             (build/executable-config {})
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer std.package.build/archive-specs}
+(Test/check
+ [{:name "converts declared HARP archives to native package records"
+   :test (fn []
+           (build/archive-specs
+            [{:harp "target/shared.harp"}
+             {:harp "target/support.harp"}]))
+   :expected [{:path "target/shared.harp" :primary false}
+              {:path "target/support.harp" :primary false}]}
+  {:name "rejects an archive declaration without a HARP path"
+   :test (fn []
+           (try
+             (build/archive-specs [{}])
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer std.package.build/seal-spec}
+(Test/check
+ [{:name "keeps dependencies before the primary archive"
+   :test (fn []
+           (build/seal-spec
+            {:entry 'demo/main
+             :output "target/demo"
+             :archives [{:harp "target/shared.harp"}]}
+            "target/demo.harp"))
+   :expected {:output "target/demo"
+              :entry 'demo/main
+              :archives [{:path "target/shared.harp" :primary false}
+                         {:path "target/demo.harp" :primary true}]}}])
+
+^{:refer std.package.build/project-form}
+(Test/check
+ [{:name "reads the executable declaration from the mounted project"
+   :test (fn []
+           (IPromise/then
+            (build/project-form)
+            (fn [project]
+              (select-keys (:project/executable project)
+                           [:entry :output :primary :archives]))))
+   :expected {:entry 'hara.command/main
+              :output "target/hara-sealed/hara"
+              :primary {:project "."}
+              :archives []}}])
+
+^{:refer std.package.build/specs-project}
+(Test/check
+ [{:name "declares an artifact-only project for the specification corpus"
+   :test (fn []
+           (build/specs-project "0.1.0"))
+   :expected {:hara/type :project
+              :hara/version "1.0.0"
+              :project/id 'hara/foundation.specs
+              :project/version "0.1.0"
+              :project/source-paths []
+              :project/test-paths []
+              :project/extension-paths []
+              :project/artifact-paths ["content"]
+              :project/capabilities #{:file :kernel}
+              :project/dependencies {}}}])
+
+^{:refer std.package.build/distribution-config}
+(Test/check
+ [{:name "accepts the explicit host and output for a minimal companion release"
+   :test (fn []
+           (build/distribution-config
+            {:project/distribution {:launcher "hara"
+                                    :entry 'demo/main
+                                    :host "target/release/hara-native"
+                                    :output "target/demo"}}))
+   :expected {:launcher "hara"
+              :entry 'demo/main
+              :host "target/release/hara-native"
+              :output "target/demo"}}
+  {:name "rejects a distribution without an explicit native host"
+   :test (fn []
+           (try
+             (build/distribution-config {:project/distribution {:output "target/demo"}})
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer std.package.build/build}
+(Test/check
+ [{:name "delegates a complete artifact project to the native HARP builder"
+   :test (fn []
+           (let [output "/target/hara-package-build-test.harp"]
+             (IPromise/then
+              (std.native.File/delete output {:missing-ok? true})
+              (fn [_]
+                (IPromise/finally
+                 (Promise/run
+                  (fn []
+                    (let [archive (build/build "spec" "target/hara-package-build-test.harp")]
+                      [archive
+                       (string? (build/inspect archive))])))
+                 (fn []
+                   (std.native.File/delete output {:missing-ok? true})))))))
+   :expected ["target/hara-package-build-test.harp" true]}])
+
+^{:refer std.package.build/inspect}
+(Test/check
+ [{:name "rejects inspection without one archive path"
+   :test (fn []
+           (try
+             (build/inspect nil)
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer std.package.build/seal}
+(Test/check
+ [{:name "keeps executable-spec validation at the native boundary"
+   :test (fn []
+           (try
+             (build/seal {})
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer std.package.build/build-specs}
+(Test/check
+ [{:name "preserves curated catalogue and conformance payload boundaries"
+   :test (fn []
+           (let [output "/target/hara-specs-curation-test.harp"]
+             (IPromise/then
+              (std.native.File/delete output {:missing-ok? true})
+              (fn [_]
+                (IPromise/finally
+                 (Promise/run
+                  (fn []
+                    (let [archive (build/build-specs "spec" "target/hara-specs-curation-test.harp")
+                          manifest (build/inspect archive)]
+                      [(std.native.String/includes? manifest "content/registry-index.json")
+                       (std.native.String/includes? manifest "content/01-lang/009-halc/draft/conformance/complete.hal")
+                       (std.native.String/includes? manifest "00-unsorted/contrib")
+                       (std.native.String/includes? manifest "99-archive")])))
+                 (fn []
+                   (std.native.File/delete output {:missing-ok? true})))))))
+   :expected [true true false false]}])
+
+^{:refer std.package.build/read-spec-content}
+(Test/check
+ [{:name "reports the unavailable Foundation specification package exactly"
+   :test (fn []
+           (try
+             (build/read-spec-content
+              "content/01-lang/000-metaspec/draft/metaspec-metaspec.edn")
+             false
+             (catch error
+               (= "hara:hara/foundation.specs"
+                  (:package/coordinate (ex-data error))))))
+   :expected true}])
+
+^{:refer std.package.build/build-distribution}
+(Test/check
+ [{:name "builds the declared native host and primary HARP without a specs companion"
+   :test (fn []
+           (IPromise/then
+            (build/build-distribution)
+            (fn [manifest]
+              (select-keys manifest [:distribution/format :launcher :entry :archive]))))
+   :expected {:distribution/format "hara-distribution/v1"
+              :launcher "hara"
+              :entry 'hara.command/main
+              :archive "lib/hara.harp"}}])
+
+^{:refer std.package.build/distribute}
+(Test/check
+ [{:name "validates companion distribution descriptors at the native package boundary"
+   :test (fn []
+           (try
+             (build/distribute {})
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer std.package.build/seal-project}
+(Test/check
+ [{:name "builds and verifies a one-file executable with its HARP payload"
+   :test (fn []
+           (let [output "/target/hara-sealed/hara"
+                 specs-output "/target/hara-sealed/hara-specs.harp"
+                 primary-output "/target/hara-sealed/hara-primary.harp"]
+             (IPromise/then
+              (std.native.File/delete output {:missing-ok? true})
+              (fn [_]
+                (IPromise/then
+                 (std.native.File/delete specs-output {:missing-ok? true})
+                 (fn [_]
+                   (IPromise/then
+                    (std.native.File/delete primary-output {:missing-ok? true})
+                    (fn [_]
+                      (IPromise/finally
+                       (IPromise/then
+                        (build/seal-project)
+                        (fn [manifest]
+                          (let [inspected (build/inspect-seal "target/hara-sealed/hara")
+                                verified (build/verify-seal "target/hara-sealed/hara")]
+                            [(:executable/format manifest)
+                             (:entry manifest)
+                             (count (:archives manifest))
+                             (:executable/format inspected)
+                             (:executable/format verified)])))
+                       (fn []
+                         (IPromise/then
+                          (std.native.File/delete output {:missing-ok? true})
+                          (fn [_]
+                            (IPromise/then
+                             (std.native.File/delete specs-output {:missing-ok? true})
+                             (fn [_]
+                               (std.native.File/delete primary-output {:missing-ok? true})))))))))))))))
+   :expected ["hara-executable/v1" 'hara.command/main 2 "hara-executable/v1" "hara-executable/v1"]}])
+
+^{:refer std.package.build/inspect-seal}
+(Test/check
+ [{:name "returns nil when an executable has no seal trailer"
+   :test (fn []
+           (build/inspect-seal "project.edn"))
+   :expected nil}])
+
+^{:refer std.package.build/verify-seal}
+(Test/check
+ [{:name "returns nil when verification sees no seal trailer"
+   :test (fn []
+           (build/verify-seal "project.edn"))
+   :expected nil}])

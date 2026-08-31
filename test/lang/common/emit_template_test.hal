@@ -1,0 +1,92 @@
+(ns lang.common.emit-template-test
+  (:require [lang.common.emit-template :as template]))
+
+(def fixture-entry
+  {:lang :fixture
+   :module 'fixture.core
+   :id 'run
+   :op :plain
+   :form-input '(outer 1)
+   :static/code.cache (atom {})})
+
+(def fixture-grammar {:reserved {:plain {}}})
+(def fixture-modules {'fixture.core {:id 'fixture.core}})
+(def fixture-book {:lang :fixture :grammar fixture-grammar :modules fixture-modules})
+
+^{:refer lang.common.emit-template/member?}
+(Test/check [{:name "tests membership without assuming a host collection implementation"
+              :test (fn [] [(template/member? #{:a :b} :b) (template/member? #{:a} :missing)])
+              :expected [true false]}])
+
+^{:refer lang.common.emit-template/entry-reserved}
+(Test/check [{:name "locates the reserved grammar operation for an entry"
+              :test (fn [] (template/entry-reserved fixture-grammar fixture-entry))
+              :expected {}}])
+
+^{:refer lang.common.emit-template/code-state-computing?}
+(Test/check [{:name "reports only the active dynamic computation coordinate"
+              :test (fn [] [(template/code-state-computing? fixture-entry)
+                            (binding [template/*computing-entries* #{[:fixture 'fixture.core 'run]}]
+                              (template/code-state-computing? fixture-entry))])
+              :expected [false true]}])
+
+^{:refer lang.common.emit-template/create-code-state}
+(Test/check [{:name "hydrates, stages, and restores the recursion guard after failure"
+              :test (fn [] (let [state (template/create-code-state
+                                         fixture-entry {} fixture-grammar fixture-modules)
+                                recursive (binding [template/*computing-entries* #{[:fixture 'fixture.core 'run]}]
+                                            (try (template/create-code-state
+                                                  fixture-entry {} fixture-grammar fixture-modules)
+                                                 false
+                                                 (catch error true)))]
+                            [(select-keys state template/+code-state-keys+)
+                             recursive
+                             (template/code-state-computing? fixture-entry)]))
+              :expected [{:form '(outer 1) :deps #{} :deps-fragment #{} :deps-native {}
+                          :xtalk-ops #{} :xtalk-profiles #{} :polyfill-modules #{}}
+                         true false]}])
+
+^{:refer lang.common.emit-template/cached-code-state}
+(Test/check [{:name "memoizes one code state per language and recomputes after cache reset"
+              :test (fn [] (let [calls (atom 0)
+                                entry (assoc fixture-entry :static/code.cache (atom {}))
+                                reserved {:hydrate (fn [form grammar context]
+                                                     (swap! calls inc)
+                                                     [nil form])}
+                                first-state (template/cached-code-state entry reserved fixture-grammar fixture-modules)
+                                second-state (template/cached-code-state entry reserved fixture-grammar fixture-modules)
+                                _ (template/clear-code-state-cache! entry)
+                                third-state (template/cached-code-state entry reserved fixture-grammar fixture-modules)]
+                            [(= first-state second-state)
+                             (= first-state third-state)
+                             (deref calls)
+                             (keys (deref (:static/code.cache entry)))]))
+              :expected [true true 2 [:fixture]]}])
+
+^{:refer lang.common.emit-template/clear-code-state-cache!}
+(Test/check [{:name "clears a present cache idempotently and accepts entries without one"
+              :test (fn [] (let [entry (assoc fixture-entry :static/code.cache (atom {:fixture :state}))]
+                            [(= entry (template/clear-code-state-cache! entry))
+                             (= entry (template/clear-code-state-cache! entry))
+                             (deref (:static/code.cache entry))
+                             (template/clear-code-state-cache! (dissoc entry :static/code.cache))]))
+              :expected [true true {} {:lang :fixture :module 'fixture.core :id 'run
+                                                         :op :plain :form-input '(outer 1)}]}])
+
+^{:refer lang.common.emit-template/materialize-code-entry}
+(Test/check [{:name "merges staged state and hydration metadata into materialized entries"
+              :test (fn [] (let [entry (assoc fixture-entry :static/code.cache (atom {}))
+                            book (assoc fixture-book
+                                        :grammar {:reserved {:plain {:hydrate (fn [form grammar context]
+                                                                                [{:hydrated true} form])
+                                                                       :hydrate-hook (fn [value] (assoc value :hooked true))}}})]
+                        (select-keys (template/materialize-code-entry book entry)
+                                     [:form :hydrated :hooked :deps :xtalk-ops])))
+              :expected {:form '(outer 1) :hydrated true :hooked true :deps #{} :xtalk-ops #{}}}])
+
+^{:refer lang.common.emit-template/cached-entry-deps}
+(Test/check [{:name "returns the cached dependency set for the book language"
+              :test (fn [] (template/cached-entry-deps
+                            fixture-book
+                            (assoc fixture-entry :static/code.cache (atom {}))))
+              :expected #{}}])

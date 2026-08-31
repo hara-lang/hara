@@ -1,0 +1,166 @@
+(ns std.package.build
+  (:config {:role :internal}))
+
+(defn executable-config
+  [project]
+  (let [config (:project/executable project)
+        entry (:entry config)
+        output (:output config)
+        primary (:primary config)
+        archives (or (:archives config) [])]
+    (cond
+      (not (map? config))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn requires :project/executable"}))
+
+      (not (symbol? entry))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn :project/executable :entry must be a symbol"}))
+
+      (not (string? output))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn :project/executable :output must be a string"}))
+
+      (not (and (map? primary) (string? (:project primary))))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn :project/executable :primary must declare a project path"}))
+
+      (not (vector? archives))
+      (throw (ex :package/invalid-executable
+                 {:ex/message "project.edn :project/executable :archives must be a vector"}))
+
+      :else config)))
+
+(defn archive-specs
+  [archives]
+  (mapv (fn [archive]
+          (cond
+            (not (and (map? archive) (string? (:harp archive))))
+            (throw (ex :package/invalid-executable
+                       {:ex/message "project.edn executable archives must declare :harp strings"}))
+
+            :else {:path (:harp archive) :primary false}))
+        archives))
+
+(defn seal-spec
+  [config primary-archive]
+  {:output (:output config)
+   :entry (:entry config)
+   :archives (conj (archive-specs (or (:archives config) []))
+                   {:path primary-archive :primary true})})
+
+(defn project-form
+  []
+  (IPromise/then
+   (std.native.File/read "/project.edn")
+   (fn [source]
+     (read-string (std.native.String/decode-utf8 source)))))
+
+(defn specs-project
+  "Returns the self-contained artifact project used for a specification HARP."
+  [version]
+  {:hara/type :project
+   :hara/version "1.0.0"
+   :project/id 'hara/foundation.specs
+   :project/version version
+   :project/source-paths []
+   :project/test-paths []
+   :project/extension-paths []
+   :project/artifact-paths ["content"]
+   :project/capabilities #{:file :kernel}
+   :project/dependencies {}})
+
+(defn ^{:public true} build
+  ([project]
+   (std.native.Package/build project))
+  ([project output]
+   (std.native.Package/build project output))
+  ([project output package]
+   (std.native.Package/build project output package))
+  ([project output package profile]
+   (std.native.Package/build project output package profile)))
+
+(defn ^{:public true} inspect
+  [archive]
+  (std.native.Package/inspect archive))
+
+(defn ^{:public true} seal
+  [spec]
+  (std.native.Package/seal spec))
+
+(defn ^{:public true} inspect-seal
+  [path]
+  (std.native.Package/inspect-seal path))
+
+(defn ^{:public true} verify-seal
+  [path]
+  (std.native.Package/verify-seal path))
+
+(defn ^{:public true} distribute
+  [spec]
+  (std.native.Package/distribute spec))
+
+(defn ^{:public true} build-specs
+  "Builds a deterministic HARP containing the versioned specification corpus."
+  [project output]
+  (build project output))
+
+(def +specs-coordinate+ "hara:hara/foundation.specs")
+
+(defn ^{:public true} read-spec-content
+  "Reads a path from the mounted Foundation specification package."
+  [path]
+  (let [descriptor (std.native.Package/find +specs-coordinate+)]
+    (cond descriptor
+          (std.native.String/decode-utf8
+           (std.native.Package/read descriptor path))
+
+          :else
+          (throw (ex :package/specs-unavailable
+                     {:ex/message "specification package is not installed"
+                      :package/coordinate +specs-coordinate+})))))
+
+(defn distribution-config
+  "Validates the explicit native host and output used by a minimal companion release."
+  [project]
+  (let [config (:project/distribution project)
+        host (:host config)
+        output (:output config)]
+    (cond
+      (not (map? config))
+      (throw (ex :package/invalid-distribution
+                 {:ex/message "project.edn requires :project/distribution"}))
+
+      (not (string? host))
+      (throw (ex :package/invalid-distribution
+                 {:ex/message "project.edn :project/distribution :host must be a string"}))
+
+      (not (string? output))
+      (throw (ex :package/invalid-distribution
+                 {:ex/message "project.edn :project/distribution :output must be a string"}))
+
+      :else config)))
+
+(defn ^{:public true} build-distribution
+  "Builds the configured native host and primary HARP as a relocatable companion release."
+  []
+  (IPromise/then
+   (project-form)
+   (fn [project]
+     (let [config (distribution-config project)]
+       (distribute {:project "."
+                    :host (:host config)
+                    :output (:output config)
+                    :replace? true})))))
+
+(defn ^{:public true} seal-project
+  "Builds the declared primary HARP and seals every declared HARP into one executable."
+  []
+  (IPromise/then
+   (project-form)
+   (fn [project]
+     (let [config (executable-config project)
+           specs-archive (build-specs "spec" "target/hara-sealed/hara-specs.harp")
+           config (assoc config :archives (conj (:archives config) {:harp specs-archive}))
+           primary-archive (build (:project (:primary config)) "target/hara-sealed/hara-primary.harp")]
+       (seal (seal-spec config primary-archive))))))

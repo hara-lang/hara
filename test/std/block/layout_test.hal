@@ -1,0 +1,80 @@
+(ns std.block.layout-compact-candidate-test
+  (:require [std.block.construct :as construct]
+            [std.block.layout :as layout]))
+
+(def binding-map (Algo/ordered-map :keys '[a b] :as 'rest))
+
+^{:refer std.block.layout/is-def?}
+(Test/check [{:name "recognises declaration forms and def-prefixed symbols"
+              :test (fn [] [(layout/is-def? 'defn) (layout/is-def? 'define-local) (layout/is-def? 'let)])
+              :expected [true true false]}])
+
+^{:refer std.block.layout/is-binding?}
+(Test/check [{:name "recognises binding forms and with-prefixed symbols"
+              :test (fn [] [(layout/is-binding? 'let) (layout/is-binding? 'with-open) (layout/is-binding? 'assoc)])
+              :expected [true true false]}])
+
+^{:refer std.block.layout/layout-hiccup-like}
+(Test/check [{:name "recognises nested keyword-tagged hiccup vectors"
+              :test (fn [] [(layout/layout-hiccup-like [:a :b])
+                            (layout/layout-hiccup-like [:a [:b]])])
+              :expected [false true]}])
+
+^{:refer std.block.layout/layout-spec-fn}
+(Test/check [{:name "derives aligned two-column specs for assoc forms"
+              :test (fn [] (layout/layout-spec-fn '(assoc m :a 1 :b 2) true))
+              :expected {:col-call true :col-from 1 :columns 2}}])
+
+^{:refer std.block.layout/layout-annotate-arglist}
+(Test/check [{:name "annotates nested binding maps and vectors with layout metadata"
+              :test (fn []
+                      (= (let [annotated (first (layout/layout-annotate-arglist [binding-map]))]
+                           [(get (meta annotated) :readable-len)
+                            (:tag (meta (:keys annotated)))
+                            (:columns (:spec (meta (:keys annotated))))])
+                         [30 :vector 1]))
+              :expected true}])
+
+^{:refer std.block.layout/layout-annotate-bindings}
+(Test/check [{:name "annotates binding vectors with two-column layout metadata"
+              :test (fn []
+                      (= (let [annotated (layout/layout-annotate-bindings [binding-map 1])]
+                           [(:col-align (:spec (meta annotated)))
+                            (:columns (:spec (meta annotated)))
+                            (count annotated)])
+                         [true 2 2]))
+              :expected true}])
+
+^{:refer std.block.layout/layout-annotate-fn-named}
+(Test/check [{:name "keeps the named function shape while annotating arglists"
+              :test (fn []
+                      (let [annotated (layout/layout-annotate-fn-named '(defn hello [x] x))]
+                        [(first annotated) (second annotated) (count annotated)]))
+              :expected ['defn 'hello 4]}])
+
+^{:refer std.block.layout/layout-annotate-fn-anon}
+(Test/check [{:name "keeps anonymous function head and arity while annotating arglists"
+              :test (fn []
+                      (let [annotated (layout/layout-annotate-fn-anon '(fn [x] x))]
+                        [(first annotated) (count annotated)]))
+              :expected ['fn 3]}])
+
+^{:refer std.block.layout/layout-annotate-svg-path}
+(Test/check [{:name "splits SVG path coordinates into a vector"
+              :test (fn [] (:d (second (layout/layout-annotate-svg-path [:path {:d "M 10 10 L 20 20"}]))))
+              :expected ["M" "10" "10" "L" "20" "20"]}])
+
+^{:refer std.block.layout/layout-annotate}
+(Test/check [{:name "dispatches SVG paths to their layout annotation"
+              :test (fn [] (:d (second (layout/layout-annotate [:path {:d "M 0 1"}]))))
+              :expected ["M" "0" "1"]}])
+
+^{:refer std.block.layout/layout-default-fn}
+(Test/check [{:name "renders short vectors without multiline expansion"
+              :test (fn [] (pr-str (construct/rep (layout/layout-default-fn [1 2] {}))))
+              :expected "[1 2]"}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "renders a simple call into one layout line"
+              :test (fn [] (construct/get-lines (layout/layout-main '(+ 1 2 3))))
+              :expected ["(+ 1 2 3)"]}])

@@ -1,0 +1,68 @@
+(ns lang.common.emit-rewrite-test
+  (:require [lang.common.emit-rewrite :as rewrite]))
+
+^{:refer lang.common.emit-rewrite/stage-transforms}
+(Test/check [{:name "returns a stable vector for configured and absent rewrite stages"
+              :test (fn [] [(rewrite/stage-transforms {:rewrite {:staging [identity]}} :staging)
+                            (rewrite/stage-transforms {} :missing)])
+              :expected [[identity] []]}])
+
+^{:refer lang.common.emit-rewrite/xtalk-context}
+(Test/check [{:name "derives XTalk context from module namespaces and aliases"
+              :test (fn [] (rewrite/xtalk-context {:module {:id 'fixture.core :alias {'short 'fixture.core}}}))
+              :expected {:ns 'fixture.core :aliases {'short 'fixture.core} :env {} :preserve-unknown true}}])
+
+^{:refer lang.common.emit-rewrite/infer-environment}
+(Test/check [{:name "merges inferred environment and preserves context on inference failure"
+              :test (fn [] [(select-keys
+                             (rewrite/infer-environment
+                              'form
+                              {:env {'existing {:kind :map}}
+                               :infer (fn [form context] {:env {'values {:kind :array}}})})
+                             [:env])
+                            (select-keys
+                             (rewrite/infer-environment
+                              'form
+                              {:env {} :infer (fn [form context] (throw "failure"))})
+                             [:env])])
+              :expected [{:env {'existing {:kind :map} 'values {:kind :array}}}
+                         {:env {}}]}])
+
+^{:refer lang.common.emit-rewrite/contains-dot?}
+(Test/check [{:name "detects nested dot forms in aggregate Hara values"
+              :test (fn [] [(rewrite/contains-dot? '(outer (. value ["name"])))
+                            (rewrite/contains-dot? {:plain [1 2]})])
+              :expected [true false]}])
+
+^{:refer lang.common.emit-rewrite/rewrite-symbol-value}
+(Test/check [{:name "rewrites a qualified symbol through the module alias map"
+              :test (fn [] [(rewrite/rewrite-symbol-value 'short/value {'short 'target})
+                            (rewrite/rewrite-symbol-value 'plain {'short 'target})])
+              :expected ['target/value 'plain]}])
+
+^{:refer lang.common.emit-rewrite/array-target?}
+(Test/check [{:name "recognizes inferred array access targets"
+              :test (fn [] [(rewrite/array-target? 'items {'items {:kind :array}})
+                            (rewrite/array-target? 'item {'item {:kind :map}})])
+              :expected [true false]}])
+
+^{:refer lang.common.emit-rewrite/canonical-lower}
+(Test/check [{:name "lowers string and array dot access to canonical XTalk operations"
+              :test (fn [] [(rewrite/canonical-lower '(. object ["name"]) {} {})
+                            (rewrite/canonical-lower '(. items [0]) {} {'items {:kind :array}})])
+              :expected ['(x:get-key object "name") '(x:get-idx items 0)]}])
+
+^{:refer lang.common.emit-rewrite/canonical-stage}
+(Test/check [{:name "uses only canonical lang context keys and lowers aliases"
+              :test (fn [] (rewrite/canonical-stage
+                            '(. short/object ["name"])
+                            {:mopts {:lang/xtalk-context {:aliases {'short 'target} :env {}}}}))
+              :expected '(x:get-key target/object "name")}])
+
+^{:refer lang.common.emit-rewrite/rewrite-stage}
+(Test/check [{:name "runs canonical lowering before configured stage transforms"
+              :test (fn [] (rewrite/rewrite-stage
+                            :staging '(. object ["name"])
+                            {:rewrite {:staging [(fn [form context] (list 'wrapped form))]}}
+                            {:module {:id 'fixture.core}}))
+              :expected '(wrapped (x:get-key object "name"))}])

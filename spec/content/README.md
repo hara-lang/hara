@@ -1,7 +1,7 @@
 # Hara specification corpus
 
 This is the versioned payload of the `hara/foundation.specs` HARP. It is built
-by `std.lib.package/build-specs` with the Hara source release and is delivered
+by `std.package.build/build-specs` with the Hara source release and is delivered
 through its paired GitHub Packages `.specs` image.
 
 The public catalogue is `registry-index.json`. Each catalogue record resolves

@@ -1,0 +1,245 @@
+(ns std.typed.registry-test
+  (:require [std.foundation.bootstrap :as bootstrap]
+            [std.typed.registry :as registry]))
+
+(def +base+
+  (registry/local
+   'model
+   {'Id :int
+    'Status '[:enum :active :disabled]}))
+
+(def +user-schema+
+  [:map
+   [:id (list 'var 'Id)]
+   [:status (list 'var 'm/Status)]])
+
+(def +application+
+  (registry/registry
+   {'User +user-schema+}
+   {:namespace 'app
+    :aliases {'m 'model}
+    :refers {'Id 'model/Id}
+    :parents [+base+]}))
+
+(def +app-user+ 'app/User)
+(def +model-id+ 'model/Id)
+(def +model-status+ 'model/Status)
+(def +model-missing+ 'model/Missing)
+(def +demo-token+ 'demo/Token)
+
+^{:refer std.typed.registry/registry-error}
+(Test/check
+ [{:name "retains an inspectable invalid-registry classification"
+   :test (fn []
+           (try
+             (registry/registry-error "bad registry" {:value :bad})
+             (catch error
+               [(ex-message error) (:type (ex-data error))])))
+   :expected ["bad registry" :std.typed.registry/invalid-registry]}])
+
+^{:refer std.typed.registry/registry?}
+(Test/check
+ [{:name "recognises only canonical immutable registries"
+   :test (fn [] [(registry/registry? +application+)
+                 (registry/registry? {:registry/type :std.typed.registry/registry})])
+   :expected [true false]}])
+
+^{:refer std.typed.registry/require-map}
+(Test/check
+ [{:name "accepts maps and rejects invalid option values"
+   :test (fn []
+           [(registry/require-map {:ok true} "options")
+            (try
+              (registry/require-map [] "options")
+              :missing-error
+              (catch error (:type (ex-data error))))])
+   :expected [{:ok true} :std.typed.registry/invalid-registry]}])
+
+^{:refer std.typed.registry/require-symbol-map}
+(Test/check
+ [{:name "requires aliases and refers to map symbols to symbols"
+   :test (fn []
+           [(registry/require-symbol-map {'short 'long/name} "aliases")
+            (try
+              (registry/require-symbol-map {:short 'long/name} "aliases")
+              :missing-error
+              (catch error (:type (ex-data error))))])
+   :expected [{'short 'long/name} :std.typed.registry/invalid-registry]}])
+
+^{:refer std.typed.registry/require-parents}
+(Test/check
+ [{:name "preserves valid parent order and rejects ordinary maps"
+   :test (fn []
+           [(registry/require-parents [+base+])
+            (try
+              (registry/require-parents [{}])
+              :missing-error
+              (catch error (:type (ex-data error))))])
+   :expected [[+base+] :std.typed.registry/invalid-registry]}])
+
+^{:refer std.typed.registry/qualify-in}
+(Test/check
+ [{:name "resolves aliases refers local names and absolute names"
+   :test (fn []
+           [(registry/qualify-in 'app {'m 'model} {'Id 'model/Id} 'User)
+            (registry/qualify-in 'app {'m 'model} {'Id 'model/Id} 'Id)
+            (registry/qualify-in 'app {'m 'model} {'Id 'model/Id} 'm/Status)
+            (registry/qualify-in 'app {'m 'model} {'Id 'model/Id} 'other/Value)])
+   :expected [+app-user+ +model-id+ +model-status+ 'other/Value]}])
+
+^{:refer std.typed.registry/qualify}
+(Test/check
+ [{:name "uses registry configuration to qualify visible targets"
+   :test (fn [] [(registry/qualify +application+ 'User)
+                 (registry/qualify +application+ 'Id)
+                 (registry/qualify +application+ 'm/Status)])
+   :expected [+app-user+ +model-id+ +model-status+]}])
+
+^{:refer std.typed.registry/canonical-entries}
+(Test/check
+ [{:name "stores entries at canonical qualified names"
+   :test (fn [] (registry/canonical-entries {'Id :int} 'model {} {}))
+   :expected {+model-id+ :int}}])
+
+^{:refer std.typed.registry/registry}
+(Test/check
+ [{:name "constructs an immutable namespace-aware registry"
+   :test (fn [] (select-keys +application+
+                           [:registry/type :registry/namespace :registry/aliases
+                            :registry/refers :registry/entries]))
+   :expected {:registry/type :std.typed.registry/registry
+              :registry/namespace 'app
+              :registry/aliases {'m 'model}
+              :registry/refers {'Id 'model/Id}
+              :registry/entries {+app-user+ +user-schema+}}}])
+
+^{:refer std.typed.registry/ensure}
+(Test/check
+ [{:name "accepts registries and canonicalises ordinary entry maps"
+   :test (fn [] [(registry/ensure +application+)
+                 (registry/local-entries (registry/ensure {'Id :int}))])
+   :expected [+application+ {'Id :int}]}])
+
+^{:refer std.typed.registry/local}
+(Test/check
+ [{:name "qualifies local entries with the declared namespace"
+   :test (fn [] (registry/local-entries (registry/local 'demo {'Token :str})))
+   :expected {+demo-token+ :str}}])
+
+^{:refer std.typed.registry/composite}
+(Test/check
+ [{:name "keeps parent registries in precedence order"
+   :test (fn [] (registry/parents (registry/composite [+application+ +base+])))
+   :expected [+application+ +base+]}])
+
+^{:refer std.typed.registry/local-entries}
+(Test/check
+ [{:name "returns only local canonical entries"
+   :test (fn [] (registry/local-entries +application+))
+   :expected {+app-user+ +user-schema+}}])
+
+^{:refer std.typed.registry/parents}
+(Test/check
+ [{:name "returns parent registries without flattening them"
+   :test (fn [] (registry/parents +application+))
+   :expected [+base+]}])
+
+^{:refer std.typed.registry/find-in-parent}
+(Test/check
+ [{:name "tries alternatives in order for one parent"
+   :test (fn [] (select-keys (registry/find-in-parent +base+ [+model-missing+ +model-id+])
+                             [:name :schema]))
+   :expected {:name +model-id+ :schema :int}}])
+
+^{:refer std.typed.registry/find-schema}
+(Test/check
+ [{:name "resolves local names before ordered parent names"
+   :test (fn []
+           [(select-keys (registry/find-schema +application+ 'User) [:name :schema])
+            (select-keys (registry/find-schema +application+ 'Id) [:name :schema])
+            (registry/find-schema +application+ 'Missing)])
+   :expected [{:name +app-user+ :schema +user-schema+}
+              {:name +model-id+ :schema :int}
+              nil]}])
+
+^{:refer std.typed.registry/lookup}
+(Test/check
+ [{:name "returns a schema surface or nil"
+   :test (fn [] [(registry/lookup +application+ 'Id)
+                 (registry/lookup +application+ 'Missing)])
+   :expected [:int nil]}])
+
+^{:refer std.typed.registry/has-schema?}
+(Test/check
+ [{:name "reports only visible schema names"
+   :test (fn [] [(registry/has-schema? +application+ 'User)
+                 (registry/has-schema? +application+ 'Missing)])
+   :expected [true false]}])
+
+^{:refer std.typed.registry/require-schema}
+(Test/check
+ [{:name "returns visible schemas and classifies unresolved references"
+   :test (fn []
+           [(registry/require-schema +application+ 'Id)
+            (try
+              (registry/require-schema +application+ 'Missing)
+              :missing-error
+              (catch error (:type (ex-data error))))])
+   :expected [:int :std.typed.registry/invalid-registry]}])
+
+^{:refer std.typed.registry/append-unique}
+(Test/check
+ [{:name "does not duplicate visible names"
+   :test (fn [] [(registry/append-unique [+model-id+] +model-id+)
+                 (registry/append-unique [+model-id+] +app-user+)])
+   :expected [[+model-id+] [+model-id+ +app-user+]]}])
+
+^{:refer std.typed.registry/append-names}
+(Test/check
+ [{:name "appends only first-visible names"
+   :test (fn [] (registry/append-names [+app-user+] [+app-user+ +model-id+]))
+   :expected [+app-user+ +model-id+]}])
+
+^{:refer std.typed.registry/names}
+(Test/check
+ [{:name "lists local names followed by unshadowed parent names"
+   :test (fn [] (registry/names +application+))
+   :expected [+app-user+ +model-id+ +model-status+]}])
+
+^{:refer std.typed.registry/definitions}
+(Test/check
+ [{:name "flattens definitions according to lookup precedence"
+   :test (fn [] (registry/definitions +application+))
+   :expected {+app-user+ +user-schema+
+              +model-id+ :int
+              +model-status+ '[:enum :active :disabled]}}])
+
+^{:refer std.typed.registry/assoc-schema}
+(Test/check
+ [{:name "returns a new registry without mutating the input"
+   :test (fn []
+           (let [extended (registry/assoc-schema +application+ 'Token :str)]
+             [(registry/lookup extended 'Token)
+              (registry/lookup +application+ 'Token)]))
+   :expected [:str nil]}])
+
+^{:refer std.typed.registry/dissoc-schema}
+(Test/check
+ [{:name "removes only the local schema entry"
+   :test (fn []
+           (let [extended (registry/assoc-schema +application+ 'Token :str)]
+             [(registry/has-schema? (registry/dissoc-schema extended 'Token) 'Token)
+              (registry/has-schema? +application+ 'Id)]))
+   :expected [false true]}])
+
+^{:refer std.foundation.bootstrap/scaffold}
+(Test/check
+ [{:name "bootstraps deterministic Test/check seams for the supported registry API"
+   :test (fn []
+           (let [preview (bootstrap/scaffold 'std.typed.registry ""
+                                             {:test-namespace 'fixture.registry-test
+                                              :alias 'registry})]
+             [(:changed preview)
+              (empty? (:missing (:coverage preview)))
+              (not (empty? (:pending (:coverage preview))))]))
+   :expected [true true true]}])

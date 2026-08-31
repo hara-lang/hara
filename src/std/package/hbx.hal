@@ -1,0 +1,156 @@
+;; HBX0 bytecode-package codec. HARP project artifacts remain in std.package.build.
+(ns std.package.hbx
+  (:config {:role :internal}))
+
+(def +format-order+ [:hbx])
+(def +operation-order+ [:validate :inspect :pack :unpack :conform])
+(def +operations+ #{:validate :inspect :pack :unpack :conform})
+(def +specifications+
+  {:hal/hbx0-wire
+   {:spec/id :hal/hbx0-wire
+    :spec/format :hbx
+    :spec/kind :wire
+    :spec/path "01-lang/010-bytecode/draft/hbx0-wire.edn"
+    :spec/corpora [:hal/hbx0-golden :hal/hbx0-malformed]}})
+(def +formats+
+  {:hbx {:format/id :hbx
+         :format/name "HBX0"
+         :format/kind :executable-package
+         :format/status :draft
+         :format/extension ".hbx"
+         :format/magic "HBX0"
+         :format/version 0
+         :format/spec-id :hal/hbx0-wire
+         :format/spec-path "01-lang/010-bytecode/draft/hbx0-wire.edn"}})
+
+(defn fail [message data]
+  (throw (ex :dependency data :ex/message message)))
+
+(defn includes? [values target]
+  (not (nil? (first (filter (fn [value] (= value target)) values)))))
+
+(defn unknown-keys [value allowed]
+  (vec (sort-by str (filter (fn [key] (not (has? allowed key))) (keys value)))))
+
+(defn hbx-bytes [value operation]
+  (if (bytes? value)
+    (std.native.Bytes/copy value)
+    (fail (str "std.package.hbx/" (name operation) " expects Bytes")
+          {:type :std.package.hbx/invalid-package :operation operation :value value})))
+
+(defn ^{:public true} formats []
+  (vec (map (fn [id] (get +formats+ id)) +format-order+)))
+
+(defn ^{:public true} spec
+  ([] (get +specifications+ :hal/hbx0-wire))
+  ([identity]
+   (let [value (get +specifications+ identity)]
+     (if value value
+       (fail (str "Unknown std.package.hbx specification: " identity)
+             {:type :std.package.hbx/unknown-specification :spec identity
+              :available [:hal/hbx0-wire]})))))
+
+(defn ^{:public true} provider [value]
+  (if (not (map? value))
+    (fail "std.package.hbx provider must be a map"
+          {:type :std.package.hbx/invalid-provider :value value})
+    nil)
+  (let [unknown (unknown-keys value #{:provider/id :provider/operations :provider/formats})
+        id (:provider/id value)
+        formats (:provider/formats value)
+        operations (:provider/operations value)
+        hbx (get formats :hbx)]
+    (if (not (empty? unknown))
+      (fail (str "std.package.hbx provider contains unsupported keys: " unknown)
+            {:type :std.package.hbx/invalid-provider :unknown unknown}) nil)
+    (if (not (keyword? id))
+      (fail ":provider/id must be a keyword"
+            {:type :std.package.hbx/invalid-provider :field :provider/id}) nil)
+    (if (not (and (map? formats) (= [:hbx] (vec (keys formats)))))
+      (fail ":provider/formats must declare exactly :hbx"
+            {:type :std.package.hbx/invalid-provider :field :provider/formats}) nil)
+    (if (not (vector? hbx))
+      (fail "HBX provider operations must be a vector"
+            {:type :std.package.hbx/invalid-provider :field :provider/formats}) nil)
+    (if (not (every? (fn [operation] (has? +operations+ operation)) hbx))
+      (fail "HBX provider declares an unknown operation"
+            {:type :std.package.hbx/invalid-provider :operations hbx}) nil)
+    (let [derived (vec (filter (fn [operation] (includes? hbx operation)) +operation-order+))]
+      (if (not= operations derived)
+        (fail ":provider/operations does not match exact HBX capabilities"
+              {:type :std.package.hbx/invalid-provider :declared operations :derived derived}) nil)
+      {:provider/id id :provider/operations derived :provider/formats {:hbx derived}})))
+
+(defn ^{:public true} current-provider []
+  (provider (std.native.HBX/provider)))
+
+(defn ^{:public true} capabilities []
+  [(current-provider)])
+
+(defn supports [operation]
+  (let [provider (current-provider)]
+    (if (includes? (get (:provider/formats provider) :hbx) operation)
+      provider
+      (fail (str "std.package.hbx provider cannot satisfy :" (name operation))
+            {:type :std.package.hbx/capability-unavailable
+             :operation operation :format :hbx
+             :provider (:provider/id provider)}))))
+
+(defn ^{:public true} detect [value]
+  (let [value (hbx-bytes value :detect)]
+    (if (and (<= 4 (std.native.Bytes/count value))
+             (= 72 (std.native.Bytes/get value 0))
+             (= 66 (std.native.Bytes/get value 1))
+             (= 88 (std.native.Bytes/get value 2))
+             (= 48 (std.native.Bytes/get value 3)))
+      :hbx nil)))
+
+(defn invalid [operation provider error]
+  (fail (str "Invalid hbx package: " (ex-message error))
+        {:type :std.package.hbx/package-invalid :operation operation
+         :format :hbx :provider (:provider/id provider)
+         :message (ex-message error)}))
+
+(defn ^{:public true} validate [value]
+  (let [provider (supports :validate) value (hbx-bytes value :validate)]
+    (try (std.native.HBX/validate value)
+         (catch error (invalid :validate provider error)))))
+
+(defn ^{:public true} inspect [value]
+  (let [provider (supports :inspect) value (hbx-bytes value :inspect)]
+    (try (std.native.HBX/inspect value)
+         (catch error (invalid :inspect provider error)))))
+
+(defn ^{:public true} pack [modules]
+  (let [provider (supports :pack)]
+    (try (std.native.HBX/pack modules)
+         (catch error (invalid :pack provider error)))))
+
+(defn ^{:public true} unpack [value]
+  (let [provider (supports :unpack) value (hbx-bytes value :unpack)]
+    (try (std.native.HBX/unpack value)
+         (catch error (invalid :unpack provider error)))))
+
+(defn ^{:public true} conform [value]
+  (supports :conform)
+  (validate value)
+  {:conformance/spec :hal/hbx0-wire
+   :conformance/provider (:provider/id (current-provider))
+   :conformance/valid true})
+
+(def +format+ :hbx)
+(def +version+ 0)
+
+(defn ^{:public true} encode [modules]
+  (pack modules))
+
+(defn ^{:public true} decode [bytes]
+  (unpack bytes))
+
+(defn ^{:public true} modules [bytes]
+  (unpack bytes))
+
+(defn ^{:public true} extract [bytes resource]
+  (first
+   (filter (fn [module] (= resource (:module/resource module)))
+           (modules bytes))))

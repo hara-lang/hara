@@ -1,0 +1,137 @@
+(ns std.lib.format.version-test
+  (:require [std.lib.format.version]))
+
+^{:refer std.lib.format.version/parse-number}
+(Test/check
+ [{:name "parses present numeric version fields"
+   :test (fn [] [(std.lib.format.version/parse-number "1")
+                 (std.lib.format.version/parse-number "")])
+   :expected [1 nil]}])
+
+^{:refer std.lib.format.version/parse-qualifier}
+(Test/check
+ [{:name "ranks known qualifiers and build-only releases"
+   :test (fn [] [(std.lib.format.version/parse-qualifier "" "")
+                 (std.lib.format.version/parse-qualifier "alpha" "")
+                 (std.lib.format.version/parse-qualifier "beta" "")
+                 (std.lib.format.version/parse-qualifier "" "build")])
+   :expected [6 0 1 -1]}])
+
+^{:refer std.lib.format.version/separator-index}
+(Test/check
+ [{:name "selects the earliest release separator"
+   :test (fn [] [(std.lib.format.version/separator-index "1.2-alpha")
+                 (std.lib.format.version/separator-index "1.2_rc")
+                 (std.lib.format.version/separator-index "1.2")])
+   :expected [3 3 nil]}])
+
+^{:refer std.lib.format.version/parse}
+(Test/check
+ [{:name "parses final, qualified, and numeric-release versions"
+   :test (fn [] [(std.lib.format.version/parse "1.0.0-final")
+                 (std.lib.format.version/parse "1.0.0-alpha+build.123")
+                 (std.lib.format.version/parse "9.1-901.jdbc4")])
+   :expected [{:major 1 :minor 0 :incremental 0 :qualifier 6 :release "final" :build ""}
+              {:major 1 :minor 0 :incremental 0 :qualifier 0 :release "alpha" :build "build.123"}
+              {:major 9 :minor 1 :incremental nil :qualifier -1 :release "901.jdbc4" :build ""}]}])
+
+^{:refer std.lib.format.version/version}
+(Test/check
+ [{:name "normalizes strings while preserving version maps"
+   :test (fn [] [(std.lib.format.version/version "1.0-RC5")
+                 (std.lib.format.version/version {:major 2 :minor 0})])
+   :expected [{:major 1 :minor 0 :incremental nil :qualifier 3 :release "rc5" :build ""}
+              {:major 2 :minor 0}]}])
+
+^{:refer std.lib.format.version/order}
+(Test/check
+ [{:name "orders comparable fields deterministically"
+   :test (fn [] (std.lib.format.version/order "1.2"))
+   :expected [1 2 nil 6 "" ""]}])
+
+^{:refer std.lib.format.version/equal?}
+(Test/check
+ [{:name "treats final and implicit stable versions as equal"
+   :test (fn [] (std.lib.format.version/equal? "1.2-final" "1.2"))
+   :expected true}])
+
+^{:refer std.lib.format.version/newer?}
+(Test/check
+ [{:name "detects newer major and incremental fields"
+   :test (fn [] [(std.lib.format.version/newer? "1.2" "1.0")
+                 (std.lib.format.version/newer? "1.2.2" "1.0.4")])
+   :expected [true true]}])
+
+^{:refer std.lib.format.version/older?}
+(Test/check
+ [{:name "detects older qualifier and release fields"
+   :test (fn [] [(std.lib.format.version/older? "1.0-alpha" "1.0-beta")
+                 (std.lib.format.version/older? "1.0-rc1" "1.0")])
+   :expected [true true]}])
+
+^{:refer std.lib.format.version/not-equal?}
+(Test/check
+ [{:name "negates equality"
+   :test (fn [] [(std.lib.format.version/not-equal? "3.0" "3.0")
+                 (std.lib.format.version/not-equal? "3.0" "3.1")])
+   :expected [false true]}])
+
+^{:refer std.lib.format.version/not-newer?}
+(Test/check
+ [{:name "negates newer comparison"
+   :test (fn [] [(std.lib.format.version/not-newer? "3.0" "3.0")
+                 (std.lib.format.version/not-newer? "3.0" "2.0")])
+   :expected [true false]}])
+
+^{:refer std.lib.format.version/not-older?}
+(Test/check
+ [{:name "negates older comparison"
+   :test (fn [] [(std.lib.format.version/not-older? "3.0" "3.0")
+                 (std.lib.format.version/not-older? "2.0" "3.0")])
+   :expected [true false]}])
+
+^{:refer std.lib.format.version/clojure-version}
+(Test/check
+ [{:name "returns the portable Clojure version shape"
+   :test (fn [] (set (keys (std.lib.format.version/clojure-version))))
+   :expected #{:major :minor :incremental :qualifier :release :build}}])
+
+^{:refer std.lib.format.version/java-version}
+(Test/check
+ [{:name "returns the portable Java version shape"
+   :test (fn [] (set (keys (std.lib.format.version/java-version))))
+   :expected #{:major :minor :incremental :qualifier :release :build}}])
+
+^{:refer std.lib.format.version/system-version}
+(Test/check
+ [{:name "selects a portable version by system tag"
+   :test (fn [] [(std.lib.format.version/system-version :clojure)
+                 (std.lib.format.version/system-version :java)])
+   :expected [(std.lib.format.version/clojure-version)
+              (std.lib.format.version/java-version)]}])
+
+^{:refer std.lib.format.version/satisfied}
+(Test/check
+ [{:name "checks constraints against an explicit current version"
+   :test (fn [] [(std.lib.format.version/satisfied
+                  [:java :newer {:major 1 :minor 7}]
+                  {:major 1 :minor 8})
+                 (std.lib.format.version/satisfied
+                  [:java :older {:major 1 :minor 7}]
+                  {:major 1 :minor 7})
+                 (std.lib.format.version/satisfied
+                  [:java :not-newer {:major 30 :minor 0}]
+                  {:major 17 :minor 0})])
+   :expected [true false true]}])
+
+^{:refer std.lib.format.version/init}
+(Test/check
+ [{:name "expands and evaluates bodies when constraints pass"
+   :test (fn [] (std.lib.format.version/init [] 42))
+   :expected 42}])
+
+^{:refer std.lib.format.version/run}
+(Test/check
+ [{:name "runs bodies when constraints pass"
+   :test (fn [] (std.lib.format.version/run [] 43))
+   :expected 43}])

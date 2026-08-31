@@ -1,0 +1,194 @@
+(ns std.lib.format.report-test
+  (:require [std.lib.format.report :as report]))
+
+^{:refer std.lib.format.report/contains-value?}
+(Test/check [{:name "checks membership without requiring a collection"
+              :test (fn [] [(report/contains-value? [:a :b] :a)
+                             (report/contains-value? nil :a)])
+              :expected [true false]}])
+
+^{:refer std.lib.format.report/distinct-values}
+(Test/check [{:name "preserves first-seen values"
+              :test (fn [] (report/distinct-values [:a :b :a :c :b]))
+              :expected [:a :b :c]}])
+
+^{:refer std.lib.format.report/field-order-key}
+(Test/check [{:name "creates deterministic character keys"
+              :test (fn [] [(report/field-order-key :files) (report/field-order-key :timeout)])
+              :expected [[42 45 48 41 55] [56 45 49 41 51 57 56]]}])
+
+^{:refer std.lib.format.report/field-order-before?}
+(Test/check [{:name "compares field ordering without host sorting"
+              :test (fn [] [(report/field-order-before? :files :timeout)
+                             (report/field-order-before? :timeout :files)])
+              :expected [true false]}])
+
+^{:refer std.lib.format.report/insert-field}
+(Test/check [{:name "inserts one field in canonical order"
+              :test (fn [] (report/insert-field :files [:items :timeout]))
+              :expected [:files :items :timeout]}])
+
+^{:refer std.lib.format.report/sort-fields}
+(Test/check [{:name "sorts extension fields deterministically"
+              :test (fn [] (report/sort-fields [:timeout :files :facts]))
+              :expected [:facts :files :timeout]}])
+
+^{:refer std.lib.format.report/record-role}
+(Test/check [{:name "maps statuses to roles"
+              :test (fn [] [(report/record-role {:status :return})
+                             (report/record-role {:data {:test/status :failed}})
+                             (report/record-role {:status :timeout})
+                             (report/record-role {:status :other})])
+              :expected [:success :error :timeout :default]}])
+
+^{:refer std.lib.format.report/record-status}
+(Test/check [{:name "reads record and nested test statuses"
+              :test (fn [] [(report/record-status {:status :return})
+                             (report/record-status {:data {:test/status :timeout}})
+                             (report/record-status {})])
+              :expected [:return :timeout nil]}])
+
+^{:refer std.lib.format.report/status-text}
+(Test/check [{:name "formats statuses with stable words"
+              :test (fn [] [(report/status-text :return) (report/status-text :failed)
+                             (report/status-text :critical) (report/status-text :other)])
+              :expected ["ok" "failed" "critical" "other"]}])
+
+^{:refer std.lib.format.report/time-text}
+(Test/check [{:name "formats optional elapsed values"
+              :test (fn [] [(report/time-text nil) (report/time-text 8) (report/time-text "0.18s")])
+              :expected ["" "8ms" "0.18s"]}])
+
+^{:refer std.lib.format.report/progress-layout}
+(Test/check [{:name "derives one shared layout from records"
+              :test (fn [] (report/progress-layout
+                            [{:item/id "a" :item/index 0 :item/total 2}
+                             {:item/id "long-name" :item/index 1 :item/total 2}]))
+              :expected {:item/index-width 4 :item/id-width 11
+                         :item/result-width 60 :item/time-width 10}}])
+
+^{:refer std.lib.format.report/progress-line}
+(Test/check [{:name "renders a progress entry with role and elapsed time"
+              :test (fn [] (select-keys
+                            (report/progress-line {:item/id :alpha :item/index 0 :item/total 2
+                                                   :status :passed :item/count 15 :elapsed "0.18s"})
+                            [:line/text :line/role]))
+              :expected {:line/text "1/2  :alpha  passed (15)  0.18s" :line/role :success}}])
+
+^{:refer std.lib.format.report/progress-lines}
+(Test/check [{:name "uses a shared layout across progress rows"
+              :test (fn []
+                      (let [lines (report/progress-lines
+                                   [{:item/id "a" :item/index 0 :item/total 2 :status :passed}
+                                    {:item/id "long-name" :item/index 1 :item/total 2 :status :failed}])]
+                        [(count lines) (vec (map :line/role lines))
+                         (str/index-of (:line/text (nth lines 0)) "passed")
+                         (str/index-of (:line/text (nth lines 1)) "failed")]))
+              :expected [2 [:success :error] 19 19]}])
+
+^{:refer std.lib.format.report/diagnostic-line}
+(Test/check [{:name "renders diagnostic data with status role"
+              :test (fn [] (select-keys (report/diagnostic-line
+                                         {:item/id :beta :status :warn :data "review"})
+                                        [:line/text :line/role]))
+              :expected {:line/text ":beta  warn  review" :line/role :warning}}])
+
+^{:refer std.lib.format.report/summary-field-label}
+(Test/check [{:name "labels known and extension summary fields"
+              :test (fn [] [(report/summary-field-label :items) (report/summary-field-label :custom)])
+              :expected ["Items" "custom"]}])
+
+^{:refer std.lib.format.report/summary-value-text}
+(Test/check [{:name "formats summary timing fields"
+              :test (fn [] [(report/summary-value-text :items 2)
+                             (report/summary-value-text :elapsed 8)])
+              :expected ["2" "8ms"]}])
+
+^{:refer std.lib.format.report/summary-field-role}
+(Test/check [{:name "assigns semantic roles to summary fields"
+              :test (fn [] [(report/summary-field-role :passed) (report/summary-field-role :failed)
+                             (report/summary-field-role :timeout) (report/summary-field-role :facts)])
+              :expected [:success :error :timeout :default]}])
+
+^{:refer std.lib.format.report/summary-fields}
+(Test/check [{:name "includes configured and ordered extension fields"
+              :test (fn [] (report/summary-fields {:section/fields [:errors]}
+                                                   {:items 2 :results 2 :warnings 1 :errors 0
+                                                    :cumulative 7 :elapsed 8}))
+              :expected [:errors :cumulative :elapsed :items :results :warnings]}])
+
+^{:refer std.lib.format.report/summary-lines}
+(Test/check [{:name "renders structured summary lines"
+              :test (fn []
+                      (let [lines (report/summary-lines
+                                   {:section/entries [{:items 2 :results 2 :warnings 1 :errors 0
+                                                       :cumulative 7 :elapsed 8}]})]
+                        [(count lines) (:line/text (nth lines 0)) (:line/text (nth lines 5))]))
+              :expected [6 "Items: 2" "Elapsed: 8ms"]}])
+
+^{:refer std.lib.format.report/section-role}
+(Test/check [{:name "assigns section display roles"
+              :test (fn [] [(report/section-role {:section/id :warnings})
+                             (report/section-role {:section/id :summary})
+                             (report/section-role {:section/id :other})])
+              :expected [:warning :highlight :highlight]}])
+
+^{:refer std.lib.format.report/section-content-lines}
+(Test/check [{:name "dispatches text section content"
+              :test (fn [] (let [lines (report/section-content-lines
+                                         {:section/kind :text :section/entries ["hello"]})]
+                            [(count lines) (:line/text (nth lines 0))]))
+              :expected [1 "hello"]}])
+
+^{:refer std.lib.format.report/section-selected?}
+(Test/check [{:name "applies inclusion and exclusion filters"
+              :test (fn [] [(report/section-selected? {:section/id :items} {})
+                             (report/section-selected? {:section/id :items} {:exclude-sections [:items]})])
+              :expected [true false]}])
+
+^{:refer std.lib.format.report/section-lines}
+(Test/check [{:name "adds section titles and omits empty sections"
+              :test (fn []
+                      [(let [lines (report/section-lines
+                                    {:section/id :items :section/title "ITEMS" :section/kind :text
+                                     :section/entries ["ok"]}
+                                    {:include-section-titles true})]
+                         [(count lines) (:line/text (nth lines 0)) (:line/text (nth lines 1))])
+                       (report/section-lines {:section/id :empty :section/entries []}
+                                             {:include-section-titles true})])
+              :expected [[2 "ITEMS" "ok"] []]}])
+
+^{:refer std.lib.format.report/add-group}
+(Test/check [{:name "joins non-empty groups with one separator"
+              :test (fn [] (let [lines (report/add-group
+                                        [{:line/text "one"}]
+                                        [{:line/text "two"}])]
+                            [(count lines) (:line/text (nth lines 1))]))
+              :expected [3 ""]}])
+
+^{:refer std.lib.format.report/report-lines}
+(Test/check [{:name "renders a titled report into groups"
+              :test (fn [] (let [lines (report/report-lines
+                                        {:report/title "REPORT"
+                                         :report/sections [{:section/id :items :section/title "ITEMS"
+                                                            :section/kind :text :section/entries ["ok"]}]
+                                         :report/annotations ["Done"]})]
+                            [(count lines) (:line/text (nth lines 0)) (:line/text (nth lines 2))
+                             (:line/text (nth lines 5))]))
+              :expected [6 "REPORT" "ITEMS" "Done"]}])
+
+^{:refer std.lib.format.report/report}
+(Test/check [{:name "renders report lines as plain text"
+              :test (fn [] (report/report
+                            {:report/title "REPORT"
+                             :report/sections [{:section/id :items :section/title "ITEMS"
+                                                :section/kind :text :section/entries ["ok"]}]}))
+              :expected "REPORT\n\nITEMS\nok"}])
+
+^{:refer std.lib.format.report/render-report}
+(Test/check [{:name "renders report output through the terminal boundary"
+              :test (fn [] (report/render-report
+                            {:report/title "REPORT"
+                             :report/sections [{:section/id :items :section/title "ITEMS"
+                                                :section/kind :text :section/entries ["ok"]}]}))
+              :expected "REPORT\n\nITEMS\nok"}])

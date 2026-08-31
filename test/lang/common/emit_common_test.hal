@@ -1,0 +1,98 @@
+(ns lang.common.emit-common-test
+  (:require [lang.common.emit-common :as common]
+            [lang.common.emit-helper :as helper]))
+
+(def operator-grammar
+  (assoc helper/+default+
+         :reserved
+         {'+ {:op :add :emit :infix :raw "+"}
+          '- {:op :sub :emit :infix- :raw "-"}
+          'not {:op :not :emit :pre :raw "!"}
+          := {:op :assign :emit :assign :raw "="}
+          '. {:op :index :emit :index}}))
+
+^{:refer lang.common.emit-common/with:explode}
+(Test/check
+ [{:name "emission dynamic formatting controls retain their archive behavior"
+   :test (fn [] [(common/with:explode common/*explode*)
+                 (common/with-trace common/*trace*)
+                 (common/with-compressed common/*compressed*)
+                 (common/with-indent [10] common/*indent*)
+                 (common/newline-indent)
+                 (common/with-indent [2] (common/newline-indent))])
+   :expected [true true true 10 "\n" "\n  "]}])
+
+^{:refer lang.common.emit-common/emit-reserved-value}
+(Test/check
+ [{:name "primitive, free, and token emissions preserve the Foundation layout"
+   :test (fn [] [(common/emit-reserved-value 'hello {} {})
+                 (common/emit-reserved-value 'hello {:reserved {'hello {:value true :raw "world"}}} {})
+                 (common/emit-free-raw "." [1 2 3] helper/+default+ {})
+                 (common/emit-free " " '(:- 1 2 3) helper/+default+ {})
+                 (common/emit-comment nil '(:# "comment" A) helper/+default+ {})
+                 (common/emit-array [1 2 3] {} {})
+                 (common/emit-wrappable? '(!= 1 x) {:reserved {'!= {:emit :infix}}})
+                 (common/emit-squash nil '(:% 1 2 "x") helper/+default+ {})
+                 (common/wrapped-str "hello" [:data :map] helper/+default+)])
+   :expected [nil "world" "1.2.3" "1 2 3" "// comment A" '("1" "2" "3") true "12\"x\"" "{hello}"]}])
+
+^{:refer lang.common.emit-common/emit-pre}
+(Test/check
+ [{:name "operator emission retains prefix postfix infix and conditional forms"
+   :test (fn [] [(common/emit-pre "!" '[x] helper/+default+ {})
+                 (common/emit-post "--" '[x] helper/+default+ {})
+                 (common/emit-prefix "return" '[x] helper/+default+ {})
+                 (common/emit-postfix "as" '[x] helper/+default+ {})
+                 (common/emit-infix "|" '[x y z] helper/+default+ {})
+                 (common/emit-infix-default "/" '[x] 1 helper/+default+ {})
+                 (common/emit-infix-pre "-" '[x] helper/+default+ {})
+                 (common/emit-infix-if-single '(:? true x y) helper/+default+ {})
+                 (common/emit-infix-if '(:? true x :else y) helper/+default+ {})
+                 (common/emit-between ":" [1 2] helper/+default+ {})
+                 (common/emit-bi "==" '[x y] helper/+default+ {})
+                 (common/emit-assign "=" '[x 1] helper/+default+ {})])
+   :expected ["!x" "x--" "return x" "x as" "x | y | z" "1 / x" "-x" "true ? x : y" "true ? x : y" "1:2" "x == y" "x = 1"]}])
+
+^{:refer lang.common.emit-common/emit-return-do}
+(Test/check
+ [{:name "return, global, symbol, and token forms follow the archive contracts"
+   :test (fn [] [(common/emit-return-do [1 2 3] helper/+default+ {})
+                 (common/emit-return-base "return" [1] helper/+default+ {})
+                 (common/emit-return "break" [1] helper/+default+ {})
+                 (common/emit-with-global nil '(!:G HELLO) {} {})
+                 (common/emit-symbol-classify 't/hello {:module {:alias {'t 'table}}})
+                 (common/emit-symbol-standard 'print! helper/+default+ {:layout :full})
+                 (common/emit-symbol 'a {:token {:symbol {:emit-fn (fn [sym _ _] (str sym 123))}}} {})
+                 (common/emit-token :string "1" {:token {:string {:quote :single}}} {})
+                 (common/emit-with-decorate nil '(!:decorate {:id 1} HELLO) {} {})])
+   :expected ["(1 2 (return 3))" "return 1" "break 1" "HELLO" [:alias 'table] "printf" "a123" "'1'" "HELLO"]}])
+
+^{:refer lang.common.emit-common/drop-last-value}
+(Test/check
+ [{:name "invocation parsing and all invocation layouts retain their canonical output"
+   :test (fn [] [(common/drop-last-value [1 2 3])
+                 (common/first-keyword-index [1 :name "hello"])
+                 (common/invoke-kw-parse [1 2 :name "hello" :foo "bar"])
+                 (common/emit-invoke-kw-pair [:name "hello"] helper/+default+ {})
+                 (vec (common/emit-invoke-args [1 :name "hello"] helper/+default+ {}))
+                 (common/emit-invoke-layout ["ab\nc" "de\nf"] helper/+default+ {})
+                 (common/emit-invoke-raw "-" '[abc] helper/+default+ {})
+                 (common/emit-invoke-static '(:table/new "hello") helper/+default+ {})
+                 (common/emit-invoke-typecast '(:int (:char 2)) helper/+default+ {})
+                 (common/emit-invoke :invoke '(call "hello" (+ 1 2)) helper/+default+ {})
+                 (common/emit-new "new" '(String 1 2) helper/+default+ {})
+                 (common/emit-class-static-invoke nil '(String "new" 1 2) helper/+default+ {})])
+   :expected [[1 2] 1 [[1 2] [[:name "hello"] [:foo "bar"]]] "name=\"hello\"" ["1" "name=\"hello\""] "(ab\nc,de\nf)" "-(abc)" "table.new(\"hello\")" "((int)(:char 2))" "call(\"hello\",(+ 1 2))" "new String(1,2)" "String.new(1,2)"]}])
+
+^{:refer lang.common.emit-common/emit-index-entry}
+(Test/check
+ [{:name "indexing and recursive dispatch preserve archive grammar selection"
+   :test (fn [] [(common/emit-index-entry 'hello helper/+default+ {})
+                 (common/emit-index-entry [9] helper/+default+ {})
+                 (common/emit-index nil '[x [hello] (world foo) baz] helper/+default+ {})
+                 (common/emit-op :- '(:- "~~") (assoc helper/+default+ :reserved {:- {:emit :free}}) {})
+                 (common/form-key [] {})
+                 (common/emit-common-loop '(add 1 (:int 1)) helper/+default+ {})
+                 (common/emit-common-loop-bound '(+ 1 2) operator-grammar {} common/+emit-lookup+ common/emit-op common/emit-common-loop)
+                 (common/emit-common '(+ 1 (+ 2 3)) operator-grammar {})])
+   :expected [".hello" "[9]" "x[hello].world(foo).baz" "~~" [:vector :data nil] "add(1,(:int 1))" "1 + 2" "1 + (2 + 3)"]}])

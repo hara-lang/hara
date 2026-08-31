@@ -1,0 +1,94 @@
+(ns std.lib.format.table-test
+  (:require [std.lib.format.table :as table]))
+
+^{:refer std.lib.format.table/record-role}
+(Test/check [{:name "maps test and record statuses to display roles"
+              :test (fn [] [(table/record-role {:status :return})
+                             (table/record-role {:data {:test/status :failed}})
+                             (table/record-role {:status :cancelled})])
+              :expected [:success :error :warning]}])
+
+^{:refer std.lib.format.table/column-label}
+(Test/check [{:name "derives labels from supported column key forms"
+              :test (fn [] [(table/column-label :path)
+                             (table/column-label 'value)
+                             (table/column-label "Label")
+                             (table/column-label 1)])
+              :expected ["path" "value" "Label" ""]}])
+
+^{:refer std.lib.format.table/normalise-column}
+(Test/check [{:name "fills column defaults while retaining column options"
+              :test (fn [] [(table/normalise-column :path)
+                             (table/normalise-column {:key :elapsed :align :right})])
+              :expected [{:key :path :label "path" :align :left :role nil}
+                         {:key :elapsed :label "elapsed" :align :right :role nil}]}])
+
+^{:refer std.lib.format.table/column-value}
+(Test/check [{:name "reads keyed and computed column values"
+              :test (fn [] [(table/column-value {:key :path} {:path "a.hal"})
+                             (table/column-value {:key (fn [row] (+ (:left row) (:right row)))}
+                                                 {:left 2 :right 3})])
+              :expected ["a.hal" 5]}])
+
+^{:refer std.lib.format.table/column-width}
+(Test/check [{:name "uses an explicit width or the widest rendered value"
+              :test (fn [] [(table/column-width {:key :name :label "name" :width 7}
+                                                 [{:name "a"}])
+                             (table/column-width {:key :name :label "name"}
+                                                 [{:name "界"} {:name "abc"}])])
+              :expected [7 4]}])
+
+^{:refer std.lib.format.table/realised-columns}
+(Test/check [{:name "normalises each column with its realised width"
+              :test (fn [] (table/realised-columns [:path {:key :id :align :right}]
+                                                   [{:path "a.hal" :id 2}]))
+              :expected [{:key :path :label "path" :align :left :role nil :width 5}
+                         {:key :id :label "id" :align :right :role nil :width 2}]}])
+
+^{:refer std.lib.format.table/cells-with-separators}
+(Test/check [{:name "places unstyled spacing cells between table cells"
+              :test (fn [] (table/cells-with-separators
+                            [{:cell/text "a" :cell/role :index}
+                             {:cell/text "b" :cell/role :error}]))
+              :expected [{:cell/text "a" :cell/role :index}
+                         {:cell/text "  " :cell/role :default}
+                         {:cell/text "b" :cell/role :error}]}])
+
+^{:refer std.lib.format.table/table-cells}
+(Test/check [{:name "applies row and column roles to padded data cells"
+              :test (fn []
+                      (let [cells (table/table-cells
+                                   [{:key :name :width 4}
+                                    {:key :timeout :width 7 :role :timeout}]
+                                   {:name "case" :timeout 4 :status :return
+                                    :data {:test/status :failed}})]
+                        [(vec (map (fn [cell] (:cell/text cell)) cells))
+                         (vec (map (fn [cell] (:cell/role cell)) cells))]))
+              :expected [["case" "  " "4      "]
+                         [:error :default :timeout]]}])
+
+^{:refer std.lib.format.table/table-lines}
+(Test/check [{:name "renders aligned headers, separators, rows, and wide Unicode"
+              :test (fn []
+                      (let [standard (table/table-lines
+                                      {:section/columns [{:key :path}
+                                                         {:key :fun :align :right}
+                                                         {:key :ins :align :right}]
+                                       :section/entries [{:path "a.clj" :fun 2 :ins 3}
+                                                         {:path "b.clj" :fun 1 :ins 0}]})
+                            wide (table/table-lines
+                                  {:section/columns [{:key :name} {:key :value}]
+                                   :section/entries [{:name "界" :value 1}
+                                                     {:name "aa" :value 22}]})]
+                        [(count standard)
+                         (:line/text (nth standard 0)) (:line/role (nth standard 0))
+                         (:line/text (nth standard 1)) (:line/role (nth standard 1))
+                         (:line/text (nth standard 2)) (:line/role (nth standard 2))
+                         (:line/text (nth standard 3)) (:line/role (nth standard 3))
+                         (:line/text (nth wide 2)) (:line/text (nth wide 3))]))
+              :expected [4
+                         "path   fun  ins" :highlight
+                         "-----  ---  ---" :muted
+                         "a.clj    2    3" :default
+                         "b.clj    1    0" :default
+                         "界    1    " "aa    22   "]}])

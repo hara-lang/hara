@@ -1,0 +1,66 @@
+(ns lang.common.book-entry
+  (:require [lang.common.util :as ut]))
+
+(defn filter-values
+  [value]
+  (reduce-kv (fn [output key entry]
+               (if entry
+                 (assoc output key entry)
+                 output))
+             {}
+             value))
+
+(defn book-entry-string
+  [{:keys [id lang module section display] :as entry}]
+  (if (= display :symbol)
+    (str "E:" (ut/sym-full module id))
+    (str "#book.entry " [lang section (ut/sym-full module id)]
+         (if (= display :brief)
+           ""
+           (str " "
+                (filter-values
+                 (dissoc entry
+                         :section :id :module :declared :form-input :template
+                         :standalone :line :time :priority :display)))))))
+
+(defstruct BookEntry [lang
+                      id
+                      module
+                      section
+                      declared
+                      form
+                      form-input
+                      deps
+                      deps-fragment
+                      deps-native
+                      xtalk-ops
+                      xtalk-profiles
+                      polyfill-modules
+                      namespace
+                      template
+                      standalone
+                      line
+                      time
+                      priority
+                      display])
+
+(defn book-entry?
+  [value]
+  (instance? BookEntry value))
+
+(defn ^{:public true} book-entry
+  "Creates a provider-independent Book entry."
+  [value]
+  (map->BookEntry (merge {:display :default} value)))
+
+(defn book-entry-data
+  [value]
+  (if (not (book-entry? value))
+    (throw (ex :argument {:book-entry value}
+               :ex/message "Expected a BookEntry value")))
+  value)
+
+(defn entry-coordinate
+  [value]
+  (let [value (book-entry-data value)]
+    [(:lang value) (:module value) (:section value) (:id value)]))

@@ -1,0 +1,572 @@
+(ns std.typed.schema
+  (:require [std.typed.registry :as registry]))
+
+;; Portable normalization and validation; native Schema values are reflected
+;; through Schema/ast but do not replace the named-schema registry.
+
+(def ^{:dynamic true} *registry* nil)
+
+(defn reference-form?
+  [value]
+  (and (list? value)
+       (= 2 (count value))
+       (= 'var (first value))
+       (symbol? (second value))))
+
+(defn normalize-dispatch
+  [surface]
+  (cond
+    (= (type surface) :std.native.SchemaType) :schema-value
+    (and (map? surface) (has? surface :kind)) :normalized
+    (keyword? surface) :primitive
+    (reference-form? surface) :reference
+    (and *registry* (symbol? surface)) :registry-reference
+    (vector? surface) (cond
+                        (empty? surface) :unknown
+                        :else (first surface))
+    :else :unknown))
+
+(defmulti normalize normalize-dispatch)
+
+(defn assoc-properties
+  [schema properties]
+  (cond
+    (empty? properties) schema
+    :else (assoc schema :properties properties)))
+
+(defn properties
+  [surface]
+  (cond
+    (and (= 2 (count surface)) (map? (second surface))) (second surface)
+    :else {}))
+
+(defn normalize-primitive
+  [surface]
+  (let [name (first surface)]
+    (cond
+      (= name :integer)
+      {:kind :union
+       :types [(assoc-properties {:kind :primitive :name :long} (properties surface))
+               (assoc-properties {:kind :primitive :name :bigint} (properties surface))]}
+      :else
+      (assoc-properties {:kind :primitive :name name} (properties surface)))))
+
+(defmethod normalize :schema-value [surface]
+  (normalize (Schema/ast surface)))
+
+(defmethod normalize :normalized [surface]
+  (let [kind (:kind surface)
+        children (or (:children surface) [])]
+    (cond
+      (= kind :primitive)
+      (normalize (or (:name surface) (first children)))
+
+      (= kind :union)
+      {:kind :union
+       :types (vec (map normalize (or (:types surface) children)))}
+
+      (= kind :vector)
+      (assoc-properties
+       {:kind :vector
+        :item (normalize (or (:item surface) (first children) :any))}
+       (or (:properties surface) {}))
+
+      (= kind :set)
+      (assoc-properties
+       {:kind :set
+        :item (normalize (or (:item surface) (first children) :any))}
+       (or (:properties surface) {}))
+
+      (= kind :tuple)
+      {:kind :tuple :items (vec (map normalize (or (:items surface) children)))}
+
+      (= kind :enum)
+      {:kind :enum :values (vec (or (:values surface) children))}
+
+      (= kind :reference)
+      {:kind :reference :name (:name surface)}
+
+      (= kind :map)
+      {:kind :map
+       :properties (or (:properties surface) {})
+       :fields (vec (map normalize-field (or (:fields surface) children)))}
+
+      (= kind :fn)
+      {:kind :fn
+       :inputs (normalize-inputs (:inputs surface))
+       :output (normalize (:output surface))}
+
+      (= kind :function)
+      {:kind :function
+       :arities (vec (map normalize (or (:arities surface) children)))}
+
+      :else {:kind :unknown :surface surface})))
+
+(defmethod normalize :primitive [surface]
+  (cond
+    (= surface :integer) (normalize [:integer])
+    :else {:kind :primitive :name surface}))
+
+(defmethod normalize :reference [surface]
+  {:kind :reference :name (second surface)})
+
+(defmethod normalize :registry-reference [surface]
+  {:kind :reference :name (registry/qualify *registry* surface)})
+
+(defmethod normalize :or [surface]
+  {:kind :union :types (vec (map normalize (rest surface)))})
+
+(defmethod normalize :maybe [surface]
+  (normalize (vec (concat [:or] [(second surface) :nil]))))
+
+(defn collection-parts
+  [surface]
+  (let [arguments (vec (rest surface))
+        property-form? (and (not (empty? arguments)) (map? (first arguments)))]
+    {:properties (cond
+                  property-form? (first arguments)
+                  :else {})
+     :item (cond
+             property-form? (cond
+                              (> (count arguments) 1) (second arguments)
+                              :else :any)
+             (empty? arguments) :any
+             :else (first arguments))}))
+
+(defmethod normalize :vector [surface]
+  (let [parts (collection-parts surface)]
+    (assoc-properties {:kind :vector :item (normalize (:item parts))}
+                      (:properties parts))))
+
+(defmethod normalize :set [surface]
+  (let [parts (collection-parts surface)]
+    (assoc-properties {:kind :set :item (normalize (:item parts))}
+                      (:properties parts))))
+
+(defmethod normalize :tuple [surface]
+  {:kind :tuple :items (vec (map normalize (rest surface)))})
+
+(defmethod normalize :enum [surface]
+  {:kind :enum :values (vec (rest surface))})
+
+(defn normalize-field
+  [field]
+  (cond
+    (and (vector? field) (= 2 (count field)))
+    {:name (first field) :type (normalize (second field)) :properties {}}
+
+    (and (vector? field) (= 3 (count field)) (map? (second field)))
+    {:name (first field) :type (normalize (nth field 2)) :properties (second field)}
+
+    (map? field)
+    {:name (:name field)
+     :type (normalize (:type field))
+     :properties (or (:properties field) {})}
+
+    :else
+    (throw (ex :serialization {:entry field}
+               :ex/message "map schema entries must be [key schema] or [key properties schema]"))))
+
+(defmethod normalize :map [surface]
+  (let [arguments (vec (rest surface))
+        property-form? (and (not (empty? arguments)) (map? (first arguments)))
+        properties (cond property-form? (first arguments) :else {})
+        fields (cond property-form? (rest arguments) :else arguments)]
+    {:kind :map
+     :properties properties
+     :fields (vec (map normalize-field fields))}))
+
+(defn ampersand-index
+  "Returns the first variadic marker index, or nil when inputs are fixed."
+  [inputs]
+  (loop [index 0]
+    (cond
+      (= index (count inputs)) nil
+      (= '& (nth inputs index)) index
+      :else (recur (inc index)))))
+
+(defn normalize-inputs
+  [inputs]
+  (let [inputs (or inputs [])
+        ampersand (ampersand-index inputs)]
+    (cond
+      (nil? ampersand)
+      {:fixed (vec (map normalize inputs)) :rest nil}
+      :else
+      {:fixed (vec (map normalize (take ampersand inputs)))
+       :rest (normalize (nth inputs (inc ampersand)))})))
+
+(defmethod normalize :fn [surface]
+  {:kind :fn
+   :inputs (normalize-inputs (second surface))
+   :output (normalize (nth surface 2))})
+
+(defmethod normalize :function [surface]
+  {:kind :function :arities (vec (map normalize (rest surface)))})
+
+(defmethod normalize :str [surface] (normalize-primitive surface))
+(defmethod normalize :string [surface] (normalize-primitive surface))
+(defmethod normalize :keyword [surface] (normalize-primitive surface))
+(defmethod normalize :symbol [surface] (normalize-primitive surface))
+(defmethod normalize :list [surface] (normalize-primitive surface))
+(defmethod normalize :bytes [surface] (normalize-primitive surface))
+(defmethod normalize :int [surface] (normalize-primitive surface))
+(defmethod normalize :long [surface] (normalize-primitive surface))
+(defmethod normalize :bigint [surface] (normalize-primitive surface))
+(defmethod normalize :integer [surface] (normalize-primitive surface))
+(defmethod normalize :num [surface] (normalize-primitive surface))
+(defmethod normalize :number [surface] (normalize-primitive surface))
+(defmethod normalize :any [surface] (normalize-primitive surface))
+(defmethod normalize :nil [surface] (normalize-primitive surface))
+(defmethod normalize :bool [surface] (normalize-primitive surface))
+(defmethod normalize :boolean [surface] (normalize-primitive surface))
+
+(defmethod normalize :default [surface]
+  {:kind :unknown :surface surface})
+
+(defn ^{:public true} normalize-with
+  "Normalizes schema using an explicit immutable schema registry."
+  [surface registry-value]
+  (binding [*registry* (registry/ensure registry-value)]
+    (normalize surface)))
+
+(defn ^{:public true} reference-names
+  "Returns all named references reachable from a schema surface."
+  [surface]
+  (let [normal (normalize surface)]
+    (cond
+      (= :reference (:kind normal)) [(:name normal)]
+      (= :union (:kind normal)) (vec (mapcat reference-names (:types normal)))
+      (or (= :vector (:kind normal)) (= :set (:kind normal))) (reference-names (:item normal))
+      (= :tuple (:kind normal)) (vec (mapcat reference-names (:items normal)))
+      (= :map (:kind normal)) (vec (mapcat (fn [field] (reference-names (:type field)))
+                                             (:fields normal)))
+      :else [])))
+
+(defn ^{:public true} resolve-reference
+  "Resolves one named schema to its normal form, or nil when absent."
+  [target registry-value]
+  (let [registry-value (registry/ensure registry-value)
+        found (registry/find-schema registry-value target)]
+    (cond
+      found (normalize-with (:schema found) (:registry found))
+      :else nil)))
+
+(defn resolve-normal
+  [normal registry-value visited]
+  (cond
+    (= :reference (:kind normal))
+    (let [name (:name normal)]
+      (cond
+        (has? visited name) normal
+        :else
+        (let [resolved (resolve-reference name registry-value)]
+          (cond
+            resolved (resolve-normal resolved registry-value (conj visited name))
+            :else normal))))
+
+    (= :union (:kind normal))
+    (assoc normal :types (vec (map (fn [item] (resolve-normal item registry-value visited))
+                                   (:types normal))))
+
+    (or (= :vector (:kind normal)) (= :set (:kind normal)))
+    (assoc normal :item (resolve-normal (:item normal) registry-value visited))
+
+    (= :tuple (:kind normal))
+    (assoc normal :items (vec (map (fn [item] (resolve-normal item registry-value visited))
+                                   (:items normal))))
+
+    (= :map (:kind normal))
+    (assoc normal :fields
+           (vec (map (fn [field]
+                       (assoc field :type (resolve-normal (:type field) registry-value visited)))
+                     (:fields normal))))
+
+    :else normal))
+
+(defn ^{:public true} resolve-recursive
+  "Resolves reachable references while retaining recursive edges."
+  [surface registry-value]
+  (let [registry-value (registry/ensure registry-value)]
+    (resolve-normal (normalize-with surface registry-value) registry-value #{})))
+
+(defn ^{:public true} unresolved-references
+  "Returns reachable names that cannot be resolved by registry-value."
+  [surface registry-value]
+  (let [registry-value (registry/ensure registry-value)]
+    (vec (filter (fn [name] (not (registry/has-schema? registry-value name)))
+                 (reference-names (normalize-with surface registry-value))))))
+
+(defn primitive-valid?
+  [name value]
+  (cond
+    (= name :any) true
+    (= name :nil) (nil? value)
+    (or (= name :bool) (= name :boolean)) (boolean? value)
+    (or (= name :num) (= name :number)) (number? value)
+    (or (= name :int) (= name :long)) (long? value)
+    (= name :bigint) (bigint? value)
+    (= name :integer) (integer? value)
+    (or (= name :str) (= name :string)) (string? value)
+    (= name :keyword) (keyword? value)
+    (= name :symbol) (symbol? value)
+    (= name :list) (list? value)
+    (= name :vector) (vector? value)
+    (= name :map) (map? value)
+    (= name :set) (set? value)
+    (= name :bytes) (bytes? value)
+    :else true))
+
+(defn finding
+  [path expected value]
+  {:finding/type :std.typed.schema/invalid-value
+   :finding/path (vec path)
+   :finding/expected expected
+   :finding/value value})
+
+(defn property-finding
+  [path expected value constraint expected-value]
+  {:finding/type :std.typed.schema/property-violation
+   :finding/path (vec path)
+   :finding/expected expected
+   :finding/value value
+   :finding/context {:constraint constraint :expected expected-value}})
+
+(defn missing-key-finding
+  [path field]
+  {:finding/type :std.typed.schema/missing-key
+   :finding/path (conj (vec path) (:name field))
+   :finding/expected (:type field)
+   :finding/value nil
+   :finding/context {:present? false
+                     :constraint :required
+                     :key (:name field)
+                     :parent-path (vec path)}})
+
+(defn closed-key-finding
+  [path expected key value]
+  {:finding/type :std.typed.schema/closed-map-key
+   :finding/path (conj (vec path) key)
+   :finding/expected expected
+   :finding/value value
+   :finding/context {:constraint :closed :key key}})
+
+(defn qualified-keyword?
+  [value]
+  (and (keyword? value) (str/includes? (str value) "/")))
+
+(defn property-count
+  [value]
+  (cond
+    (string? value) (str/length value)
+    (or (vector? value) (set? value) (map? value) (list? value)) (count value)
+    :else nil))
+
+(defn distinct-values?
+  [value]
+  (cond
+    (or (vector? value) (list? value)) (= (count value) (count (set value)))
+    :else true))
+
+(defn validate-properties
+  [normal value path]
+  (let [properties (or (:properties normal) {})
+        count-value (property-count value)]
+    (vec
+     (concat
+      (cond (and (:min-count properties) count-value (< count-value (:min-count properties)))
+            [(property-finding path normal value :min-count (:min-count properties))]
+            :else [])
+      (cond (and (:max-count properties) count-value (> count-value (:max-count properties)))
+            [(property-finding path normal value :max-count (:max-count properties))]
+            :else [])
+      (cond (and (:pattern properties) (string? value)
+                 (not (RegExp/matches (RegExp/compile (:pattern properties)) value)))
+            [(property-finding path normal value :pattern (:pattern properties))]
+            :else [])
+      (cond (and (= true (:qualified properties)) (not (qualified-keyword? value)))
+            [(property-finding path normal value :qualified true)]
+            :else [])
+      (cond (and (= true (:distinct properties)) (not (distinct-values? value)))
+            [(property-finding path normal value :distinct true)]
+            :else [])))))
+
+(defn field-optional?
+  [field]
+  (= true (:optional (:properties field))))
+
+(defn known-field?
+  [normal key]
+  (any? (fn [field] (= key (:name field))) (:fields normal)))
+
+(defn closed-map-findings
+  [normal value path]
+  (cond
+    (not (= true (:closed (:properties normal)))) []
+    :else
+    (vec (mapcat (fn [key]
+                   (cond
+                     (known-field? normal key) []
+                     :else [(closed-key-finding path normal key (get value key))]))
+                 (sort-by str (keys value))))))
+
+(defn validate-dispatch [normal _value _path] (:kind normal))
+
+(defmulti validate-normal validate-dispatch)
+
+(defmethod validate-normal :primitive [normal value path]
+  (cond
+    (primitive-valid? (:name normal) value) (validate-properties normal value path)
+    :else [(finding path normal value)]))
+
+(defmethod validate-normal :enum [normal value path]
+  (cond
+    (any? (fn [candidate] (= candidate value)) (:values normal)) []
+    :else [(finding path normal value)]))
+
+(defmethod validate-normal :union [normal value path]
+  (cond
+    (any? (fn [member] (empty? (validate-with member value path #{}))) (:types normal)) []
+    :else [(finding path normal value)]))
+
+(defmethod validate-normal :vector [normal value path]
+  (cond
+    (not (vector? value)) [(finding path normal value)]
+    :else
+    (loop [index 0 output (validate-properties normal value path)]
+      (cond
+        (= index (count value)) output
+        :else (recur (inc index)
+                     (vec (concat output
+                                  (validate-with (:item normal) (nth value index)
+                                                 (conj path index) #{}))))))))
+
+(defmethod validate-normal :set [normal value path]
+  (cond
+    (not (set? value)) [(finding path normal value)]
+    :else
+    (let [values (vec (sort-by str value))]
+      (loop [index 0 output (validate-properties normal value path)]
+        (cond
+          (= index (count values)) output
+          :else (recur (inc index)
+                       (vec (concat output
+                                    (validate-with (:item normal) (nth values index)
+                                                   (conj path index) #{})))))))))
+
+(defmethod validate-normal :tuple [normal value path]
+  (cond
+    (not (and (vector? value) (= (count value) (count (:items normal)))))
+    [(finding path normal value)]
+    :else
+    (loop [index 0 output []]
+      (cond
+        (= index (count value)) output
+        :else (recur (inc index)
+                     (vec (concat output
+                                  (validate-with (nth (:items normal) index)
+                                                 (nth value index)
+                                                 (conj path index) #{}))))))))
+
+(defmethod validate-normal :map [normal value path]
+  (cond
+    (not (map? value)) [(finding path normal value)]
+    :else
+    (let [field-findings
+          (loop [remaining (:fields normal) output []]
+            (cond
+              (empty? remaining) output
+              :else
+              (let [field (first remaining)
+                    key (:name field)]
+                (recur (rest remaining)
+                       (cond
+                         (has? value key)
+                         (vec (concat output
+                                      (validate-with (:type field) (get value key)
+                                                     (conj path key) #{})))
+                         (field-optional? field) output
+                         :else (conj output (missing-key-finding path field)))))))]
+      (vec (concat (validate-properties normal value path)
+                   field-findings
+                   (closed-map-findings normal value path))))))
+
+(defn reference-finding
+  [finding-type path normal value]
+  {:finding/type finding-type
+   :finding/path (vec path)
+   :finding/expected normal
+   :finding/value value
+   :finding/reference (:name normal)})
+
+(defmethod validate-normal :reference [normal value path]
+  [(reference-finding :std.typed.schema/unresolved-reference path normal value)])
+
+(defmethod validate-normal :default [_normal _value _path] [])
+
+(defn validate-with
+  [normal value path trail]
+  (cond
+    (= :reference (:kind normal))
+    (let [found (cond *registry* (registry/find-schema *registry* (:name normal))
+                      :else nil)
+          visit-key (cond found [(:name found) (vec path)]
+                          :else nil)]
+      (cond
+        (not found) (validate-normal normal value path)
+        (has? trail visit-key)
+        [(reference-finding :std.typed.schema/cyclic-reference path normal value)]
+        :else
+        (binding [*registry* (:registry found)]
+          (validate-with (normalize-with (:schema found) (:registry found))
+                         value path (conj trail visit-key)))))
+
+    :else (validate-normal normal value path)))
+
+(defn ^{:public true} validate
+  "Returns deterministic path-aware findings for a value against a schema."
+  ([surface value]
+   (validate-with (normalize surface) value [] #{}))
+  ([surface value registry-value]
+   (binding [*registry* (registry/ensure registry-value)]
+     (validate-with (normalize surface) value [] #{}))))
+
+(defn ^{:public true} valid?
+  "Returns true when a value produces no validation findings."
+  ([surface value] (empty? (validate surface value)))
+  ([surface value registry-value] (empty? (validate surface value registry-value))))
+
+(defn compatible-normal?
+  [expected actual]
+  (cond
+    (= expected actual) true
+    (or (= :any (:name expected)) (= :any (:name actual))) true
+    (and (= :primitive (:kind expected)) (= :primitive (:kind actual)))
+    (= (:name expected) (:name actual))
+    (= :union (:kind expected))
+    (any? (fn [member] (compatible-normal? member actual)) (:types expected))
+    (= :union (:kind actual))
+    (any? (fn [member] (compatible-normal? expected member)) (:types actual))
+    (and (= :vector (:kind expected)) (= :vector (:kind actual)))
+    (compatible-normal? (:item expected) (:item actual))
+    (and (= :set (:kind expected)) (= :set (:kind actual)))
+    (compatible-normal? (:item expected) (:item actual))
+    :else false))
+
+(defn ^{:public true} compatible?
+  "Returns true when schemas have an overlapping value domain."
+  ([expected actual] (compatible-normal? (normalize expected) (normalize actual)))
+  ([expected actual registry-value]
+   (compatible-normal? (resolve-recursive expected registry-value)
+                       (resolve-recursive actual registry-value))))
+
+(defn ^{:public true} project-arities
+  "Returns normalized :fn arities from a :fn or :function surface."
+  ([surface]
+   (let [normal (normalize surface)]
+     (cond
+       (= :fn (:kind normal)) [normal]
+       (= :function (:kind normal)) (:arities normal)
+       :else [])))
+  ([surface registry-value]
+   (project-arities (resolve-recursive surface registry-value))))

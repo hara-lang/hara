@@ -1,0 +1,187 @@
+(ns std.block.value-test
+  (:require [std.block.base]
+            [std.block.protocol]
+            [std.block.value]))
+
+(defstruct ValueFixture [kind tag text length width height prefixed suffixed verified value children])
+
+(extend-type ValueFixture std.block.protocol/IBlock
+  (block-type [block] (:kind block))
+  (block-tag [block] (:tag block))
+  (block-string [block] (:text block))
+  (block-length [block] (:length block))
+  (block-width [block] (:width block))
+  (block-height [block] (:height block))
+  (block-prefixed [block] (:prefixed block))
+  (block-suffixed [block] (:suffixed block))
+  (block-verify [block] (:verified block))
+  (block-info [_] {}))
+
+(extend-type ValueFixture std.block.protocol/IBlockModifier
+  (block-modify [block accumulator input]
+    ((:value block) accumulator input)))
+
+(extend-type ValueFixture std.block.protocol/IBlockExpression
+  (block-value [block] (:value block))
+  (block-value-string [block] (str (:value block))))
+
+(extend-type ValueFixture std.block.protocol/IBlockContainer
+  (block-children [block] (:children block))
+  (replace-children [block children]
+    (ValueFixture (:kind block) (:tag block) (:text block)
+                  (:length block) (:width block) (:height block)
+                  (:prefixed block) (:suffixed block) (:verified block)
+                  (:value block) children)))
+
+(def +one+ (ValueFixture :token :number "1" 1 1 0 false false true 1 []))
+(def +two+ (ValueFixture :token :number "2" 1 1 0 false false true 2 []))
+(def +void+ (ValueFixture :void :linespace " " 1 1 0 false false true nil []))
+(def +discard+ (ValueFixture :modifier :discard "#_" 2 2 0 false false true (fn [out _] out) []))
+(def +vector+ (ValueFixture :container :vector "[1 #_2]" 7 7 0 false false true nil [+one+ +void+ +discard+ +two+]))
+
+^{:refer std.block.value/apply-modifiers}
+(Test/check
+ [{:name "applies pending modifiers before retaining the next block"
+   :test (fn []
+           (mapv std.block.base/block-value
+                 (std.block.value/apply-modifiers [+discard+ +one+ +two+])))
+   :expected [2]}])
+
+^{:refer std.block.value/child-values}
+(Test/check
+ [{:name "keeps expression children and applies discard modifiers"
+   :test (fn [] (std.block.value/child-values +vector+))
+   :expected [1]}])
+
+^{:refer std.block.value/root-value}
+(Test/check
+ [{:name "builds a do form from root children"
+   :test (fn []
+           (std.block.value/root-value
+            (ValueFixture :container :root "1 2" 3 3 0 false false true nil [+one+ +two+])))
+   :expected '(do 1 2)}])
+
+^{:refer std.block.value/list-value}
+(Test/check
+ [{:name "builds a list from expression children"
+   :test (fn [] (std.block.value/list-value +vector+))
+   :expected '(1)}])
+
+^{:refer std.block.value/vector-value}
+(Test/check
+ [{:name "builds a vector from expression children"
+   :test (fn [] (std.block.value/vector-value +vector+))
+   :expected [1]}])
+
+^{:refer std.block.value/set-value}
+(Test/check
+ [{:name "builds a set from expression children"
+   :test (fn [] (std.block.value/set-value +vector+))
+   :expected #{1}}])
+
+^{:refer std.block.value/map-value}
+(Test/check
+ [{:name "builds key-value maps and rejects an odd number of children"
+   :test (fn []
+           [(std.block.value/map-value
+             (ValueFixture :container :map "{1 2}" 5 5 0 false false true nil [+one+ +two+]))
+            (try
+              (std.block.value/map-value
+               (ValueFixture :container :map "{1}" 3 3 0 false false true nil [+one+]))
+              false
+              (catch _ true))])
+   :expected [{1 2} true]}])
+
+^{:refer std.block.value/from-value-string}
+(Test/check
+ [{:name "reads an EDN value from a block value string"
+   :test (fn []
+           (std.block.value/from-value-string
+            (ValueFixture :container :fn "(+ 1 1)" 7 7 0 false false true "(+ 1 1)" [])))
+   :expected '(+ 1 1)}])
+
+^{:refer std.block.value/deref-value}
+(Test/check
+ [{:name "builds a deref form from the first child"
+   :test (fn []
+           (std.block.value/deref-value
+            (ValueFixture :container :deref "@x" 2 2 0 false false true nil
+                         [(ValueFixture :token :symbol "x" 1 1 0 false false true 'x [])])))
+   :expected '(deref x)}])
+
+^{:refer std.block.value/meta-value}
+(Test/check
+ [{:name "attaches keyword metadata to a metadata-capable value"
+   :test (fn []
+           (let [value (std.block.value/meta-value
+                        (ValueFixture :container :meta "^:dynamic {:a 1}" 15 15 0 false false true nil
+                                     [(ValueFixture :token :keyword ":dynamic" 8 8 0 false false true :dynamic [])
+                                      (ValueFixture :token :map "{:a 1}" 6 6 0 false false true {:a 1} [])]))]
+             [(meta value) value]))
+   :expected [{:dynamic true} {:a 1}]}])
+
+^{:refer std.block.value/quote-value}
+(Test/check
+ [{:name "builds a quote form from the first child"
+   :test (fn []
+           (std.block.value/quote-value
+            (ValueFixture :container :quote "'x" 2 2 0 false false true nil
+                         [(ValueFixture :token :symbol "x" 1 1 0 false false true 'x [])])))
+   :expected '(quote x)}])
+
+^{:refer std.block.value/var-value}
+(Test/check
+ [{:name "builds a var form from the first child"
+   :test (fn []
+           (std.block.value/var-value
+            (ValueFixture :container :var "#'x" 3 3 0 false false true nil
+                         [(ValueFixture :token :symbol "x" 1 1 0 false false true 'x [])])))
+   :expected '(var x)}])
+
+^{:refer std.block.value/hash-keyword-value}
+(Test/check
+ [{:name "qualifies every map key with the hash-keyword prefix"
+   :test (fn []
+           (std.block.value/hash-keyword-value
+            (ValueFixture :container :hash-keyword "#:hello{:a 1}" 13 13 0 false false true nil
+                         [(ValueFixture :token :keyword ":hello" 6 6 0 false false true :hello [])
+                          (ValueFixture :token :map "{:a 1}" 6 6 0 false false true {:a 1} [])])))
+   :expected {:hello/a 1}}])
+
+^{:refer std.block.value/select-value}
+(Test/check
+ [{:name "builds a reader-conditional selection form"
+   :test (fn []
+           (std.block.value/select-value
+            (ValueFixture :container :select "#?(:clj x)" 10 10 0 false false true nil
+                         [(ValueFixture :token :keyword ":clj" 4 4 0 false false true :clj [])
+                          (ValueFixture :token :symbol "x" 1 1 0 false false true 'x [])])))
+   :expected '(? {:clj x})}])
+
+^{:refer std.block.value/select-splice-value}
+(Test/check
+ [{:name "builds a reader-conditional splicing selection form"
+   :test (fn []
+           (std.block.value/select-splice-value
+            (ValueFixture :container :select-splice "#?@(:clj x)" 11 11 0 false false true nil
+                         [(ValueFixture :token :keyword ":clj" 4 4 0 false false true :clj [])
+                          (ValueFixture :token :symbol "x" 1 1 0 false false true 'x [])])))
+   :expected '(?-splicing {:clj x})}])
+
+^{:refer std.block.value/unquote-value}
+(Test/check
+ [{:name "builds an unquote form from the first child"
+   :test (fn []
+           (std.block.value/unquote-value
+            (ValueFixture :container :unquote "~x" 2 2 0 false false true nil
+                         [(ValueFixture :token :symbol "x" 1 1 0 false false true 'x [])])))
+   :expected '(unquote x)}])
+
+^{:refer std.block.value/unquote-splice-value}
+(Test/check
+ [{:name "builds an unquote-splicing form from the first child"
+   :test (fn []
+           (std.block.value/unquote-splice-value
+            (ValueFixture :container :unquote-splice "~@x" 3 3 0 false false true nil
+                         [(ValueFixture :token :symbol "x" 1 1 0 false false true 'x [])])))
+   :expected '(unquote-splicing x)}])

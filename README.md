@@ -103,19 +103,26 @@ appropriate.
 
 ## Build a local Hara executable
 
-`project.edn` declares the executable contract rather than putting Hara command
+`project.edn` declares the companion contract rather than putting Hara command
 semantics into Rust:
 
 ```clojure
+:project/hara-bin "target/hara/bin/hara"
 :project/distribution {:launcher "hara"
-                       :entry hara.command/main}
+                       :entry hara.command/main
+                       :host "../hara-native/core/rust/target/release/hara-native"
+                       :output "target/hara"}
 ```
 
-Build a fresh Hara Native binary and compose a local distribution from this
-checkout:
+Build the declared release host, then call the HAL package boundary from a
+Hara evaluation or build automation:
 
 ```text
-"$HARA_NATIVE" distribution build . --output target/hara
+cd ../hara-native/core/rust && cargo build --release --bin hara-native
+
+(require 'std.package.build)
+(std.package.build/build-distribution)
+
 HARA_DIST_HOME="$(mktemp -d)" target/hara/bin/hara --version
 HARA_DIST_HOME="$(mktemp -d)" target/hara/bin/hara help
 ```
@@ -162,8 +169,8 @@ Treat the directory as one release unit. Do **not** ship `bin/hara` by itself:
 it needs the adjacent HARP package and manifest.
 
 ```text
-# The builder copies the host that runs this command, so build on the target platform.
-"$HARA_NATIVE" distribution build . --output target/hara
+# Run std.package.build/build-distribution on the target platform first.
+# It copies the explicit :project/distribution :host into target/hara/bin/hara.
 
 # Preserve the hara/ directory and executable mode in a platform-labelled archive.
 tar -C target -czf target/hara-darwin-arm64.tar.gz hara
@@ -187,6 +194,11 @@ The archive is a transport wrapper around the directory, not a second package
 format. `release.edn` detects accidental modification of either enclosed file
 at startup; public distribution still needs the signed source and registry
 attestation process described below.
+
+The optional legacy sealed executable remains separate: call
+`std.package.build/seal-project` when a single payload-bearing executable is
+required. It writes its primary and specs HARPs beneath `target/hara-sealed/`;
+the normal `target/hara/` companion never mounts or ships the specs package.
 
 Before committing a HAL change, run its focused test in a fresh native process
 and then run the full project suite. The repository workflow requires each
@@ -215,26 +227,42 @@ Native and do not replace this repository's HAL suite.
 
 ## Source-package publishing (when this repository is release-ready)
 
-Publishing a Hara package is a signed request for the registry to rebuild and
-attest a source package. It is not an upload of a locally built `.harp` file.
-The full protocol is maintained in the [Hara Native publishing guide](https://github.com/hara-lang/hara-native/blob/main/PUBLISHING.md);
-the following is the Hara-source release checklist.
+GitHub Packages is the source of truth for Hara releases. A release is not an
+upload of a local `.harp` file and it does not use the Hara Identity service.
+The source repository proves a signed tag; the protected
+[`hara-lang/hara-packages`](https://github.com/hara-lang/hara-packages)
+workflow rebuilds the tag and is the only writer to GHCR.
+
+The paired immutable artifacts for this repository are:
+
+```text
+ghcr.io/hara-packages/hara-lang.hara:<version>        source HARP
+ghcr.io/hara-packages/hara-lang.hara.specs:<version>  specification HARP
+```
+
+The public Packages API remains the transport for clients. It returns locks
+with the archive SHA-256 and the exact `:oci/repository` and `:oci/manifest`;
+clients do not need a GitHub token or an Identity-policy checkout.
 
 1. Complete the package boundary in this repository:
    - set the immutable `:project/version` and the intended package coordinate;
    - add `:project/recipe` pointing to a typed recipe with `:recipe/format`,
      `:recipe/adapter`, `:recipe/toolchain`, `:recipe/inputs`, and
      `:recipe/outputs`;
-   - complete the `hara` CLI entry point and publish a compatibility policy
-     that pins the supported native artifacts;
-   - add a test that builds, verifies, and exercises the composed package.
-2. Use the target `hara-native` binary to run the full HAL suite, then inspect
-   the actual source package locally:
+   - keep the complete specification corpus under `spec/content/`; its
+     artifact-only `spec/project.edn` is built through
+     `std.package.build/build-specs`;
+   - pin the native revision that performs the rebuild in the release
+     environment variable `HARA_NATIVE_PUBLICATION_REVISION`.
+2. Use that target Hara Native binary to run the HAL suite and inspect both
+   reproducible local inputs:
 
    ```text
    "$HARA_NATIVE" test --project .
    "$HARA_NATIVE" bundle build . --output /tmp/hara-source.harp
-   HARA_DIST_HOME="$(mktemp -d)" "$HARA_NATIVE" bundle verify /tmp/hara-source.harp
+   "$HARA_NATIVE" bundle verify /tmp/hara-source.harp
+   "$HARA_NATIVE" bundle build spec --output /tmp/hara-specs.harp
+   "$HARA_NATIVE" bundle verify /tmp/hara-specs.harp
    ```
 
 3. From a clean, reviewed `main`, push the exact source commit and create a
@@ -249,26 +277,20 @@ the following is the Hara-source release checklist.
    git ls-remote --tags origin refs/tags/<version>
    ```
 
-4. Use a publisher key that has been granted the exact package coordinate. The
-   private key stays outside this repository. Run the non-mutating preflight
-   before submitting a request:
+4. The tag runs `package-publication-request.yml`. It verifies the signed tag,
+   records the Hara Native revision and `spec` Git tree, signs a receipt with
+   GitHub OIDC, and opens or updates a receipt pull request in `hara-packages`.
+   The source workflow has no GHCR credential.
+5. Review and merge that receipt pull request. The protected central workflow
+   checks the source files against the receipt, rebuilds and verifies both
+   HARPs, publishes their immutable version and digest tags, makes them public,
+   and reads the manifests back from GHCR. A merged receipt is the authority;
+   a locally built HARP or a source tag alone is not a published package.
 
-   ```text
-   "$HARA_NATIVE" publish --tap hara --dry-run .
-   "$HARA_NATIVE" publish --tap hara .
-   ```
-
-5. Record the request identifier. It is not proof of publication. Wait for the
-   registry to rebuild from the signed source tag, validate the recipe, and
-   issue its attestation. In a fresh `HARA_DIST_HOME`, verify the downloaded
-   final archive and, when the package has an entry point, run that entry.
-
-Use `--skip-signed-tag` only when a signed tag is unavailable and the clean
-checkout `HEAD` exactly matches the remote default branch; it still requires an
-authorized publisher key, source provenance, and registry attestation. Never
-reuse or move a published version tag, upload an archive with `curl`, copy an
-archive into registry storage, or store a publisher key/token in this
-repository.
+Never reuse or move a published version tag, upload an archive with `curl`,
+copy an archive into registry storage, or place a GHCR credential in this
+repository. GitHub environment protection and the central workflow govern
+release authority.
 
 ## Native host releases are separate
 

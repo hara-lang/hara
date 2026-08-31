@@ -1,0 +1,136 @@
+(ns lang.common.grammar-xtalk-test
+  (:require [lang.common.grammar-xtalk :as xtalk]))
+
+^{:refer lang.common.grammar-xtalk/form}
+(Test/check [{:name "constructs list-shaped XTalk forms and preserves missing items"
+              :test (fn [] [(xtalk/form ['op 'value])
+                            (xtalk/item '(op value) 1)
+                            (xtalk/item '(op) 2)
+                            (xtalk/unary 'out '(in value))
+                            (xtalk/binary 'out '(in left right))
+                            (xtalk/variadic 'out '(in left right))])
+              :expected ['(op value) 'value nil '(out value) '(out left right) '(out left right)]}])
+
+^{:refer lang.common.grammar-xtalk/tf-throw}
+(Test/check [{:name "lowers every arithmetic, comparison, and nil transform to canonical forms"
+              :test (fn [] [(xtalk/tf-throw '(x:throw error))
+                            (xtalk/tf-add '(x:add a b c))
+                            (xtalk/tf-sub '(x:sub a b))
+                            (xtalk/tf-mul '(x:mul a b))
+                            (xtalk/tf-div '(x:div a b))
+                            (xtalk/tf-neg '(x:neg a))
+                            (xtalk/tf-inc '(x:inc a))
+                            (xtalk/tf-dec '(x:dec a))
+                            (xtalk/tf-eq '(x:eq a b))
+                            (xtalk/tf-neq '(x:neq a b))
+                            (xtalk/tf-lt '(x:lt a b))
+                            (xtalk/tf-lte '(x:lte a b))
+                            (xtalk/tf-gt '(x:gt a b))
+                            (xtalk/tf-gte '(x:gte a b))
+                            (xtalk/tf-zero? '(x:zero? a))
+                            (xtalk/tf-pos? '(x:pos? a))
+                            (xtalk/tf-neg? '(x:neg? a))
+                            (xtalk/tf-even? '(x:even? a))
+                            (xtalk/tf-odd? '(x:odd? a))
+                            (xtalk/tf-eq-nil? '(x:nil? a))
+                            (xtalk/tf-not-nil? '(x:not-nil? a))])
+              :expected ['(throw error) '(+ a b c) '(- a b) '(* a b) '(/ a b) '(- a)
+                         '(+ a 1) '(- a 1) '(== a b) '(not= a b) '(< a b) '(<= a b)
+                         '(> a b) '(>= a b) '(== a 0) '(> a 0) '(< a 0)
+                         '(== 0 (mod a 2)) '(not (== 0 (mod a 2))) '(== nil a) '(not= nil a)]}])
+
+^{:refer lang.common.grammar-xtalk/tf-has-key?}
+(Test/check [{:name "lowers structural object access, mutation, and copy operations"
+              :test (fn [] [(xtalk/tf-has-key? '(x:has-key? obj "a"))
+                            (xtalk/tf-has-key? '(x:has-key? obj "a" true))
+                            (xtalk/tf-get-path '(x:get-path obj ["a" "b"]))
+                            (xtalk/tf-get-path '(x:get-path {:a 1} ["a"] :fallback))
+                            (xtalk/tf-get-key '(x:get-key obj "a"))
+                            (xtalk/tf-get-key '(x:get-key obj "a" :fallback))
+                            (xtalk/tf-set-key '(x:set-key obj "a" 1))
+                            (xtalk/tf-del-key '(x:del-key obj "a"))
+                            (xtalk/tf-copy-key '(x:copy-key dst src ["to" "from"]))])
+              :expected ['(not= (x:get-key obj "a") nil)
+                         '(== true (not= (x:get-key obj "a") nil))
+                         '(. obj ["a"] ["b"])
+                         '(:? (x:nil? (. (quote {:a 1}) ["a"])) :fallback (. (quote {:a 1}) ["a"]))
+                         '(. obj ["a"])
+                         '(:? (x:nil? (. obj ["a"])) :fallback (. obj ["a"]))
+                         '(:= (. obj ["a"]) 1)
+                         '(x:del (. obj ["a"]))
+                         '(:= (. dst ["to"]) (. src ["from"]))]}])
+
+^{:refer lang.common.grammar-xtalk/tf-grammar-offset}
+(Test/check [{:name "uses grammar index settings for all positional transforms"
+              :test (fn [] [(xtalk/tf-grammar-offset)
+                            (xtalk/tf-grammar-end-inclusive)
+                            (xtalk/tf-offset-base 0 'value)
+                            (xtalk/tf-offset-base 1 'value)
+                            (xtalk/tf-offset-base 1 1)
+                            (xtalk/tf-offset '(x:offset 10))
+                            (xtalk/tf-offset-rev '(x:offset-rev 10))
+                            (xtalk/tf-offset-len '(x:offset-len 10))
+                            (xtalk/tf-offset-rlen '(x:offset-rlen 10))
+                            (xtalk/tf-first '(x:first arr))
+                            (xtalk/tf-second '(x:second arr))
+                            (xtalk/tf-last '(x:last arr))
+                            (xtalk/tf-second-last '(x:second-last arr))])
+              :expected [0 nil 'value '(+ value 1) 2 10 9 9 10
+                         '(x:get-idx arr (x:offset 0))
+                         '(x:get-idx arr (x:offset 1))
+                         '(x:get-idx arr (x:offset-len (x:len arr)))
+                         '(x:get-idx arr (x:offset-len (- (x:len arr) 1)))]}])
+
+^{:refer lang.common.grammar-xtalk/tf-str-lt}
+(Test/check [{:name "lowers string ordering, global, lookup, and bit operations"
+              :test (fn [] [(xtalk/tf-str-lt '(x:str-lt a b))
+                            (xtalk/tf-str-gt '(x:str-gt a b))
+                            (xtalk/tf-global-set '(x:global-set SYM 1))
+                            (xtalk/tf-global-has? '(x:global-has SYM))
+                            (xtalk/tf-global-del '(x:global-del SYM))
+                            (xtalk/tf-lu-eq '(x:lu-eq a b))
+                            (xtalk/tf-bit-and '(x:bit-and a b))
+                            (xtalk/tf-bit-or '(x:bit-or a b))
+                            (xtalk/tf-bit-lshift '(x:bit-lshift a b))
+                            (xtalk/tf-bit-rshift '(x:bit-rshift a b))
+                            (xtalk/tf-bit-xor '(x:bit-xor a b))])
+              :expected ['(x:str-comp a b) '(x:str-comp b a)
+                         '(x:set-key !:G "SYM" 1)
+                         '(not= nil (x:get-key !:G "SYM"))
+                         '(x:set-key !:G "SYM" nil)
+                         '(== a b) '(b:& a b) '(b:| a b) '(b:<< a b) '(b:>> a b) '(b:xor a b)]}])
+
+^{:refer lang.common.grammar-xtalk/+xt-common-basic+}
+(Test/check [{:name "keeps every archived XTalk extension category structurally complete"
+              :test (fn [] (every?
+                            (fn [entry] (and (:op entry) (:symbol entry) (:op-spec entry)))
+                            (concat xtalk/+xt-common-basic+
+                                    xtalk/+xt-common-index+
+                                    xtalk/+xt-common-number+
+                                    xtalk/+xt-common-nil+
+                                    xtalk/+xt-common-primitives+
+                                    xtalk/+xt-common-lu+
+                                    xtalk/+xt-common-object+
+                                    xtalk/+xt-common-array+
+                                    xtalk/+xt-common-print+
+                                    xtalk/+xt-common-string+
+                                    xtalk/+xt-common-bytes+
+                                    xtalk/+xt-common-math+
+                                    xtalk/+xt-functional-base+
+                                    xtalk/+xt-functional-invoke+
+                                    xtalk/+xt-functional-return+
+                                    xtalk/+xt-functional-array+
+                                    xtalk/+xt-functional-iter+
+                                    xtalk/+xt-lang-global+
+                                    xtalk/+xt-lang-bit+
+                                    xtalk/+xt-lang-throw+
+                                    xtalk/+xt-lang-unpack+
+                                    xtalk/+xt-lang-random+
+                                    xtalk/+xt-lang-time+
+                                    xtalk/+xt-lang-json+
+                                    xtalk/+xt-socket+
+                                    xtalk/+xt-notify-http+
+                                    xtalk/+xt-runtime-promise+
+                                    xtalk/+xt-runtime-shell+
+                                    xtalk/+xt-runtime-file+)))
+              :expected true}])

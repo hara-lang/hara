@@ -1,0 +1,42 @@
+(ns std.block.heal.print)
+
+(def +rainbow-colors+
+  ["\u001b[34m"                        ; blue
+   "\u001b[35m"                        ; magenta
+   "\u001b[32m"                        ; green
+   "\u001b[31m"                        ; red
+   "\u001b[36m"                        ; cyan
+   "\u001b[33m"                        ; yellow
+   ])
+
+(def +error-color+    "\u001b[41m") ; red background
+(def +unpaired-color+ "\u001b[43m") ; yellow background
+(def +reset-color+ "\u001b[0m")
+
+(defn ^{:public true} print-rainbow
+  "prints out the"
+  {:added "4.0"}
+  [content delimiters]
+  (let [color-map (->>
+                   delimiters
+                   (map
+                    (fn
+                     [delim]
+                     (let
+                      [depth    (get delim :depth 0)
+                       correct? (get delim :correct? true)
+                       color    (cond correct?             (get +rainbow-colors+ (mod depth (count +rainbow-colors+)))
+                                      (get delim :pair-id) +error-color+
+                                      :else                +unpaired-color+)]
+                      [[(:line delim) (:col delim)] color])))
+                   (into {}))]
+    (do (reduce (fn [[line-num col-num] char]
+                  (let [color (get color-map [line-num col-num])
+                        text  (str char)]
+                    (if color (Printer/p (str color text +reset-color+)) (Printer/p text))
+                    (if (= char \newline)
+                      [(inc line-num) 1]
+                      [line-num (inc col-num)])))
+          [1 1]
+          (seq content))
+      nil)))

@@ -1,0 +1,137 @@
+(ns std.lib.format.diff-test
+  (:require [std.lib.format.diff]))
+
+(def +change+
+  [{:type "CHANGE"
+    :original {:position 1 :lines ["old"]}
+    :revised {:position 1 :lines ["new"]}}])
+
+^{:refer std.lib.format.diff/create-chunk}
+(Test/check
+ [{:name "normalizes missing chunk fields"
+   :test (fn []
+           [(std.lib.format.diff/create-chunk {})
+            (std.lib.format.diff/create-chunk {:position 2 :lines ["a" "b"]})])
+   :expected [{:position 0 :count 0 :lines []}
+              {:position 2 :count 2 :lines ["a" "b"]}]}])
+
+^{:refer std.lib.format.diff/create-delta}
+(Test/check
+ [{:name "normalizes both sides of a delta"
+   :test (fn []
+           (std.lib.format.diff/create-delta (first +change+)))
+   :expected {:type "CHANGE"
+              :original {:position 1 :count 1 :lines ["old"]}
+              :revised {:position 1 :count 1 :lines ["new"]}}}])
+
+^{:refer std.lib.format.diff/create-patch}
+(Test/check
+ [{:name "normalizes every patch delta"
+   :test (fn []
+           (std.lib.format.diff/create-patch +change+))
+   :expected [{:type "CHANGE"
+               :original {:position 1 :count 1 :lines ["old"]}
+               :revised {:position 1 :count 1 :lines ["new"]}}]}])
+
+^{:refer std.lib.format.diff/lcs-table}
+(Test/check
+ [{:name "records longest common subsequence lengths"
+   :test (fn []
+           (let [table (std.lib.format.diff/lcs-table ["a" "old"] ["a" "new"])]
+             [(get table [0 0])
+              (get table [0 1])
+              (get table [1 0])
+              (get table [1 1])]))
+   :expected [1 0 0 0]}])
+
+^{:refer std.lib.format.diff/edit-script}
+(Test/check
+ [{:name "chooses stable equal delete insert edits"
+   :test (fn []
+           (std.lib.format.diff/edit-script ["a" "old"] ["a" "new"]))
+   :expected [[:equal 0 0 "a"]
+              [:delete 1 1 "old"]
+              [:insert 2 1 "new"]]}])
+
+^{:refer std.lib.format.diff/flush-delta}
+(Test/check
+ [{:name "coalesces an accumulated changed region"
+   :test (fn []
+           (std.lib.format.diff/flush-delta
+            []
+            {:original-position 1
+             :revised-position 1
+             :original-lines ["old"]
+             :revised-lines ["new"]}))
+   :expected [{:type "CHANGE"
+               :original {:position 1 :count 1 :lines ["old"]}
+               :revised {:position 1 :count 1 :lines ["new"]}}]}])
+
+^{:refer std.lib.format.diff/deltas-from-edits}
+(Test/check
+ [{:name "coalesces adjacent edits and flushes at equal lines"
+   :test (fn []
+           (std.lib.format.diff/deltas-from-edits
+            [[:equal 0 0 "a"]
+             [:delete 1 1 "old"]
+             [:insert 2 1 "new"]]))
+   :expected [{:type "CHANGE"
+               :original {:position 1 :count 1 :lines ["old"]}
+               :revised {:position 1 :count 1 :lines ["new"]}}]}])
+
+^{:refer std.lib.format.diff/diff}
+(Test/check
+ [{:name "creates a normalized line change"
+   :test (fn []
+           (std.lib.format.diff/diff "a\nold" "a\nnew"))
+   :expected [{:type "CHANGE"
+               :original {:position 1 :count 1 :lines ["old"]}
+               :revised {:position 1 :count 1 :lines ["new"]}}]}])
+
+^{:refer std.lib.format.diff/apply-deltas}
+(Test/check
+ [{:name "applies either direction selected by delta keys"
+   :test (fn []
+           [(std.lib.format.diff/apply-deltas "a\nold" +change+ :original :revised)
+            (std.lib.format.diff/apply-deltas "a\nnew" +change+ :revised :original)])
+   :expected ["a\nnew" "a\nold"]}])
+
+^{:refer std.lib.format.diff/patch}
+(Test/check
+ [{:name "applies a native patch"
+   :test (fn []
+           (std.lib.format.diff/patch "a\nold" +change+))
+   :expected "a\nnew"}])
+
+^{:refer std.lib.format.diff/unpatch}
+(Test/check
+ [{:name "round trips a patch back to its source text"
+   :test (fn []
+           (let [source "a\nold"
+                 revised "a\nnew"
+                 deltas (std.lib.format.diff/diff source revised)]
+             [(std.lib.format.diff/patch source deltas)
+              (std.lib.format.diff/unpatch revised deltas)
+              (= deltas (std.lib.format.diff/diff source revised))]))
+   :expected ["a\nnew" "a\nold" true]}])
+
+^{:refer std.lib.format.diff/->string}
+(Test/check
+ [{:name "renders a readable ANSI diff"
+   :test (fn []
+           (std.lib.format.diff/->string (std.lib.format.diff/diff "a\nold" "a\nnew")))
+   :expected "\u001B[1m@@ -1,1 +1,1 \u001B[0m\n\u001B[31m-\u001B[31m\u001B[40mold\u001B[0m\u001B[0m\n\u001B[32m+\u001B[32m\u001B[40mnew\u001B[0m\u001B[0m\n"}])
+
+^{:refer std.lib.format.diff/summary}
+(Test/check
+ [{:name "counts inserted and deleted lines"
+   :test (fn []
+           (std.lib.format.diff/summary +change+))
+   :expected {:deletes 1 :inserts 1}}])
+
+^{:refer std.lib.format.diff/get-lines}
+(Test/check
+ [{:name "reports compact changed-line locations"
+   :test (fn []
+           (vec (std.lib.format.diff/get-lines +change+)))
+   :expected [[1 1]]}])

@@ -1,0 +1,504 @@
+(ns std.block.heal.parse-test
+  (:require [std.block.heal.parse :as parse]))
+
+(defn migration-map-includes? [actual expected]
+  (every? (fn [entry] (= (get actual (key entry)) (val entry))) expected))
+
+(defn migration-contains-in [values]
+  {:migration/matcher :contains-in :values values})
+
+(defn migration-satisfies [predicate]
+  {:migration/matcher :satisfies :predicate predicate})
+
+(defn migration-test-check [test expected]
+  (let [actual (test)
+        matcher (if (map? expected) (:migration/matcher expected))]
+    (cond
+      (= matcher :contains-in)
+      (Test/compare
+       (every? (fn [required]
+                 (not (empty? (filter (fn [entry]
+                                        (migration-map-includes? entry required))
+                                      actual))))
+               (:values expected))
+       true)
+
+      (= matcher :satisfies)
+      (Test/compare ((:predicate expected) actual) true)
+
+      :else (Test/compare (= actual expected) true))))
+
+^{:refer std.block.heal.parse/parse-delimiters :added "4.0"}
+(Test/check
+ [{:name "gets all the delimiters in the file #1"
+   :test (fn [] (parse/parse-delimiters "(+ 1 2 3)"))
+   :expected [{:char "(" :col 1 :line 1 :style :paren :type :open} {:char ")" :col 9 :line 1 :style :paren :type :close}]}
+  {:name "gets all the delimiters in the file #2"
+   :test (fn [] (parse/parse-delimiters "( ; )"))
+   :expected [{:char "(" :col 1 :line 1 :style :paren :type :open}]}
+  {:name "gets all the delimiters in the file #3"
+   :test (fn [] (parse/parse-delimiters "; \"\n\"("))
+   :expected []}
+  {:name "gets all the delimiters in the file #4"
+   :test (fn [] (parse/parse-delimiters "; \"\n\"\"("))
+   :expected [{:char "(" :col 3 :line 2 :style :paren :type :open}]}
+  {:name "gets all the delimiters in the file #5"
+   :test (fn [] (parse/parse-delimiters "\\("))
+   :expected []}
+  {:name "gets all the delimiters in the file #6"
+   :test (fn [] (parse/parse-delimiters "\"()\" "))
+   :expected []}
+  {:name "gets all the delimiters in the file #7"
+   :test (fn [] (parse/parse-delimiters "\"(\n)\" "))
+   :expected []}
+  {:name "keeps delimiters when the input contains the token marker"
+   :test (fn [] (parse/parse-delimiters "\u0001(a\u0001)"))
+   :expected [{:char "(" :col 2 :line 1 :style :paren :type :open}
+              {:char ")" :col 5 :line 1 :style :paren :type :close}]}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/pair-delimiters :added "4.0"}
+(do
+ (parse/pair-delimiters (parse/parse-delimiters "[]]]][]]"))
+ (Test/check
+  [{:name "pairs the delimiters and annotates whether it's erroring #1"
+    :test (fn [] (parse/pair-delimiters (parse/parse-delimiters "[]")))
+    :expected (migration-contains-in [{:correct? true
+                                        :pair-id 0
+                                        :type :open
+                                        :style :square
+                                        :line 1
+                                        :col 1
+                                        :depth 0
+                                        :char "["} {:correct? true
+                                                    :pair-id 0
+                                                    :type :close
+                                                    :style :square
+                                                    :line 1
+                                                    :col 2
+                                                    :depth 0
+                                                    :char "]"}])}
+   {:name "pairs the delimiters and annotates whether it's erroring #2"
+    :test (fn [] (parse/pair-delimiters (parse/parse-delimiters "]")))
+    :expected (migration-contains-in [{:correct? false
+                                        :type :close
+                                        :style :square
+                                        :line 1
+                                        :col 1
+                                        :depth -1
+                                        :char "]"}])}
+   {:name "pairs the delimiters and annotates whether it's erroring #3"
+    :test (fn [] (parse/pair-delimiters (parse/parse-delimiters "]]")))
+    :expected (migration-contains-in [{:correct? false
+                                        :type :close
+                                        :style :square
+                                        :line 1
+                                        :col 1
+                                        :depth -1
+                                        :char "]"} {:correct? false
+                                                    :type :close
+                                                    :style :square
+                                                    :line 1
+                                                    :col 2
+                                                    :depth -2
+                                                    :char "]"}])}
+   {:name "pairs the delimiters and annotates whether it's erroring #4"
+    :test (fn [] (parse/pair-delimiters (parse/parse-delimiters "[[[]")))
+    :expected (migration-contains-in [{:correct? false
+                                        :type :open
+                                        :style :square
+                                        :line 1
+                                        :col 1
+                                        :depth 0
+                                        :char "["} {:correct? false
+                                                    :type :open
+                                                    :style :square
+                                                    :line 1
+                                                    :col 2
+                                                    :depth 1
+                                                    :char "["}
+                                       {:correct? true
+                                        :pair-id 0
+                                        :type :open
+                                        :style :square
+                                        :line 1
+                                        :col 3
+                                        :depth 2
+                                        :char "["} {:correct? true
+                                                    :pair-id 0
+                                                    :type :close
+                                                    :style :square
+                                                    :line 1
+                                                    :col 4
+                                                    :depth 2
+                                                    :char "]"}])}
+   {:name "pairs the delimiters and annotates whether it's erroring #5"
+    :test (fn [] (parse/pair-delimiters (parse/parse-delimiters "{)")))
+    :expected (migration-contains-in [{:correct? false
+                                        :pair-id 0
+                                        :type :open
+                                        :style :curly
+                                        :line 1
+                                        :col 1
+                                        :depth 0
+                                        :char "{"} {:correct? false
+                                                    :pair-id 0
+                                                    :type :close
+                                                    :style :paren
+                                                    :line 1
+                                                    :col 2
+                                                    :depth 0
+                                                    :char ")"}])}
+   {:name "pairs the delimiters and annotates whether it's erroring #6"
+    :test (fn []
+              (parse/pair-delimiters (parse/parse-delimiters "
+(defn
+ (do
+   (it)
+ (this))")))
+    :expected (migration-contains-in [{:correct? false
+                                        :type :open
+                                        :style :paren
+                                        :line 2
+                                        :col 1
+                                        :depth 0
+                                        :char "("} {:correct? true
+                                                    :pair-id 2
+                                                    :type :open
+                                                    :style :paren
+                                                    :line 3
+                                                    :col 2
+                                                    :depth 1
+                                                    :char "("}
+                                       {:correct? true
+                                        :pair-id 0
+                                        :type :open
+                                        :style :paren
+                                        :line 4
+                                        :col 4
+                                        :depth 2
+                                        :char "("} {:correct? true
+                                                    :pair-id 0
+                                                    :type :close
+                                                    :style :paren
+                                                    :line 4
+                                                    :col 7
+                                                    :depth 2
+                                                    :char ")"}
+                                       {:correct? true
+                                        :pair-id 1
+                                        :type :open
+                                        :style :paren
+                                        :line 5
+                                        :col 2
+                                        :depth 2
+                                        :char "("} {:correct? true
+                                                    :pair-id 1
+                                                    :type :close
+                                                    :style :paren
+                                                    :line 5
+                                                    :col 7
+                                                    :depth 2
+                                                    :char ")"}
+                                       {:correct? true
+                                        :pair-id 2
+                                        :type :close
+                                        :style :paren
+                                        :line 5
+                                        :col 8
+                                        :depth 1
+                                        :char ")"}])}]
+  migration-test-check))
+
+^{:refer std.block.heal.parse/parse :added "4.0"}
+(Test/check
+ [{:name "creates a parse function"
+   :test (fn [] (parse/parse "(()"))
+   :expected [{:correct? false
+               :index 0
+               :type :open
+               :style :paren
+               :line 1
+               :col 1
+               :depth 0
+               :char "("} {:correct? true
+                           :index 1
+                           :pair-id 0
+                           :type :open
+                           :style :paren
+                           :line 1
+                           :col 2
+                           :depth 1
+                           :char "("}
+              {:correct? true
+               :index 2
+               :pair-id 0
+               :type :close
+               :style :paren
+               :line 1
+               :col 3
+               :depth 1
+               :char ")"}]}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/print-delimiters :added "4.0"}
+(Test/check
+ [{:name "prints caret rows with line numbers"
+   :test (fn []
+             (let [content "(a)"]
+               (with-out-string
+                 (parse/print-delimiters content
+                                         (parse/parse-delimiters content)
+                                         {:line-numbers true}))))
+   :expected (migration-satisfies string?)}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/count-unescaped-quotes :added "4.0"}
+(Test/check
+ [{:name "counting unescaped quotes in a line #1"
+   :test (fn [] (parse/count-unescaped-quotes ""))
+   :expected 0}
+  {:name "counting unescaped quotes in a line #2"
+   :test (fn [] (parse/count-unescaped-quotes "\"hello\""))
+   :expected 2}
+  {:name "counting unescaped quotes in a line #3"
+   :test (fn [] (parse/count-unescaped-quotes "\"hello \\\"world\\\"\""))
+   :expected 2}
+  {:name "counting unescaped quotes in a line #4"
+   :test (fn [] (parse/count-unescaped-quotes "\" \\\"  \""))
+   :expected 2}
+  {:name "counting unescaped quotes in a line #5"
+   :test (fn [] (parse/count-unescaped-quotes "\" \\\""))
+   :expected 1}
+  {:name "counting unescaped quotes in a line #6"
+   :test (fn [] (parse/count-unescaped-quotes "\\\"\\\""))
+   :expected 0}
+  {:name "counting unescaped quotes in a line #7"
+   :test (fn [] (parse/count-unescaped-quotes "test\\"))
+   :expected 0}
+  {:name "counting unescaped quotes in a line #8"
+   :test (fn [] (parse/count-unescaped-quotes "test\\\""))
+   :expected 0}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/parse-lines-raw :added "4.0"}
+(Test/check
+ [{:name "parses raw lines into a structure"
+   :test (fn [] (parse/parse-lines-raw ["(def x 1)"]))
+   :expected [{:type :code
+               :style :paren
+               :line 1
+               :col 1
+               :action :open
+               :last-idx 8
+               :char "("}]}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/parse-lines :added "4.0"}
+(do
+ (def
+  sample-code
+  "
+(defn my-function
+  \"This is a docstring
+   that spans multiple lines.\"
+  [arg1 arg2] ; This is an inline comment
+  (println \"Hello, world!\")
+  ;; Another comment line
+  (let [x 1
+        y 2]
+    (+ x y)))
+
+;; Final comment
+")
+ (def
+  another-sample
+  "\"\"\"
+This is a triple-quoted string
+that acts as a multi-line comment or docstring in other languages but not clojure
+\"\"\"
+(def x 1) ; inline
+;; a comment
+\"single line string\"
+")
+ (Test/check
+  [{:name "parse lines #1"
+    :test (fn []
+              (parse/parse-lines (str/join "
+" ["(:? ()" "    ())" "    nil)"])))
+    :expected [{:type :code
+                :style :paren
+                :line 1
+                :col 1
+                :action :open
+                :last-idx 5
+                :char "("} {:type :code
+                            :style :paren
+                            :line 2
+                            :col 5
+                            :action :open
+                            :last-idx 6
+                            :char "("}
+               {:char "n" :col 5 :last-idx 7 :line 3 :type :code}]}
+   {:name "parse lines #2"
+    :test (fn []
+              (parse/parse-lines (str/join "
+" ["(:? ()" "    ())" "    nil {})"])))
+    :expected [{:type :code
+                :style :paren
+                :line 1
+                :col 1
+                :action :open
+                :last-idx 5
+                :char "("} {:type :code
+                            :style :paren
+                            :line 2
+                            :col 5
+                            :action :open
+                            :last-idx 6
+                            :char "("}
+               {:char "n" :col 5 :last-idx 10 :line 3 :type :code}]}
+   {:name "parse lines #3"
+    :test (fn [] (parse/parse-lines sample-code))
+    :expected (migration-satisfies vector?)}
+   {:name "parse lines #4"
+    :test (fn [] (parse/parse-lines another-sample))
+    :expected (migration-satisfies vector?)}]
+  migration-test-check))
+
+^{:refer std.block.heal.parse/is-open-heavy :added "4.0"}
+(Test/check
+ [{:name "checks if open delimiters dominate #1"
+   :test (fn []
+             (parse/is-open-heavy (parse/pair-delimiters (parse/parse-delimiters "(()"))))
+   :expected true}
+  {:name "checks if open delimiters dominate #2"
+   :test (fn []
+             (parse/is-open-heavy (parse/pair-delimiters (parse/parse-delimiters "(()))"))))
+   :expected false}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/is-balanced :added "4.0"}
+(Test/check
+ [{:name "checks if parens are balanced #1"
+   :test (fn []
+             (parse/is-balanced (parse/pair-delimiters (parse/parse-delimiters "{{])"))))
+   :expected true}
+  {:name "checks if parens are balanced #2"
+   :test (fn []
+             (parse/is-balanced (parse/pair-delimiters (parse/parse-delimiters "((])"))))
+   :expected true}
+  {:name "checks if parens are balanced #3"
+   :test (fn []
+             (parse/is-balanced (parse/pair-delimiters (parse/parse-delimiters "(])"))))
+   :expected false}
+  {:name "checks if parens are balanced #4"
+   :test (fn []
+             (parse/is-balanced (parse/pair-delimiters (parse/parse-delimiters "(()))"))))
+   :expected false}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/is-readable :added "4.0"}
+(Test/check
+ [{:name "checks if parens are readable #1"
+   :test (fn []
+             (parse/is-readable (parse/pair-delimiters (parse/parse-delimiters "{{])"))))
+   :expected false}
+  {:name "checks if parens are readable #2"
+   :test (fn []
+             (parse/is-readable (parse/pair-delimiters (parse/parse-delimiters "((])"))))
+   :expected false}
+  {:name "checks if parens are readable #3"
+   :test (fn []
+             (parse/is-readable (parse/pair-delimiters (parse/parse-delimiters "(])"))))
+   :expected false}
+  {:name "checks if parens are readable #4"
+   :test (fn []
+             (parse/is-readable (parse/pair-delimiters (parse/parse-delimiters "(()))"))))
+   :expected false}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/is-close-heavy :added "4.0"}
+(Test/check
+ [{:name "checks if parens are close heavy #1"
+   :test (fn [] (parse/is-close-heavy (parse/parse "{{])")))
+   :expected false}
+  {:name "checks if parens are close heavy #2"
+   :test (fn []
+             (parse/is-close-heavy (parse/pair-delimiters (parse/parse-delimiters "((])"))))
+   :expected false}
+  {:name "checks if parens are close heavy #3"
+   :test (fn []
+             (parse/is-close-heavy (parse/pair-delimiters (parse/parse-delimiters "(])"))))
+   :expected true}
+  {:name "checks if parens are close heavy #4"
+   :test (fn []
+             (parse/is-close-heavy (parse/pair-delimiters (parse/parse-delimiters "(()))"))))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/make-delimiter-line-lu :added "4.0"}
+(Test/check
+ [{:name "creates a line lu"
+   :test (fn []
+             (parse/make-delimiter-line-lu (parse/pair-delimiters (parse/parse-delimiters "((\n)\n) \n)"))))
+   :expected {1 [{:correct? true
+                  :index 0
+                  :pair-id 1
+                  :type :open
+                  :style :paren
+                  :line 1
+                  :col 1
+                  :depth 0
+                  :char "("} {:correct? true
+                              :index 1
+                              :pair-id 0
+                              :type :open
+                              :style :paren
+                              :line 1
+                              :col 2
+                              :depth 1
+                              :char "("}]
+              4 [{:correct? false
+                  :index 4
+                  :type :close
+                  :style :paren
+                  :line 4
+                  :col 1
+                  :depth -1
+                  :char ")"}]
+              3 [{:correct? true
+                  :index 3
+                  :pair-id 1
+                  :type :close
+                  :style :paren
+                  :line 3
+                  :col 1
+                  :depth 0
+                  :char ")"}]
+              2 [{:correct? true
+                  :index 2
+                  :pair-id 0
+                  :type :close
+                  :style :paren
+                  :line 2
+                  :col 1
+                  :depth 1
+                  :char ")"}]}}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/make-delimiter-index-lu :added "4.0"}
+(Test/check
+ [{:name "creates the index lookup"
+   :test (fn []
+             (sort (keys (parse/make-delimiter-index-lu (parse/pair-delimiters (parse/parse-delimiters "((\n)\n) \n)"))))))
+   :expected [0 1 2 3 4]}]
+ migration-test-check)
+
+^{:refer std.block.heal.parse/delimiter-info :added "4.0"}
+(Test/check
+ [{:name "classifies paired delimiters and ignores ordinary characters"
+   :test (fn [] [(parse/delimiter-info \() (parse/delimiter-info \]) (parse/delimiter-info \x)])
+   :expected [{:type :open :style :paren}
+              {:type :close :style :square}
+              nil]}])

@@ -1,0 +1,41 @@
+(ns lang.base.v1.grammar-spec-test
+  (:require [lang.base.v1.grammar-spec :as spec]))
+
+^{:refer lang.base.v1.grammar-spec/+version+}
+(Test/check
+ [{:name "V1 grammar spec retains migration identity and hydrates operator references"
+   :test (fn [] [spec/+version+
+                 (count spec/+migration-inputs+)
+                 spec/+reference-fields+
+                 (let [entry (spec/hydrate-entry {:op :fixture :raw 'fixture/value})]
+                   (:raw entry))])
+   :expected [1 3 [:macro :lower :value/template :format :value] 'fixture/value]}])
+
+^{:refer lang.base.v1.grammar-spec/+feature-group-names+}
+(Test/check
+ [{:name "V1 owns the checked-in Foundation operator snapshot"
+   :test (fn [] [(count spec/+features+)
+                 (count spec/+feature-groups+)
+                 (count spec/+feature-group-data+)
+                 (take 3 spec/+feature-group-names+)
+                 (take-last 5 spec/+feature-group-names+)
+                 (boolean (get spec/+features+ :x-add))
+                 spec/+fingerprint+
+                 (= {:define spec/+features+ :override {}} spec/+operators+)
+                 (spec/snapshot-valid?)])
+   :expected [301 43 43
+              '[+op-builtin+ +op-builtin-global+ +op-builtin-module+]
+              '[+xtalk-common+ +xtalk-functional+ +xtalk-language-specific+
+                +xtalk-hara.lang-link-specific+ +xtalk-runtime-specific+]
+              true "djb2:2219895603" true true]}])
+
+^{:refer lang.base.v1.grammar-spec/extend}
+(Test/check
+ [{:name "V1 grammar extension and overwrite remain explicit and checked"
+   :test (fn [] (let [extended (spec/extend {:v1-test {:op :v1-test :symbol #{'v1:test} :emit :unit}})
+                 overwritten (spec/overwrite {:add {:raw "PLUS"}})]
+                 [(count extended) (:op (get extended :v1-test))
+                  (:raw (get overwritten :add))
+                  (try (spec/extend {:add {}}) false (catch _ true))
+                  (try (spec/overwrite {:missing {}}) false (catch _ true))]))
+   :expected [302 :v1-test "PLUS" true true]}])

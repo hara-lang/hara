@@ -208,7 +208,7 @@
    'Base/long? [true (fn [] (Base/long? 1))]
    'Base/type [:std.native.Vector (fn [] (Base/type (Base/vector 1)))]
    'Base/instance? [true (fn [] (Base/instance? Promise (Promise/from 1)))]
-   'Iter/seq [[1 2] (fn [] (vec (Iter/seq [1 2])))]
+   'Iter/seq [[1 2] (fn [] (Base/vec (Iter/seq [1 2])))]
    'Iter/iter [1 (fn [] (Iter/iter-next (Iter/iter [1 2])))]
    'Iter/iter-finite? [true (fn [] (Iter/iter-finite? [1]))]
    'Iter/iter-materialize [[1 2] (fn [] (Iter/iter-materialize [1 2]))]
@@ -233,11 +233,12 @@
 (def capability-method-groups
   {
    :kernel/session ['Kernel/session-create 'Kernel/session-close 'Kernel/session-list 'Kernel/session-info 'Kernel/session-eval 'Kernel/session-namespace 'Kernel/session-complete 'Kernel/resource-register 'Kernel/resource-remove 'Kernel/resource-list 'Kernel/filesystem-create 'Kernel/filesystem-attach 'Kernel/filesystem-detach 'Kernel/filesystem-info 'Kernel/filesystem-close 'Kernel/capabilities
-                    'Kernel/package-build 'Kernel/package-inspect 'Kernel/package-install 'Kernel/package-publish 'Kernel/package-registry-verify
+                    'Kernel/package-check 'Kernel/package-build 'Kernel/package-inspect 'Kernel/package-install 'Kernel/package-publish 'Kernel/package-registry-verify
                     'Kernel/snapshot-build 'Kernel/snapshot-diff 'Kernel/snapshot-inspect 'Kernel/snapshot-verify
                     'Kernel/tap-add 'Kernel/tap-bootstrap 'Kernel/tap-config-root 'Kernel/tap-initialize 'Kernel/tap-list 'Kernel/tap-mirror-add 'Kernel/tap-remove 'Kernel/tap-verify]
    :sandbox/runtime ['Sandbox/open 'Sandbox/eval 'Sandbox/call 'Sandbox/cancel 'Sandbox/status 'Sandbox/close]
-   :package/provider ['Package/catalog 'Package/find 'Package/ensure 'Package/load 'Package/unload 'Package/state]
+   :package/provider ['Package/catalog 'Package/find 'Package/read 'Package/ensure 'Package/load 'Package/unload 'Package/state
+                      'Package/build 'Package/inspect 'Package/seal 'Package/inspect-seal 'Package/verify-seal 'Package/distribute]
    :crypto/provider ['Crypto/random-bytes 'Crypto/ed25519-keypair 'Crypto/ed25519-public 'Crypto/ed25519-sign 'Crypto/ed25519-verify 'Crypto/x25519-keypair 'Crypto/x25519-public 'Crypto/x25519-shared 'Crypto/p256-keypair 'Crypto/p256-public 'Crypto/p256-sign 'Crypto/p256-verify 'Crypto/p256-shared]
    :host/os ['OS/platform 'OS/arch 'OS/cwd 'OS/env 'OS/getenv 'OS/time-ms 'OS/time-ns]
    :host/process ['Process/spawn 'Process/alive? 'Process/write 'Process/close-input 'Process/stdout 'Process/stderr 'Process/stdout-stream 'Process/stderr-stream 'Process/wait 'Process/kill]
@@ -259,7 +260,8 @@
    :inventory/mutable-array ['Arr/push-first 'Arr/push-last 'Arr/pop-first 'Arr/pop-last 'Arr/insert 'Arr/remove 'Arr/slice 'Arr/map 'Arr/filter 'Arr/fold-left 'Arr/fold-right]
    :inventory/mutable-object ['Obj/assign 'Obj/keys 'Obj/vals 'Obj/pairs]
    :inventory/document-shape ['Document/element 'Document/text 'Document/fragment 'Document/annotate 'Document/pass 'Document/escaped 'Document/group 'Document/line 'Document/break 'Document/nest 'Document/align 'Document/normalize 'Document/valid? 'Document/render]
-   :inventory/codec-format ['Edn/pretty 'Json/pretty]
+   :inventory/codec-format ['Edn/pretty 'Json/pretty
+                            'HBX/provider 'HBX/validate 'HBX/inspect 'HBX/pack 'HBX/unpack]
    :inventory/schema-shape ['Schema/of 'Schema/kind 'Schema/form 'Schema/ast 'Schema/origin]
    :inventory/foundation-boundary ['Base/satisfies?]
    :inventory/namespace-introspection ['Runtime/ns-publics 'Runtime/ns-aliases 'Runtime/ns-find 'Runtime/ns-create 'Runtime/ns-name
@@ -321,7 +323,7 @@
 (def declared-native-methods
   (append-group-methods
     (append-group-methods
-      (vec (keys portable-fixtures))
+      (Base/vec (keys portable-fixtures))
       capability-method-groups)
     inventory-method-groups))
 
@@ -358,12 +360,12 @@
 
 (defn native-method-keys
   []
-  (vec (keys native-method-corpus)))
+  (Base/vec (keys native-method-corpus)))
 
 (defn native-method-results
   []
-  (vec (map (fn [method] (native-method-result method nil))
-        (native-method-keys))))
+  (Base/vec (map (fn [method] (native-method-result method nil))
+                 (native-method-keys))))
 
 (defn native-classification-summary
   []
@@ -392,15 +394,15 @@
   [thunk]
   (try
     [:value (thunk)]
-    (catch Throwable error
+    (catch error
       [:error (normalized-error-class error)])))
 
 (defn native-closure-report
   [live-methods]
   (let [live (set live-methods)
         classified (set (native-method-keys))
-        missing (vec (filter (fn [method] (not (has? classified method))) live-methods))
-        extra (vec (filter (fn [method] (not (has? live method))) (native-method-keys)))]
+        missing (Base/vec (filter (fn [method] (not (has? classified method))) live-methods))
+        extra (Base/vec (filter (fn [method] (not (has? live method))) (native-method-keys)))]
     {:pass (and (empty? missing) (empty? extra))
      :live (count live)
      :classified (count classified)
@@ -423,7 +425,7 @@
                 actual ((second fixture))]
             {:method method :classification classification :pass (= expected actual)
              :expected expected :actual actual})
-          (catch Throwable error
+          (catch error
             {:method method :classification classification :pass false
              :error-class (normalized-error-class error)
              :error-message (ex-message error)})))
@@ -540,10 +542,10 @@
 
 (defn native-boundary-results
   []
-  (vec (map
-    (fn [case]
-      (assoc case :pass (= (get case :expected) (get case :actual))))
-    (native-boundary-cases))))
+  (Base/vec (map
+             (fn [case]
+               (assoc case :pass (= (get case :expected) (get case :actual))))
+             (native-boundary-cases))))
 
 (defn native-profile-report
   []

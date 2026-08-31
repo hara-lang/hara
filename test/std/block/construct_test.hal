@@ -1,0 +1,430 @@
+(ns std.block.construct-test
+  (:require [std.block.base :as base]
+            [std.block.construct :refer :all :as construct]))
+
+(defn migration-test-check
+  [test expected]
+  (let [actual (test)]
+    (std.native.Test/result
+     "archive migration check"
+     actual
+     expected
+     (std.native.Test/compare actual expected))))
+
+(defn migration-meta-tree
+  [value]
+  (let [metadata   (select-keys (or (meta value) {}) [:readable-len :tag :spec])
+        normalized (cond
+                    (vector? value) (mapv migration-meta-tree value)
+                    (map? value)    (reduce-kv
+                                     (fn
+                                      [output key item] (assoc output (migration-meta-tree key) (migration-meta-tree item))) {}
+                                     value)
+                    (set? value)    (set (map migration-meta-tree value))
+                    (seq? value)    (apply list (map migration-meta-tree value))
+                    :else           value)]
+    {:meta metadata :value normalized}))
+
+^{:refer std.block.construct/void :added "3.0"}
+(Test/check
+ [{:name "creates a void block"
+   :test (fn [] (std.block.base/block-representation (void)))
+   :expected "␣"}]
+ migration-test-check)
+
+^{:refer std.block.construct/space :added "3.0"}
+(Test/check
+ [{:name "creates a space block"
+   :test (fn [] (std.block.base/block-representation (space)))
+   :expected "␣"}]
+ migration-test-check)
+
+^{:refer std.block.construct/spaces :added "3.0"}
+(Test/check
+ [{:name "creates multiple space blocks"
+   :test (fn [] (apply str (map std.block.base/block-representation (spaces 5))))
+   :expected "␣␣␣␣␣"}]
+ migration-test-check)
+
+^{:refer std.block.construct/tab :added "3.0"}
+(Test/check [{:name "creates a tab", :test (fn [] (std.block.base/block-representation (tab))), :expected "\\t"}] migration-test-check)
+
+^{:refer std.block.construct/tabs :added "3.0"}
+(Test/check [{:name "creates multiple tabs", :test (fn [] (apply str (map std.block.base/block-representation (tabs 5)))), :expected "\\t\\t\\t\\t\\t"}] migration-test-check)
+
+^{:refer std.block.construct/newline :added "3.0"}
+(Test/check [{:name "creates a newline", :test (fn [] (std.block.base/block-representation (construct/newline))), :expected "\\n"}] migration-test-check)
+
+^{:refer std.block.construct/newlines :added "3.0"}
+(Test/check [{:name "creates multiple newlines", :test (fn [] (apply str (map std.block.base/block-representation (newlines 5)))), :expected "\\n\\n\\n\\n\\n"}] migration-test-check)
+
+^{:refer std.block.construct/newline? :added "4.0"}
+(Test/check
+ [{:name "checks if a block is a newline"
+   :test (fn [] (newline? (construct/newline)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.construct/comment :added "3.0"}
+(Test/check
+ [{:name "creates a comment block"
+   :test (fn [] (std.block.base/block-representation (construct/comment ";hello")))
+   :expected ";hello"}]
+ migration-test-check)
+
+^{:refer std.block.construct/token-dimensions :added "3.0"}
+(Test/check [{:name "returns the dimensions of the token #1", :test (fn [] (token-dimensions :regexp "#\"hello\\nworld\"")), :expected [15 0]} {:name "returns the dimensions of the token #2", :test (fn [] (token-dimensions :regexp "#\"hello\nworld\"")), :expected [6 1]}] migration-test-check)
+
+^{:refer std.block.construct/string-token :added "3.0"}
+(Test/check [{:name "constructs a string token #1", :test (fn [] (std.block.base/block-representation (string-token "hello"))), :expected "\"hello\""} {:name "constructs a string token #2", :test (fn [] (std.block.base/block-representation (string-token "hello\nworld"))), :expected "\"hello\\nworld\""} {:name "constructs a string token #3", :test (fn [] (std.block.base/block-representation (string-token " \"hello\"  "))), :expected "\" \\\"hello\\\"  \""}] migration-test-check)
+
+^{:refer std.block.construct/token :added "3.0"}
+(Test/check
+ [{:name "creates a token"
+   :test (fn [] (std.block.base/block-representation (token (quote abc))))
+   :expected "abc"}]
+ migration-test-check)
+
+^{:refer std.block.construct/token-from-string :added "3.0"}
+(Test/check
+ [{:name "creates a token from a string input"
+   :test (fn [] (std.block.base/block-representation (token-from-string "abc")))
+   :expected "abc"}]
+ migration-test-check)
+
+^{:refer std.block.construct/container-checks :added "3.0"}
+(Test/check
+ [{:name "performs checks for the container #1"
+   :test (fn [] (container-checks :list [] {}))
+   :expected true}
+  {:name "performs checks for the container #2"
+   :test (fn [] (container-checks :list [(token 1)] {:cons 1}))
+   :expected true}
+  {:name "performs checks for the container #3"
+   :test (fn [] (try (container-checks :list [] {:cons 1}) (catch e :thrown)))
+   :expected :thrown}]
+ migration-test-check)
+
+^{:refer std.block.construct/container :added "3.0"}
+(Test/check
+ [{:name "creates a container"
+   :test (fn [] (std.block.base/block-representation (container :list [(void) (void)])))
+   :expected "(  )"}]
+ migration-test-check)
+
+^{:refer std.block.construct/uneval :added "3.0"}
+(Test/check
+ [{:name "creates a hash-uneval block"
+   :test (fn [] (std.block.base/block-representation (uneval)))
+   :expected "#_"}]
+ migration-test-check)
+
+^{:refer std.block.construct/cursor :added "3.0"}
+(Test/check
+ [{:name "creates a cursor for the navigator"
+   :test (fn [] (std.block.base/block-representation (cursor)))
+   :expected "|"}]
+ migration-test-check)
+
+^{:refer std.block.construct/construct-collection :added "3.0"}
+(Test/check
+ [{:name "constructs a collection"
+   :test (fn []
+             (std.block.base/block-representation (construct-collection [1 2 (void) (void) 3])))
+   :expected "[1 2  3]"}]
+ migration-test-check)
+
+^{:refer std.block.construct/construct-children :added "3.0"}
+(Test/check [{:name "constructs the children ", :test (fn [] (mapv std.block.base/block-representation (construct-children [1 (construct/newline) (void) 2]))), :expected ["1" "\\n" "␣" "2"]}] migration-test-check)
+
+^{:refer std.block.construct/block :added "3.0"}
+(Test/check
+ [{:name "creates a block #1"
+   :test (fn [] (base/block-info (block 1)))
+   :expected {:height 0 :string "1" :tag :number :type :token :width 1}}
+  {:name "creates a block #2"
+   :test (fn []
+             (std.block.base/block-representation (block [1 (construct/newline) (void) 2])))
+   :expected "[1
+ 2]"}]
+ migration-test-check)
+
+^{:refer std.block.construct/add-child :added "3.0"}
+(Test/check
+ [{:name "adds a child to a container block"
+   :test (fn []
+             (-> (block [])
+                 (add-child 1) (add-child 2)
+                 (std.block.base/block-representation)))
+   :expected "[12]"}]
+ migration-test-check)
+
+^{:refer std.block.construct/empty :added "3.0"}
+(Test/check
+ [{:name "constructs empty list"
+   :test (fn [] (std.block.base/block-representation (construct/empty)))
+   :expected "()"}]
+ migration-test-check)
+
+^{:refer std.block.construct/root :added "3.0"}
+(Test/check
+ [{:name "constructs a root block"
+   :test (fn [] (std.block.base/block-representation (root (quote [a b]))))
+   :expected "a b"}]
+ migration-test-check)
+
+^{:refer std.block.construct/contents :added "3.0"}
+(Test/check
+ [{:name "reads out the contents of a container"
+   :test (fn [] (contents (block [1 2 3])))
+   :expected (quote [1 ␣ 2 ␣ 3])}]
+ migration-test-check)
+
+^{:refer std.block.construct/max-width}
+(Test/check
+ [{:name "measures the widest line with and without a first-line offset"
+   :test (fn []
+           (let [block (construct/block
+                        [:very-long-line (construct/newline) (construct/void) 2])]
+             [(max-width block)
+              (max-width block 10)
+              (max-width (construct/empty))]))
+   :expected [16 16 2]}]
+ migration-test-check)
+
+^{:refer std.block.construct/line-width :added "4.0"}
+(Test/check
+ [{:name "get the width at the line which it finishes #1"
+   :test (fn [] (line-width (block [:very-long-line (construct/newline) (void) 2])))
+   :expected 3}
+  {:name "get the width at the line which it finishes #2"
+   :test (fn [] (line-width (block [:very-long-line (construct/newline) (void) 2]) 3))
+   :expected 0}]
+ migration-test-check)
+
+^{:refer std.block.construct/rep :added "4.0"}
+(Test/check
+ [{:name "returns the clojure forms representation of the dsl"
+   :test (fn [] (rep (block [1 2 3 4])))
+   :expected [1 2 3 4]}]
+ migration-test-check)
+
+^{:refer std.block.construct/get-lines :added "4.0"}
+(Test/check
+ [{:name "gets the lines for a block"
+   :test (fn []
+             (get-lines (block [(construct/newline) (void) :very-long-line (construct/newline) (void) 2])))
+   :expected ["[" " :very-long-line" " 2]"]}]
+ migration-test-check)
+
+^{:refer std.block.construct/line-split}
+(Test/check
+ [{:name "splits top-level child blocks at newline boundaries"
+   :test (fn []
+           (let [dom (line-split
+                      (block [(construct/newline)
+                              (void)
+                              1]))]
+             [(:tag dom)
+              (mapv count (:lines dom))
+              (mapv (fn [line]
+                      (mapv std.block.base/block-representation line))
+                    (:lines dom))]))
+   :expected [:vector [0 2] [[] ["␣" "1"]]]}]
+ migration-test-check)
+
+^{:refer std.block.construct/line-restore}
+(Test/check
+ [{:name "restores line domains with increasing body indentation"
+   :test (fn []
+           (mapv (fn [offset]
+                   (std.block.base/block-representation
+                    (line-restore
+                     (line-split
+                      (block [(construct/newline)
+                              (void)
+                              :very-long-line
+                              (construct/newline)
+                              (void)
+                              2]))
+                     offset)))
+                 [0 2 5 10]))
+   :expected ["[
+ :very-long-line
+ 2]"
+              "[
+   :very-long-line
+   2]"
+              "[
+      :very-long-line
+      2]"
+              "[
+           :very-long-line
+           2]"]}]
+ migration-test-check)
+
+^{:refer std.block.construct/indent-body :added "4.0"}
+(Test/check
+ [{:name "indents the body given offset"
+   :test (fn []
+             (std.block.base/block-representation (indent-body (block [1 2 (construct/newline) 3 4]) 5)))
+   :expected "[1 2
+     3 4]"}]
+ migration-test-check)
+
+^{:refer std.block.construct/raw-block}
+(Test/check
+ [{:name "creates a concrete block from fully supplied fields"
+   :test (fn []
+           (base/block-info
+            (raw-block :token :number "1" 1 [] {:width 1 :height 0})))
+   :expected {:type :token :tag :number :string "1" :height 0 :width 1}}]
+ migration-test-check)
+
+^{:refer std.block.construct/text-height}
+(Test/check
+ [{:name "counts newline boundaries in text"
+   :test (fn [] (text-height "a\nb\n"))
+   :expected 2}]
+ migration-test-check)
+
+^{:refer std.block.construct/text-width}
+(Test/check
+ [{:name "returns the width after the final newline"
+   :test (fn [] [(text-width "abc") (text-width "ab\ncde")])
+   :expected [3 3]}]
+ migration-test-check)
+
+^{:refer std.block.construct/repeat-string}
+(Test/check
+ [{:name "repeats source text exactly the requested number of times"
+   :test (fn [] (repeat-string "ab" 3))
+   :expected "ababab"}]
+ migration-test-check)
+
+^{:refer std.block.construct/join-strings}
+(Test/check
+ [{:name "joins printable source fragments without separators"
+   :test (fn [] (join-strings ["a" 2 "c"]))
+   :expected "a2c"}]
+ migration-test-check)
+
+^{:refer std.block.construct/error}
+(Test/check
+ [{:name "creates reader-error blocks with source dimensions and message"
+   :test (fn []
+           (let [block (error "bad\nsource" "unexpected token")]
+             [(base/block-info block) (:message (:props block))]))
+   :expected [{:type :error :tag :reader-error :string "bad\nsource" :height 1 :width 6}
+              "unexpected token"]}]
+ migration-test-check)
+
+^{:refer std.block.construct/modifier}
+(Test/check
+ [{:name "creates modifiers that receive accumulator and input"
+   :test (fn []
+           (let [block (modifier :append "@" (fn [out input] (conj out input)))]
+             [(base/block-type block)
+              (base/block-modify block [:kept] :input)]))
+   :expected [:modifier [:kept :input]]}]
+ migration-test-check)
+
+^{:refer std.block.construct/container-tag}
+(Test/check
+ [{:name "classifies concrete collection values"
+   :test (fn [] [(container-tag []) (container-tag ()) (container-tag {})
+                 (container-tag #{}) (container-tag 1)])
+   :expected [:vector :list :map :set nil]}]
+ migration-test-check)
+
+^{:refer std.block.construct/child-strings}
+(Test/check
+ [{:name "concatenates the exact source text of children"
+   :test (fn [] (child-strings [(token 1) (space) (token 2)]))
+   :expected "1 2"}]
+ migration-test-check)
+
+^{:refer std.block.construct/child-value-string}
+(Test/check
+ [{:name "uses modifiers verbatim, expressions as values, and skips void blocks"
+   :test (fn [] [(child-value-string (uneval))
+                 (child-value-string (token 1))
+                 (child-value-string (space))])
+   :expected ["#_" "1" nil]}]
+ migration-test-check)
+
+^{:refer std.block.construct/container-value-string}
+(Test/check
+ [{:name "renders expression value strings within supplied delimiters"
+   :test (fn [] (container-value-string "[" "]" [(token 1) (space) (token 2)]))
+   :expected "[1 2]"}]
+ migration-test-check)
+
+^{:refer std.block.construct/expression-values}
+(Test/check
+ [{:name "suppresses the expression immediately following hash-uneval"
+   :test (fn [] (expression-values [(token 1) (uneval) (token 2) (token 3)]))
+   :expected [1 3]}]
+ migration-test-check)
+
+^{:refer std.block.construct/pair-map}
+(Test/check
+ [{:name "builds maps from pairs and rejects an odd input count"
+   :test (fn [] [(pair-map [:a 1 :b 2])
+                 (try (pair-map [:a]) false (catch _ true))])
+   :expected [{:a 1 :b 2} true]}]
+ migration-test-check)
+
+^{:refer std.block.construct/block-form}
+(Test/check
+ [{:name "converts keyword tokens and concrete collections to reader forms"
+   :test (fn [] [(block-form (token :name))
+                 (block-form (block [1 2]))])
+   :expected ['(keyword "name") [1 2]]}]
+ migration-test-check)
+
+^{:refer std.block.construct/container-value}
+(Test/check
+ [{:name "computes vector, map, and quote container values"
+   :test (fn [] [(container-value :vector [(token 1) (token 2)])
+                 (container-value :map [(token :a) (token 1)])
+                 (container-value :quote [(token 'x)])])
+   :expected [[1 2] {:a 1} '(quote x)]}]
+ migration-test-check)
+
+^{:refer std.block.construct/make-container}
+(Test/check
+ [{:name "builds containers with delimiters and replace-children behavior"
+   :test (fn []
+           (let [block (make-container :vector [(token 1)] nil)
+                 replaced (base/replace-children block [(token 2)])]
+             [(base/block-representation block)
+              (base/block-representation replaced)]))
+   :expected ["[1]" "[2]"]}]
+ migration-test-check)
+
+^{:refer std.block.construct/construct-map-values}
+(Test/check
+ [{:name "flattens sorted map entries for deterministic construction"
+   :test (fn [] (construct-map-values {2 20 1 10}))
+   :expected [1 10 2 20]}]
+ migration-test-check)
+
+^{:refer std.block.construct/split-lines-at-newlines}
+(Test/check
+ [{:name "splits child sequences at newline blocks while retaining line content"
+   :test (fn []
+           (mapv (fn [line]
+                   (mapv base/block-representation line))
+                 (split-lines-at-newlines [(token 1) (newline) (space) (token 2)])))
+   :expected [["1"] ["␣" "2"]]}]
+ migration-test-check)
+
+^{:refer std.block.construct/restore-line}
+(Test/check
+ [{:name "recursively restores nested line domains without changing scalar blocks"
+   :test (fn []
+           (mapv base/block-representation
+                 (restore-line [(token 1) (space)] 4)))
+   :expected ["1" "␣"]}]
+ migration-test-check)

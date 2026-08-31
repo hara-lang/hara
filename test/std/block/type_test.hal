@@ -1,0 +1,224 @@
+(ns std.block.type-test
+  (:require [std.block.protocol]
+            [std.block.type]))
+
+^{:refer std.block.type/block-compare}
+(Test/check
+ [{:name "orders blocks by tag and then source text"
+   :test (fn []
+           [(std.block.type/block-compare
+             (std.block.type/token-block :symbol "a" 'a "a" 1 0)
+             (std.block.type/token-block :symbol "a" 'a "a" 1 0))
+            (neg? (std.block.type/block-compare
+                   (std.block.type/token-block :number "1" 1 "1" 1 0)
+                   (std.block.type/token-block :symbol "a" 'a "a" 1 0)))])
+   :expected [0 true]}])
+
+^{:refer std.block.type/block?}
+(Test/check
+ [{:name "recognizes only concrete Block instances"
+   :test (fn [] [(std.block.type/block? (std.block.type/token-block :number "42" 42 "42" 2 0))
+                 (std.block.type/block? {:type :token})])
+   :expected [true false]}])
+
+^{:refer std.block.type/void-block}
+(Test/check
+ [{:name "constructs canonical source strings for void characters"
+   :test (fn []
+           (let [space (std.block.type/void-block :linespace \space 1 0)]
+             [(std.block.protocol/block-type space)
+              (std.block.protocol/block-tag space)
+              (std.block.protocol/block-string space)
+              (std.block.protocol/block-string (std.block.type/void-block :linetab \tab 1 0))
+              (std.block.protocol/block-string (std.block.type/void-block :linebreak \newline 0 1))
+              (std.block.protocol/block-string (std.block.type/void-block :eof nil 0 0))]))
+   :expected [:void :linespace " " "\t" "\n" ""]}])
+
+^{:refer std.block.type/void-block?}
+(Test/check
+ [{:name "recognizes concrete void blocks"
+   :test (fn [] [(std.block.type/void-block? (std.block.type/void-block :linespace \space 1 0))
+                 (std.block.type/void-block? (std.block.type/token-block :number "42" 42 "42" 2 0))])
+   :expected [true false]}])
+
+^{:refer std.block.type/token-block?}
+(Test/check
+ [{:name "recognizes concrete token blocks"
+   :test (fn [] [(std.block.type/token-block? (std.block.type/token-block :number "42" 42 "42" 2 0))
+                 (std.block.type/token-block? (std.block.type/void-block :linespace \space 1 0))])
+   :expected [true false]}])
+
+^{:refer std.block.type/container-block?}
+(Test/check
+ [{:name "recognizes concrete container blocks"
+   :test (fn [] [(std.block.type/container-block? (std.block.type/container-block :vector [] {:start "[" :end "]"}))
+                 (std.block.type/container-block? (std.block.type/token-block :number "42" 42 "42" 2 0))])
+   :expected [true false]}])
+
+^{:refer std.block.type/modifier-block?}
+(Test/check
+ [{:name "recognizes concrete modifier blocks"
+   :test (fn [] [(std.block.type/modifier-block? (std.block.type/modifier-block :discard "#_" (fn [out _] out)))
+                 (std.block.type/modifier-block? (std.block.type/token-block :number "42" 42 "42" 2 0))])
+   :expected [true false]}])
+
+^{:refer std.block.type/error-block?}
+(Test/check
+ [{:name "recognizes concrete error blocks"
+   :test (fn [] [(std.block.type/error-block? (std.block.type/Block :error :invalid "!" nil [] {}))
+                 (std.block.type/error-block? (std.block.type/token-block :number "42" 42 "42" 2 0))])
+   :expected [true false]}])
+
+^{:refer std.block.type/code-block?}
+(Test/check
+ [{:name "recognizes token and container blocks as code"
+   :test (fn [] [(std.block.type/code-block? (std.block.type/token-block :number "42" 42 "42" 2 0))
+                 (std.block.type/code-block? (std.block.type/container-block :vector [] {:start "[" :end "]"}))
+                 (std.block.type/code-block? (std.block.type/void-block :linespace \space 1 0))])
+   :expected [true true false]}])
+
+^{:refer std.block.type/space-block?}
+(Test/check
+ [{:name "recognizes only a literal space as a linespace block"
+   :test (fn [] [(std.block.type/space-block? (std.block.type/void-block :linespace \space 1 0))
+                 (std.block.type/space-block? (std.block.type/void-block :linetab \tab 1 0))])
+   :expected [true false]}])
+
+^{:refer std.block.type/linebreak-block?}
+(Test/check
+ [{:name "recognizes linebreak tags"
+   :test (fn [] [(std.block.type/linebreak-block? (std.block.type/void-block :linebreak \newline 0 1))
+                 (std.block.type/linebreak-block? (std.block.type/void-block :linespace \space 1 0))])
+   :expected [true false]}])
+
+^{:refer std.block.type/linespace-block?}
+(Test/check
+ [{:name "recognizes linespace tags"
+   :test (fn [] [(std.block.type/linespace-block? (std.block.type/void-block :linespace \space 1 0))
+                 (std.block.type/linespace-block? (std.block.type/void-block :linebreak \newline 0 1))])
+   :expected [true false]}])
+
+^{:refer std.block.type/eof-block?}
+(Test/check
+ [{:name "recognizes eof tags"
+   :test (fn [] [(std.block.type/eof-block? (std.block.type/void-block :eof nil 0 0))
+                 (std.block.type/eof-block? (std.block.type/void-block :linespace \space 1 0))])
+   :expected [true false]}])
+
+^{:refer std.block.type/nil-void?}
+(Test/check
+ [{:name "recognizes nil and concrete void blocks"
+   :test (fn [] [(std.block.type/nil-void? nil)
+                 (std.block.type/nil-void? (std.block.type/void-block :linespace \space 1 0))
+                 (std.block.type/nil-void? (std.block.type/token-block :number "42" 42 "42" 2 0))])
+   :expected [true true false]}])
+
+^{:refer std.block.type/comment-block?}
+(Test/check
+ [{:name "recognizes comment blocks"
+   :test (fn [] [(std.block.type/comment-block? (std.block.type/comment-block "; note"))
+                 (std.block.type/comment-block? (std.block.type/token-block :symbol "note" 'note "note" 4 0))])
+   :expected [true false]}])
+
+^{:refer std.block.type/comment-block}
+(Test/check
+ [{:name "constructs comment presentation metadata"
+   :test (fn []
+           (let [block (std.block.type/comment-block "; note")]
+             [(std.block.protocol/block-type block)
+              (std.block.protocol/block-tag block)
+              (std.block.protocol/block-string block)
+              (std.block.protocol/block-width block)
+              (std.block.protocol/block-height block)]))
+   :expected [:comment :comment "; note" 6 0]}])
+
+^{:refer std.block.type/token-block}
+(Test/check
+ [{:name "constructs token protocol values and presentation data"
+   :test (fn []
+           (let [block (std.block.type/token-block :symbol "hello" 'hello "HELLO" 5 0)]
+             [(std.block.protocol/block-type block)
+              (std.block.protocol/block-value block)
+              (std.block.protocol/block-value-string block)
+              (std.block.protocol/block-width block)
+              (std.block.protocol/block-height block)]))
+   :expected [:token 'hello "HELLO" 5 0]}])
+
+^{:refer std.block.type/container-width}
+(Test/check
+ [{:name "returns the full source width of a container"
+   :test (fn []
+           (std.block.type/container-width
+            (std.block.type/container-block :vector [] {:start "[" :end "]"})))
+   :expected 2}])
+
+^{:refer std.block.type/container-height}
+(Test/check
+ [{:name "sums child heights in a container"
+   :test (fn []
+           (std.block.type/container-height
+            (std.block.type/container-block
+             :vector
+             [(std.block.type/void-block :linebreak \newline 0 1)
+              (std.block.type/void-block :linebreak \newline 0 1)]
+             {:start "[" :end "]"})))
+   :expected 2}])
+
+^{:refer std.block.type/container-string}
+(Test/check
+ [{:name "returns the source string of a container"
+   :test (fn []
+           (std.block.type/container-string
+            (std.block.type/container-block
+             :vector [(std.block.type/token-block :number "42" 42 "42" 2 0)]
+             {:start "[" :end "]"})))
+   :expected "[42]"}])
+
+^{:refer std.block.type/container-value-string}
+(Test/check
+ [{:name "returns only expression values within container delimiters"
+   :test (fn []
+           (std.block.type/container-value-string
+            (std.block.type/container-block
+             :vector
+             [(std.block.type/token-block :number "42" 42 "forty-two" 2 0)
+              (std.block.type/void-block :linespace \space 1 0)
+              (std.block.type/token-block :number "7" 7 "seven" 1 0)]
+             {:start "[" :end "]"})))
+   :expected "[forty-two seven]"}])
+
+^{:refer std.block.type/container-expression-values}
+(Test/check
+ [{:name "keeps token and container values while dropping void and modifier values"
+   :test (fn []
+           (vec
+            (std.block.type/container-expression-values
+             [(std.block.type/token-block :number "42" 42 "42" 2 0)
+              (std.block.type/void-block :linespace \space 1 0)
+              (std.block.type/container-block :vector [] {:start "[" :end "]"})
+              (std.block.type/modifier-block :discard "#_" (fn [out _] out))])))
+   :expected [42]}])
+
+^{:refer std.block.type/container-block}
+(Test/check
+ [{:name "constructs function containers and supports child replacement"
+   :test (fn []
+           (let [plus (std.block.type/token-block :symbol "+" '+ "+" 1 0)
+                 one (std.block.type/token-block :number "1" 1 "1" 1 0)
+                 block (std.block.type/container-block :fn [plus one] {:start "(" :end ")"})
+                 replacement (std.block.protocol/replace-children block [one])]
+             [(std.block.protocol/block-value block)
+              (std.block.protocol/block-string block)
+              (std.block.protocol/block-value-string block)
+              (mapv std.block.protocol/block-value (std.block.protocol/block-children replacement))]))
+   :expected ['(fn [] (+ 1)) "(+1)" "(+ 1)" [1]]}])
+
+^{:refer std.block.type/modifier-block}
+(Test/check
+ [{:name "constructs modifiers that receive the accumulator and input"
+   :test (fn []
+           (let [block (std.block.type/modifier-block :append "@" (fn [out input] (conj out input)))]
+             [(std.block.protocol/block-type block)
+              (std.block.protocol/block-width block)
+              (std.block.protocol/block-modify block [:kept] :input)]))
+   :expected [:modifier 1 [:kept :input]]}])

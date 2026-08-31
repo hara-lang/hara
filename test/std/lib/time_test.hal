@@ -1,0 +1,121 @@
+(ns std.lib.time-test
+  (:require [std.lib.time :as time]))
+
+^{:refer std.lib.time/instant}
+(Test/check [{:name "constructs typed values" :test (fn [] [(time/instant? (time/instant 0)) (time/duration? (time/duration 1000)) (time/datetime? (time/datetime {:year 2026 :month 8 :day 18}))]) :expected [true true true]}])
+^{:refer std.lib.time/instant->datetime}
+(Test/check [{:name "converts epoch in UTC" :test (fn [] (time/to-map (time/instant->datetime (time/epoch) 0))) :expected {:year 1970 :month 1 :day 1 :hour 0 :minute 0 :second 0 :millisecond 0 :offset-minutes 0}}])
+^{:refer std.lib.time/datetime->instant}
+(Test/check [{:name "round trips fixed-offset civil time" :test (fn [] (time/to-long (time/datetime->instant (time/instant->datetime (time/instant 1787025600123) 600)))) :expected 1787025600123}])
+^{:refer std.lib.time/leap-year?}
+(Test/check [{:name "uses Gregorian leap years" :test (fn [] [(time/leap-year? 2000) (time/leap-year? 2100)]) :expected [true false]}])
+^{:refer std.lib.time/days-in-month}
+(Test/check [{:name "counts leap February" :test (fn [] [(time/days-in-month 2000 2) (time/days-in-month 2100 2)]) :expected [29 28]}])
+^{:refer std.lib.time/duration}
+(Test/check [{:name "constructs fixed durations and rejects months" :test (fn [] [(time/to-long (time/duration {:days 1 :hours 2})) (try (time/duration {:months 1}) false (catch error true))]) :expected [93600000 true]}])
+^{:refer std.lib.time/plus}
+(Test/check [{:name "adds timeline values" :test (fn [] (time/to-long (time/plus (time/instant 1000) (time/duration 500)))) :expected 1500}])
+^{:refer std.lib.time/minus}
+(Test/check [{:name "subtracts instants and durations" :test (fn [] [(time/to-long (time/minus (time/instant 1000) (time/duration 500))) (time/to-long (time/minus (time/instant 1500) (time/instant 1000)))] ) :expected [500 500]}])
+^{:refer std.lib.time/adjust}
+(Test/check [{:name "adjusts calendar months" :test (fn [] (select-keys (time/to-map (time/adjust (time/datetime {:year 2024 :month 1 :day 31}) {:months 1})) [:year :month :day])) :expected {:year 2024 :month 2 :day 29}}])
+^{:refer std.lib.time/truncate}
+(Test/check [{:name "truncates civil values" :test (fn [] (select-keys (time/to-map (time/truncate (time/datetime {:year 2026 :month 8 :day 18 :hour 14 :minute 22 :second 9}) :day)) [:year :month :day :hour :minute :second])) :expected {:year 2026 :month 8 :day 18 :hour 0 :minute 0 :second 0}}])
+^{:refer std.lib.time/format}
+(Test/check [{:name "formats native numeric patterns" :test (fn [] (time/format (time/datetime {:year 2026 :month 8 :day 18 :hour 14 :minute 3 :second 9 :millisecond 12 :offset-minutes 600}) "yyyy-MM-dd'T'HH:mm:ss.SSS Z XXX")) :expected "2026-08-18T14:03:09.012 +1000 +10:00"}])
+^{:refer std.lib.time/parse}
+(Test/check [{:name "parses strict fixed-offset patterns" :test (fn [] (time/format-iso (time/parse "2026-08-18T14:00:00.123+10:00" "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"))) :expected "2026-08-18T14:00:00.123+10:00"}])
+^{:refer std.lib.time/now}
+(Test/check [{:name "reads native clocks" :test (fn [] (let [wall (time/now) before (time/elapsed-ns) after (time/elapsed-ns)] [(time/instant? wall) (< 0 (time/to-long wall)) (<= before after)])) :expected [true true true]}])
+^{:refer std.lib.time/fail}
+(Test/check [{:name "throws typed failure values" :test (fn [] (try (time/fail "bad" {:x 1}) false (catch error (= (:x (ex-data error)) 1))) ) :expected true}])
+^{:refer std.lib.time/instant?}
+(Test/check [{:name "recognizes instants" :test (fn [] (time/instant? (time/instant 0))) :expected true}])
+^{:refer std.lib.time/duration?}
+(Test/check [{:name "recognizes durations" :test (fn [] (time/duration? (time/duration 0))) :expected true}])
+^{:refer std.lib.time/datetime?}
+(Test/check [{:name "recognizes civil date-times" :test (fn [] (time/datetime? (time/datetime {:year 2020 :month 1 :day 1}))) :expected true}])
+^{:refer std.lib.time/valid-offset?}
+(Test/check [{:name "bounds fixed offsets" :test (fn [] [(time/valid-offset? -1080) (time/valid-offset? 1080) (time/valid-offset? 1081)]) :expected [true true false]}])
+^{:refer std.lib.time/make-civil}
+(Test/check [{:name "fills default civil time fields" :test (fn [] (time/to-map (time/make-civil {:year 2020 :month 2 :day 29}))) :expected {:year 2020 :month 2 :day 29 :hour 0 :minute 0 :second 0 :millisecond 0 :offset-minutes 0}}])
+^{:refer std.lib.time/datetime}
+(Test/check [{:name "constructs civil date-times" :test (fn [] (time/day (time/datetime {:year 2020 :month 2 :day 29}))) :expected 29}])
+^{:refer std.lib.time/epoch}
+(Test/check [{:name "constructs epoch instant" :test (fn [] (time/to-long (time/epoch))) :expected 0}])
+^{:refer std.lib.time/elapsed-ns}
+(Test/check [{:name "reads monotonic elapsed clock" :test (fn [] (let [a (time/elapsed-ns) b (time/elapsed-ns)] (<= a b))) :expected true}])
+^{:refer std.lib.time/to-long}
+(Test/check [{:name "extracts timeline milliseconds" :test (fn [] [(time/to-long (time/instant 4)) (time/to-long (time/duration 5))]) :expected [4 5]}])
+^{:refer std.lib.time/from-long}
+(Test/check [{:name "constructs instants from milliseconds" :test (fn [] (time/to-long (time/from-long 7))) :expected 7}])
+^{:refer std.lib.time/floor-div}
+(Test/check [{:name "floors negative quotients" :test (fn [] [(time/floor-div -1 2) (time/floor-div 5 2)]) :expected [-1 2]}])
+^{:refer std.lib.time/days-from-civil}
+(Test/check [{:name "counts Unix epoch days" :test (fn [] (time/days-from-civil 1970 1 1)) :expected 0}])
+^{:refer std.lib.time/civil-from-days}
+(Test/check [{:name "converts epoch days to civil fields" :test (fn [] (time/civil-from-days 0)) :expected [1970 1 1]}])
+^{:refer std.lib.time/to-map}
+(Test/check [{:name "maps typed values" :test (fn [] (time/to-map (time/duration 9))) :expected {:millisecond 9}}])
+^{:refer std.lib.time/from-map}
+(Test/check [{:name "builds civil values from maps" :test (fn [] (time/year (time/from-map {:year 2020 :month 1 :day 2}))) :expected 2020}])
+^{:refer std.lib.time/to-vector}
+(Test/check [{:name "vectors selected fields" :test (fn [] (time/to-vector (time/datetime {:year 2020 :month 1 :day 2}) [:year :day])) :expected [2020 2]}])
+^{:refer std.lib.time/year}
+(Test/check [{:name "reads year" :test (fn [] (time/year (time/instant 0))) :expected 1970}])
+^{:refer std.lib.time/month}
+(Test/check [{:name "reads month" :test (fn [] (time/month (time/instant 0))) :expected 1}])
+^{:refer std.lib.time/day}
+(Test/check [{:name "reads day" :test (fn [] (time/day (time/instant 0))) :expected 1}])
+^{:refer std.lib.time/hour}
+(Test/check [{:name "reads hour" :test (fn [] (time/hour (time/instant 0))) :expected 0}])
+^{:refer std.lib.time/minute}
+(Test/check [{:name "reads minute" :test (fn [] (time/minute (time/instant 0))) :expected 0}])
+^{:refer std.lib.time/second}
+(Test/check [{:name "reads second" :test (fn [] (time/second (time/instant 0))) :expected 0}])
+^{:refer std.lib.time/millisecond}
+(Test/check [{:name "reads millisecond" :test (fn [] (time/millisecond (time/instant 12))) :expected 12}])
+^{:refer std.lib.time/offset-minutes}
+(Test/check [{:name "reads civil offset" :test (fn [] (time/offset-minutes (time/datetime {:year 2020 :month 1 :day 1 :offset-minutes 60}))) :expected 60}])
+^{:refer std.lib.time/day-of-week}
+(Test/check [{:name "reports ISO weekday" :test (fn [] (time/day-of-week (time/datetime {:year 1970 :month 1 :day 1}))) :expected 4}])
+^{:refer std.lib.time/has-timezone?}
+(Test/check [{:name "identifies civil timezone values" :test (fn [] (time/has-timezone? (time/datetime {:year 2020 :month 1 :day 1}))) :expected true}])
+^{:refer std.lib.time/get-timezone}
+(Test/check [{:name "gets timezone offset" :test (fn [] (time/get-timezone (time/datetime {:year 2020 :month 1 :day 1 :offset-minutes -60}))) :expected -60}])
+^{:refer std.lib.time/with-offset}
+(Test/check [{:name "represents instant at offset" :test (fn [] (time/hour (time/with-offset (time/instant 0) 60))) :expected 1}])
+^{:refer std.lib.time/with-timezone}
+(Test/check [{:name "aliases offset representation" :test (fn [] (time/hour (time/with-timezone (time/instant 0) 120))) :expected 2}])
+^{:refer std.lib.time/equal}
+(Test/check [{:name "compares timeline equality" :test (fn [] (time/equal (time/instant 0) (time/datetime {:year 1970 :month 1 :day 1}))) :expected true}])
+^{:refer std.lib.time/before}
+(Test/check [{:name "compares timeline precedence" :test (fn [] (time/before (time/instant 0) (time/instant 1))) :expected true}])
+^{:refer std.lib.time/after}
+(Test/check [{:name "compares timeline succession" :test (fn [] (time/after (time/instant 1) (time/instant 0))) :expected true}])
+^{:refer std.lib.time/shift-months}
+(Test/check [{:name "shifts month preserving valid day" :test (fn [] (select-keys (time/to-map (time/shift-months (time/datetime {:year 2024 :month 1 :day 31}) 1)) [:year :month :day])) :expected {:year 2024 :month 2 :day 29}}])
+^{:refer std.lib.time/value-index}
+(Test/check [{:name "finds value positions" :test (fn [] [(time/value-index [:a :b] :b) (time/value-index [:a] :x)]) :expected [1 nil]}])
+^{:refer std.lib.time/latest}
+(Test/check [{:name "selects latest timeline value" :test (fn [] (time/to-long (time/latest (time/instant 1) (time/instant 3) (time/instant 2)))) :expected 3}])
+^{:refer std.lib.time/earliest}
+(Test/check [{:name "selects earliest timeline value" :test (fn [] (time/to-long (time/earliest (time/instant 3) (time/instant 1) (time/instant 2)))) :expected 1}])
+^{:refer std.lib.time/pad}
+(Test/check [{:name "pads numeric fields" :test (fn [] (time/pad 7 3)) :expected "007"}])
+^{:refer std.lib.time/offset-text}
+(Test/check [{:name "formats signed offsets" :test (fn [] [(time/offset-text 600 false) (time/offset-text -90 true)]) :expected ["+1000" "-01:30"]}])
+^{:refer std.lib.time/token-value}
+(Test/check [{:name "formats known tokens" :test (fn [] (time/token-value (time/datetime {:year 2020 :month 2 :day 3 :offset-minutes 0}) "XXX")) :expected "Z"}])
+^{:refer std.lib.time/token-at}
+(Test/check [{:name "finds longest pattern token" :test (fn [] (time/token-at "SSS" 0)) :expected "SSS"}])
+^{:refer std.lib.time/format-iso}
+(Test/check [{:name "formats canonical ISO" :test (fn [] (time/format-iso (time/instant 0))) :expected "1970-01-01T00:00:00.000Z"}])
+^{:refer std.lib.time/digit?}
+(Test/check [{:name "recognizes decimal digits" :test (fn [] [(time/digit? \9) (time/digit? \x)]) :expected [true false]}])
+^{:refer std.lib.time/parse-digits}
+(Test/check [{:name "parses fixed-width digits" :test (fn [] (time/parse-digits "2020" 0 4 :year)) :expected [2020 4]}])
+^{:refer std.lib.time/parse-offset}
+(Test/check [{:name "parses ISO offsets" :test (fn [] [(time/parse-offset "2020-01-01T00:00:00.000Z") (time/parse-offset "2020-01-01T00:00:00.000+10:00")]) :expected [0 600]}])
+^{:refer std.lib.time/parse-iso}
+(Test/check [{:name "parses ISO instants" :test (fn [] (time/to-long (time/parse-iso "1970-01-01T00:00:00.000Z"))) :expected 0}])

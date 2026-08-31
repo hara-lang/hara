@@ -1,0 +1,84 @@
+(ns std.block.heal.edit-test
+  (:require [std.block.heal.edit :as core]
+            [std.block.heal.parse :as parse]))
+
+^{:refer std.block.heal.edit/update-content :added "4.0"}
+(Test/check
+ [{:name "performs the necessary edits to a string #1"
+   :test (fn []
+             (core/update-content "("
+                                  (quote ({:action :insert :col 1 :line 1 :new-char ")"}))))
+   :expected "()"}
+  {:name "performs the necessary edits to a string #2"
+   :test (fn []
+             (core/update-content "
+(defn my-func [x]
+  (if (> x 0)
+    (println :positive)
+    (println :done})"
+                                  (quote ({:action :replace :col 19 :line 5 :new-char ")"}))))
+   :expected "
+(defn my-func [x]
+  (if (> x 0)
+    (println :positive)
+    (println :done))"}]
+)
+
+^{:refer std.block.heal.edit/create-mismatch-edits :added "4.0"}
+(Test/check
+ [{:name "find the actions required to edit the content"
+   :test (fn []
+             (core/create-mismatch-edits (parse/pair-delimiters (parse/parse-delimiters "
+(defn my-func [x]
+  (if (> x 0)
+    (println :positive)
+    (println :done})"))))
+   :expected (quote ({:action :replace :col 19 :line 5 :new-char ")"}))}]
+)
+
+^{:refer std.block.heal.edit/check-append-fn :added "4.0"}
+(Test/check
+ [{:name "check for open unpaired #1"
+   :test (fn [] (core/check-append-fn {:type :open}))
+   :expected true}
+  {:name "check for open unpaired #2"
+   :test (fn [] (core/check-append-fn {:pair-id 1 :type :open}))
+   :expected false}]
+)
+
+^{:refer std.block.heal.edit/check-append-edits :added "4.0"}
+(Test/check
+ [{:name "checks that append edits are valid #1"
+   :test (fn []
+             (core/check-append-edits [{:type :open} {:type :open} {:pair-id 1 :type :close}]))
+   :expected true}
+  {:name "checks that append edits are valid #2"
+   :test (fn []
+             (core/check-append-edits [{:type :open} {:pair-id 1 :type :close} {:type :open}]))
+   :expected false}]
+)
+
+^{:refer std.block.heal.edit/create-append-edits :added "4.0"}
+(Test/check
+ [{:name "creates the append edits"
+   :test (fn [] (core/create-append-edits (parse/parse-delimiters " ( ")))
+   :expected [{:action :insert :col 2 :line 1 :new-char ")"}]}]
+)
+
+^{:refer std.block.heal.edit/check-remove-fn :added "4.0"}
+(Test/check
+ [{:name "check for close unpaired #1"
+   :test (fn [] (core/check-remove-fn {:type :close}))
+   :expected true}
+  {:name "check for close unpaired #2"
+   :test (fn [] (core/check-remove-fn {:pair-id 1 :type :close}))
+   :expected false}]
+)
+
+^{:refer std.block.heal.edit/create-remove-edits :added "4.0"}
+(Test/check
+ [{:name "creates removes edits"
+   :test (fn []
+             (core/create-remove-edits [{:col 2 :line 1 :type :close} {:col 3 :line 2 :type :close}]))
+   :expected [{:action :remove :col 3 :line 2} {:action :remove :col 2 :line 1}]}]
+)

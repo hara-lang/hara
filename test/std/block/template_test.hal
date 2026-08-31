@@ -1,0 +1,92 @@
+(ns std.block.template-test
+  (:require [std.block :as block]
+            [std.block.template :as template]
+            [std.foundation.bootstrap :as bootstrap]))
+
+^{:refer std.block.template/template-expand-children}
+(Test/check
+ [{:name "splices template child markers without changing ordinary values"
+   :test (fn []
+           (template/template-expand-children
+            [1 [:template/splice [2 3]] {:value 4}]))
+   :expected [1 2 3 {:value 4}]}])
+
+^{:refer std.block.template/template-replace-unquotes}
+(Test/check
+ [{:name "resolves unquote and unquote-splicing across a template form"
+   :test (fn []
+           (pr-str
+            (template/template-replace-unquotes
+             '(do (unquote value) (unquote-splicing items))
+             {'value 7 'items [8 9]})))
+   :expected "(do 7 8 9)"}])
+
+^{:refer std.block.template/$}
+(Test/check
+ [{:name "captures macro-call lexical values in a template"
+   :test (fn []
+           (let [value 7]
+             (pr-str (template/$ (list ~value)))))
+   :expected "(list 7)"}])
+
+^{:refer std.block.template/get-template-params}
+(Test/check
+ [{:name "finds unquote and splice parameters in parsed template code"
+   :test (fn []
+           (vec (map pr-str
+                     (template/get-template-params
+                      (block/parse-first "(foo ~x ~@xs)")))))
+   :expected ["(unquote x)" "(unquote-splicing xs)"]}])
+
+^{:refer std.block.template/get-template}
+(Test/check
+ [{:name "records parsed code parameters and multiple-form mode"
+   :test (fn []
+           (let [single (template/get-template "(foo ~x ~@xs)")
+                 multiple (template/get-template "(foo ~x) (bar ~@xs)" identity true)]
+             [(:multi single)
+              (vec (map pr-str (:params single)))
+              (:multi multiple)
+              (vec (map pr-str (:params multiple)))]))
+   :expected [nil ["(unquote x)" "(unquote-splicing xs)"]
+              true ["(unquote x)" "(unquote-splicing xs)"]]}])
+
+^{:refer std.block.template/fill-template}
+(Test/check
+ [{:name "renders interpolated values and reports missing inputs with ex data"
+   :test (fn []
+           (let [template (template/get-template "(foo ~x ~@xs)")]
+             [(template/fill-template template {'x 7 'xs [8 9]})
+              (try
+                (template/fill-template template {})
+                :not-thrown
+                (catch error
+                  [(ex-class error) (ex-message error)
+                   (:input (ex-data error)) (:missing (ex-data error))]))]))
+   :expected ["(foo 7 8 9)"
+              [:ex.class/argument "Missing params" {} #{'x 'xs}]]}])
+
+^{:refer std.block.template/defn-form}
+(Test/check
+ [{:name "builds the compatibility function form with positional and optional arities"
+   :test (fn []
+           (pr-str
+            (template/defn-form
+             {'fsym 'sample
+              'doc "doc"
+              'base-args '[x]
+              'opts-args '[]
+              'body-form 'x})))
+   :expected "(defn sample \"doc\" ([x] (sample x {})) ([] x))"}])
+
+^{:refer std.foundation.bootstrap/scaffold}
+(Test/check
+ [{:name "bootstraps Test/check inventory for every public template seam"
+   :test (fn []
+           (let [preview (bootstrap/scaffold 'std.block.template ""
+                                             {:test-namespace 'fixture.template-test
+                                              :alias 'template})]
+             [(:changed preview)
+              (empty? (:missing (:coverage preview)))
+              (not (empty? (:pending (:coverage preview))))]))
+   :expected [true true true]}])

@@ -1,0 +1,40 @@
+(ns lang.protocol.registry-test
+  (:require [lang.protocol.registry :as registry]))
+
+(defstruct RegistryFixture [tag])
+
+(extend-type RegistryFixture registry/IGrammarCatalog
+  (find-source [fixture coordinate] [(:tag fixture) :find coordinate])
+  (list-sources [fixture query] [(:tag fixture) :list query])
+  (available-versions [fixture grammar-id] [(:tag fixture) :versions grammar-id]))
+(extend-type RegistryFixture registry/IGrammarRegistry
+  (install-source [fixture source] [(:tag fixture) :install source])
+  (replace-source [fixture source] [(:tag fixture) :replace source])
+  (remove-source [fixture coordinate] [(:tag fixture) :remove coordinate]))
+(extend-type RegistryFixture registry/IGrammarResolver
+  (resolve-grammar [fixture request] [(:tag fixture) :resolve request]))
+
+(def fixture (RegistryFixture :fixture))
+
+^{:refer lang.protocol.registry/find-source}
+(Test/check [{:name "separates grammar catalog lookup operations"
+              :test (fn [] [(registry/find-source fixture [:grammar :js 1])
+                            (registry/list-sources fixture {:grammar/id :js})
+                            (registry/available-versions fixture :js)])
+              :expected [[:fixture :find [:grammar :js 1]]
+                         [:fixture :list {:grammar/id :js}]
+                         [:fixture :versions :js]]}])
+
+^{:refer lang.protocol.registry/install-source}
+(Test/check [{:name "separates grammar registry mutation operations"
+              :test (fn [] [(registry/install-source fixture {:grammar/id :js})
+                            (registry/replace-source fixture {:grammar/id :js :grammar/version 2})
+                            (registry/remove-source fixture [:grammar :js 1])])
+              :expected [[:fixture :install {:grammar/id :js}]
+                         [:fixture :replace {:grammar/id :js :grammar/version 2}]
+                         [:fixture :remove [:grammar :js 1]]]}])
+
+^{:refer lang.protocol.registry/resolve-grammar}
+(Test/check [{:name "dispatches grammar resolution independently of registry mutation"
+              :test (fn [] (registry/resolve-grammar fixture {:grammar/id :js :grammar/version 1}))
+              :expected [:fixture :resolve {:grammar/id :js :grammar/version 1}]}])

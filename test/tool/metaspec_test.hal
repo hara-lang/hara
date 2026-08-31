@@ -1,0 +1,263 @@
+(ns tool.metaspec-test
+  (:require [std.foundation.bootstrap :as bootstrap]
+            [std.typed.registry :as registry]
+            [tool.metaspec :as metaspec]))
+
+;; The bootstrap preview inventories the full public API; each permanent block below is behavioral.
+
+(def +document+
+  {:document/id :demo/document
+   :document/version "1.0.0"
+   :document/type :demo/spec
+   :meta/document-schema
+   {:schema/id :demo/document-schema
+    :schema/type :map
+    :schema/required [:document/id :document/version]}
+   :meta/schemas []
+   :meta/cross-references []
+   :meta/checkers []
+   :spec/conforms-to {:spec/id :demo/document :spec/version "1.0.0"}})
+
+^{:refer tool.metaspec/coordinate}
+(Test/check
+ [{:name "uses document identity and version as a stable coordinate"
+   :test (fn [] (metaspec/coordinate +document+))
+   :expected [:demo/document "1.0.0"]}])
+
+^{:refer tool.metaspec/catalog}
+(Test/check
+ [{:name "creates an empty immutable catalog"
+   :test (fn [] (metaspec/catalog))
+   :expected {:metaspecs {} :checkers {}}}])
+
+^{:refer tool.metaspec/catalog-metaspec}
+(Test/check
+ [{:name "adds a metaspec without altering its prior catalog"
+   :test (fn [] [(metaspec/find-metaspec (metaspec/catalog-metaspec (metaspec/catalog) +document+)
+                                       [:demo/document "1.0.0"])
+                 (metaspec/find-metaspec (metaspec/catalog) [:demo/document "1.0.0"])])
+   :expected [+document+ nil]}])
+
+^{:refer tool.metaspec/catalog-checker}
+(Test/check
+ [{:name "adds external checker entrypoints without global state"
+   :test (fn [] (function?
+                 (metaspec/find-checker
+                  (metaspec/catalog-checker (metaspec/catalog) [:demo/checkers "1"]
+                                            {'demo/check (fn [_ _] [])})
+                  [:demo/checkers "1"]
+                  'demo/check)))
+   :expected true
+   }])
+
+^{:refer tool.metaspec/find-metaspec}
+(Test/check
+ [{:name "looks up exact versioned metaspec identities"
+   :test (fn [] (metaspec/find-metaspec
+                 (metaspec/catalog-metaspec (metaspec/catalog) +document+)
+                 [:demo/document "2.0.0"]))
+   :expected nil}])
+
+^{:refer tool.metaspec/find-checker}
+(Test/check
+ [{:name "returns nil for an absent checker entrypoint"
+   :test (fn [] (metaspec/find-checker (metaspec/catalog) [:demo/checkers "1"] 'demo/check))
+   :expected nil}])
+
+^{:refer tool.metaspec/qualified-keyword?}
+(Test/check
+ [{:name "distinguishes qualified keyword identifiers"
+   :test (fn [] [(metaspec/qualified-keyword? :demo/value)
+                 (metaspec/qualified-keyword? :value)])
+   :expected [true false]}])
+
+^{:refer tool.metaspec/finding}
+(Test/check
+ [{:name "creates findings with a canonical repair payload"
+   :test (fn [] (select-keys (metaspec/finding :fail :demo/rule :demo/requirement [:demo/key]
+                                                "broken" {:action/type :replace-value})
+                           [:finding/id :rule/id :requirement/id :finding/status :finding/path :finding/repair]))
+   :expected {:finding/id :demo/rule
+              :rule/id :demo/rule
+              :requirement/id :demo/requirement
+              :finding/status :fail
+              :finding/path [:demo/key]
+              :finding/repair {:action/type :replace-value}}}])
+
+^{:refer tool.metaspec/walk}
+(Test/check
+ [{:name "visits maps vectors and nested values with their EDN paths"
+   :test (fn [] (metaspec/walk {:demo/value [1]} (fn [_ path] [path])))
+   :expected [[] [:demo/value] [:demo/value 0]]}])
+
+^{:refer tool.metaspec/field-values}
+(Test/check
+ [{:name "returns every matching field value and path"
+   :test (fn [] (metaspec/field-values {:demo/value [{:demo/value 1}]} :demo/value))
+   :expected [{:field :demo/value :value [{:demo/value 1}] :path [:demo/value]}
+              {:field :demo/value :value 1 :path [:demo/value 0 :demo/value]}]}])
+
+^{:refer tool.metaspec/lint}
+(Test/check
+ [{:name "detects missing requirements, unqualified keys, invalid IDs, and duplicates"
+   :test (fn [] (set (map :rule/id
+                           (metaspec/lint [{:schema/id :demo/value}
+                                           {:schema/id :demo/value}
+                                           {:extension true}]))))
+   :expected #{:hara.metaspec.rule/qualified-key
+               :hara.metaspec.rule/duplicate-id}}])
+
+^{:refer tool.metaspec/schema-name}
+(Test/check
+ [{:name "preserves a schema identifier namespace in the std.typed symbol"
+   :test (fn [] (metaspec/schema-name :demo/value))
+   :expected 'demo/value}])
+
+^{:refer tool.metaspec/compile-schema}
+(Test/check
+ [{:name "compiles map properties, optional fields, and named references"
+   :test (fn [] (metaspec/compile-schema
+                 {:schema/type :map
+                  :schema/required [:demo/id]
+                  :schema/properties {:demo/id {:schema/ref :demo/value}
+                                      :demo/label {:schema/type :string :schema/min-length 1}}}))
+   :expected [:map
+              [:demo/id (list 'var 'demo/value)]
+              [:demo/label {:optional true} [:str {:min-count 1}]]]}])
+
+^{:refer tool.metaspec/schema-declarations}
+(Test/check
+ [{:name "indexes the document schema and named declarations"
+   :test (fn [] (set (keys (metaspec/schema-declarations
+                            {:meta/document-schema {:schema/id :demo/root}
+                             :meta/schemas [{:schema/id :demo/value}]}))))
+   :expected #{:demo/root :demo/value}}])
+
+^{:refer tool.metaspec/compile-registry}
+(Test/check
+ [{:name "builds a typed registry that resolves named declarations"
+   :test (fn [] (registry/has-schema?
+                 (metaspec/compile-registry
+                  {:meta/document-schema {:schema/id :demo/root :schema/type :map}
+                   :meta/schemas [{:schema/id :demo/value :schema/type :string}]})
+                 'demo/value))
+   :expected true}])
+
+^{:refer tool.metaspec/translate-finding}
+(Test/check
+ [{:name "turns typed missing-key findings into an add-key repair"
+   :test (fn [] (:finding/repair
+                 (metaspec/translate-finding
+                  {:finding/type :std.typed.schema/missing-key
+                   :finding/path [:document/id]
+                   :finding/context {:parent-path [] :key :document/id}})))
+   :expected {:action/type :add-key :action/path [] :action/key :document/id}}])
+
+^{:refer tool.metaspec/validate-document}
+(Test/check
+ [{:name "validates declared required document fields"
+   :test (fn [] (:finding/repair
+                 (first (metaspec/validate-document
+                         {:meta/document-schema {:schema/id :demo/document
+                                                 :schema/type :map
+                                                 :schema/required [:document/id]}
+                          :meta/schemas []}
+                         {}))))
+   :expected {:action/type :add-key :action/path [] :action/key :document/id}}])
+
+^{:refer tool.metaspec/reference-entries}
+(Test/check
+ [{:name "collects both schema/ref and schema/items source paths"
+   :test (fn [] (metaspec/reference-entries {:schema/ref :demo/value
+                                              :schema/items :demo/item}))
+   :expected [{:field :schema/ref :value :demo/value :path [:schema/ref]}
+              {:field :schema/items :value :demo/item :path [:schema/items]}]}])
+
+^{:refer tool.metaspec/edn-value?}
+(Test/check
+ [{:name "rejects functions while accepting portable nested data"
+   :test (fn [] [(metaspec/edn-value? {:demo/value [1 :demo/value]})
+                 (metaspec/edn-value? (fn [] :demo/value))])
+   :expected [true false]}])
+
+^{:refer tool.metaspec/verify}
+(Test/check
+ [{:name "reports an unresolved declared schema reference"
+   :test (fn [] (has? (set (map :rule/id (metaspec/verify {:schema/ref :missing/schema})))
+                           :hara.metaspec.rule/schema-reference))
+   :expected true}])
+
+^{:refer tool.metaspec/builtin-findings}
+(Test/check
+ [{:name "runs all four normative built-in checker operations"
+   :test (fn [] [(empty? (metaspec/builtin-findings {:demo/value 1}
+                                                {:checker/id :demo/rule
+                                                 :checker/requirement :demo/requirement
+                                                 :checker/op :hara.metaspec.check/qualified-map-keys}))
+                 (count (metaspec/builtin-findings {:demo/id :not-qualified}
+                                                   {:checker/id :demo/rule
+                                                    :checker/requirement :demo/requirement
+                                                    :checker/op :hara.metaspec.check/qualified-field-values
+                                                    :checker/fields [:demo/id]}))
+                 (count (metaspec/builtin-findings [{:demo/id :demo/value} {:demo/id :demo/value}]
+                                                   {:checker/id :demo/rule
+                                                    :checker/requirement :demo/requirement
+                                                    :checker/op :hara.metaspec.check/unique-field-values
+                                                    :checker/fields [:demo/id]}))
+                 (count (metaspec/builtin-findings (fn [] nil)
+                                                   {:checker/id :demo/rule
+                                                    :checker/requirement :demo/requirement
+                                                    :checker/op :hara.metaspec.check/no-host-values}))])
+   :expected [true 1 1 1]}])
+
+^{:refer tool.metaspec/checker-obligations}
+(Test/check
+ [{:name "marks unavailable external checkers blocked"
+   :test (fn [] (select-keys
+                 (first (metaspec/checker-obligations
+                         {:meta/checkers [{:checker/id :demo/rule
+                                           :checker/type :external
+                                           :checker/requirement :demo/requirement
+                                           :checker/package [:demo/checker "1"]}]}
+                         {} (metaspec/catalog)))
+                 [:obligation/id :obligation/status]))
+   :expected {:obligation/id :demo/rule :obligation/status :blocked}}])
+
+^{:refer tool.metaspec/conformance-report}
+(Test/check
+ [{:name "prioritizes blocked obligations in its canonical status"
+   :test (fn [] (select-keys
+                 (metaspec/conformance-report +document+ +document+
+                                              [{:obligation/status :pass :obligation/findings []}
+                                               {:obligation/status :blocked :obligation/findings []}])
+                 [:report/type :report/status :summary]))
+   :expected {:report/type :hara/metaspec-conformance
+              :report/status :blocked
+              :summary {:pass 1 :fail 0 :unknown 0 :blocked 1}}}])
+
+^{:refer tool.metaspec/conforms}
+(Test/check
+ [{:name "conforms self-describing documents with an explicit immutable metaspec"
+   :test (fn [] (:report/status (metaspec/conforms +document+ {:metaspec +document+})) )
+   :expected :pass}])
+
+^{:refer tool.metaspec/verification-report}
+(Test/check
+ [{:name "reports no-finding verification as pass"
+   :test (fn [] (select-keys (metaspec/verification-report +document+ [])
+                             [:report/type :report/status :summary]))
+   :expected {:report/type :hara/metaspec-verification
+              :report/status :pass
+              :summary {:pass 1 :fail 0 :unknown 0 :blocked 0}}}])
+
+^{:refer std.foundation.bootstrap/scaffold}
+(Test/check
+ [{:name "bootstraps deterministic Test/check seams for the complete public API"
+   :test (fn []
+           (let [preview (bootstrap/scaffold 'tool.metaspec ""
+                                             {:test-namespace 'fixture.metaspec-test
+                                              :alias 'metaspec})]
+             [(:changed preview)
+              (empty? (:missing (:coverage preview)))
+              (not (empty? (:pending (:coverage preview))))]))
+   :expected [true true true]}])

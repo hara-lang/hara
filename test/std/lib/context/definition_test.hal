@@ -1,0 +1,33 @@
+(ns std.lib.context.definition-test
+  (:require [std.lib.context.definition :as definition]))
+
+(defn isolated [function]
+  (try (definition/clear) (function) (finally (definition/clear))))
+(defn install []
+  (definition/register-family {:id :fallback/function :origin :hara :prefix #{"defn."} :kind :function})
+  (definition/register-family {:id :language/postgres-function :origin [:lang :postgres] :exact #{"defn.pg"} :kind :function}))
+
+^{:refer std.lib.context.definition/ensure-resource}
+(Test/check [{:name "ensures the backing resource" :test (fn [] (:type (definition/ensure-resource))) :expected :definition/family}])
+^{:refer std.lib.context.definition/registry}
+(Test/check [{:name "exposes the family registry atom" :test (fn [] (atom? (definition/registry))) :expected true}])
+^{:refer std.lib.context.definition/normalize-text-set}
+(Test/check [{:name "normalizes text sets" :test (fn [] (definition/normalize-text-set [:a "b"])) :expected #{":a" "b"}}])
+^{:refer std.lib.context.definition/normalize-family}
+(Test/check [{:name "normalizes family fields" :test (fn [] (select-keys (definition/normalize-family {:id :x :exact ["a"]}) [:id :exact :prefix :generated])) :expected {:id :x :exact #{"a"} :prefix #{} :generated []}}])
+^{:refer std.lib.context.definition/register-family}
+(Test/check [{:name "registers normalized families" :test (fn [] (isolated (fn [] (:id (definition/register-family {:id :x :prefix #{"x"}}))))) :expected :x}])
+^{:refer std.lib.context.definition/unregister-family}
+(Test/check [{:name "returns and removes families" :test (fn [] (isolated (fn [] (definition/register-family {:id :x}) [(:id (definition/unregister-family :x)) (definition/match-family "x")])) ) :expected [:x nil]}])
+^{:refer std.lib.context.definition/families}
+(Test/check [{:name "orders registered families" :test (fn [] (isolated (fn [] (definition/register-family {:id :z}) (definition/register-family {:id :a}) (vec (map :id (definition/families)))))) :expected [:a :z]}])
+^{:refer std.lib.context.definition/sync-origin}
+(Test/check [{:name "replaces owned origin families" :test (fn [] (isolated (fn [] (definition/sync-origin :lang [{:id :x :exact #{"x"}}]) (vec (map :id (definition/sync-origin :lang [{:id :y :exact #{"y"}}])))))) :expected [:y]}])
+^{:refer std.lib.context.definition/exact-family}
+(Test/check [{:name "finds exact families" :test (fn [] (:id (definition/exact-family "x" [{:id :x :exact #{"x"}}]))) :expected :x}])
+^{:refer std.lib.context.definition/prefix-family}
+(Test/check [{:name "prefers longest prefixes" :test (fn [] (:id (definition/prefix-family "defn.pg" [{:id :a :prefix #{"defn."}} {:id :b :prefix #{"defn.pg"}}]))) :expected :b}])
+^{:refer std.lib.context.definition/match-family}
+(Test/check [{:name "prefers exact registrations over prefixes" :test (fn [] (isolated (fn [] (install) [(:id (definition/match-family "defn.pg")) (:id (definition/match-family "defn.js"))]))) :expected [:language/postgres-function :fallback/function]}])
+^{:refer std.lib.context.definition/clear}
+(Test/check [{:name "clears families idempotently" :test (fn [] (isolated (fn [] (definition/register-family {:id :x}) [(definition/clear) (definition/clear)]))) :expected [{} {}]}])

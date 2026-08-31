@@ -1,0 +1,55 @@
+(ns lang.model.v1.spec-postgres-test
+  (:require [lang.model.v1.spec-postgres :as postgres]
+            [lang.model.v1.spec-postgres.postgres-native :as native]))
+
+^{:refer lang.model.v1.spec-postgres/+language+}
+(Test/check
+ [{:name "restores the archive PostgreSQL model as a versioned XTalk child"
+   :test (fn [] [postgres/+language+
+                 postgres/+tag+
+                 postgres/+version+
+                 postgres/+grammar-version+
+                 (:lang postgres/+book+)
+                 (:parent postgres/+book+)
+                 (get-in postgres/+selection+ [:coordinate :grammar/id])])
+   :expected [:postgres :postgres 1 1 :postgres :xtalk :postgres]}])
+
+(def sales-tax-form
+  '(defn sales-tax
+     {:- [:real]
+      :props [:immutable :parallel-safe]}
+     [:real subtotal :real fraction := 0.06]
+     (return (* fraction subtotal))))
+
+(def sales-tax-output
+  (str "CREATE OR REPLACE FUNCTION sales_tax(\n"
+       "  subtotal REAL,\n"
+       "  fraction REAL DEFAULT 0.06\n"
+       ") RETURNS REAL AS $$\n"
+       "BEGIN\n"
+       "  RETURN fraction * subtotal;\n"
+       "END;\n"
+       "$$ LANGUAGE 'plpgsql' IMMUTABLE PARALLEL SAFE;"))
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-defn-format}
+(Test/check
+ [{:name "formats PostgreSQL function metadata and typed inputs"
+   :test (fn [] (let [metadata (first (native/pg-defn-format sales-tax-form))]
+                  [(:static/return metadata)
+                   (:static/language metadata)
+                   (:static/props metadata)
+                   (get-in metadata [:static/input 0 :symbol])
+                   (get-in metadata [:static/input 0 :modifiers])
+                   (get-in metadata [:static/input 1 :symbol])
+                   (get-in metadata [:static/input 1 :value])]))
+   :expected [[:real] :default [:immutable :parallel-safe]
+              'subtotal [:real] 'fraction 0.06]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-defn}
+(Test/check
+ [{:name "emits the archived deterministic PL/pgSQL function shape"
+   :test (fn [] (let [formatted (native/pg-defn-format sales-tax-form)]
+                  (native/pg-defn (second formatted)
+                                  (:grammar postgres/+selection+)
+                                  {})))
+   :expected sales-tax-output}])

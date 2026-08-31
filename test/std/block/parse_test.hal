@@ -1,0 +1,640 @@
+(ns std.block.parse-test
+  (:require [std.block.base :as base]
+            [std.block.construct :as construct]
+            [std.block.parse :refer :all]
+            [std.block.reader :as reader]))
+
+(defn migration-test-check
+  [test expected]
+  (let [actual (test)]
+    (std.native.Test/result
+     "archive migration check"
+     actual
+     expected
+     (std.native.Test/compare actual expected))))
+
+^{:refer std.block.parse/read-dispatch :added "3.0"}
+(Test/check
+ [{:name "dispatches on first symbol #1"
+   :test (fn [] (read-dispatch \tab))
+   :expected :void}
+  {:name "dispatches on first symbol #2"
+   :test (fn [] (read-dispatch (str/char-at "#" 0)))
+   :expected :hash}]
+ migration-test-check)
+
+^{:refer std.block.parse/-parse :added "3.0"}
+(Test/check
+ [{:name "extendable parsing function #1"
+   :test (fn [] (base/block-info (-parse (reader/create ":a"))))
+   :expected {:height 0 :string ":a" :tag :keyword :type :token :width 2}}
+  {:name "extendable parsing function #2"
+   :test (fn [] (base/block-info (-parse (reader/create "\"\\\\n\""))))
+   :expected {:height 0 :string "\"\\\\n\"" :tag :string :type :token :width 5}}
+  {:name "extendable parsing function #3"
+   :test (fn [] (base/block-info (-parse (reader/create "\"\\n\""))))
+   :expected {:height 0 :string "\"\\n\"" :tag :string :type :token :width 4}}
+  {:name "extendable parsing function #4"
+   :test (fn [] (base/block-info (-parse (reader/create "\"\n\""))))
+   :expected {:height 1 :string "\"\n\"" :tag :string :type :token :width 1}}
+  {:name "extendable parsing function #5"
+   :test (fn []
+             (base/block-info (-parse (reader/create "\n\n"))))
+   :expected {:height 1 :string "\n" :tag :linebreak :type :void :width 0}}
+  {:name "extendable parsing function #6"
+   :test (fn []
+             (base/block-info (-parse (reader/create "\"\n\n\""))))
+   :expected {:height 2 :string "\"\n\n\"" :tag :string :type :token :width 1}}
+  {:name "extendable parsing function #7"
+   :test (fn []
+             (base/block-info (-parse (reader/create "\"\\n\""))))
+   :expected {:height 0 :string "\"\\n\"" :tag :string :type :token :width 4}}
+  {:name "extendable parsing function #8"
+   :test (fn []
+             (base/block-info (-parse (reader/create "\"\\n\n\""))))
+   :expected {:height 1 :string "\"\\n\n\"" :tag :string :type :token :width 1}}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-void :added "3.0"}
+(Test/check
+ [{:name "reads a void block from reader"
+   :test (fn []
+             (->> (reader/read-repeatedly (reader/create " \t\n\f") parse-void eof-block?)
+                  (take 5) (map std.block.base/block-representation)))
+   :expected ["␣" "\\t" "\\n" "\\f"]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-comment :added "3.0"}
+(Test/check
+ [{:name "creates a comment"
+   :test (fn []
+             (-> (reader/create ";this is a comment") parse-comment (base/block-info)))
+   :expected {:width 18
+              :type :comment
+              :string ";this is a comment"
+              :tag :comment
+              :height 0}}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-token :added "3.0"}
+(Test/check
+ [{:name "reads token block from the reader #1"
+   :test (fn [] (-> (reader/create "abc") (parse-token) (base/block-value)))
+   :expected (quote abc)}
+  {:name "reads token block from the reader #2"
+   :test (fn [] (-> (reader/create "3/5") (parse-token) (base/block-value)))
+   :expected (/ 3 5)}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-keyword :added "3.0"}
+(Test/check
+ [{:name "reads a keyword block from the reader #1"
+   :test (fn [] (-> (reader/create ":a/b") (parse-keyword) (base/block-value)))
+   :expected :a/b}
+  {:name "reads a keyword block from the reader #2"
+   :test (fn [] (-> (reader/create "::hello") (parse-keyword) (base/block-value)))
+   :expected (keyword ":hello")}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-reader :added "3.0"}
+(Test/check
+ [{:name "reads a :char block from the reader"
+   :test (fn [] (select-keys
+                 (-> (reader/create "\\c") (parse-reader) (base/block-info))
+                 [:string :tag :type]))
+   :expected {:string "\\c" :tag :char :type :token}}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-string-data :added "3.0"}
+(Test/check
+ [{:name "reads string data from the reader #1"
+   :test (fn [] (read-string-data (reader/create "\"hello\"")))
+   :expected "hello"}
+  {:name "reads string data from the reader #2"
+   :test (fn [] (read-string-data (reader/create "\"\\\"hello\\\"\"")))
+   :expected "\\\"hello\\\""}
+  {:name "rejects a non-string reader input"
+   :test (fn []
+           (try
+             (read-string-data (reader/create "\n\n"))
+             false
+             (catch _ true)))
+   :expected true}
+  {:name "reads string data from the reader #4"
+   :test (fn []
+             (read-string-data (reader/create "\"\n\n\"")))
+   :expected "\n\n"}
+  {:name "reads string data from the reader #5"
+   :test (fn []
+             (read-string-data (reader/create "\"\\n\"")))
+   :expected "\\n"}
+  {:name "reads string data from the reader #6"
+   :test (fn []
+             (read-string-data (reader/create "\"\\n\n\"")))
+   :expected "\\n\n"}]
+ migration-test-check)
+
+^{:refer std.block.parse/eof-block? :added "3.0"}
+(Test/check
+ [{:name "checks if block is of tag :eof"
+   :test (fn [] (eof-block? (-parse (reader/create ""))))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.parse/delimiter-block? :added "3.0"}
+(Test/check
+ [{:name "checks if block is of tag :delimiter"
+   :test (fn []
+             (delimiter-block? (binding [*end-delimiter* (str/char-at "}" 0)] (-parse (reader/create "}")))))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-whitespace :added "3.0"}
+(Test/check
+ [{:name "reads whitespace blocks as vector"
+   :test (fn [] (count (read-whitespace (reader/create "   "))))
+   :expected 3}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-non-expressions :added "3.0"}
+(Test/check
+ [{:name "parses whitespace until next token"
+   :test (fn []
+             (std.block.base/block-representation (parse-non-expressions (reader/create " \na"))))
+   :expected "[(␣ \\n) a]"}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-start :added "3.0"}
+(Test/check
+ [{:name "rejects a different prefix"
+   :test (fn []
+           (try
+             (read-start (reader/create "~@") "~#")
+             false
+             (catch _ true)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-collection :added "3.0"}
+(Test/check
+ [{:name "reads all children, taking a delimiter as option"
+   :test (fn []
+             (apply str
+                    (map std.block.base/block-representation
+                         (read-collection (reader/create "(1 2 3 4 5)") "(" (str/char-at ")" 0)))))
+   :expected "1␣2␣3␣4␣5"}]
+ migration-test-check)
+
+^{:refer std.block.parse/read-cons :added "3.0"}
+(Test/check
+ [{:name "helper method for reading  #1"
+   :test (fn [] (->> (read-cons (reader/create "@hello") "@") (map base/block-string)))
+   :expected (quote ("hello"))}
+  {:name "helper method for reading  #2"
+   :test (fn []
+             (->> (read-cons (reader/create "^hello {}") "^" 2) (map base/block-string)))
+   :expected (quote ("hello" " " "{}"))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-collection :added "3.0"}
+(Test/check
+ [{:name "parses a collection #1"
+   :test (fn []
+             (-> (parse-collection (reader/create "#(+ 1 2 3 4)") :fn) (base/block-value)))
+   :expected (quote (fn [] (+ 1 2 3 4)))}
+  {:name "parses a collection #2"
+   :test (fn []
+             (-> (parse-collection (reader/create "(1 2 3 4)") :list) (base/block-value)))
+   :expected (quote (1 2 3 4))}
+  {:name "parses a collection #3"
+   :test (fn []
+             (-> (parse-collection (reader/create "[1 2 3 4]") :vector) (base/block-value)))
+   :expected [1 2 3 4]}
+  {:name "parses a collection #4"
+   :test (fn []
+             (-> (parse-collection (reader/create "{1 2 3 4}") :map) (base/block-value)))
+   :expected {1 2 3 4}}
+  {:name "parses a collection #5"
+   :test (fn []
+             (-> (parse-collection (reader/create "#{1 2 3 4}") :set) (base/block-value)))
+   :expected #{1 4 3 2}}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-cons :added "3.0"}
+(Test/check
+ [{:name "parses a cons #1"
+   :test (fn [] (-> (parse-cons (reader/create "~hello") :unquote) (base/block-value)))
+   :expected (quote (unquote hello))}
+  {:name "parses a cons #2"
+   :test (fn []
+             (-> (parse-cons (reader/create "~@hello") :unquote-splice) (base/block-value)))
+   :expected (quote (unquote-splicing hello))}
+  {:name "parses a cons #3"
+   :test (fn []
+             (-> (parse-cons (reader/create "^tag {:a 1}") :meta)
+                 (base/block-value) ((juxt meta identity))))
+   :expected [{:tag (quote tag)} {:a 1}]}
+  {:name "parses a cons #4"
+   :test (fn [] (-> (parse-cons (reader/create "@hello") :deref) (base/block-value)))
+   :expected (quote (deref hello))}
+  {:name "parses a cons #5"
+   :test (fn [] (-> (parse-cons (reader/create "`hello") :syntax) (base/block-value)))
+   :expected (quote (syntax-quote hello))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-unquote :added "3.0"}
+(Test/check
+ [{:name "parses a block starting with `~` from the reader #1"
+   :test (fn [] (-> (parse-unquote (reader/create "~hello")) (base/block-value)))
+   :expected (quote (unquote hello))}
+  {:name "parses a block starting with `~` from the reader #2"
+   :test (fn [] (-> (parse-unquote (reader/create "~@hello")) (base/block-value)))
+   :expected (quote (unquote-splicing hello))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-select :added "3.0"}
+(Test/check
+ [{:name "parses a block starting with `#?` from the reader #1"
+   :test (fn [] (-> (parse-select (reader/create "#?(:cljs a)")) (base/block-value)))
+   :expected (quote (? {:cljs a}))}
+  {:name "parses a block starting with `#?` from the reader #2"
+   :test (fn [] (-> (parse-select (reader/create "#?@(:cljs a)")) (base/block-value)))
+   :expected (quote (?-splicing {:cljs a}))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-hash-uneval :added "3.0"}
+(Test/check
+ [{:name "parses the hash-uneval string"
+   :test (fn []
+             (std.block.base/block-representation (parse-hash-uneval (reader/create "#_"))))
+   :expected "#_"}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-hash-cursor :added "3.0"}
+(Test/check
+ [{:name "parses the hash-cursor string"
+   :test (fn []
+             (std.block.base/block-representation (parse-hash-cursor (reader/create "#|"))))
+   :expected "|"}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-hash :added "3.0"}
+(Test/check
+ [{:name "parses a block starting with `#` from the reader #1"
+   :test (fn [] (-> (parse-hash (reader/create "#{1 2 3}")) (base/block-value)))
+   :expected #{1 3 2}}
+  {:name "parses a block starting with `#` from the reader #2"
+   :test (fn [] (-> (parse-hash (reader/create "#(+ 1 2)")) (base/block-value)))
+   :expected (quote (fn [] (+ 1 2)))}
+  {:name "parses a block starting with `#` from the reader #3"
+   :test (fn [] (-> (parse-hash (reader/create "#\"hello\"")) (base/block-value)))
+   :expected #"hello"}
+  {:name "parses a block starting with `#` from the reader #4"
+   :test (fn [] (-> (parse-hash (reader/create "#^hello {}")) (base/block-value)))
+   :expected (with-meta {} {:tag (quote hello)})}
+  {:name "parses a block starting with `#` from the reader #5"
+   :test (fn [] (-> (parse-hash (reader/create "#'hello")) (base/block-value)))
+   :expected (quote (var hello))}
+  {:name "parses a block starting with `#` from the reader #6"
+   :test (fn [] (-> (parse-hash (reader/create "#=(list 1 2 3)")) (base/block-value)))
+   :expected (quote (1 2 3))}
+  {:name "parses a block starting with `#` from the reader #7"
+   :test (fn [] (-> (parse-hash (reader/create "#?(:clj true)")) (base/block-value)))
+   :expected (quote (? {:clj true}))}
+  {:name "parses a block starting with `#` from the reader #8"
+   :test (fn [] (-> (parse-hash (reader/create "#?@(:clj [1 2 3])")) (base/block-value)))
+   :expected (quote (?-splicing {:clj [1 2 3]}))}
+  {:name "parses a block starting with `#` from the reader #9"
+   :test (fn []
+             (-> (parse-hash (reader/create "#:hello {:a 1 :b 2}")) (base/block-value)))
+   :expected {:hello/a 1 :hello/b 2}}
+  {:name "preserves an instant reader literal"
+   :test (fn []
+           (base/block-string
+            (parse-hash (reader/create "#inst \"2018-08-06T06:01:40.682-00:00\""))))
+   :expected "#inst \"2018-08-06T06:01:40.682-00:00\""} ]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-string :added "3.0"}
+(Test/check
+ [{:name "parses a block from a string input"
+   :test (fn [] (-> (parse-string "#(:b {:b 1})") (base/block-value)))
+   :expected (quote (fn [] ((keyword "b") {(keyword "b") 1})))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-root :added "3.0"}
+(Test/check
+ [{:name "parses a root"
+   :test (fn [] (std.block.base/block-representation (parse-root "a b c")))
+   :expected "a b c"}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-root}
+(Test/check
+ [{:name "parses a large flat source without dropping siblings"
+   :test (fn []
+           (let [source (str/join "\n" (repeat 100 "x"))
+                 root (parse-root source)
+                 code (vec (filter base/expression? (base/block-children root)))]
+             [(count code)
+              (base/block-string (first code))
+              (base/block-string (last code))]))
+   :expected [100 "x" "x"]}
+  {:name "parses deeply nested valid collections without native recursion"
+   :test (fn []
+           (let [depth 50
+                 source (str (apply str (repeat depth "("))
+                             "x"
+                             (apply str (repeat depth ")")))]
+             (base/block-string (parse-root source))))
+   :expected (str (apply str (repeat 50 "("))
+                  "x"
+                  (apply str (repeat 50 ")")))}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-container-iterative}
+(Test/check
+ [{:name "closes nested ordinary collection frames in source order"
+   :test (fn []
+           (let [[block end] (parse-container-iterative "(a [b])" 0)]
+             [(base/block-string block) end]))
+   :expected ["(a [b])" 7]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-first :added "4.0"}
+(Test/check
+ [{:name "gets the first element in root"
+   :test (fn [] (std.block.base/block-representation (parse-first "a b c")))
+   :expected "a"}]
+ migration-test-check)
+
+
+^{:refer std.block.parse/*end-delimiter*}
+(Test/check
+ [{:name "provides a dynamically bindable delimiter boundary"
+   :test (fn [] (binding [*end-delimiter* \]] *end-delimiter*))
+   :expected \]}]
+ migration-test-check)
+
+^{:refer std.block.parse/source-char}
+(Test/check
+ [{:name "returns source characters only within bounds"
+   :test (fn [] (mapv (fn [index] (source-char "ab" index)) [-1 0 1 2]))
+   :expected [nil \a \b nil]}]
+ migration-test-check)
+
+^{:refer std.block.parse/source-position}
+(Test/check
+ [{:name "tracks offsets across CRLF and LF line endings"
+   :test (fn [] (mapv (fn [offset] (source-position "a\r\nb\n" offset)) [0 1 2 3 4 5]))
+   :expected [{:offset 0 :row 1 :col 1}
+              {:offset 1 :row 1 :col 2}
+              {:offset 2 :row 2 :col 1}
+              {:offset 3 :row 2 :col 1}
+              {:offset 4 :row 2 :col 2}
+              {:offset 5 :row 3 :col 1}]}]
+ migration-test-check)
+
+^{:refer std.block.parse/with-range}
+(Test/check
+ [{:name "merges source offsets into a block without dropping dimensions"
+   :test (fn []
+           (select-keys (:props (with-range (construct/token 1) "1" 0 1))
+                        [:start-offset :end-offset :width :height]))
+   :expected {:start-offset 0 :end-offset 1 :width 1 :height 0}}]
+ migration-test-check)
+
+^{:refer std.block.parse/source-positions}
+(Test/check
+ [{:name "indexes the start offset of every LF or CRLF source line"
+   :test (fn [] (source-positions "a\r\nb\n"))
+   :expected [0 3 5]}]
+ migration-test-check)
+
+^{:refer std.block.parse/indexed-position}
+(Test/check
+ [{:name "uses a line-start index to resolve one-based positions"
+   :test (fn [] (mapv (fn [offset] (indexed-position [0 3 5] offset)) [0 2 3 5]))
+   :expected [{:offset 0 :row 1 :col 1}
+              {:offset 2 :row 1 :col 3}
+              {:offset 3 :row 2 :col 1}
+              {:offset 5 :row 3 :col 1}]}]
+ migration-test-check)
+
+^{:refer std.block.parse/attach-positions}
+(Test/check
+ [{:name "annotates root children with start and end line positions"
+   :test (fn []
+           (let [block (attach-positions (parse-ranges "a\nb") (source-positions "a\nb"))]
+             (mapv (fn [child]
+                     (select-keys (:props child) [:row :col :end-row :end-col]))
+                   (base/block-children block))))
+   :expected [{:row 1 :col 1 :end-row 1 :end-col 2}
+              {:row 1 :col 2 :end-row 2 :end-col 1}
+              {:row 2 :col 1 :end-row 2 :end-col 2}]}]
+ migration-test-check)
+
+^{:refer std.block.parse/whitespace?}
+(Test/check
+ [{:name "delegates whitespace classification to the block checker"
+   :test (fn [] [(whitespace? \space) (whitespace? \a)])
+   :expected [true false]}]
+ migration-test-check)
+
+^{:refer std.block.parse/dispatch-character?}
+(Test/check
+ [{:name "recognizes boundary dispatch punctuation except a keyword colon"
+   :test (fn [] [(dispatch-character? \() (dispatch-character? \:) (dispatch-character? \a)])
+   :expected [true false false]}]
+ migration-test-check)
+
+^{:refer std.block.parse/boundary?}
+(Test/check
+ [{:name "treats EOF, whitespace, commas, and dispatch punctuation as token boundaries"
+   :test (fn [] (mapv boundary? [nil \space \, \( \a]))
+   :expected [true true true true false]}]
+ migration-test-check)
+
+^{:refer std.block.parse/closing-delimiter?}
+(Test/check
+ [{:name "recognizes the three collection closing delimiters"
+   :test (fn [] (mapv closing-delimiter? [\) \] \} \a]))
+   :expected [true true true false]}]
+ migration-test-check)
+
+^{:refer std.block.parse/scan-token-end}
+(Test/check
+ [{:name "stops token scanning at a boundary or source end"
+   :test (fn [] [(scan-token-end "abc def" 0) (scan-token-end "abc def" 4)])
+   :expected [3 7]}]
+ migration-test-check)
+
+^{:refer std.block.parse/scan-comment-end}
+(Test/check
+ [{:name "stops comments before a line terminator or EOF"
+   :test (fn [] [(scan-comment-end ";hi\n" 0) (scan-comment-end ";hi" 0)])
+   :expected [3 3]}]
+ migration-test-check)
+
+^{:refer std.block.parse/scan-string-end}
+(Test/check
+ [{:name "honours escaped quotes and rejects an unterminated string"
+   :test (fn []
+           [(scan-string-end "\"a\\\"b\"" 1 false)
+            (try (scan-string-end "\"a" 1 false) false (catch _ true))])
+   :expected [6 true]}]
+ migration-test-check)
+
+^{:refer std.block.parse/token-block}
+(Test/check
+ [{:name "constructs tokens from readable values or symbol fallback"
+   :test (fn [] (mapv base/block-value [(token-block "42") (token-block "wat")]))
+   :expected [42 (quote wat)]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-children}
+(Test/check
+ [{:name "reads children until its expected collection delimiter"
+   :test (fn []
+           (let [[children end] (parse-children "a b)" 0 \) [] parse-at)]
+             [(mapv base/block-representation children) end]))
+   :expected [["a" "␣" "b"] 3]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-container}
+(Test/check
+ [{:name "wraps parsed children with the requested container tag"
+   :test (fn []
+           (let [[block end] (parse-container "(a)" 1 :list \) parse-at)]
+             [(base/block-string block) end]))
+   :expected ["(a)" 3]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-prefix}
+(Test/check
+ [{:name "wraps a prefixed child while preserving source representation"
+   :test (fn []
+           (let [[block end] (parse-prefix "'a" 0 :quote 1 parse-at)]
+             [(base/block-string block) end]))
+   :expected ["'a" 2]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-hash-at}
+(Test/check
+ [{:name "dispatches a hash-prefixed set from a source offset"
+   :test (fn []
+           (let [[block end] (parse-hash-at "#{1}" 0 parse-at)]
+             [(base/block-string block) end]))
+   :expected ["#{1}" 4]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-at-raw}
+(Test/check
+ [{:name "parses one raw keyword token without attaching offsets"
+   :test (fn []
+           (let [[block end] (parse-at-raw ":a" 0)]
+             [(base/block-string block) end]))
+   :expected [":a" 2]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-at}
+(Test/check
+ [{:name "adds exact source offsets to a parsed token"
+   :test (fn []
+           (let [[block end] (parse-at ":a" 0)]
+             [(select-keys (:props block) [:start-offset :end-offset]) end]))
+   :expected [{:start-offset 0 :end-offset 2} 2]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-root-children}
+(Test/check
+ [{:name "preserves expression and void blocks in source order"
+   :test (fn [] (mapv base/block-representation (parse-root-children "a b" 0 [])))
+   :expected ["a" "␣" "b"]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-ranges}
+(Test/check
+ [{:name "creates an unannotated root with the complete source range"
+   :test (fn []
+           (let [block (parse-ranges "a\nb")]
+             [(base/block-string block)
+              (select-keys (:props block) [:start-offset :end-offset])]))
+   :expected ["a\nb" {:start-offset 0 :end-offset 3}]}]
+ migration-test-check)
+
+^{:refer std.block.parse/recovery-end}
+(Test/check
+ [{:name "recovers unmatched closers one character and other failures to line end"
+   :test (fn [] [(recovery-end ")bad\n" 0) (recovery-end "bad\n" 0)])
+   :expected [1 3]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-recovering-step}
+(Test/check
+ [{:name "returns a child on success and a diagnostic marker on parse failure"
+   :test (fn []
+           (let [ok (parse-recovering-step "a" 0)
+                 error (parse-recovering-step ")" 0)]
+             [(:ok ok) (base/block-string (:child ok)) (:next-index ok) (:ok error)
+              (string? (:message error))]))
+   :expected [true "a" 1 false true]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-root-recovering}
+(Test/check
+ [{:name "keeps valid source siblings while producing an unmatched-delimiter diagnostic"
+   :test (fn []
+           (let [result (parse-root-recovering "a ) b")
+                 finding (first (:diagnostics result))]
+             [(base/block-string (:block result))
+              (select-keys finding [:type :level :start-offset :end-offset])]))
+   :expected ["a ) b" {:type :tool.lint/reader-error :level :error
+                         :start-offset 2 :end-offset 3}]}]
+ migration-test-check)
+
+^{:refer std.block.parse/attach-file}
+(Test/check
+ [{:name "adds the same file provenance to every block in a parsed tree"
+   :test (fn []
+           (let [block (attach-file (parse-ranges "a") "example.hal")]
+             [(:file (:props block))
+              (:file (:props (first (base/block-children block))))]))
+   :expected ["example.hal" "example.hal"]}]
+ migration-test-check)
+
+^{:refer std.block.parse/parse-source}
+(Test/check
+ [{:name "returns an attached root and file-qualified diagnostics"
+   :test (fn []
+           (let [result (parse-source ")" {:file "example.hal"})
+                 finding (first (:diagnostics result))]
+             [(base/block-string (:block result))
+              (select-keys finding [:file :type :start-offset :end-offset])]))
+   :expected [")" {:file "example.hal" :type :tool.lint/reader-error
+                    :start-offset 0 :end-offset 1}]}]
+ migration-test-check)
+
+^{:refer std.block.parse/reader-index}
+(Test/check
+ [{:name "reads the mutable reader cursor"
+   :test (fn [] (reader-index (reader/create "ab")))
+   :expected 0}]
+ migration-test-check)
+
+^{:refer std.block.parse/reader-source}
+(Test/check
+ [{:name "reads the immutable reader source"
+   :test (fn [] (reader-source (reader/create "ab")))
+   :expected "ab"}]
+ migration-test-check)
+
+^{:refer std.block.parse/set-reader-index}
+(Test/check
+ [{:name "updates and returns the reader at the requested source offset"
+   :test (fn []
+           (let [rdr (reader/create "abc")]
+             [(reader-index (set-reader-index rdr 2))
+              (reader-index rdr)]))
+   :expected [2 2]}]
+ migration-test-check)

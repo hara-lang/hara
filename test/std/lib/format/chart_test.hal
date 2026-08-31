@@ -1,0 +1,89 @@
+(ns std.lib.format.chart-test
+  (:require [std.lib.format.chart]))
+
+(def +basic-table+
+  "| :id | :value |\n|-----+--------|\n|   1 |    \"a\" |\n|   2 |    \"b\" |")
+
+(def +keyed-table+
+  "| :id |    :email | :value |\n|-----+-----------+--------|\n|   1 | \"a@a.com\" |    \"a\" |\n|   2 | \"b@b.com\" |    \"b\" |")
+
+^{:refer std.lib.format.chart/repeat-text}
+(Test/check
+ [{:name "repeats text without separators"
+   :test (fn [] (std.lib.format.chart/repeat-text 3 "ab"))
+   :expected "ababab"}])
+
+^{:refer std.lib.format.chart/pad-left}
+(Test/check
+ [{:name "left-pads only values narrower than their field"
+   :test (fn [] [(std.lib.format.chart/pad-left 7 3)
+                 (std.lib.format.chart/pad-left "wide" 2)])
+   :expected ["  7" "wide"]}])
+
+^{:refer std.lib.format.chart/lines-bar-graph}
+(Test/check
+ [{:name "formats scaled data as block-character rows"
+   :test (fn [] (std.lib.format.chart/lines-bar-graph (range 10) 6))
+   :expected ["    ▟" "  ▗██" " ▟███"]}])
+
+^{:refer std.lib.format.chart/bar-graph}
+(Test/check
+ [{:name "joins block-character rows into a graph"
+   :test (fn [] (std.lib.format.chart/bar-graph (range 10) 6))
+   :expected "    ▟\n  ▗██\n ▟███"}])
+
+^{:refer std.lib.format.chart/sparkline}
+(Test/check
+ [{:name "formats sparse and varying sparkline values"
+   :test (fn [] [(std.lib.format.chart/sparkline (range 8))
+                 (std.lib.format.chart/sparkline [1 3 5 7 3 4 6 8 4 2 4 5 7 10])])
+   :expected [" ▁▂▃▅▆▇█" " ▂▄▆▂▃▅▇▃▁▃▄▆█"]}])
+
+^{:refer std.lib.format.chart/tree-graph}
+(Test/check
+ [{:name "renders nested tree leaves with accumulating indentation"
+   :test (fn [] (std.lib.format.chart/tree-graph
+                 '[{a "1.1"} [{b "1.2"} [{c "1.3"} {d "1.4"}]]]))
+   :expected "{a \"1.1\"}\n {b \"1.2\"}\n  {c \"1.3\"}\n  {d \"1.4\"}\n"}])
+
+^{:refer std.lib.format.chart/table-row}
+(Test/check
+ [{:name "renders an aligned table row from fields and widths"
+   :test (fn [] (std.lib.format.chart/table-row "| " " | " " |" [2 1] [1 "x"]))
+   :expected "|  1 | x |"}])
+
+^{:refer std.lib.format.chart/table-basic-format}
+(Test/check
+ [{:name "formats basic tables with EDN-rendered data"
+   :test (fn [] (std.lib.format.chart/table-basic-format
+                 [:id :value] [{:id 1 :value "a"} {:id 2 :value "b"}]))
+   :expected +basic-table+}])
+
+^{:refer std.lib.format.chart/table-basic-parse}
+(Test/check
+ [{:name "parses basic table text back to typed data"
+   :test (fn [] (std.lib.format.chart/table-basic-parse +basic-table+))
+   :expected {:headers [:id :value]
+              :data [{:id 1 :value "a"} {:id 2 :value "b"}]}}])
+
+^{:refer std.lib.format.chart/table}
+(Test/check
+ [{:name "formats keyed rows with an inserted identity field"
+   :test (fn [] (std.lib.format.chart/table
+                 {"a@a.com" {:id 1 :value "a"}
+                  "b@b.com" {:id 2 :value "b"}}
+                 {:headers [:id :email :value]
+                  :sort-key :email
+                  :id-key :email}))
+   :expected +keyed-table+}])
+
+^{:refer std.lib.format.chart/table-parse}
+(Test/check
+ [{:name "round trips keyed table text to its source map"
+   :test (fn [] (std.lib.format.chart/table-parse
+                 +keyed-table+
+                 {:headers [:id :email :value]
+                  :sort-key :email
+                  :id-key :email}))
+   :expected {"a@a.com" {:id 1 :value "a"}
+              "b@b.com" {:id 2 :value "b"}}}])

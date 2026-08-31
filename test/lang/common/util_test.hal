@@ -1,0 +1,101 @@
+(ns lang.common.util-test
+  (:require [lang.common.util :as util]))
+
+^{:refer lang.common.util/sym-id}
+(Test/check
+ [{:name "returns the unqualified identifier portion of a symbol"
+   :test (fn [] [(util/sym-id 'module/item) (util/sym-id 'item)])
+   :expected ['item 'item]}])
+
+^{:refer lang.common.util/sym-module}
+(Test/check
+ [{:name "returns a symbol module only for qualified identifiers"
+   :test (fn [] [(util/sym-module 'module.item/value) (util/sym-module 'value)])
+   :expected ['module.item nil]}])
+
+^{:refer lang.common.util/sym-pair}
+(Test/check
+ [{:name "splits a qualified symbol into module and unqualified id"
+   :test (fn [] (util/sym-pair 'module/item))
+   :expected ['module 'item]}])
+
+^{:refer lang.common.util/sym-full}
+(Test/check
+ [{:name "constructs fully qualified symbols from modules and entry descriptors"
+   :test (fn [] [(util/sym-full 'module 'item)
+                 (util/sym-full {:module 'module :id 'item})
+                 (util/sym-full {:module 'module})])
+   :expected ['module/item 'module/item nil]}])
+
+^{:refer lang.common.util/sym-default-str}
+(Test/check
+ [{:name "uses underscore target spelling for symbol-like values"
+   :test (fn [] [(util/sym-default-str 'item-name)
+                 (util/sym-default-str "item-name")])
+   :expected ["item_name" "item_name"]}])
+
+^{:refer lang.common.util/sym-default-inverse-str}
+(Test/check
+ [{:name "restores hyphen Hara spelling from default target strings"
+   :test (fn [] [(util/sym-default-inverse-str 'item_name)
+                 (util/sym-default-inverse-str "item_name")])
+   :expected ["item-name" "item-name"]}])
+
+^{:refer lang.common.util/hashvec?}
+(Test/check
+ [{:name "recognizes the archive hash-vector grammar shape only"
+   :test (fn [] [(util/hashvec? #{[1 2]})
+                 (util/hashvec? #{[1] [2]})
+                 (util/hashvec? [[1]])])
+   :expected [true false false]}])
+
+^{:refer lang.common.util/doublevec?}
+(Test/check
+ [{:name "recognizes the archive double-vector grammar shape only"
+   :test (fn [] [(util/doublevec? [[1 2]])
+                 (util/doublevec? [[1] [2]])
+                 (util/doublevec? #{[1]})])
+   :expected [true false false]}])
+
+^{:refer lang.common.util/lang-context}
+(Test/check
+ [{:name "builds canonical language context keys and rejects absent languages"
+   :test (fn []
+           [(util/lang-context :fixture)
+            (try (util/lang-context nil) :missing (catch error :thrown))])
+   :expected [:lang/fixture :thrown]}])
+
+^{:refer lang.common.util/module-id}
+(Test/check
+ [{:name "reduces module descriptors to ids without changing module symbols"
+   :test (fn [] [(util/module-id {:id 'module}) (util/module-id 'module)])
+   :expected ['module 'module]}])
+
+^{:refer lang.common.util/entry-summary}
+(Test/check
+ [{:name "summarizes archive entry identity and adds a symbol when complete"
+   :test (fn []
+           [(util/entry-summary {:module 'module :id 'item :section :code :extra :ignored})
+            (util/entry-summary {:id 'item :line 4 :extra :ignored})])
+   :expected [{:module 'module :id 'item :section :code :symbol 'module/item}
+              {:id 'item :line 4}]}])
+
+^{:refer lang.common.util/error-with-context}
+(Test/check
+ [{:name "delegates context errors to the canonical provenance wrapper"
+   :test (fn []
+           (let [error (util/error-with-context "compile" {:lang/module :fixture}
+                                                (ex :generic {} :ex/message "inner"))]
+             [(ex-message error) (:lang/module (ex-data error))]))
+   :expected ["compile: inner" :fixture]}])
+
+^{:refer lang.common.util/throw-with-context}
+(Test/check
+ [{:name "throws delegated canonical provenance wrappers"
+   :test (fn []
+           (try
+             (util/throw-with-context "compile" {:lang/module :fixture}
+                                      (ex :generic {} :ex/message "inner"))
+             :missing
+             (catch error [(ex-message error) (:lang/module (ex-data error))])))
+   :expected ["compile: inner" :fixture]}])

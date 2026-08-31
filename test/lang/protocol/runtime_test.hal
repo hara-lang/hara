@@ -1,0 +1,24 @@
+(ns lang.protocol.runtime-test
+  (:require [lang.protocol.runtime :as runtime]))
+
+(defstruct RuntimeFixture [tag])
+
+(extend-type RuntimeFixture runtime/IEvalTransport
+  (exchange [fixture request options] [(:tag fixture) :exchange request options]))
+(extend-type RuntimeFixture runtime/IContextEval
+  (evaluate [fixture request options] [(:tag fixture) :evaluate request options])
+  (evaluate-raw [fixture request options] [(:tag fixture) :evaluate-raw request options]))
+
+(def fixture (RuntimeFixture :fixture))
+
+^{:refer lang.protocol.runtime/exchange}
+(Test/check [{:name "exchanges portable evaluation requests through transport"
+              :test (fn [] (runtime/exchange fixture {:op :eval} {:timeout 50}))
+              :expected [:fixture :exchange {:op :eval} {:timeout 50}]}])
+
+^{:refer lang.protocol.runtime/evaluate}
+(Test/check [{:name "keeps evaluated and raw context requests distinct"
+              :test (fn [] [(runtime/evaluate fixture {:code "1 + 1"} {:profile :default})
+                            (runtime/evaluate-raw fixture "1 + 1" {:profile :raw})])
+              :expected [[:fixture :evaluate {:code "1 + 1"} {:profile :default}]
+                         [:fixture :evaluate-raw "1 + 1" {:profile :raw}]]}])

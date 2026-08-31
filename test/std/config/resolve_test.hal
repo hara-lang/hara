@@ -1,0 +1,383 @@
+(ns std.config.resolve-test
+  (:require [std.config.resolve :as resolve]))
+
+^{:refer std.config.resolve/resolve}
+(Test/check [{:name "loads the resolver and resolves composition directives"
+              :test (fn []
+                      (resolve/resolve
+                       {:endpoint [:format ["http://%s:%s" "localhost" 8080]]
+                        :fallback [:or nil "fallback"]
+                        :merged [:merge :nested
+                                 {:service {:host "localhost"}}
+                                 {:service {:port 8080}}]}))
+              :expected {:endpoint "http://localhost:8080"
+                         :fallback "fallback"
+                         :merged {:service {:host "localhost" :port 8080}}}}])
+
+^{:refer std.config.resolve/register-directive}
+(Test/check [{:name "registers a directive handler"
+              :test (fn []
+                      (try
+                       (resolve/reset-registries!)
+                       (resolve/register-directive
+                        :test/double
+                        (fn [form _ _] (* 2 (nth form 1))))
+                       (resolve/resolve [:test/double 21])
+                       (finally (resolve/reset-registries!))))
+              :expected 42}])
+
+^{:refer std.config.resolve/register-type}
+(Test/check [{:name "registers a content decoder"
+              :test (fn []
+                      (try
+                       (resolve/reset-registries!)
+                       (resolve/register-type :test/suffix
+                                              (fn [content] (str content "!")))
+                       (resolve/resolve-content "hello" {:type :test/suffix})
+                       (finally (resolve/reset-registries!))))
+              :expected "hello!"}])
+
+^{:refer std.config.resolve/directive?}
+(Test/check [{:name "recognizes registered and deferred directives"
+              :test (fn []
+                      [(resolve/directive? [:format ["x"]])
+                       (resolve/directive? [:eval '(+ 1 2)])
+                       (resolve/directive? [:unknown 1])
+                       (resolve/directive? :format)])
+              :expected [true true false false]}])
+
+^{:refer std.config.resolve/decode-type}
+(Test/check [{:name "decodes built-ins and reports unsupported decoders"
+              :test (fn []
+                      [(resolve/decode-type :text "hello")
+                       (let [data (try
+                                    (resolve/decode-type :yaml "hello")
+                                    nil
+                                    (catch error (ex-data error)))]
+                         [(:error/type data) (:feature data)])
+                       (let [data (try
+                                    (resolve/decode-type :unknown "hello")
+                                    nil
+                                    (catch error (ex-data error)))]
+                         [(:error/type data) (:type data)])])
+              :expected ["hello"
+                         [:std.config/unsupported-feature :yaml]
+                         [:std.config/unknown-type :unknown]]}])
+
+^{:refer std.config.resolve/resolve-content}
+(Test/check [{:name "uses defaults decodes content and selects nested values"
+              :test (fn []
+                      [(resolve/resolve-content nil {:default "fallback" :type :text})
+                       (resolve/resolve-content
+                        {:service {:port 8080 :host "localhost"}}
+                        {:type :text :select {:in :service :keys [:port]}})])
+              :expected ["fallback" {:port 8080}]}])
+
+^{:refer std.config.resolve/state}
+(Test/check [{:name "creates source traversal state"
+              :test (fn [] (resolve/state {:root true} {:parent true} [:service :port]))
+              :expected {:root {:root true}
+                         :parent {:parent true}
+                         :path [:service :port]}}])
+
+^{:refer std.config.resolve/resolve-directive}
+(Test/check [{:name "invokes known directives and leaves unknown forms intact"
+              :test (fn []
+                      (try
+                       (resolve/reset-registries!)
+                       (resolve/register-directive :test/identity
+                                                   (fn [form _ _] (nth form 1)))
+                       [(resolve/resolve-directive [:test/identity 42] {} {})
+                        (resolve/resolve-directive [:missing 42] {} {})]
+                       (finally (resolve/reset-registries!))))
+              :expected [42 [:missing 42]]}])
+
+^{:refer std.config.resolve/resolve-map}
+(Test/check [{:name "resolves directive values in maps"
+              :test (fn []
+                      (resolve/resolve-map
+                       {:endpoint [:format ["http://%s" "localhost"]]}
+                       {}
+                       {:endpoint [:format ["http://%s" "localhost"]]}
+                       []))
+              :expected {:endpoint "http://localhost"}}])
+
+^{:refer std.config.resolve/resolve-vector}
+(Test/check [{:name "resolves directive values in vectors"
+              :test (fn []
+                      (resolve/resolve-vector
+                       [[:format ["x%s" 1]] [:or nil "fallback"]]
+                       {}
+                       {}))
+              :expected ["x1" "fallback"]}])
+
+^{:refer std.config.resolve/resolve-form}
+(Test/check [{:name "resolves nested map vector list and set forms"
+              :test (fn []
+                      (resolve/resolve-form
+                       {:vector [[:format ["x%s" 1]]]
+                        :list (list [:or nil "fallback"])
+                        :set #{[:format ["x%s" 2]]}}
+                       {}
+                       {:root true :parent nil :path []}))
+              :expected {:vector ["x1"]
+                         :list (list "fallback")
+                         :set #{"x2"}}}])
+
+^{:refer std.config.resolve/effective-context}
+(Test/check [{:name "normalizes supplied project and root context"
+              :test (fn []
+                      (select-keys
+                       (resolve/effective-context
+                        {:config/project {:project/root "/project"}
+                         :marker true})
+                       [:project :root :marker]))
+              :expected {:project {:project/root "/project"}
+                         :root "/project"
+                         :marker true}}])
+
+^{:refer std.config.resolve/directive-options}
+(Test/check [{:name "returns an options map only at the requested index"
+              :test (fn []
+                      [(resolve/directive-options [:env "MODE" {:default "dev"}] 2)
+                       (resolve/directive-options [:env "MODE"] 2)
+                       (resolve/directive-options [:env "MODE" "not-map"] 2)])
+              :expected [{:default "dev"} {} {}]}])
+
+^{:refer std.config.resolve/resolve-value}
+(Test/check [{:name "delegates value resolution"
+              :test (fn []
+                      (resolve/resolve-value
+                       [:format ["v%s" 1]]
+                       {}
+                       {:root nil :parent nil :path []}))
+              :expected "v1"}])
+
+^{:refer std.config.resolve/resolve-path-value}
+(Test/check [{:name "converts text and sequence paths and rejects other values"
+              :test (fn []
+                      [(resolve/resolve-path-value "child.edn" {} {})
+                       (resolve/resolve-path-value ["child" ".edn"] {} {})
+                       (let [data (try
+                                    (resolve/resolve-path-value 42 {} {})
+                                    nil
+                                    (catch error (ex-data error)))]
+                         [(:error/type data) (:path data)])])
+              :expected ["child.edn" "child.edn" [:std.config/invalid-path 42]]}])
+
+^{:refer std.config.resolve/directive-format}
+(Test/check [{:name "formats resolved directive arguments"
+              :test (fn []
+                      (resolve/directive-format
+                       [:format ["http://%s:%s" "localhost" 8080]]
+                       {}
+                       {}))
+              :expected "http://localhost:8080"}])
+
+^{:refer std.config.resolve/directive-str}
+(Test/check [{:name "concatenates direct and resolved string values"
+              :test (fn []
+                      (resolve/directive-str
+                       [:str ["hello" [:or nil " "] "world"]]
+                       {}
+                       {}))
+              :expected "hello world"}])
+
+^{:refer std.config.resolve/directive-or}
+(Test/check [{:name "returns the first non-nil resolved value"
+              :test (fn []
+                      [(resolve/directive-or [:or nil false "fallback"] {} {})
+                       (resolve/directive-or [:or nil nil] {} {})])
+              :expected [false nil]}])
+
+^{:refer std.config.resolve/directive-case}
+(Test/check [{:name "selects matching and default case branches"
+              :test (fn []
+                      [(resolve/directive-case [:case "dev" "prod" :production
+                                                "dev" :development :default :unknown] {} {})
+                       (resolve/directive-case [:case "qa" "prod" :production
+                                                :default :unknown] {} {})])
+              :expected [:development :unknown]}])
+
+^{:refer std.config.resolve/directive-error}
+(Test/check [{:name "throws explicit structured configuration errors"
+              :test (fn []
+                      (let [data (try
+                                   (resolve/directive-error
+                                    [:error "bad configuration" {:field :mode}]
+                                    {}
+                                    {:path [:mode]})
+                                   nil
+                                   (catch error (ex-data error)))]
+                        [(:error/type data) (:path data) (:field data)]))
+              :expected [:std.config/explicit-error [:mode] :mode]}])
+
+^{:refer std.config.resolve/merge-modifier}
+(Test/check [{:name "finds the first merge modifier"
+              :test (fn []
+                      [(resolve/merge-modifier [:nested :nil])
+                       (resolve/merge-modifier [:unknown])])
+              :expected [:nested nil]}])
+
+^{:refer std.config.resolve/without-merge-modifier}
+(Test/check [{:name "removes only merge modifier values"
+              :test (fn []
+                      (resolve/without-merge-modifier
+                       [:nested {:service {:host "localhost"}} :nil
+                        {:service {:port 8080}}]))
+              :expected [{:service {:host "localhost"}}
+                         {:service {:port 8080}}]}])
+
+^{:refer std.config.resolve/directive-merge}
+(Test/check [{:name "merges flat nested and reverse-precedence documents"
+              :test (fn []
+                      [(resolve/directive-merge [:merge {:a 1} {:b 2}] {} {})
+                       (resolve/directive-merge
+                        [:merge :nested
+                         {:service {:host "localhost"}}
+                         {:service {:port 8080}}]
+                        {} {})
+                       (resolve/directive-merge [:merge :nil {:a 1} {:a 2}] {} {})])
+              :expected [{:a 1 :b 2}
+                         {:service {:host "localhost" :port 8080}}
+                         {:a 1}]}])
+
+^{:refer std.config.resolve/scoped-value}
+(Test/check [{:name "selects and resolves a value under a source scope"
+              :test (fn []
+                      (resolve/scoped-value
+                       {:service {:port 8080}}
+                       :service
+                       {:select {:keys [:port]}}
+                       {}
+                       {}))
+              :expected {:port 8080}}])
+
+^{:refer std.config.resolve/directive-root}
+(Test/check [{:name "reads values from the resolution root"
+              :test (fn []
+                      (resolve/directive-root
+                       [:root :name]
+                       {}
+                       {:root {:name "root"} :parent nil :path []}))
+              :expected "root"}])
+
+^{:refer std.config.resolve/directive-parent}
+(Test/check [{:name "reads values from the immediate parent"
+              :test (fn []
+                      (resolve/directive-parent
+                       [:parent :name]
+                       {}
+                       {:root {} :parent {:name "parent"} :path []}))
+              :expected "parent"}])
+
+^{:refer std.config.resolve/directive-global}
+(Test/check [{:name "reads values from supplied global configuration"
+              :test (fn []
+                      (resolve/directive-global
+                       [:global :profile]
+                       {:config/global {:profile :session}}
+                       {}))
+              :expected :session}])
+
+^{:refer std.config.resolve/directive-project}
+(Test/check [{:name "reads values from supplied project configuration"
+              :test (fn []
+                      (resolve/directive-project
+                       [:project :project/id]
+                       {:project {:project/id 'demo}}
+                       {}))
+              :expected 'demo}])
+
+^{:refer std.config.resolve/environment-value}
+(Test/check [{:name "prefers explicit environment values"
+              :test (fn []
+                      [(resolve/environment-value "MODE" {:env {"MODE" "test"}})
+                       (resolve/environment-value :MODE {:config/env {:MODE "dev"}})])
+              :expected ["test" "dev"]}])
+
+^{:refer std.config.resolve/directive-env}
+(Test/check [{:name "resolves explicit environment values and defaults"
+              :test (fn []
+                      [(resolve/directive-env [:env "MODE"] {:env {"MODE" "test"}} {})
+                       (resolve/directive-env [:env "MISSING" {:default "dev"}] {:env {}} {})])
+              :expected ["test" "dev"]}])
+
+^{:refer std.config.resolve/throw-include-cycle}
+(Test/check [{:name "preserves acyclic loads and reports complete cycles"
+              :test (fn []
+                      [(resolve/throw-include-cycle "b.edn" ["a.edn"])
+                       (let [data (try
+                                    (resolve/throw-include-cycle "a.edn" ["a.edn" "b.edn"])
+                                    nil
+                                    (catch error (ex-data error)))]
+                         [(:error/type data) (:include/stack data)])])
+              :expected [nil
+                         [:std.config/include-cycle ["a.edn" "b.edn" "a.edn"]]]}])
+
+^{:refer std.config.resolve/inferred-type}
+(Test/check [{:name "infers YAML TOML and standard extensions"
+              :test (fn []
+                      [(resolve/inferred-type "config.yaml" :text)
+                       (resolve/inferred-type "config.yml" :text)
+                       (resolve/inferred-type "config.toml" :text)
+                       (resolve/inferred-type "config.json" :text)])
+              :expected [:yaml :yaml :toml :json]}])
+
+^{:refer std.config.resolve/load-file}
+(Test/check [{:name "loads nested include fixtures relative to the including file"
+              :test (fn []
+                      (resolve/load-file
+                       "root.edn"
+                       {:root "test-fixtures/std-config"
+                        :project {:project/id 'demo}
+                        :env {"MODE" "test"}}
+                       {:type :edn}))
+              :expected {:name "root"
+                         :child {:name "child" :mode "test" :deeper {:value 42}}
+                         :json {:service {:port 8080}}
+                         :text "hello from file\n"}}])
+
+^{:refer std.config.resolve/directive-file}
+(Test/check [{:name "loads text file directives with the default text type"
+              :test (fn []
+                      (resolve/directive-file
+                       [:file "nested/message.txt"]
+                       {:root "test-fixtures/std-config"}
+                       {}))
+              :expected "hello from file\n"}])
+
+^{:refer std.config.resolve/directive-include}
+(Test/check [{:name "loads typed include directives"
+              :test (fn []
+                      (resolve/directive-include
+                       [:include "nested/deeper.edn" {:type :edn}]
+                       {:root "test-fixtures/std-config"}
+                       {}))
+              :expected {:value 42}}])
+
+^{:refer std.config.resolve/reset-registries!}
+(Test/check [{:name "restores default registry contents idempotently"
+              :test (fn []
+                      (try
+                       (resolve/register-directive :test/temp (fn [_ _ _] :temp))
+                       (resolve/register-type :test/temp (fn [_] :temp))
+                       [(resolve/reset-registries!)
+                        (resolve/directive? [:test/temp])
+                        (let [data (try
+                                     (resolve/decode-type :test/temp "x")
+                                     nil
+                                     (catch error (ex-data error)))]
+                          (:error/type data))
+                        (resolve/reset-registries!)
+                        (resolve/directive? [:format ["x"]])]
+                       (finally (resolve/reset-registries!))))
+              :expected [nil false :std.config/unknown-type nil true]}])
+
+^{:refer std.config.resolve/load}
+(Test/check [{:name "loads an EDN document using inferred type"
+              :test (fn []
+                      (resolve/load
+                       "nested/deeper.edn"
+                       {:root "test-fixtures/std-config"}))
+              :expected {:value 42}}])

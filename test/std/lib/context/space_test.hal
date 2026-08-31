@@ -1,0 +1,69 @@
+(ns std.lib.context.space-test
+  (:require [std.lib.context.registry :as registry]
+            [std.lib.context.space :as space]))
+
+^{:refer std.lib.context.space/reset-spaces!}
+(Test/check [{:name "clears cached spaces idempotently"
+              :test (fn []
+                      (binding [space/*spaces* (atom {})]
+                        (space/space :demo)
+                        (space/reset-spaces!)
+                        (space/reset-spaces!)
+                        @space/*spaces*))
+              :expected {}}])
+
+(defn isolated [function]
+  (binding [registry/*registry* (atom {}) space/*spaces* (atom {})]
+    (try
+     (registry/registry-install :demo {:rt {:default {:key :default :create (fn [config] registry/+rt-null+) :config {:nested {:base 1}}}} :scratch registry/+rt-null+})
+     (function)
+     (finally (space/reset-spaces!) (registry/reset-registry!)))))
+
+^{:refer std.lib.context.space/space-merge-config}
+(Test/check [{:name "merges nested space config" :test (fn [] (space/space-merge-config {:a {:x 1}} {:a {:y 2}})) :expected {:a {:x 1 :y 2}}}])
+^{:refer std.lib.context.space/space-context-set}
+(Test/check [{:name "sets resolved context runtime entries" :test (fn [] (isolated (fn [] (let [s (space/space-create {:namespace :demo})] (:config (space/space-context-set s :demo :default {:nested {:local 2}})))))) :expected {:nested {:base 1 :local 2}}}])
+^{:refer std.lib.context.space/space-context-unset}
+(Test/check [{:name "unsets context entries" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (space/space-context-unset s :demo) (ISpace/context-list s))))) :expected []}])
+^{:refer std.lib.context.space/space-context-get}
+(Test/check [{:name "gets configured contexts" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (:variant (space/space-context-get s :demo)))))) :expected :default}])
+^{:refer std.lib.context.space/space-rt-create}
+(Test/check [{:name "creates configured runtimes" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (registry/rt-null? (space/space-rt-create s :demo)))))) :expected true}])
+^{:refer std.lib.context.space/space-rt-start}
+(Test/check [{:name "starts runtimes once" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (= (space/space-rt-start s :demo) (space/space-rt-start s :demo)))))) :expected true}])
+^{:refer std.lib.context.space/space-rt-stop}
+(Test/check [{:name "stops active runtimes" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (space/space-rt-start s :demo) (space/space-rt-stop s :demo) (ISpace/rt-stopped? s :demo))))) :expected true}])
+^{:refer std.lib.context.space/space-stop}
+(Test/check [{:name "stops every active runtime" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (space/space-rt-start s :demo) (space/space-stop s) (ISpace/rt-stopped? s :demo))))) :expected true}])
+^{:refer std.lib.context.space/space?}
+(Test/check [{:name "recognizes Space values" :test (fn [] (space/space? (space/space-create {}))) :expected true}])
+^{:refer std.lib.context.space/space-create}
+(Test/check [{:name "creates named spaces" :test (fn [] (:namespace (space/space-create {:namespace :demo}))) :expected :demo}])
+^{:refer std.lib.context.space/space}
+(Test/check [{:name "caches spaces by namespace" :test (fn [] (binding [space/*spaces* (atom {})] (= (space/space :demo) (space/space :demo)))) :expected true}])
+^{:refer std.lib.context.space/space-resolve}
+(Test/check [{:name "resolves symbols and retains spaces" :test (fn [] (binding [space/*spaces* (atom {})] [(space/space? (space/space-resolve 'demo)) (space/space? (space/space-resolve (space/space :demo)))])) :expected [true true]}])
+^{:refer std.lib.context.space/protocol-tmpl}
+(Test/check [{:name "builds protocol member templates" :test (fn [] ((space/protocol-tmpl {:prefix "space:" :protocol 'ISpace}) {:name 'rt-get :arglists '([x])})) :expected {:name 'space:rt-get :arglists '([x]) :protocol 'ISpace :instance nil :resolve nil :default nil}}])
+^{:refer std.lib.context.space/space:context-set}
+(Test/check [{:name "sets contexts through convenience API" :test (fn [] (isolated (fn [] (:variant (space/space:context-set 'demo :demo :default {})))) ) :expected :default}])
+^{:refer std.lib.context.space/space:context-unset}
+(Test/check [{:name "unsets contexts through convenience API" :test (fn [] (isolated (fn [] (space/space:context-set 'demo :demo :default {}) (space/space:context-unset 'demo :demo) (space/space:context-list 'demo)))) :expected []}])
+^{:refer std.lib.context.space/space:context-list}
+(Test/check [{:name "lists contexts through convenience API" :test (fn [] (isolated (fn [] (space/space:context-set 'demo :demo :default {}) (space/space:context-list 'demo)))) :expected [:demo]}])
+^{:refer std.lib.context.space/space:context-get}
+(Test/check [{:name "gets contexts through convenience API" :test (fn [] (isolated (fn [] (space/space:context-set 'demo :demo :default {}) (:variant (space/space:context-get 'demo :demo))))) :expected :default}])
+^{:refer std.lib.context.space/space:rt-active}
+(Test/check [{:name "lists active runtimes through convenience API" :test (fn [] (isolated (fn [] (space/space:context-set 'demo :demo :default {}) (space/space:rt-start 'demo :demo) (space/space:rt-active 'demo)))) :expected [:demo]}])
+^{:refer std.lib.context.space/space:rt-get}
+(Test/check [{:name "gets active runtimes through convenience API" :test (fn [] (isolated (fn [] (space/space:context-set 'demo :demo :default {}) (space/space:rt-start 'demo :demo) (registry/rt-null? (space/space:rt-get 'demo :demo))))) :expected true}])
+^{:refer std.lib.context.space/space:rt-start}
+(Test/check [{:name "starts through convenience API" :test (fn [] (isolated (fn [] (space/space:context-set 'demo :demo :default {}) (registry/rt-null? (space/space:rt-start 'demo :demo))))) :expected true}])
+^{:refer std.lib.context.space/space:rt-started?}
+(Test/check [{:name "reports started runtime through convenience API" :test (fn [] (isolated (fn [] (space/space:context-set 'demo :demo :default {}) (space/space:rt-start 'demo :demo) (space/space:rt-started? 'demo :demo)))) :expected true}])
+^{:refer std.lib.context.space/space:rt-stopped?}
+(Test/check [{:name "reports stopped runtime through convenience API" :test (fn [] (isolated (fn [] (space/space:context-set 'demo :demo :default {}) (space/space:rt-stopped? 'demo :demo)))) :expected true}])
+^{:refer std.lib.context.space/space:rt-stop}
+(Test/check [{:name "stops through convenience API" :test (fn [] (isolated (fn [] (space/space:context-set 'demo :demo :default {}) (space/space:rt-start 'demo :demo) (space/space:rt-stop 'demo :demo) (space/space:rt-stopped? 'demo :demo)))) :expected true}])
+^{:refer std.lib.context.space/space:rt-current}
+(Test/check [{:name "falls back to registry scratch runtime" :test (fn [] (isolated (fn [] (registry/rt-null? (space/space:rt-current 'demo :demo))))) :expected true}])

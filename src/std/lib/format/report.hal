@@ -1,0 +1,484 @@
+(ns std.lib.format.report
+  (:config {:role :internal})
+  (:require [std.lib.format.common :as common]
+            [std.lib.format.table :as table]
+            [std.lib.format.terminal :as terminal]))
+
+(def +default-options+
+  {:include-title true
+   :include-section-titles true
+   :include-annotations true
+   :include-empty false
+   :exclude-sections []})
+
+(def +default-summary-fields+
+  [:items :results :warnings :errors :cumulative :elapsed])
+
+(def +field-order-characters+
+  "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz-/:.")
+
+(defn ^{:public true} contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= candidate value)))
+   false
+   (or values [])))
+
+(defn ^{:public true} distinct-values
+  [values]
+  (reduce
+   (fn [output value]
+     (if (contains-value? output value)
+       output
+       (conj output value)))
+   []
+   (or values [])))
+
+(defn ^{:public true} field-order-key
+  [field]
+  (let [text (name field)]
+    (loop [index 0
+           output []]
+      (if (= index (str/length text))
+        output
+        (let [character (str/slice text index (inc index))
+              position (str/index-of +field-order-characters+ character)]
+          (recur
+           (inc index)
+           (conj output (if (< position 0) 1000 position))))))))
+
+(defn ^{:public true} field-order-before?
+  [left right]
+  (loop [left (field-order-key left)
+         right (field-order-key right)]
+    (cond
+      (empty? left) false
+      (empty? right) true
+      (< (first left) (first right)) true
+      (> (first left) (first right)) false
+      :else (recur (vec (rest left))
+                   (vec (rest right))))))
+
+(defn ^{:public true} insert-field
+  [field fields]
+  (loop [remaining (vec fields)
+         output []]
+    (if (empty? remaining)
+      (conj output field)
+      (if (field-order-before? field (first remaining))
+        (vec (concat output [field] remaining))
+        (recur (vec (rest remaining))
+               (conj output (first remaining)))))))
+
+(defn ^{:public true} sort-fields
+  [fields]
+  (loop [remaining (vec fields)
+         output []]
+    (if (empty? remaining)
+      output
+      (recur (vec (rest remaining))
+             (insert-field (first remaining) output)))))
+
+(defn ^{:public true} record-role
+  [record]
+  (let [data (:data record)
+        status (or (:test/status record)
+                   (if (map? data) (:test/status data) nil)
+                   (:status record))]
+    (case status
+    :return :success
+    :passed :success
+    :warn :warning
+    :error :error
+    :failed :error
+    :timeout :timeout
+    :skipped :warning
+    :cancelled :warning
+    :critical :critical
+    :default)))
+
+(defn ^{:public true} record-status
+  [record]
+  (let [data (:data record)]
+    (or (:test/status record)
+        (if (map? data) (:test/status data) nil)
+        (:status record))))
+
+(defn ^{:public true} status-text
+  [status]
+  (case status
+    :return "ok"
+    :passed "passed"
+    :warn "warn"
+    :error "error"
+    :failed "failed"
+    :timeout "timeout"
+    :skipped "skipped"
+    :cancelled "cancelled"
+    :critical "critical"
+    (name (or status :return))))
+
+(defn ^{:public true} time-text
+  [value]
+  (if (nil? value)
+    ""
+    (if (string? value)
+      value
+      (str value "ms"))))
+
+(defn ^{:public true} progress-layout
+  "Returns one shared width layout for a group of progress records."
+  [records]
+  (let [records (vec (or records []))
+        index-width
+        (reduce
+         (fn [width record]
+           (let [total (or (:item/total record) "?")
+                 index (or (:item/index record) 0)
+                 index-text (str (inc index) "/" total)
+                 candidate (max
+                            (or (:item/index-width record) 0)
+                            (+ 2
+                               (* 2
+                                  (common/display-width
+                                   (common/value-text total))))
+                            (common/display-width index-text))]
+             (max width candidate)))
+         0
+         records)
+        id-width
+        (reduce
+         (fn [width record]
+           (max
+            width
+            (max
+             (or (:item/id-width record) 0)
+             (+ 2 (common/display-width (:item/id record))))))
+         0
+         records)
+        result-spec
+        (reduce
+         (fn [output record]
+           (if (has? record :item/result-width)
+             {:width (max (:width output)
+                          (or (:item/result-width record) 0))
+              :explicit? true}
+             output))
+         {:width 0 :explicit? false}
+         records)
+        time-spec
+        (reduce
+         (fn [output record]
+           (if (has? record :item/time-width)
+             {:width (max (:width output)
+                          (or (:item/time-width record) 0))
+              :explicit? true}
+             output))
+         {:width 0 :explicit? false}
+         records)]
+    {:item/index-width index-width
+     :item/id-width id-width
+     :item/result-width (if (:explicit? result-spec)
+                          (:width result-spec)
+                          60)
+     :item/time-width (if (:explicit? time-spec)
+                        (:width time-spec)
+                        10)}))
+
+(defn ^{:public true} progress-line
+  ([record]
+   (progress-line record {}))
+  ([record layout]
+   (let [record (merge record layout)
+         index (or (:item/index record) 0)
+         total (or (:item/total record) "?")
+         index-text (str (inc index) "/" total)
+         index-text (if (:item/index-width record)
+                      (common/pad index-text
+                                  (:item/index-width record)
+                                  :right)
+                      index-text)
+         id (common/value-text (:item/id record))
+         id (if (:item/id-width record)
+              (common/pad id (:item/id-width record) :left)
+              id)
+         status (if (or (not (has? record :item/status?))
+                        (:item/status? record))
+                  (status-text (record-status record))
+                  "")
+        count-text
+        (if (has? record :item/count)
+          (str " (" (common/value-text (:item/count record)) ")")
+          "")
+        display
+        (if (and (= :return (:status record))
+                 (has? record :item/display))
+          (:item/display record)
+          (if (has? record :data)
+            (:data record)
+            (:error record)))
+        elapsed
+        (if (has? record :elapsed)
+          (let [value (time-text (:elapsed record))]
+            (if (:item/time-width record)
+              (str "  " (common/pad value
+                                    (:item/time-width record)
+                                    :left))
+              (str "  " value)))
+          "")
+        result
+        (let [result (str status
+                          count-text
+                          (if (nil? display)
+                            ""
+                            (str (if (or (not (empty? status))
+                                         (not (empty? count-text)))
+                                      "  "
+                                      "")
+                                 (common/value-text display))))]
+          (if (:item/result-width record)
+            (common/pad result (:item/result-width record) :left)
+            result))
+        result-role (record-role record)
+        cells
+        [(common/cell index-text :index)
+         (common/cell "  ")
+         (common/cell id)
+         (common/cell "  ")
+         (common/cell result result-role)]]
+    (assoc
+     (common/line-cells
+      (if (has? record :elapsed)
+        (conj cells (common/cell elapsed :bold))
+        cells))
+     :line/role result-role))))
+
+(defn ^{:public true} progress-lines
+  "Renders progress records with one shared layout across every row."
+  [records]
+  (let [records (vec (or records []))
+        layout (progress-layout records)]
+    (vec
+     (map
+      (fn [record]
+        (progress-line record layout))
+      records))))
+
+(defn ^{:public true} diagnostic-line
+  [record]
+  (let [id (common/value-text (:item/id record))
+        status (status-text (record-status record))
+        role (record-role record)
+        value
+        (if (has? record :data)
+          (:data record)
+          (:error record))]
+    (assoc
+     (common/line-cells
+      [(common/cell id)
+       (common/cell "  ")
+       (common/cell status role)
+       (if (nil? value)
+         (common/cell "")
+         (common/cell (str "  " (common/value-text value)) role))])
+     :line/role role)))
+
+(defn ^{:public true} summary-field-label
+  [field]
+  (case field
+    :items "Items"
+    :results "Results"
+    :warnings "Warnings"
+    :errors "Errors"
+    :cumulative "Cumulative"
+    :elapsed "Elapsed"
+    :files "Files"
+    :facts "Facts"
+    :checks "Checks"
+    :passed "Passed"
+    :failed "Failed"
+    :throw "Throw"
+    :timeout "Timeout"
+    :skipped "Skipped"
+    (name field)))
+
+(defn ^{:public true} summary-value-text
+  [field value]
+  (if (or (= :cumulative field)
+          (= :elapsed field))
+    (time-text value)
+    (common/value-text value)))
+
+(defn ^{:public true} summary-field-role
+  [field]
+  (case field
+    :passed :success
+    :failed :error
+    :errors :error
+    :throw :warning
+    :warnings :warning
+    :timeout :timeout
+    :cumulative :bold
+    :elapsed :bold
+    :default))
+
+(defn ^{:public true} summary-fields
+  [section summary]
+  (let [configured (:section/fields section)
+        base
+        (if (empty? configured)
+          +default-summary-fields+
+          configured)
+        extras
+        (if (:section/strict-fields section)
+          []
+          (sort-fields
+           (filter
+            (fn [field]
+              (not (contains-value? base field)))
+            (keys summary))))]
+    (distinct-values (vec (concat base extras)))))
+
+(defn ^{:public true} summary-lines
+  [section]
+  (let [summary (first (:section/entries section))]
+    (vec
+    (map
+      (fn [field]
+        (common/line-cells
+         [(common/cell (str (summary-field-label field) ": "))
+          (common/cell
+           (summary-value-text field (get summary field))
+           (summary-field-role field))]))
+      (summary-fields section summary)))))
+
+(defn ^{:public true} section-role
+  [section]
+  (case (:section/id section)
+    :warnings :warning
+    :errors :error
+    :summary :highlight
+    :results :highlight
+    :items :highlight
+    :highlight))
+
+(defn ^{:public true} section-content-lines
+  [section]
+  (case (:section/kind section)
+    :progress
+    (progress-lines (:section/entries section))
+
+    :diagnostics
+    (vec
+     (map diagnostic-line (:section/entries section)))
+
+    :table
+    (table/table-lines section)
+
+    :summary
+    (summary-lines section)
+
+    :text
+    (vec
+     (map
+      (fn [entry]
+        (common/line (common/value-text entry)))
+      (:section/entries section)))
+
+    []))
+
+(defn ^{:public true} section-selected?
+  [section options]
+  (let [id (:section/id section)
+        include (:include-sections options)
+        exclude (:exclude-sections options)]
+    (and
+     (or (empty? include)
+         (contains-value? include id))
+     (not (contains-value? exclude id)))))
+
+(defn ^{:public true} section-lines
+  [section options]
+  (let [content (section-content-lines section)
+        entries (:section/entries section)
+        include-empty (:include-empty options)]
+    (if (or (not (section-selected? section options))
+            (and (empty? entries)
+                 (not include-empty)))
+      []
+      (if (:include-section-titles options)
+        (vec
+         (concat
+          [(common/line
+            (or (:section/title section)
+                (name (:section/id section)))
+            (section-role section))]
+          content))
+        content))))
+
+(defn ^{:public true} add-group
+  [output group]
+  (if (empty? group)
+    output
+    (vec
+     (concat
+      output
+      (if (empty? output)
+        []
+        [(common/line "")])
+      group))))
+
+(defn ^{:public true} report-lines
+  "Renders a portable report document into structured lines."
+  ([document]
+   (report-lines document {}))
+  ([document options]
+   (let [options (merge +default-options+ options)
+         title
+         (if (and (:include-title options)
+                  (:report/title document))
+           [(common/line
+             (:report/title document)
+             :highlight)]
+           [])
+         section-groups
+         (vec
+          (map
+           (fn [section]
+             (section-lines section options))
+           (:report/sections document)))
+         output
+         (reduce add-group title section-groups)
+         annotations
+         (if (:include-annotations options)
+           (vec
+            (map
+             (fn [annotation]
+               (common/line
+                (common/value-text annotation)
+                :highlight))
+             (:report/annotations document)))
+           [])]
+     (add-group output annotations))))
+
+(defn ^{:public true} report
+  "Renders a portable report document as plain text."
+  ([document]
+   (report document {}))
+  ([document options]
+   (str/join
+    "\n"
+     (map
+     (fn [entry]
+       (:line/text entry))
+     (report-lines document options)))))
+
+(defn ^{:public true} render-report
+  "Renders a portable report document as plain text or ANSI output."
+  ([document]
+   (render-report document {}))
+  ([document options]
+   (terminal/render
+    (report-lines document options)
+    options)))

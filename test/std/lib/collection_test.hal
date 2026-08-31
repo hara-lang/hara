@@ -1,0 +1,394 @@
+(ns std.lib.collection-test
+  (:require [std.lib.collection :as collection]))
+
+(defn test-check
+  [name actual expected]
+  (= actual expected))
+
+(def results
+  [(test-check
+    "constructs the specialised persistent collection families"
+    [(type (collection/deque 1 2))
+     (type (collection/ordered-map :a 1))
+     (type (collection/ordered-set 1))
+     (type (collection/priority-map :a 2))
+     (type (collection/queue 1))
+     (type (collection/sorted-map :b 2 :a 1))
+     (type (collection/sorted-set 2 1))
+     (type (collection/trie "alpha" 7))]
+    [:hara/Deque
+     :hara/OrderedMap
+     :hara/OrderedSet
+     :hara/PriorityMap
+     :hara/Queue
+     :hara/SortedMap
+     :hara/SortedSet
+     :hara/Trie])
+
+   (test-check
+    "recognises each specialised collection family"
+    [(collection/deque? (collection/deque))
+     (collection/ordered-map? (collection/ordered-map))
+     (collection/ordered-set? (collection/ordered-set))
+     (collection/priority-map? (collection/priority-map))
+     (collection/queue? (collection/queue))
+     (collection/sorted-map? (collection/sorted-map))
+     (collection/sorted-set? (collection/sorted-set))
+     (collection/trie? (collection/trie))
+     (collection/deque? [])
+     (collection/priority-map? {})]
+    [true true true true true true true true false false])
+
+   (test-check
+    "supports persistent deque operations at both ends"
+    (let [value (collection/deque 1 2 3)]
+      [(collection/peek-first value) (collection/peek-last value)
+       (collection/push-first value 0) (collection/push-last value 4)
+       (collection/pop-first value) (collection/pop-last value)
+       (assoc value 1 9) value])
+    [1 3 [0 1 2 3] [1 2 3 4] [2 3] [1 2] [1 9 3] [1 2 3]])
+
+   (test-check
+    "orders priority maps with stable insertion-order ties"
+    (let [value (collection/priority-map :a 2 :b 1 :c 1)]
+      [(keys value) (collection/peek-first value) (collection/peek-last value)
+       (keys (assoc value :b 1)) (keys (assoc value :b 2))
+       (keys (collection/pop-first value)) (keys (collection/pop-last value))
+       (get value :b)])
+    [[:b :c :a] [:b 1] [:a 2] [:b :c :a] [:c :a :b]
+     [:c :a] [:b :c] 1])
+
+   (test-check
+    "preserves collection-specific behaviour"
+    [(keys (collection/ordered-map :b 2 :a 1))
+     (keys (collection/sorted-map :b 2 :a 1))
+     (nth (collection/queue 4 5 6) 1)
+     (get (collection/trie "alpha" 7) "alpha")]
+    [[:b :a] [:a :b] 5 7])
+
+   (test-check "rejects non-string trie keys" (try (do (collection/trie :alpha 7) false) (catch test_error__ true)) true)
+
+   (test-check "does not expose specialised constructors unqualified" (try (do (ordered-map) false) (catch test_error__ true)) true)
+
+   (test-check "does not expose specialised constructors from std.foundation" (try (do (std.foundation/ordered-map) false) (catch test_error__ true)) true)
+
+   (test-check
+    "transforms values through a compiled literal path"
+    [(collection/transform {:a {:b 1}} [:a :b] inc)
+     (collection/transform {"a" 1} ["a"] inc)
+     (collection/transform [10 20] [1] inc)
+     (collection/transform [{:items [1 2]} {:items [3]}] [:each :items :each] inc)
+     (collection/transform {:a {:x 1 :y 2}} [:a :map-vals] inc)
+     (collection/transform {:a 1} [:map-keys] name)
+     (collection/transform [1 2 3] [:first] inc)
+     (collection/transform [1 2 3] [:last] inc)
+     (collection/transform {:a [1 {:b 2}]} [:walk number?] inc)
+     (collection/transform [1 2 3 4] [:each even?] (fn [x] (* x 10)))
+     (collection/transform 1 [] (fn [x] (+ x 9)))]
+    [{:a {:b 2}}
+     {"a" 2}
+     [10 21]
+     [{:items [2 3]} {:items [4]}]
+     {:a {:x 2 :y 3}}
+     {"a" 1}
+     [2 2 3]
+     [1 2 4]
+     {:a [2 {:b 3}]}
+     [1 20 3 40]
+     10])
+
+   (test-check
+    "selects values through a compiled literal path"
+    [(collection/select {:a {:b 1}} [:a :b])
+     (collection/select {"a" 1} ["a"])
+     (collection/select [10 20] [1])
+     (collection/select [{:items [1 2]} {:items [3]}] [:each :items :each])
+     (collection/select {:a {:x 1}} [:a :map-vals])
+     (collection/select {:a 1} [:map-keys])
+     (collection/select [1 2 3] [:last])
+     (collection/select {:a [1 {:b 2}]} [:walk number?])
+     (collection/select [1 2 3 4] [:each even?])
+     (collection/select [] [:each])]
+    [[1]
+     [1]
+     [20]
+     [1 2 3]
+     [1]
+     [:a]
+     [3]
+     [1 2]
+     [2 4]
+     []])
+
+   (test-check
+    "replaces addressed values through setval"
+    [(collection/setval {:a {:b 1}} [:a :b] 9)
+     (collection/setval [1 2] [:each] 0)]
+    [{:a {:b 9}} [0 0]])
+
+   (test-check
+    "rejects malformed paths at macroexpansion"
+    [(try (do (macroexpand (quote (collection/select {:a 1} :a))) false)
+          (catch test_error__ true))
+     (try (do (macroexpand (quote (collection/select {} [:walk]))) false)
+          (catch test_error__ true))
+     (try (do (macroexpand (quote (collection/transform {} [:walk :a] inc))) false)
+          (catch test_error__ true))
+     (try (do (macroexpand (quote (collection/select {} [1.5]))) false)
+          (catch test_error__ true))]
+    [true true true true])
+
+   (test-check
+    "traverses entries, sets, and whole trees"
+    [(collection/transform {:a 1} [:map-entries] (fn [e] [(name (key e)) (inc (val e))]))
+     (collection/select {:a 1} [:map-entries 0])
+     (collection/transform #{1 2} [:set] inc)
+     (collection/select #{1} [:set])
+     (collection/select [1 [2]] [:tree])
+     (collection/transform 1 [:tree] inc)]
+    [{"a" 2}
+     [:a]
+     #{2 3}
+     [1]
+     [1 2 [2] [1 [2]]]
+     2])
+
+   (test-check
+    "guards, views, and multi-branch navigation"
+    [(collection/select [1 2 3] [:each :when odd?])
+     (collection/transform [1 2 3] [:each :when odd?] (fn [x] (* x 10)))
+     (collection/select [1 2 3] [:each :unless even?])
+     (collection/select {:a 2} [:a (view inc)])
+     (collection/transform {:a 2} [:a (view inc)] (fn [x] (* x 10)))
+     (collection/select {:a {:x 1} :b {:x 2}} [:multi [:a :x] [:b :x]])
+     (collection/transform {:a {:x 1} :b {:x 2}} [:multi [:a :x] [:b :x]] inc)]
+    [[1 3]
+     [10 2 30]
+     [1 3]
+     [3]
+     {:a 30}
+     [1 2]
+     {:a {:x 2} :b {:x 3}}])
+
+   (test-check
+    "rejects malformed guard and multi steps at macroexpansion"
+    [(try (do (macroexpand (quote (collection/select {} [:when :a]))) false)
+          (catch test_error__ true))
+     (try (do (macroexpand (quote (collection/select {} [:multi :a]))) false)
+          (catch test_error__ true))
+     (try (do (macroexpand (quote (collection/select {} [[1.5]]))) false)
+          (catch test_error__ true))]
+    [true true true])])
+
+results
+
+(Test/check
+ [{:name "archive collection behavior"
+   :test (fn [] (every? identity results))
+   :expected true}])
+
+^{:refer std.lib.collection/deque}
+(Test/check [{:name "constructs ordered deques"
+              :test (fn [] [(type (collection/deque 1 2)) (vec (collection/deque 1 2))])
+              :expected [:std.native.Deque [1 2]]}])
+
+^{:refer std.lib.collection/ordered-map}
+(Test/check [{:name "constructs insertion-ordered maps"
+              :test (fn [] (vec (keys (collection/ordered-map :b 2 :a 1))))
+              :expected [:b :a]}])
+
+^{:refer std.lib.collection/ordered-set}
+(Test/check [{:name "constructs insertion-ordered sets"
+              :test (fn [] (type (collection/ordered-set 2 1)))
+              :expected :std.native.OrderedSet}])
+
+^{:refer std.lib.collection/priority-map}
+(Test/check [{:name "constructs priority-ordered maps"
+              :test (fn [] (vec (keys (collection/priority-map :a 2 :b 1))))
+              :expected [:b :a]}])
+
+^{:refer std.lib.collection/queue}
+(Test/check [{:name "constructs persistent queues"
+              :test (fn [] [(type (collection/queue 1 2)) (vec (collection/queue 1 2))])
+              :expected [:std.native.Queue [1 2]]}])
+
+^{:refer std.lib.collection/sorted-map}
+(Test/check [{:name "constructs key-sorted maps"
+              :test (fn [] (vec (keys (collection/sorted-map :b 2 :a 1))))
+              :expected [:a :b]}])
+
+^{:refer std.lib.collection/sorted-set}
+(Test/check [{:name "constructs value-sorted sets"
+              :test (fn [] (vec (collection/sorted-set 2 1)))
+              :expected [1 2]}])
+
+^{:refer std.lib.collection/trie}
+(Test/check [{:name "constructs string-keyed tries"
+              :test (fn [] [(type (collection/trie "alpha" 7))
+                            (get (collection/trie "alpha" 7) "alpha")])
+              :expected [:std.native.Trie 7]}])
+
+^{:refer std.lib.collection/peek-first}
+(Test/check [{:name "reads a deque front"
+              :test (fn [] (collection/peek-first (collection/deque 1 2)))
+              :expected 1}])
+
+^{:refer std.lib.collection/peek-last}
+(Test/check [{:name "reads a deque back"
+              :test (fn [] (collection/peek-last (collection/deque 1 2)))
+              :expected 2}])
+
+^{:refer std.lib.collection/pop-first}
+(Test/check [{:name "removes a deque front persistently"
+              :test (fn [] (vec (collection/pop-first (collection/deque 1 2))))
+              :expected [2]}])
+
+^{:refer std.lib.collection/pop-last}
+(Test/check [{:name "removes a deque back persistently"
+              :test (fn [] (vec (collection/pop-last (collection/deque 1 2))))
+              :expected [1]}])
+
+^{:refer std.lib.collection/push-first}
+(Test/check [{:name "adds a deque front persistently"
+              :test (fn [] (vec (collection/push-first (collection/deque 1 2) 0)))
+              :expected [0 1 2]}])
+
+^{:refer std.lib.collection/push-last}
+(Test/check [{:name "adds a deque back persistently"
+              :test (fn [] (vec (collection/push-last (collection/deque 1 2) 3)))
+              :expected [1 2 3]}])
+
+^{:refer std.lib.collection/deque?}
+(Test/check [{:name "recognises deques"
+              :test (fn [] [(collection/deque? (collection/deque)) (collection/deque? [])])
+              :expected [true false]}])
+
+^{:refer std.lib.collection/priority-map?}
+(Test/check [{:name "recognises priority maps"
+              :test (fn [] [(collection/priority-map? (collection/priority-map)) (collection/priority-map? {})])
+              :expected [true false]}])
+
+^{:refer std.lib.collection/ordered-map?}
+(Test/check [{:name "recognises ordered maps"
+              :test (fn [] [(collection/ordered-map? (collection/ordered-map)) (collection/ordered-map? {})])
+              :expected [true false]}])
+
+^{:refer std.lib.collection/ordered-set?}
+(Test/check [{:name "recognises ordered sets"
+              :test (fn [] [(collection/ordered-set? (collection/ordered-set)) (collection/ordered-set? [])])
+              :expected [true false]}])
+
+^{:refer std.lib.collection/queue?}
+(Test/check [{:name "recognises queues"
+              :test (fn [] [(collection/queue? (collection/queue)) (collection/queue? [])])
+              :expected [true false]}])
+
+^{:refer std.lib.collection/sorted-map?}
+(Test/check [{:name "recognises sorted maps"
+              :test (fn [] [(collection/sorted-map? (collection/sorted-map)) (collection/sorted-map? {})])
+              :expected [true false]}])
+
+^{:refer std.lib.collection/sorted-set?}
+(Test/check [{:name "recognises sorted sets"
+              :test (fn [] [(collection/sorted-set? (collection/sorted-set)) (collection/sorted-set? #{})])
+              :expected [true false]}])
+
+^{:refer std.lib.collection/trie?}
+(Test/check [{:name "recognises tries"
+              :test (fn [] [(collection/trie? (collection/trie)) (collection/trie? {})])
+              :expected [true false]}])
+
+^{:refer std.lib.collection/transform-map-keys}
+(Test/check [{:name "transforms only map keys"
+              :test (fn [] [(collection/transform-map-keys name {:a 1})
+                            (collection/transform-map-keys name [1])])
+              :expected [{"a" 1} [1]]}])
+
+^{:refer std.lib.collection/keywordize-keys}
+(Test/check [{:name "keywordizes nested string and symbol keys"
+              :test (fn [] (collection/keywordize-keys {"a" {'b 1}}))
+              :expected {:a {:b 1}}}])
+
+^{:refer std.lib.collection/keyword-spearify-keys}
+(Test/check [{:name "converts underscores to spear-case keyword keys"
+              :test (fn [] (collection/keyword-spearify-keys {"a_b" 1}))
+              :expected {:a-b 1}}])
+
+^{:refer std.lib.collection/stringify-keys}
+(Test/check [{:name "stringifies nested keyword keys"
+              :test (fn [] (collection/stringify-keys {:a {:b 1}}))
+              :expected {"a" {"b" 1}}}])
+
+^{:refer std.lib.collection/string-snakify-keys}
+(Test/check [{:name "converts spear-case keyword keys to snake strings"
+              :test (fn [] (collection/string-snakify-keys {:a-b 1}))
+              :expected {"a_b" 1}}])
+
+^{:refer std.lib.collection/walk:contains}
+(Test/check [{:name "contains isolates predicate failures while walking"
+              :test (fn [] [(collection/walk:contains number? [:a [2]])
+                            (collection/walk:contains (fn [value] (/ 1 value)) [0])])
+              :expected [true false]}])
+
+^{:refer std.lib.collection/walk:find}
+(Test/check [{:name "find returns distinct matching nested values"
+              :test (fn [] (collection/walk:find number? [1 [2 1]]))
+              :expected #{1 2}}])
+
+^{:refer std.lib.collection/walk:keep}
+(Test/check [{:name "keep returns distinct truthy mapping results"
+              :test (fn [] (collection/walk:keep (fn [value] (if (number? value) (* value 10))) [1 [2 1]]))
+              :expected #{10 20}}])
+
+^{:refer std.lib.collection/nav-key-step?}
+(Test/check [{:name "recognises keyword and string navigation keys"
+              :test (fn [] [(collection/nav-key-step? :a) (collection/nav-key-step? "a") (collection/nav-key-step? 0)])
+              :expected [true true false]}])
+
+^{:refer std.lib.collection/nav-check-path}
+(Test/check [{:name "returns valid paths and rejects non-vectors"
+              :test (fn [] [(collection/nav-check-path [:a 0])
+                            (try (collection/nav-check-path :a) :not-thrown (catch error :thrown))])
+              :expected [[:a 0] :thrown]}])
+
+^{:refer std.lib.collection/nav-check-predicate-step}
+(Test/check [{:name "requires a predicate after guarded navigation steps"
+              :test (fn [] [(collection/nav-check-predicate-step [odd?] :when)
+                            (try (collection/nav-check-predicate-step [] :when) :not-thrown (catch error :thrown))])
+              :expected [[odd?] :thrown]}])
+
+^{:refer std.lib.collection/nav-check-walk}
+(Test/check [{:name "uses the predicate validation for walk"
+              :test (fn [] (try (collection/nav-check-walk [:a]) :not-thrown (catch error :thrown)))
+              :expected :thrown}])
+
+^{:refer std.lib.collection/nav-select-body}
+(Test/check [{:name "compiles selection leaves and each traversal forms"
+              :test (fn [] [(collection/nav-select-body [] 'value)
+                            (first (collection/nav-select-body [:each] 'values))])
+              :expected [(quote (vector value)) (quote mapcat)]}])
+
+^{:refer std.lib.collection/nav-transform-group}
+(Test/check [{:name "returns the current form when no transform branches remain"
+              :test (fn [] (collection/nav-transform-group [] [] 'inc 'value))
+              :expected (quote value)}])
+
+^{:refer std.lib.collection/nav-transform-body}
+(Test/check [{:name "compiles terminal transforms into one function call"
+              :test (fn [] (collection/nav-transform-body [] 'inc 'value))
+              :expected (quote (inc value))}])
+
+^{:refer std.lib.collection/select}
+(Test/check [{:name "select navigates literal paths"
+              :test (fn [] (collection/select {:a {:b 1}} [:a :b]))
+              :expected [1]}])
+
+^{:refer std.lib.collection/transform}
+(Test/check [{:name "transform rebuilds the addressed value"
+              :test (fn [] (collection/transform {:a 1} [:a] inc))
+              :expected {:a 2}}])
+
+^{:refer std.lib.collection/setval}
+(Test/check [{:name "setval replaces every addressed value once"
+              :test (fn [] (collection/setval [1 2] [:each] 0))
+              :expected [0 0]}])

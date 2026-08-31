@@ -1,0 +1,89 @@
+(ns std.lib.context.resource-test
+  (:require [std.lib.context.resource :as resource]))
+
+^{:refer std.lib.context.resource/reset-resource-state!}
+(Test/check [{:name "resets every resource registry to the documented baseline"
+              :test (fn []
+                      (try
+                       (resource/spec-add {:type :test/resource
+                                           :variant {:default {:config {}}}})
+                       (resource/reset-resource-state!)
+                       [@resource/*resource-aliases*
+                        @resource/*resource-registry*
+                        @resource/*resource-active*]
+                       (finally (resource/reset-resource-state!))))
+              :expected [{} {} {:global {} :namespace {} :shared {}}]}])
+
+(def test-spec {:type :test/resource
+                :variant {:default {:config {} :instance {:create identity :setup identity :teardown identity}}
+                          :shared {:id :shared :mode {:default :shared :key :id}
+                                   :config {} :instance {:create identity :setup identity :teardown identity}}}})
+
+(defn isolated [function]
+  (binding [resource/*resource-aliases* (atom {})
+            resource/*resource-registry* (atom {})
+            resource/*resource-active* (atom {:global {} :namespace {} :shared {}})]
+    (try (resource/spec-add test-spec) (function) (finally (resource/reset-resource-state!)))))
+
+^{:refer std.lib.context.resource/resource-merge-config}
+(Test/check [{:name "merges nested resource configuration" :test (fn [] (resource/resource-merge-config {:mode {:a 1} :config {:a 1}} {:mode {:b 2} :config {:b 2}})) :expected {:mode {:a 1 :b 2} :config {:a 1 :b 2} :instance {} :hook {}}}])
+^{:refer std.lib.context.resource/spec-list}
+(Test/check [{:name "lists registered resource types" :test (fn [] (isolated (fn [] (vec (resource/spec-list))))) :expected [:test/resource]}])
+^{:refer std.lib.context.resource/spec-add}
+(Test/check [{:name "adds normalized specs" :test (fn [] (isolated (fn [] (let [entry (second (resource/spec-add {:type :other/resource :variant {:default {:config {}}}}))] [(:type entry) (has? (:variant entry) :default)])))) :expected [:other/resource true]}])
+^{:refer std.lib.context.resource/spec-remove}
+(Test/check [{:name "removes a registered spec" :test (fn [] (isolated (fn [] (resource/spec-remove :test/resource) (empty? (resource/spec-list))))) :expected true}])
+^{:refer std.lib.context.resource/spec-get}
+(Test/check [{:name "gets registered specs" :test (fn [] (isolated (fn [] (:type (resource/spec-get :test/resource))))) :expected :test/resource}])
+^{:refer std.lib.context.resource/variant-list}
+(Test/check [{:name "lists spec variants" :test (fn [] (isolated (fn [] (set (resource/variant-list :test/resource))))) :expected #{:default :shared}}])
+^{:refer std.lib.context.resource/variant-add}
+(Test/check [{:name "adds variants and aliases" :test (fn [] (isolated (fn [] (resource/variant-add :test/resource {:id :alt :alias :resource/alt}) @resource/*resource-aliases*))) :expected {:resource/alt [:test/resource :alt]}}])
+^{:refer std.lib.context.resource/variant-remove}
+(Test/check [{:name "removes aliased variants" :test (fn [] (isolated (fn [] (resource/variant-add :test/resource {:id :alt :alias :resource/alt}) (resource/variant-remove :test/resource :alt) @resource/*resource-aliases*))) :expected {}}])
+^{:refer std.lib.context.resource/variant-get}
+(Test/check [{:name "merges default variants into a resolved spec" :test (fn [] (isolated (fn [] [(:type (resource/variant-get :test/resource)) (:id (resource/variant-get :test/resource :shared))]))) :expected [:test/resource :shared]}])
+^{:refer std.lib.context.resource/resource-mode}
+(Test/check [{:name "resolves default and shared modes" :test (fn [] (isolated (fn [] [(resource/resource-mode :test/resource) (resource/resource-mode :test/resource :shared)]))) :expected [:global :shared]}])
+^{:refer std.lib.context.resource/resource-active}
+(Test/check [{:name "filters active resources by type" :test (fn [] (isolated (fn [] (resource/resource-active :test/resource)))) :expected {}}])
+^{:refer std.lib.context.resource/resource-setup}
+(Test/check [{:name "constructs configured instances" :test (fn [] (isolated (fn [] (resource/resource-setup :test/resource :default {:a 1})))) :expected {:a 1}}])
+^{:refer std.lib.context.resource/resource-teardown}
+(Test/check [{:name "tears down instances through the configured boundary" :test (fn [] (isolated (fn [] (resource/resource-teardown :test/resource :default {:a 1})))) :expected {:a 1}}])
+^{:refer std.lib.context.resource/resource-key}
+(Test/check [{:name "derives global namespace and shared keys" :test (fn [] (isolated (fn [] [(resource/resource-key :global :test/resource :default :x) (binding [resource/*resource-namespace* :ns] (resource/resource-key :namespace :test/resource :default nil)) (resource/resource-key :shared :test/resource :shared {:id :x})]))) :expected [nil :ns :x]}])
+^{:refer std.lib.context.resource/resource-active-path}
+(Test/check [{:name "derives canonical active paths" :test (fn [] (isolated (fn [] (resource/resource-active-path :shared :test/resource :shared {:id :x})))) :expected [:shared [:test/resource :shared] :x]}])
+^{:refer std.lib.context.resource/resource-active-get}
+(Test/check [{:name "gets missing active entries as nil" :test (fn [] (isolated (fn [] (resource/resource-active-get :global :test/resource :default nil)))) :expected nil}])
+^{:refer std.lib.context.resource/resource-active-set}
+(Test/check [{:name "sets active entries" :test (fn [] (isolated (fn [] (resource/resource-active-set :global :test/resource :default nil {:instance :v}) (resource/resource-active-get :global :test/resource :default nil)))) :expected {:instance :v}}])
+^{:refer std.lib.context.resource/resource-active-start}
+(Test/check [{:name "starts and registers instances" :test (fn [] (isolated (fn [] (resource/resource-active-start :global :test/resource :default nil {:x 1})))) :expected {:x 1}}])
+^{:refer std.lib.context.resource/resource-active-stop}
+(Test/check [{:name "stops and removes active instances" :test (fn [] (isolated (fn [] (resource/resource-active-start :global :test/resource :default nil {:x 1}) (resource/resource-active-stop :global :test/resource :default nil) (resource/resource-active-get :global :test/resource :default nil)))) :expected nil}])
+^{:refer std.lib.context.resource/resource-active-restart}
+(Test/check [{:name "restarts present entries" :test (fn [] (isolated (fn [] (resource/resource-active-start :global :test/resource :default nil {:x 1}) (resource/resource-active-restart :global :test/resource :default nil)))) :expected {:x 1}}])
+^{:refer std.lib.context.resource/resource-active-get-or-start}
+(Test/check [{:name "gets or starts allowed instances" :test (fn [] (isolated (fn [] (resource/resource-active-get-or-start :global :test/resource :default nil {:x 1})))) :expected {:x 1}}])
+^{:refer std.lib.context.resource/resource-input}
+(Test/check [{:name "normalizes resource inputs" :test (fn [] [(resource/resource-input :shared) (resource/resource-input {:x 1})]) :expected [[:shared {}] [:default {:x 1}]]}])
+^{:refer std.lib.context.resource/resource-call-fn}
+(Test/check [{:name "dispatches explicit resource call arity" :test (fn [] (isolated (fn [] (let [call (resource/resource-call-fn (fn [& values] (vec values)))] (call :global :test/resource :default nil [:x]))))) :expected [:global :test/resource :default nil [:x]]}])
+^{:refer std.lib.context.resource/resource-api-fn}
+(Test/check [{:name "adapts public calls to low-level functions" :test (fn [] (isolated (fn [] ((resource/resource-api-fn (fn [& values] (vec values)) 1 nil {}) :test/resource {:x 1})))) :expected [:global :test/resource :default nil {:x 1}]}])
+^{:refer std.lib.context.resource/resource-exists?}
+(Test/check [{:name "reports inactive public resources" :test (fn [] (isolated (fn [] (resource/resource-exists? :test/resource)))) :expected false}])
+^{:refer std.lib.context.resource/resource-set}
+(Test/check [{:name "sets resources through public API" :test (fn [] (isolated (fn [] (resource/resource-set :test/resource {:instance :v}) (resource/resource-exists? :test/resource)))) :expected true}])
+^{:refer std.lib.context.resource/resource-stop}
+(Test/check [{:name "stops public resources" :test (fn [] (isolated (fn [] (resource/resource-start :test/resource {:x 1}) (resource/resource-stop :test/resource) (resource/resource-exists? :test/resource)))) :expected false}])
+^{:refer std.lib.context.resource/resource-path}
+(Test/check [{:name "exposes public resource paths" :test (fn [] (isolated (fn [] (resource/resource-path :test/resource {})))) :expected [:global [:test/resource :default]]}])
+^{:refer std.lib.context.resource/resource-start}
+(Test/check [{:name "starts resources through public API" :test (fn [] (isolated (fn [] (resource/resource-start :test/resource {:x 1})))) :expected {:x 1}}])
+^{:refer std.lib.context.resource/resource-restart}
+(Test/check [{:name "restarts public resources" :test (fn [] (isolated (fn [] (resource/resource-start :test/resource {:x 1}) (resource/resource-restart :test/resource)))) :expected {:x 1}}])
+^{:refer std.lib.context.resource/resource-get}
+(Test/check [{:name "gets or starts public resources" :test (fn [] (isolated (fn [] (resource/resource-get :test/resource {:x 1})))) :expected {:x 1}}])

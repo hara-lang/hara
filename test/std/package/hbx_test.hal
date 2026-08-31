@@ -1,0 +1,203 @@
+(ns std.package.hbx-test
+  (:require [std.package.hbx :as hbx]))
+
+(def +provider+
+  {:provider/id :rust
+   :provider/operations [:validate :inspect :pack :unpack :conform]
+   :provider/formats {:hbx [:validate :inspect :pack :unpack :conform]}})
+
+^{:refer std.package.hbx/fail}
+(Test/check
+ [{:name "constructs a structured package failure"
+   :test (fn []
+           (try
+             (hbx/fail "failure" {:kind :test})
+             false
+             (catch error (= :hara/dependency (:ex/code (ex-data error))))))
+   :expected true}])
+
+^{:refer std.package.hbx/includes?}
+(Test/check
+ [{:name "finds only values present in a collection"
+   :test (fn []
+           [(hbx/includes? [:hbx :harp] :hbx)
+            (hbx/includes? [:hbx :harp] :zip)])
+   :expected [true false]}])
+
+^{:refer std.package.hbx/unknown-keys}
+(Test/check
+ [{:name "returns unsupported keys in deterministic order"
+   :test (fn []
+           (hbx/unknown-keys {:z 1 :a 2 :ok 3} #{:ok}))
+   :expected [:a :z]}])
+
+^{:refer std.package.hbx/hbx-bytes}
+(Test/check
+ [{:name "copies bytes and rejects non-byte values"
+   :test (fn []
+           [(std.native.String/decode-utf8
+             (hbx/hbx-bytes (std.native.String/encode-utf8 "HBX0") :test))
+            (try
+              (hbx/hbx-bytes "HBX0" :test)
+              false
+              (catch error true))])
+   :expected ["HBX0" true]}])
+
+^{:refer std.package.hbx/formats}
+(Test/check
+ [{:name "exposes HBX as the single executable bytecode format"
+   :test (fn []
+           (hbx/formats))
+   :expected [{:format/id :hbx
+               :format/name "HBX0"
+               :format/kind :executable-package
+               :format/status :draft
+               :format/extension ".hbx"
+               :format/magic "HBX0"
+               :format/version 0
+               :format/spec-id :hal/hbx0-wire
+               :format/spec-path "01-lang/010-bytecode/draft/hbx0-wire.edn"}]}])
+
+^{:refer std.package.hbx/spec}
+(Test/check
+ [{:name "returns the HBX wire specification and rejects unknown identities"
+   :test (fn []
+           [(hbx/spec)
+            (hbx/spec :hal/hbx0-wire)
+            (try
+              (hbx/spec :missing)
+              false
+              (catch error true))])
+   :expected [{:spec/id :hal/hbx0-wire
+               :spec/format :hbx
+               :spec/kind :wire
+               :spec/path "01-lang/010-bytecode/draft/hbx0-wire.edn"
+               :spec/corpora [:hal/hbx0-golden :hal/hbx0-malformed]}
+              {:spec/id :hal/hbx0-wire
+               :spec/format :hbx
+               :spec/kind :wire
+               :spec/path "01-lang/010-bytecode/draft/hbx0-wire.edn"
+               :spec/corpora [:hal/hbx0-golden :hal/hbx0-malformed]}
+              true]}])
+
+^{:refer std.package.hbx/provider}
+(Test/check
+ [{:name "normalizes the declared native HBX provider"
+   :test (fn []
+           [(hbx/provider +provider+)
+            (try
+              (hbx/provider {:provider/id :rust})
+              false
+              (catch error true))])
+   :expected [+provider+ true]}])
+
+^{:refer std.package.hbx/current-provider}
+(Test/check
+ [{:name "reads the canonical native HBX provider"
+   :test (fn []
+           (hbx/current-provider))
+   :expected +provider+}])
+
+^{:refer std.package.hbx/capabilities}
+(Test/check
+ [{:name "reports one canonical HBX capability descriptor"
+   :test (fn []
+           (hbx/capabilities))
+   :expected [+provider+]}])
+
+^{:refer std.package.hbx/supports}
+(Test/check
+ [{:name "returns a supporting provider and rejects unavailable operations"
+   :test (fn []
+           [(:provider/id (hbx/supports :pack))
+            (try
+              (hbx/supports :sign)
+              false
+              (catch error true))])
+   :expected [:rust true]}])
+
+^{:refer std.package.hbx/detect}
+(Test/check
+ [{:name "detects only the HBX0 magic prefix"
+   :test (fn []
+           [(hbx/detect (std.native.String/encode-utf8 "HBX0"))
+            (hbx/detect (std.native.String/encode-utf8 "HBC0"))])
+   :expected [:hbx nil]}])
+
+^{:refer std.package.hbx/invalid}
+(Test/check
+ [{:name "wraps native codec failures in the package error boundary"
+   :test (fn []
+           (try
+             (hbx/invalid :validate +provider+ "bad package")
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer std.package.hbx/validate}
+(Test/check
+ [{:name "validates a deterministic empty HBX package"
+   :test (fn []
+           (hbx/validate (hbx/pack [])))
+   :expected true}])
+
+^{:refer std.package.hbx/inspect}
+(Test/check
+ [{:name "inspects an empty HBX package without source compilation"
+   :test (fn []
+           (hbx/inspect (hbx/pack [])))
+   :expected {:package/format :hbx
+              :package/version 0
+              :modules/count 0
+              :modules/resources []}}])
+
+^{:refer std.package.hbx/pack}
+(Test/check
+ [{:name "packs an empty module sequence into detectable HBX bytes"
+   :test (fn []
+           (hbx/detect (hbx/pack [])))
+   :expected :hbx}])
+
+^{:refer std.package.hbx/unpack}
+(Test/check
+ [{:name "unpacks an empty HBX package"
+   :test (fn []
+           (mapv identity (hbx/unpack (hbx/pack []))))
+   :expected []}])
+
+^{:refer std.package.hbx/conform}
+(Test/check
+ [{:name "reports successful HBX wire conformance"
+   :test (fn []
+           (hbx/conform (hbx/pack [])))
+   :expected {:conformance/spec :hal/hbx0-wire
+              :conformance/provider :rust
+              :conformance/valid true}}])
+
+^{:refer std.package.hbx/encode}
+(Test/check
+ [{:name "encodes HBX through the package codec"
+   :test (fn []
+           (hbx/detect (hbx/encode [])))
+   :expected :hbx}])
+
+^{:refer std.package.hbx/decode}
+(Test/check
+ [{:name "decodes HBX through the package codec"
+   :test (fn []
+           (mapv identity (hbx/decode (hbx/encode []))))
+   :expected []}])
+
+^{:refer std.package.hbx/modules}
+(Test/check
+ [{:name "returns package modules through the named convenience operation"
+   :test (fn []
+           (mapv identity (hbx/modules (hbx/encode []))))
+   :expected []}])
+
+^{:refer std.package.hbx/extract}
+(Test/check
+ [{:name "returns nil when an HBX package does not contain a resource"
+   :test (fn []
+           (hbx/extract (hbx/encode []) "missing.hal"))
+   :expected nil}])

@@ -1,0 +1,138 @@
+(ns lang.common.grammar-api-test
+  (:require [lang.common.grammar-api :as grammar]
+            [lang.common.registry :as registry]))
+
+(def plus-entry {:op :add :symbol #{'+} :type :operator :raw "+"})
+(def cast-entry {:op :cast :symbol #{'cast} :type :operator :raw "cast"})
+
+(def template
+  (grammar/emit-template
+   {:template/id :default :template/version 1
+    :template/value {:token {:nil "nil"}}}))
+
+(def profile
+  (grammar/profile
+   {:profile/id :core :profile/version 1
+    :profile/operators {:add plus-entry}}))
+
+(def parent
+  (grammar/definition
+   {:grammar/id :base-js :grammar/version 1 :grammar/release "base"
+    :grammar/emit-template {:template/id :default :template/version 1}
+    :grammar/profiles [{:profile/id :core :profile/version 1}]}))
+
+(def child
+  (grammar/definition
+   {:grammar/id :js :grammar/version 2 :grammar/release "child"
+    :grammar/parent {:grammar/id :base-js :grammar/version 1}
+    :operators {:override {:add {:raw "plus"}}}
+    :grammar/rewrite {:staging {:append ['lang.common.grammar-api/fingerprint]}}
+    :grammar/facets
+    {:typed {:operators {:define {:cast cast-entry}}
+             :grammar/sections [[:lint [:no-eval]]]}
+     :jsx {:requires #{:typed}
+           :operators {:override {:add {:raw "jsx-plus"}}}}}
+    :grammar/facet-order [:typed :jsx]}))
+
+(def catalog
+  (registry/install
+   (registry/install
+    (registry/install
+     (registry/install (registry/registry) template)
+     profile)
+    parent)
+   child))
+
+^{:refer lang.common.grammar-api/engine-version}
+(Test/check
+ [{:name "grammar source declarations validate identity and retain exact coordinates"
+   :test (fn [] [grammar/engine-version
+                 (grammar/require-fields {:id :fixture} [:id])
+                 (try (grammar/require-fields {} [:id]) false (catch _ true))
+                 (grammar/source :fixture :source 1 {:value true})
+                 (grammar/source-coordinate profile)
+                 (grammar/source-coordinate template)
+                 (grammar/source-coordinate child)
+                 (try (grammar/definition {:grammar/id :missing}) false (catch _ true))])
+   :expected [1 {:id :fixture} true
+              {:value true :source/kind :fixture :source/id :source :source/version 1}
+              [:profile :core 1] [:emit-template :default 1] [:grammar :js 2] true]}])
+
+^{:refer lang.common.grammar-api/deep-merge}
+(Test/check
+ [{:name "grammar customization primitives preserve archive merge and phase semantics"
+   :test (fn [] [(grammar/deep-merge {:a {:x 1} :b 1} {:a {:y 2} :b 2})
+                 (grammar/apply-operators {:add plus-entry :cast cast-entry}
+                                          {:exclude #{:cast} :override {:add {:raw "plus"}}})
+                 (grammar/key-present? {:a 1} :a)
+                 (grammar/path-present? {:a {:b 1}} [:a :b])
+                 (grammar/member? [:a :b] :b)
+                 (grammar/phase-plan [:one] {:append [:two]})
+                 (grammar/phase-plan [:one] {:replace [:two]})
+                 (grammar/merge-rewrite {:staging [:one]} {:staging {:append [:two]}})
+                 (grammar/customization-value {:grammar/operators {:define {}}} :grammar/operators :operators)])
+   :expected [{:a {:x 1 :y 2} :b 2}
+              {:add {:op :add :symbol #{'+} :type :operator :raw "plus"}}
+              true true true [:one :two] [:two] {:staging [:one :two]} {:define {}}]}])
+
+^{:refer lang.common.grammar-api/apply-hook-mode}
+(Test/check
+ [{:name "declared sections are dispatched as structured grammar customizations"
+   :test (fn [] [(grammar/apply-section {:extensions {}} :lint [:no-eval] {:facet :typed})
+                 (grammar/apply-extension-sections {:extensions {}}
+                                                   [[:inference [:typed]] [:lint [:no-eval]]]
+                                                   {})
+                 (grammar/apply-customization
+                  {:operators {:add plus-entry} :template {} :rewrite {} :extensions {}}
+                  {:operators {:override {:add {:raw "plus"}}}
+                   :grammar/sections [[:lint [:no-eval]]]})
+                 (try (grammar/apply-section {} :unknown {} {}) false (catch _ true))])
+   :expected [{:extensions {:lint [:no-eval]}}
+              {:extensions {:inference [:typed] :lint [:no-eval]}}
+              {:operators {:add {:op :add :symbol #{'+} :type :operator :raw "plus"}}
+               :template {} :rewrite {} :extensions {:lint [:no-eval]}}
+              true]}])
+
+^{:refer lang.common.grammar-api/expand-facets}
+(Test/check
+ [{:name "facets expand dependencies in declared order and fingerprints are canonical"
+   :test (fn [] [
+                 (grammar/expand-facets {:typed {} :jsx {:requires #{:typed}}} [:jsx])
+                 (grammar/order-facets {:typed {} :jsx {:requires #{:typed}}}
+                                      [:typed :jsx] #{:typed :jsx})
+                 (grammar/selected-facets child [:jsx])
+                 (grammar/unsigned-byte -1)
+                 (grammar/canonical-fingerprint-value {:b #{2 1} :a [1 2]})
+                 (= (grammar/fingerprint {:a #{1 2} :b {:x 1 :y 2}})
+                    (grammar/fingerprint {:b {:y 2 :x 1} :a #{2 1}}))
+                 (try (grammar/selected-facets child [:missing]) false (catch _ true))])
+   :expected [#{:typed :jsx} [:typed :jsx] [:typed :jsx] 255
+              [:map [[:a [:vector [1 2]]] [:b [:set [1 2]]]]]
+              true true]}])
+
+^{:refer lang.common.grammar-api/require-source}
+(Test/check
+ [{:name "registry materialization composes templates profiles parents facets and provenance"
+   :test (fn [] (let [resolved (registry/resolve catalog {:grammar/id :js :grammar/version 2 :grammar/facets [:jsx]})]
+                 [(grammar/source-coordinate (grammar/require-source catalog [:grammar :js 2]))
+                  (grammar/strip-derived {:polis/type :polis/grammar :tag :js :reserved {} :token {:nil "nil"}})
+                  (grammar/ensure-engine-compatible {:grammar/engine {:minimum 1 :maximum 1}})
+                  (grammar/initial-state nil)
+                  (grammar/materialization-identity child [:typed :jsx])
+                  [(get-in resolved [:grammar :token :nil])
+                   (:raw (get-in resolved [:grammar :reserved '+]))
+                   (:raw (get-in resolved [:grammar :reserved 'cast]))
+                   (get-in resolved [:coordinate :grammar/facets])
+                   (get-in resolved [:extensions :lint])
+                   (count (get-in resolved [:rewrite :staging]))
+                   (:provenance resolved)]
+                  (try (grammar/ensure-engine-compatible {:grammar/engine {:minimum 2}}) false (catch _ true))]))
+   :expected [[:grammar :js 2]
+              {:token {:nil "nil"}}
+              {:grammar/engine {:minimum 1 :maximum 1}}
+              {:operators {} :template {} :rewrite {} :extensions {} :provenance []}
+              {:grammar/id :js :grammar/version 2 :grammar/release "child" :grammar/facets [:typed :jsx]}
+              ["nil" "jsx-plus" "cast" [:typed :jsx] [:no-eval] 1
+               [[:emit-template :default 1] [:profile :core 1] [:grammar :base-js 1]
+                [:grammar :js 2] {:facet :typed} {:facet :jsx}]]
+              true]}])

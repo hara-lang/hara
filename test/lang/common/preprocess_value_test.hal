@@ -1,0 +1,72 @@
+(ns lang.common.preprocess-value-test
+  (:require [lang.common.preprocess-value :as value]))
+
+^{:refer lang.common.preprocess-value/value-block-entry}
+(Test/check
+ [{:name "recognizes macro grammar entries explicitly allowed in value blocks"
+   :test (fn []
+           (select-keys
+            (value/value-block-entry
+             '(block input)
+             {:reserved {'block {:emit :macro
+                                 :macro (fn [form] form)
+                                 :op-spec {:allow-blocks true}}}})
+            [:emit :op-spec]))
+   :expected {:emit :macro :op-spec {:allow-blocks true}}}])
+
+^{:refer lang.common.preprocess-value/expand-value-block}
+(Test/check
+ [{:name "expands an allowed value block with its grammar macro"
+   :test (fn []
+           (value/expand-value-block
+            '(block input)
+            {:reserved {'block {:emit :macro
+                                :macro (fn [form] (list 'expanded (second form)))
+                                :op-spec {:allow-blocks true}}}}
+            {}))
+   :expected '(expanded input)}])
+
+^{:refer lang.common.preprocess-value/resolve-block-form}
+(Test/check
+ [{:name "retains direct blocks and resolves linked fragment templates recursively"
+   :test (fn []
+           (let [grammar {:reserved {'block {:emit :macro
+                                             :macro (fn [form] form)
+                                             :op-spec {:allow-blocks true}}}}
+                 modules {'library {:fragment {'piece {:template (fn [item] (list 'block item))}}}}
+                 options {:module {:id 'current :link {}}}]
+             [(value/resolve-block-form '(block input) grammar options)
+              (value/resolve-block-form '(library/piece input) grammar modules options)]))
+   :expected ['(block input) '(block input)]}])
+
+^{:refer lang.common.preprocess-value/value-template-args}
+(Test/check
+ [{:name "uses explicit argument lists or removes the receiver from template metadata"
+   :test (fn []
+           (let [template (with-meta (fn [] nil) {:arglists '([self value])})]
+             [(value/value-template-args '([first second]) template)
+              (value/value-template-args template)]))
+   :expected [['first 'second] ['value]]}])
+
+^{:refer lang.common.preprocess-value/value-standalone}
+(Test/check
+ [{:name "returns declared standalone value forms without synthesizing a replacement"
+   :test (fn []
+           (value/value-standalone
+            'block
+            {:reserved {'block {:emit :macro
+                                :value/standalone 'library/value
+                                :op-spec {:allow-blocks true}}}}))
+   :expected 'library/value}])
+
+^{:refer lang.common.preprocess-value/process-value-form}
+(Test/check
+ [{:name "expands return blocks and lifts nested blocks through standalone functions"
+   :test (fn []
+           (let [grammar {:reserved {'block {:emit :macro
+                                             :macro (fn [form] (list 'expanded (second form)))
+                                             :value/standalone 'block-value
+                                             :op-spec {:allow-blocks true}}}}]
+             [(value/process-value-form '(return (block input)) grammar {})
+              (value/process-value-form '(outer (block input)) grammar {})]))
+   :expected ['(expanded input) '(outer (block-value input))]}])

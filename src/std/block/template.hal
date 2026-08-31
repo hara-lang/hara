@@ -1,0 +1,131 @@
+(ns std.block.template
+  (:require [std.block :as b]
+    [std.block.navigate :as nav]))
+
+(defn ^{:public true} template-expand-children
+  "Expands template child values and splices unquote-splice markers."
+  [values]
+  (reduce (fn [output value]
+            (cond
+              (and (vector? value)
+                   (= :template/splice (first value)))
+              (vec (concat output (second value)))
+              :else
+              (conj (vec output) value)))
+          []
+          values))
+
+(defn ^{:public true} template-replace-unquotes
+  "Replaces runtime unquote forms in a template with lexical values."
+  [form locals]
+  (cond
+    (list? form)
+    (let [head (first form)]
+      (cond
+        (= head (quote unquote))
+        (get locals (second form))
+
+        (= head (quote unquote-splicing))
+        [:template/splice (get locals (second form))]
+
+        :else
+        (apply list
+               (template-expand-children
+                (map (fn [value]
+                       (template-replace-unquotes value locals))
+                     form)))))
+
+    (vector? form)
+    (vec (template-expand-children
+          (map (fn [value]
+                 (template-replace-unquotes value locals))
+               form)))
+
+    (map? form)
+    (reduce (fn [output entry]
+              (assoc output
+                     (template-replace-unquotes (key entry) locals)
+                     (template-replace-unquotes (val entry) locals)))
+            (empty form)
+            form)
+
+    (set? form)
+    (set (template-expand-children
+          (map (fn [value]
+                 (template-replace-unquotes value locals))
+               form)))
+
+    :else form))
+
+(defmacro ^{:public true} $
+  "Expands a template using the caller's runtime lexical values."
+  [form]
+  (let [locals (keys (get &env :locals {}))
+        bindings (mapcat (fn [sym]
+                          [(list (quote quote) sym) sym])
+                        locals)]
+    (list (quote std.block.template/template-replace-unquotes)
+          (list (quote quote) form)
+          (apply list (quote hash-map) bindings))))
+
+(defn ^{:public true} get-template-params
+  [code]
+  (->> (nav/navigator code)
+       (iterate (fn [nav]
+                  (nav/find-next nav
+                                 (fn [block]
+                                   (or (= :unquote-splice (:tag (b/info block)))
+                                       (= :unquote (:tag (b/info block))))))))
+       (drop 1)
+       (take-while identity)
+       (map nav/value)))
+
+(defn ^{:public true} get-template
+  [code-str & migration-optional-arguments]
+  (let [input-fn (first (drop 0 migration-optional-arguments))
+        multi    (first (drop 1 migration-optional-arguments))]
+    (let [code   (cond multi (b/parse-root code-str)
+                        :else (b/parse-first code-str))
+          params (get-template-params code)]
+      {:code code :input-fn (or input-fn identity) :multi multi :params params})))
+
+(defn ^{:public true} fill-template
+  [template input]
+  (let [migration-map-value-1 template
+        code                  (get migration-map-value-1 :code)
+        params                (get migration-map-value-1 :params)
+        input-fn              (get migration-map-value-1 :input-fn)
+        input                 (input-fn input)
+        missing               (std.foundation/difference (std.foundation/set (map second params)) (std.foundation/set (keys input)))
+        _                     (cond
+                                (not-empty missing)
+                                (throw (ex :argument
+                                           {:input input :missing missing}
+                                           :ex/message "Missing params"))
+                                :else nil)]
+    (nav/root-string (reduce (fn [nav param]
+                               (cond-> (nav/find-next-token nav param)
+                                 (= (quote unquote) (first param))
+                                 (nav/replace (get input (second param)))
+                                 (= (quote unquote-splicing) (first param))
+                                 (nav/replace-splice (get input (second param)))))
+                       (nav/navigator code)
+                       params))))
+
+(defn ^{:public true} defn-form
+  [migration-map-param-1]
+  (let [fsym      (get migration-map-param-1 (quote fsym))
+        doc       (get migration-map-param-1 (quote doc))
+        base-args (get migration-map-param-1 (quote base-args))
+        opts-args (get migration-map-param-1 (quote opts-args))
+        body-form (get migration-map-param-1 (quote body-form))]
+    (std.foundation/seq (std.foundation/concat (std.foundation/list (quote defn))
+                          (std.foundation/list fsym)
+                          (std.foundation/list doc)
+                          (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list base-args)
+                                                                     (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list fsym)
+                                                                                                                base-args
+                                                                                                                (std.foundation/list (std.foundation/apply std.foundation/hash-map
+                                                                                                                                       (std.foundation/seq (std.foundation/concat))))))))))
+                          (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list opts-args)
+                                                                     (std.foundation/list body-form))))))))

@@ -92,4 +92,4 @@ shared canonical bytes and fail-before-mutation vectors for Rust, Java, and
 
 [`conformance/hbx0-golden.edn`](conformance/hbx0-golden.edn) and
 [`conformance/hbx0-malformed.edn`](conformance/hbx0-malformed.edn) pin package
-determinism and shared Rust/Java rejection categories for `tool.package`.
+determinism and shared Rust/Java rejection categories for `std.package.hbx`.

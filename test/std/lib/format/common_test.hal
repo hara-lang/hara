@@ -1,0 +1,84 @@
+(ns std.lib.format.common-test
+  (:require [std.lib.format.common]))
+
+^{:refer std.lib.format.common/line}
+(Test/check
+ [{:name "creates lines with default and explicit roles"
+   :test (fn []
+           [(std.lib.format.common/line "hello")
+            (std.lib.format.common/line "warning" :warning)])
+   :expected [{:line/text "hello" :line/role :default}
+              {:line/text "warning" :line/role :warning}]}])
+
+^{:refer std.lib.format.common/value-text}
+(Test/check
+ [{:name "renders nil, strings, and data values"
+   :test (fn []
+           [(std.lib.format.common/value-text nil)
+            (std.lib.format.common/value-text "hello")
+            (std.lib.format.common/value-text [:alpha 2])])
+   :expected ["" "hello" "[:alpha 2]"]}])
+
+^{:refer std.lib.format.common/character-width}
+(Test/check
+ [{:name "classifies ordinary, wide, combining, and emoji characters"
+   :test (fn []
+           [(std.lib.format.common/character-width \a)
+            (std.lib.format.common/character-width \界)
+            (std.lib.format.common/character-width \u0301)
+            (std.lib.format.common/character-width \😀)])
+   :expected [1 2 0 2]}])
+
+^{:refer std.lib.format.common/display-width}
+(Test/check
+ [{:name "measures terminal cells rather than character count"
+   :test (fn []
+           [(std.lib.format.common/display-width "abc")
+            (std.lib.format.common/display-width "界")
+            (std.lib.format.common/display-width "é")
+            (std.lib.format.common/display-width "😀")])
+   :expected [3 2 1 2]}])
+
+^{:refer std.lib.format.common/cell}
+(Test/check
+ [{:name "creates cells with default and explicit roles"
+   :test (fn []
+           [(std.lib.format.common/cell "hello")
+            (std.lib.format.common/cell 42 :success)])
+   :expected [{:cell/text "hello" :cell/role :default}
+              {:cell/text "42" :cell/role :success}]}])
+
+^{:refer std.lib.format.common/line-cells}
+(Test/check
+ [{:name "keeps aggregate text and cell roles together"
+   :test (fn []
+           (std.lib.format.common/line-cells
+            [(std.lib.format.common/cell "1/2" :index)
+             (std.lib.format.common/cell "  ")
+             (std.lib.format.common/cell "passed" :success)]))
+   :expected {:line/text "1/2  passed"
+              :line/role :default
+              :line/cells [{:cell/text "1/2" :cell/role :index}
+                           {:cell/text "  " :cell/role :default}
+                           {:cell/text "passed" :cell/role :success}]}}])
+
+^{:refer std.lib.format.common/truncate}
+(Test/check
+ [{:name "preserves fitting values and truncates terminal-cell boundaries"
+   :test (fn []
+           [(std.lib.format.common/truncate "abc" 5)
+            (std.lib.format.common/truncate "abcdef" 5)
+            (std.lib.format.common/truncate "abcdef" 3)
+            (std.lib.format.common/truncate "界界x!" 5)
+            (std.lib.format.common/truncate "éabc" 3)])
+   :expected ["abc" "ab..." "abc" "界..." "éab"]}])
+
+^{:refer std.lib.format.common/pad}
+(Test/check
+ [{:name "pads each alignment using display width"
+   :test (fn []
+           [(std.lib.format.common/pad "x" 3 :left)
+            (std.lib.format.common/pad "x" 3 :right)
+            (std.lib.format.common/pad "x" 3 :center)
+            (std.lib.format.common/pad "界" 4 :center)])
+   :expected ["x  " "  x" " x " " 界 "]}])

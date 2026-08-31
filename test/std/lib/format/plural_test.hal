@@ -1,0 +1,61 @@
+(ns std.lib.format.plural-test
+  (:require [std.lib.format.plural]))
+
+^{:refer std.lib.format.plural/uncountable?}
+(Test/check
+ [{:name "recognizes canonical uncountable words"
+   :test (fn []
+           [(std.lib.format.plural/uncountable? "gold")
+            (std.lib.format.plural/uncountable? "moose")])
+   :expected [true true]}])
+
+^{:refer std.lib.format.plural/irregular?}
+(Test/check
+ [{:name "recognizes singular and plural irregular words"
+   :test (fn []
+           [(std.lib.format.plural/irregular? "goose")
+            (std.lib.format.plural/irregular? "geese")
+            (std.lib.format.plural/irregular? "rat")])
+   :expected [true true false]}])
+
+^{:refer std.lib.format.plural/resolve-rules}
+(Test/check
+ [{:name "uses the first matching rule"
+   :test (fn []
+           [(std.lib.format.plural/resolve-rules
+             (deref std.lib.format.plural/*singular-rules*) "hello")
+            (std.lib.format.plural/resolve-rules
+             (deref std.lib.format.plural/*singular-rules*) "hellos")])
+   :expected [nil "hello"]}])
+
+^{:refer std.lib.format.plural/singular}
+(Test/check
+ [{:name "converts regular and irregular plurals to singular"
+   :test (fn []
+           [(std.lib.format.plural/singular "rats")
+            (std.lib.format.plural/singular "geese")])
+   :expected ["rat" "goose"]}])
+
+^{:refer std.lib.format.plural/plural}
+(Test/check
+ [{:name "converts regular, irregular, and uncountable words to plural"
+   :test (fn []
+           [(std.lib.format.plural/plural "man")
+            (std.lib.format.plural/plural "rate")
+            (std.lib.format.plural/plural "inventory")
+            (std.lib.format.plural/plural "moose")])
+   :expected ["men" "rates" "inventories" "moose"]}])
+
+^{:refer std.lib.format.plural/reset-state!}
+(Test/check
+ [{:name "restores the baseline idempotently after local rule mutation"
+   :test (fn []
+           (try
+             (swap! std.lib.format.plural/*uncountable* conj "widget")
+             [(std.lib.format.plural/uncountable? "widget")
+              (std.lib.format.plural/reset-state!)
+              (std.lib.format.plural/uncountable? "widget")
+              (std.lib.format.plural/reset-state!)]
+             (finally
+               (std.lib.format.plural/reset-state!))))
+   :expected [true true false true]}])

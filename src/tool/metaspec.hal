@@ -1,0 +1,633 @@
+(ns tool.metaspec
+  (:require [std.typed.registry :as registry]
+            [std.typed.schema :as typed]))
+
+;; Catalog state is always an explicit immutable input.
+
+(defn ^{:public true} coordinate
+  "Returns the immutable identity coordinate for one specification document."
+  [document]
+  [(:document/id document) (:document/version document)])
+
+(defn ^{:public true} catalog
+  "Creates an empty immutable metaspec and checker catalog."
+  []
+  {:metaspecs {} :checkers {}})
+
+(defn ^{:public true} catalog-metaspec
+  "Adds a metaspec at its exact coordinate without mutating the input catalog."
+  [catalog-value document]
+  (assoc-in (or catalog-value (catalog)) [:metaspecs (coordinate document)] document))
+
+(defn ^{:public true} catalog-checker
+  "Adds checker entrypoints for an exact package coordinate without shared state."
+  [catalog-value package-coordinate entrypoints]
+  (assoc-in (or catalog-value (catalog)) [:checkers package-coordinate] entrypoints))
+
+(defn ^{:public true} find-metaspec
+  "Finds one exact metaspec coordinate in an immutable catalog."
+  [catalog-value package-coordinate]
+  (get-in (or catalog-value (catalog)) [:metaspecs package-coordinate]))
+
+(defn ^{:public true} find-checker
+  "Finds one external checker entrypoint in an immutable catalog."
+  [catalog-value package-coordinate entrypoint]
+  (get-in (or catalog-value (catalog)) [:checkers package-coordinate entrypoint]))
+
+(defn ^{:public true} qualified-keyword?
+  "Returns true only for keywords with a namespace component."
+  [value]
+  (and (keyword? value)
+       (str/includes? (str value) "/")))
+
+(defn ^{:public true} finding
+  "Creates a canonical, repairable metaspec finding."
+  [status rule requirement path message repair]
+  {:finding/id rule
+   :rule/id rule
+   :requirement/id requirement
+   :finding/status status
+   :finding/level :error
+   :finding/path (vec path)
+   :finding/message message
+   :finding/repair repair})
+
+(defn ^{:public true} walk
+  "Visits document values breadth first, passing each value and its EDN path."
+  [value visitor]
+  (loop [pending [[value []]]
+         output []]
+    (cond
+      (empty? pending) output
+      :else
+      (let [[current path] (first pending)
+            children
+            (cond
+              (map? current)
+              (reduce-kv (fn [output key child]
+                           (conj output [child (conj path key)]))
+                         []
+                         current)
+              (vector? current)
+              (vec (map (fn [index]
+                          [(nth current index) (conj path index)])
+                        (range (count current))))
+              (set? current)
+              (vec (map (fn [entry]
+                          [entry (conj path entry)])
+                        (sort-by str current)))
+              :else [])]
+        (recur (vec (concat (rest pending) children))
+               (vec (concat output (visitor current path))))))))
+
+(defn ^{:public true} field-values
+  "Returns values and paths for every occurrence of field in document."
+  [document field]
+  (walk document
+        (fn [value path]
+          (cond
+            (map? value)
+            (reduce-kv (fn [output key child]
+                         (cond
+                           (= field key)
+                           (conj output {:field field
+                                         :value child
+                                         :path (conj path field)})
+                           :else output))
+                       []
+                       value)
+            :else []))))
+
+(defn ^{:public true} lint
+  "Returns deterministic structural findings suitable for repair agents."
+  [document]
+  (let [required [:document/id :document/type :document/version :document/status
+                  :document/title :document/summary :spec/conforms-to
+                  :spec/artifact-kind :meta/document-schema :meta/schemas
+                  :meta/cross-references :meta/requirements :metaspec/generation]
+        identifier-fields [:document/id :schema/id :reference/id :requirement/id
+                           :section/id :rule/id :linter/id :form/id :entity/id
+                           :relation/id :codec/id :checker/id :law/id :conformance/id]
+        required-findings
+        (cond
+          (map? document)
+          (vec (map (fn [key]
+                      (finding :fail
+                               :hara.metaspec.rule/required-key
+                               :hara.metaspec/required-sections
+                               []
+                               (str "Missing required meta-spec key: " key)
+                               {:action/type :add-key :action/path [] :action/key key}))
+                    (filter (fn [key] (not (has? document key))) required)))
+          :else [])
+        key-findings
+        (walk document
+              (fn [value path]
+                (cond
+                  (map? value)
+                  (vec (mapcat (fn [key]
+                                 (cond
+                                   (qualified-keyword? key) []
+                                   :else
+                                   [(finding :fail
+                                             :hara.metaspec.rule/qualified-key
+                                             :hara.metaspec/qualified-keys
+                                             (conj path key)
+                                             (str "Map key must be a qualified keyword: " key)
+                                             {:action/type :qualify-key
+                                              :action/path path
+                                              :action/key key})]))
+                               (keys value)))
+                  :else [])))
+        identifiers
+        (vec (mapcat (fn [field] (field-values document field)) identifier-fields))
+        stable-findings
+        (vec (mapcat (fn [entry]
+                       (cond
+                         (or (map? (:value entry))
+                             (qualified-keyword? (:value entry))) []
+                         :else
+                         [(finding :fail
+                                   :hara.metaspec.rule/stable-id
+                                   :hara.metaspec/stable-identifiers
+                                   (:path entry)
+                                   (str "Declaration ID must be a qualified keyword: " (:value entry))
+                                   {:action/type :qualify-value
+                                    :action/path (:path entry)})]))
+                     identifiers))
+        duplicate-findings
+        (vec (mapcat
+              (fn [entries]
+                (cond
+                  (> (count entries) 1)
+                  (let [duplicate (second entries)]
+                    [(finding :fail
+                              :hara.metaspec.rule/duplicate-id
+                              :hara.metaspec/unique-identifiers
+                              (:path duplicate)
+                              (str "Duplicate declaration identifier: " (:value duplicate))
+                              {:action/type :rename-id
+                               :action/path (:path duplicate)
+                               :action/value (:value duplicate)})])
+                  :else []))
+              (vals (group-by (fn [entry] [(:field entry) (:value entry)]) identifiers))))]
+    (vec (concat required-findings key-findings stable-findings duplicate-findings))))
+
+(defn ^{:public true} schema-name
+  "Converts a document schema identifier to the symbol used by std.typed."
+  [schema-id]
+  (cond
+    (symbol? schema-id) schema-id
+    (keyword? schema-id)
+    (cond
+      (namespace schema-id) (symbol (namespace schema-id) (name schema-id))
+      :else (symbol (name schema-id)))
+    :else (symbol (str schema-id))))
+
+(defn ^{:public true} compile-schema
+  "Compiles one metaspec schema declaration to std.typed surface grammar."
+  [declaration]
+  (let [schema-type (:schema/type declaration)
+        qualified (or (= schema-type :qualified-keyword)
+                      (= (:schema/constraint declaration) :qualified))
+        properties
+        (reduce (fn [output entry]
+                  (let [[key value] entry]
+                    (cond
+                      (nil? value) output
+                      :else (assoc output key value))))
+                (cond
+                  qualified {:qualified true}
+                  :else {})
+                [[:min-count (or (:schema/min-count declaration)
+                                 (:schema/min-length declaration))]
+                 [:max-count (or (:schema/max-count declaration)
+                                 (:schema/max-length declaration))]
+                 [:pattern (:schema/pattern declaration)]
+                 [:distinct (cond (= true (:schema/unique declaration)) true :else nil)]])
+        with-properties (fn [surface]
+                          (cond
+                            (empty? properties) surface
+                            :else [surface properties]))
+        reference-form (fn [schema-id] (list 'var (schema-name schema-id)))]
+    (cond
+      (:schema/ref declaration) (reference-form (:schema/ref declaration))
+      (= schema-type :enum) (vec (concat [:enum] (or (:schema/values declaration) [])))
+      (= schema-type :map)
+      (let [required (set (or (:schema/required declaration) []))
+            declared (or (:schema/properties declaration) {})
+            fields
+            (vec (concat
+                  (map (fn [key] [key :any])
+                       (filter (fn [key] (not (has? declared key))) required))
+                  (reduce-kv (fn [output key field]
+                               (let [compiled (compile-schema field)]
+                                 (conj output
+                                       (cond
+                                         (has? required key) [key compiled]
+                                         :else [key {:optional true} compiled]))))
+                             []
+                             declared)))
+            root-properties (cond
+                              (= true (:schema/closed declaration)) (assoc properties :closed true)
+                              :else properties)]
+        (vec (concat [:map]
+                     (cond (empty? root-properties) [] :else [root-properties])
+                     fields)))
+      (:schema/items declaration)
+      (let [item (:schema/items declaration)
+            compiled (cond
+                       (map? item) (compile-schema item)
+                       :else (reference-form item))
+            collection (fn [head]
+                         (cond
+                           (empty? properties) [head compiled]
+                           :else [head properties compiled]))]
+        (cond
+          (= schema-type :set) (collection :set)
+          (= schema-type :vector) (collection :vector)
+          :else [:or (collection :vector) (collection :set)]))
+      (= schema-type :qualified-keyword) (with-properties :keyword)
+      (= schema-type :version) (with-properties :str)
+      (nil? schema-type) (with-properties :any)
+      (= schema-type :boolean) (with-properties :bool)
+      (= schema-type :number) (with-properties :num)
+      (= schema-type :integer) (with-properties :int)
+      (= schema-type :string) (with-properties :str)
+      :else (with-properties schema-type))))
+
+(defn ^{:public true} schema-declarations
+  "Indexes the root and named schema declarations of one metaspec document."
+  [metaspec]
+  (let [root (:meta/document-schema metaspec)
+        initial (cond
+                  (and root (:schema/id root)) {(:schema/id root) root}
+                  :else {})]
+    (reduce (fn [output declaration]
+              (cond
+                (:schema/id declaration) (assoc output (:schema/id declaration) declaration)
+                :else output))
+            initial
+            (or (:meta/schemas metaspec) []))))
+
+(defn ^{:public true} compile-registry
+  "Compiles a metaspec's declarations into an immutable std.typed registry."
+  [metaspec]
+  (registry/registry
+   (reduce-kv (fn [output schema-id declaration]
+                (assoc output (schema-name schema-id) (compile-schema declaration)))
+              {}
+              (schema-declarations metaspec))))
+
+(defn ^{:public true} translate-finding
+  "Translates std.typed findings to normative, repairable metaspec findings."
+  [typed-finding]
+  (let [finding-type (:finding/type typed-finding)
+        path (:finding/path typed-finding)
+        context (:finding/context typed-finding)]
+    (cond
+      (= finding-type :std.typed.schema/missing-key)
+      (finding :fail
+               :hara.metaspec.rule/schema-validation
+               :hara.metaspec/generated-document-conformance
+               (:parent-path context)
+               (str "Missing required key: " (:key context))
+               {:action/type :add-key
+                :action/path (:parent-path context)
+                :action/key (:key context)})
+      (= finding-type :std.typed.schema/closed-map-key)
+      (finding :fail :hara.metaspec.rule/schema-validation
+               :hara.metaspec/generated-document-conformance path
+               "Key is not allowed by closed schema"
+               {:action/type :remove-key :action/path path})
+      (= finding-type :std.typed.schema/unresolved-reference)
+      (finding :blocked :hara.metaspec.rule/schema-validation
+               :hara.metaspec/generated-document-conformance path
+               (str "Unresolved schema reference: " (:finding/reference typed-finding))
+               {:action/type :declare-schema
+                :action/schema-id (:finding/reference typed-finding)})
+      (= finding-type :std.typed.schema/cyclic-reference)
+      (finding :blocked :hara.metaspec.rule/schema-validation
+               :hara.metaspec/generated-document-conformance path
+               "Schema reference cycle cannot consume a value"
+               {:action/type :inspect-schema-cycle
+                :action/schema-id (:finding/reference typed-finding)})
+      :else
+      (finding :fail :hara.metaspec.rule/schema-validation
+               :hara.metaspec/generated-document-conformance path
+               (str "Value violates declared schema: " (:finding/value typed-finding))
+               {:action/type :replace-value
+                :action/path path
+                :action/expected (:finding/expected typed-finding)}))))
+
+(defn ^{:public true} validate-document
+  "Validates document against metaspec using the metaspec's immutable schema catalog."
+  [metaspec document]
+  (let [root (:meta/document-schema metaspec)]
+    (cond
+      root
+      (vec (map translate-finding
+                (typed/validate (compile-schema root) document (compile-registry metaspec))))
+      :else
+      [(finding :blocked
+                :hara.metaspec.rule/schema-validation
+                :hara.metaspec/generated-document-conformance
+                []
+                "Metaspec has no :meta/document-schema"
+                {:action/type :add-key :action/key :meta/document-schema})])))
+
+(defn ^{:public true} reference-entries
+  "Returns all schema/ref and schema/items references with their source paths."
+  [document]
+  (vec (concat (field-values document :schema/ref)
+               (field-values document :schema/items))))
+
+(defn ^{:public true} edn-value?
+  "Returns whether a value is made solely from portable EDN data."
+  [value]
+  (cond
+    (or (nil? value) (boolean? value) (number? value) (string? value)
+        (keyword? value) (symbol? value) (char? value)) true
+    (map? value) (every? (fn [entry] (and (edn-value? (key entry))
+                                           (edn-value? (val entry)))) value)
+    (or (vector? value) (set? value) (list? value)) (every? edn-value? value)
+    :else false))
+
+(defn ^{:public true} verify
+  "Runs structural, schema-reference, cross-reference, and catalog verification."
+  ([document] (verify document {}))
+  ([document options]
+   (let [declared (set (concat
+                        [(:schema/id (:meta/document-schema document))]
+                        (map :schema/id (or (:meta/schemas document) []))))
+         schema-findings
+         (vec (mapcat (fn [entry]
+                        (let [value (:value entry)]
+                          (cond
+                            (and (keyword? value) (not (has? declared value)))
+                            [(finding :fail
+                                      :hara.metaspec.rule/schema-reference
+                                      :hara.metaspec/resolved-schema-references
+                                      (:path entry)
+                                      (str "Unresolved schema reference: " value)
+                                      {:action/type :declare-schema
+                                       :action/schema-id value
+                                       :action/path [:meta/schemas]})]
+                            :else [])))
+                      (reference-entries document)))
+         cross-findings
+         (vec (mapcat (fn [index]
+                        (let [reference (nth (or (:meta/cross-references document) []) index)
+                              path [:meta/cross-references index]]
+                          (vec (concat
+                                (cond
+                                  (qualified-keyword? (:reference/id reference)) []
+                                  :else
+                                  [(finding :fail
+                                            :hara.metaspec.rule/cross-reference
+                                            :hara.metaspec/resolved-cross-references
+                                            (conj path :reference/id)
+                                            "Cross-reference declaration requires a stable qualified ID"
+                                            {:action/type :qualify-value
+                                             :action/path (conj path :reference/id)})])
+                                (cond
+                                  (and (:reference/from reference) (:reference/to reference)) []
+                                  :else
+                                  [(finding :fail
+                                            :hara.metaspec.rule/cross-reference
+                                            :hara.metaspec/resolved-cross-references
+                                            path
+                                            "Cross-reference declaration requires :reference/from and :reference/to"
+                                            {:action/type :complete-cross-reference :action/path path})])))))
+                      (range (count (or (:meta/cross-references document) [])))))
+         conformance-reference (:spec/conforms-to document)
+         expected [(:spec/id conformance-reference) (:spec/version conformance-reference)]
+         catalog-value (or (:catalog options) (catalog))
+         self? (= (:spec/id conformance-reference) (:document/id document))
+         resolved (or self? (find-metaspec catalog-value expected))
+         conformance-findings
+         (cond
+           (or (nil? (:spec/id conformance-reference)) resolved) []
+           :else
+           [(finding :fail
+                     :hara.metaspec.rule/conforms-to
+                     :hara.metaspec/resolved-cross-references
+                     [:spec/conforms-to :spec/id]
+                     (str "Unresolved conforming meta-spec: " (:spec/id conformance-reference))
+                     {:action/type :register-spec :action/spec-id (:spec/id conformance-reference)})])]
+     (vec (concat (lint document) schema-findings cross-findings conformance-findings)))))
+
+(defn ^{:public true} builtin-findings
+  "Runs one declared built-in checker without invoking host or logic engines."
+  [document checker]
+  (let [operation (:checker/op checker)
+        rule (:checker/id checker)
+        requirement (:checker/requirement checker)
+        fields (or (:checker/fields checker) [])]
+    (cond
+      (= operation :hara.metaspec.check/qualified-map-keys)
+      (vec (map (fn [entry]
+                  (finding :fail rule requirement (:path entry)
+                           (str "Map key must be a qualified keyword: " (:key entry))
+                           {:action/type :qualify-key
+                            :action/path (:parent-path entry)
+                            :action/key (:key entry)}))
+                (walk document
+                      (fn [value path]
+                        (cond
+                          (map? value)
+                          (vec (mapcat (fn [key]
+                                         (cond
+                                           (qualified-keyword? key) []
+                                           :else [{:key key :path (conj path key) :parent-path path}]))
+                                       (keys value)))
+                          :else [])))))
+      (= operation :hara.metaspec.check/qualified-field-values)
+      (vec (mapcat (fn [field]
+                     (mapcat (fn [entry]
+                               (cond
+                                 (or (map? (:value entry))
+                                     (qualified-keyword? (:value entry))) []
+                                 :else [(finding :fail rule requirement (:path entry)
+                                                "Identifier must be a qualified keyword"
+                                                {:action/type :qualify-value
+                                                 :action/path (:path entry)})]))
+                             (field-values document field)))
+                   fields))
+      (= operation :hara.metaspec.check/unique-field-values)
+      (vec (mapcat (fn [field]
+                     (mapcat (fn [entries]
+                               (cond
+                                 (> (count entries) 1)
+                                 (let [duplicate (second entries)]
+                                   [(finding :fail rule requirement (:path duplicate)
+                                             (str "Duplicate identifier: " (:value duplicate))
+                                             {:action/type :rename-id
+                                              :action/path (:path duplicate)
+                                              :action/value (:value duplicate)})])
+                                 :else []))
+                             (vals (group-by :value (field-values document field)))))
+                   fields))
+      (= operation :hara.metaspec.check/no-host-values)
+      (cond
+        (edn-value? document) []
+        :else [(finding :fail rule requirement []
+                        "Document contains a runtime or host value"
+                        {:action/type :replace-host-value})])
+      :else
+      [(finding :blocked rule requirement []
+                (str "Unsupported built-in checker operation: " operation)
+                {:action/type :install-checker-operation :action/operation operation})])))
+
+(defn ^{:public true} checker-obligations
+  "Runs declared checkers, reporting external packages as blocked when absent."
+  [metaspec document catalog-value]
+  (vec (mapcat
+        (fn [checker]
+          (let [rule (:checker/id checker)
+                requirement (:checker/requirement checker)]
+            (cond
+              (= :builtin (:checker/type checker))
+              [{:obligation/id rule
+                :requirement/id requirement
+                :obligation/status (cond
+                                     (empty? (builtin-findings document checker)) :pass
+                                     :else :fail)
+                :obligation/findings (builtin-findings document checker)}]
+              :else
+              [{:obligation/id rule
+                :requirement/id requirement
+                :obligation/status :blocked
+                :obligation/findings
+                [(finding :blocked rule requirement []
+                          "Checker package or entrypoint is not installed"
+                          {:action/type :install-checker-package
+                           :action/package (:checker/package checker)})]}])))
+        (or (:meta/checkers metaspec) []))))
+
+(defn ^{:public true} conformance-report
+  "Returns a canonical report and repair actions from conformance obligations."
+  [metaspec document obligations]
+  (let [findings (vec (mapcat :obligation/findings obligations))
+        count-status (fn [status]
+                       (count (filter (fn [obligation]
+                                        (= status (:obligation/status obligation))) obligations)))
+        status (cond
+                 (> (count-status :blocked) 0) :blocked
+                 (> (count-status :unknown) 0) :unknown
+                 (> (count-status :fail) 0) :fail
+                 :else :pass)]
+    {:report/type :hara/metaspec-conformance
+     :report/version "0.1.0"
+     :document/id (:document/id document)
+     :metaspec/id (:document/id metaspec)
+     :report/status status
+     :summary {:pass (count-status :pass)
+               :fail (count-status :fail)
+               :unknown (count-status :unknown)
+               :blocked (count-status :blocked)}
+     :obligations (vec obligations)
+     :findings findings
+     :next-actions
+     (vec (map (fn [entry]
+                 {:action/type :repair-finding
+                  :action/rule (:rule/id entry)
+                  :action/requirement (:requirement/id entry)
+                  :action/path (:finding/path entry)
+                  :action/repair (:finding/repair entry)})
+               findings))}))
+
+(defn ^{:public true} conforms
+  "Checks document conformance against an explicit or catalog-resolved metaspec."
+  ([document] (conforms document {}))
+  ([document options]
+   (let [catalog-value (or (:catalog options) (catalog))
+         explicit (:metaspec options)
+         reference (:spec/conforms-to document)
+         expected [(:spec/id reference) (:spec/version reference)]
+         metaspec
+         (cond
+           explicit explicit
+           (= (:spec/id reference) (:document/id document)) document
+           :else (or (find-metaspec catalog-value expected)
+                     (first (filter (fn [candidate]
+                                      (= (:document/id candidate) (:spec/id reference)))
+                                    (vals (:metaspecs catalog-value))))))
+         resolution-findings
+         (cond
+           metaspec []
+           :else
+           [(finding :blocked
+                     :hara.metaspec.rule/metaspec-resolution
+                     :hara.metaspec/generated-document-conformance
+                     [:spec/conforms-to]
+                     (str "Metaspec is not registered: " expected)
+                     {:action/type :register-metaspec :action/coordinate expected})])
+         schema-findings (cond metaspec (validate-document metaspec document) :else [])
+         reference-findings
+         (cond
+           metaspec
+           (vec (mapcat
+                 (fn [reference]
+                   (let [from (:reference/from reference)
+                         fields (cond (vector? from) from :else [from])
+                         targets (set (map :value (field-values document (:reference/to reference))))]
+                     (vec (mapcat
+                           (fn [field]
+                             (mapcat
+                              (fn [source]
+                                (let [value (:value source)]
+                                  (cond
+                                    (= (:reference/to reference) :document-relative-path) []
+                                    (or (map? value) (has? targets value)) []
+                                    :else
+                                    [(finding :fail
+                                              :hara.metaspec.rule/document-reference
+                                              :hara.metaspec/generated-document-conformance
+                                              (:path source)
+                                              (str "Unresolved reference: " value)
+                                              {:action/type :declare-reference-target
+                                               :action/target-field (:reference/to reference)
+                                               :action/value value})])))
+                              (field-values document field)))
+                           fields))))
+                 (or (:meta/cross-references metaspec) [])))
+           :else [])
+         obligations
+         (vec (concat
+               [{:obligation/id :hara.metaspec/schema
+                 :requirement/id :hara.metaspec/generated-document-conformance
+                 :obligation/status (cond (empty? schema-findings) :pass :else :fail)
+                 :obligation/findings schema-findings}
+                {:obligation/id :hara.metaspec/references
+                 :requirement/id :hara.metaspec/resolved-cross-references
+                 :obligation/status (cond (empty? reference-findings) :pass :else :fail)
+                 :obligation/findings reference-findings}
+                {:obligation/id :hara.metaspec/resolution
+                 :requirement/id :hara.metaspec/generated-document-conformance
+                 :obligation/status (cond (empty? resolution-findings) :pass :else :blocked)
+                 :obligation/findings resolution-findings}]
+               (cond metaspec (checker-obligations metaspec document catalog-value) :else [])))]
+     (conformance-report metaspec document obligations))))
+
+(defn ^{:public true} verification-report
+  "Returns the canonical verification report for a document and its findings."
+  [document findings]
+  (let [failures (count findings)]
+    {:report/type :hara/metaspec-verification
+     :report/version "0.1.0"
+     :document/id (:document/id document)
+     :report/status (cond (zero? failures) :pass :else :fail)
+     :summary {:pass (cond (zero? failures) 1 :else 0)
+               :fail failures
+               :unknown 0
+               :blocked 0}
+     :findings (vec findings)
+     :next-actions
+     (vec (map (fn [entry]
+                 {:action/type :repair-finding
+                  :action/rule (:rule/id entry)
+                  :action/requirement (:requirement/id entry)
+                  :action/path (:finding/path entry)
+                  :action/repair (:finding/repair entry)})
+               findings))}))
