@@ -1,0 +1,107 @@
+(ns db.postgres.connection-test
+  (:require [db.protocol :as protocol]
+            [db.postgres.connection :as connection]))
+
+(defstruct FakeDatabase [events])
+
+(extend-type FakeDatabase protocol/IDatabase
+  (db-engine [_] :postgresql)
+  (db-provider [_] :fake)
+  (db-info [_] {:engine :postgresql :provider :fake})
+  (db-exec [value sql parameters]
+    (do (swap! (:events value) conj [:exec sql parameters]) :exec-result))
+  (db-query [value sql parameters]
+    (do (swap! (:events value) conj [:query sql parameters]) :query-result))
+  (db-close [value]
+    (do (swap! (:events value) conj [:close]) :closed)))
+
+(def postgres-connection
+  (connection/PostgresConnection
+   7 :postgresql :pglite :embedded
+   ["sql" "transactions" "notifications" "embedded"] "memory" nil))
+
+^{:refer db.postgres.connection/PostgresConnection}
+(Test/check
+ [{:name "implements the provider-neutral PostgreSQL database contract"
+   :test (fn [] [(protocol/db-engine postgres-connection)
+                 (protocol/db-provider postgres-connection)
+                 (get (protocol/db-info postgres-connection) :mode)])
+   :expected [:postgresql :pglite :embedded]}])
+
+^{:refer db.postgres.connection/capabilities}
+(Test/check
+ [{:name "keeps stable capability metadata without credentials"
+   :test (fn [] [(connection/capabilities postgres-connection)
+                 (has? (protocol/db-info postgres-connection) :password)
+                 (has? (protocol/db-info postgres-connection) :url)])
+   :expected [["sql" "transactions" "notifications" "embedded"] false false]}])
+
+^{:refer db.postgres.connection/exec}
+(Test/check
+ [{:name "exec always delegates command SQL through the database protocol"
+   :test (fn [] (let [events (atom [])
+                      database (FakeDatabase events)
+                      result (binding [connection/*execute* :query]
+                               (connection/exec database "create table t(id int)" [1]))]
+                  [result (deref events)]))
+   :expected [:exec-result [[:exec "create table t(id int)" [1]]]]}])
+
+^{:refer db.postgres.connection/conn-execute}
+(Test/check
+ [{:name "preserves the historical query selector at conn-execute"
+   :test (fn [] (let [events (atom [])
+                      database (FakeDatabase events)
+                      result (binding [connection/*execute* :query]
+                               (connection/conn-execute database "select $1" [7]))]
+                  [result (deref events)]))
+   :expected [:query-result [[:query "select $1" [7]]]]}])
+
+^{:refer db.postgres.connection/query}
+(Test/check
+ [{:name "uses the provider-neutral query protocol"
+   :test (fn [] (let [events (atom [])
+                      database (FakeDatabase events)]
+                  [(connection/query database "select 1") (deref events)]))
+   :expected [:query-result [[:query "select 1" []]]]}])
+
+^{:refer db.postgres.connection/close}
+(Test/check
+ [{:name "is nil-safe and closes real connections"
+   :test (fn [] (let [events (atom [])
+                      database (FakeDatabase events)]
+                  [(connection/close nil) (connection/close database) (deref events)]))
+   :expected [nil :closed [[:close]]]}])
+
+^{:refer db.protocol/db-reset-safe}
+(Test/check
+ [{:name "resets disposable provider state through the lifecycle protocol"
+   :test (fn [] (let [events (atom [])
+                      database (FakeDatabase events)]
+                  [(protocol/db-reset-safe nil)
+                   (protocol/db-reset-safe database)
+                   (deref events)]))
+   :expected [nil :closed [[:close]]]}])
+
+^{:refer db.postgres.connection/numeric}
+(Test/check
+ [{:name "tags exact numeric parameters as portable data"
+   :test (fn [] [(connection/tagged? (connection/numeric "12.3400"))
+                 (connection/tag-type (connection/numeric "12.3400"))
+                 (connection/tag-value (connection/numeric "12.3400"))])
+   :expected [true "numeric" "12.3400"]}])
+
+^{:refer db.postgres.connection/sql-array}
+(Test/check
+ [{:name "retains element type and inferred dimensions for array parameters"
+   :test (fn [] (connection/sql-array :int8 [1 2 nil]))
+   :expected {"$postgres" "array" "element" "int8"
+              "dimensions" [[1 3]] "value" [1 2 nil]}}])
+
+^{:refer db.postgres.connection/notification-channel}
+(Test/check
+ [{:name "normalizes direct and historical notification channel values"
+   :test (fn [] [(connection/notification-channel "events")
+                 (connection/notification-channel :events)
+                 (connection/notification-channel {:channel :events})
+                 (connection/notification-channel {"channel" "events"})])
+   :expected ["events" "events" "events" "events"]}])

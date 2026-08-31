@@ -1,0 +1,198 @@
+(ns lang.runtime.postgres.client
+  (:require [db.postgres.connection :as connection]
+            [lang.protocol.runtime :as runtime]
+            [std.lib.context.registry :as context]))
+
+(defstruct PostgresClient
+  [id language runtime options connection state modules pointers notifications])
+
+(defn await
+  "Returns a settled promise value or an already synchronous adapter value."
+  [value]
+  (if (promise? value) (deref value) value))
+
+(defn adapter
+  "Selects a runtime-local provider operation, falling back to the host bridge."
+  [client key fallback]
+  (or (get-in (:options client) [:adapter key]) fallback))
+
+(defn connection-options
+  "Removes runtime-local settings before opening a PostgreSQL connection."
+  [client]
+  (dissoc (:options client) :id :runtime :adapter :timeout))
+
+(defn rt-create
+  "Creates an unstarted PostgreSQL client runtime."
+  [options]
+  (let [options (or options {})]
+    (lang.runtime.postgres.client/PostgresClient
+     (or (:id options) :postgres.client)
+     :postgres
+     (or (:runtime options) :client)
+     options
+     (atom nil)
+     (atom {:status :created})
+     (atom #{})
+     (atom #{})
+     (atom {}))))
+
+(defn start-runtime
+  "Opens the configured provider connection once and marks the runtime started."
+  [client]
+  (if (deref (:connection client))
+    (do
+      (reset! (:state client) {:status :started})
+      client)
+    (try
+      (let [open (adapter client :open connection/open)
+            value (await (open (connection-options client)))]
+        (reset! (:connection client) value)
+        (reset! (:state client) {:status :started})
+        client)
+      (catch error
+        (reset! (:connection client) nil)
+        (reset! (:state client) {:status :created})
+        (throw error)))))
+
+(defn stop-runtime
+  "Closes every notification and the connection, restoring a stopped baseline."
+  [client]
+  (try
+    (let [unlisten (adapter client :unlisten connection/unlisten)]
+      (reduce (fn [_ subscription]
+                (await (unlisten subscription)))
+              nil
+              (vals (deref (:notifications client)))))
+    (finally
+      (reset! (:notifications client) {})
+      (let [value (deref (:connection client))]
+        (if value
+          (await ((adapter client :close connection/close) value))))
+      (reset! (:connection client) nil)
+      (reset! (:state client) {:status :stopped})))
+  client)
+
+(defn add-notify
+  "Registers one provider notification subscription by stable caller id."
+  [client id config]
+  (let [current (get (deref (:notifications client)) id)]
+    (if current
+      current
+      (let [value (deref (:connection client))]
+        (if (nil? value)
+          (throw (ex :database {:id (:id client)}
+                     :ex/message "PostgreSQL runtime is not started"))
+          (let [listen (adapter client :listen connection/listen)
+                subscription (await (listen value config))]
+            (swap! (:notifications client) assoc id subscription)
+            subscription))))))
+
+(defn remove-notify
+  "Closes and removes a notification subscription; removal is idempotent."
+  [client id]
+  (let [subscription (get (deref (:notifications client)) id)]
+    (if subscription
+      (do
+        (try
+          (await ((adapter client :unlisten connection/unlisten) subscription))
+          (finally
+            (swap! (:notifications client) dissoc id)))
+        subscription)
+      nil)))
+
+(defn execute-only?
+  "Recognizes SQL statements whose stable result is command execution."
+  [source]
+  (let [statement (str/upper (str/trim source))]
+    (boolean
+     (first
+      (filter (fn [prefix] (str/starts-with? statement prefix))
+              ["DO " "BEGIN " "DECLARE " "INSERT " "UPDATE " "DELETE "
+               "CREATE " "DROP " "ALTER " "GRANT " "REVOKE " "TRUNCATE "
+               "COMMENT " "VACUUM "])))))
+
+(defn normalize-query
+  "Maps a one-column result set to scalars while retaining composite rows."
+  [response]
+  (let [columns (:columns response)
+        rows (:rows response)
+        values (if (= 1 (count columns)) (map first rows) rows)]
+    (if (= 1 (count values)) (first values) (vec values))))
+
+(defn raw-eval
+  "Executes SQL through the active connection and returns the normalized result."
+  [client source]
+  (let [value (deref (:connection client))]
+    (if (nil? value)
+      (throw (ex :database {:id (:id client)}
+                 :ex/message "PostgreSQL runtime is not started"))
+      (if (execute-only? source)
+        (await ((adapter client :exec connection/exec) value source []))
+        (normalize-query
+         (await ((adapter client :query connection/query) value source [])))))))
+
+(defn evaluate-async
+  "Runs raw SQL evaluation through the portable promise boundary."
+  [client source options]
+  (promise/run (fn [] (raw-eval client source))))
+
+(extend-type PostgresClient runtime/IContextEval
+  (evaluate [client request options]
+    (evaluate-async client request options))
+  (evaluate-raw [client request options]
+    (evaluate-async client request options)))
+
+(extend-type PostgresClient IContext
+  (call [client & arguments]
+    (raw-eval client (first arguments))))
+
+(extend-type PostgresClient IComponent
+  (props [client]
+    {:state {:get (fn [] (deref (:state client)))}
+     :connection {:get (fn [] (deref (:connection client)))}
+     :notifications {:get (fn [] (deref (:notifications client)))}})
+  (status [client] (:status (deref (:state client))))
+  (started? [client] (= :started (:status (deref (:state client)))))
+  (stopped? [client] (= :stopped (:status (deref (:state client)))))
+  (start [client] (start-runtime client))
+  (stop [client] (stop-runtime client))
+  (kill [client] (stop-runtime client))
+  (remote? [client] (nil? (get-in (:options client) [:container]))))
+
+(extend-type PostgresClient IContextLifeCycle
+  (has-module? [client module]
+    (not (nil? (get (deref (:modules client)) module))))
+  (setup-module [client module]
+    (swap! (:modules client) conj module)
+    client)
+  (teardown-module [client module]
+    (swap! (:modules client) disj module)
+    client)
+  (has-pointer? [client pointer]
+    (not (nil? (get (deref (:pointers client)) pointer))))
+  (setup-pointer [client pointer]
+    (swap! (:pointers client) conj pointer)
+    client)
+  (teardown-pointer [client pointer]
+    (swap! (:pointers client) disj pointer)
+    client))
+
+(def +runtime+
+  {:language :postgres
+   :runtime :client
+   :aliases [:jdbc :jdbc.client]
+   :key :client
+   :config {}
+   :create rt-create})
+
+(defn runtime-entry
+  "Builds one selectable context-registry entry for a PostgreSQL client alias."
+  [key]
+  (assoc +runtime+ :key key))
+
+(defn install
+  "Registers PostgreSQL client, JDBC, and JDBC-client runtime coordinates."
+  [context-id]
+  (let [installed (context/registry-rt-add context-id (runtime-entry :client))
+        installed (context/registry-rt-add context-id (runtime-entry :jdbc))]
+    (context/registry-rt-add context-id (runtime-entry :jdbc.client))))

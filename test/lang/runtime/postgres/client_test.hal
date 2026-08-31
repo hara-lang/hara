@@ -1,0 +1,225 @@
+(ns lang.runtime.postgres.client-test
+  (:require [db.protocol :as protocol]
+            [lang.protocol.runtime :as runtime]
+            [lang.runtime.postgres.client :as client]
+            [std.lib.component :as component]
+            [std.lib.context.registry :as context]))
+
+(defstruct FakeDatabase [events])
+
+(extend-type FakeDatabase protocol/IDatabase
+  (db-engine [_] :postgresql)
+  (db-provider [_] :fake)
+  (db-info [_] {:engine :postgresql :provider :fake})
+  (db-exec [value sql parameters]
+    (do
+      (swap! (:events value) conj [:exec sql parameters])
+      {:affected 1}))
+  (db-query [value sql parameters]
+    (do
+      (swap! (:events value) conj [:query sql parameters])
+      {:columns ["id"] :rows [[7]] :affected 0}))
+  (db-close [value]
+    (do
+      (swap! (:events value) conj [:database-close])
+      :closed)))
+
+(defn fixture
+  ([] (fixture {}))
+  ([adapter-overrides]
+   (let [events (atom [])
+         database (lang.runtime.postgres.client-test/FakeDatabase events)
+         adapter
+         (merge
+          {:open (fn [options]
+                   (do
+                     (swap! events conj [:open options])
+                     (promise/from database)))
+           :close (fn [value]
+                    (do
+                      (swap! events conj [:close])
+                      (promise/from :closed)))
+           :listen (fn [value config]
+                     (let [subscription {:id 1 :channel (:channel config)}]
+                       (swap! events conj [:listen (:channel config)])
+                       (promise/from subscription)))
+           :unlisten (fn [subscription]
+                       (do
+                         (swap! events conj [:unlisten (:id subscription)])
+                         (promise/from :unlistened)))}
+          adapter-overrides)
+         value (client/rt-create {:id :fixture
+                                  :host "database"
+                                  :adapter adapter})]
+     [value events database])))
+
+^{:refer lang.runtime.postgres.client/await}
+(Test/check
+ [{:name "await accepts both settled promises and synchronous adapter results"
+   :test (fn [] [(client/await (promise/from 7)) (client/await 9)])
+   :expected [7 9]}])
+
+^{:refer lang.runtime.postgres.client/adapter}
+(Test/check
+ [{:name "selects local adapter operations before host fallbacks"
+   :test (fn [] (let [[value _ _] (fixture {:marker (fn [] :chosen)})]
+                  [((client/adapter value :marker (fn [] :fallback)))
+                   ((client/adapter value :missing (fn [] :fallback)))]))
+   :expected [:chosen :fallback]}])
+
+^{:refer lang.runtime.postgres.client/connection-options}
+(Test/check
+ [{:name "strips runtime-only configuration before provider open"
+   :test (fn [] (let [[value _ _] (fixture)]
+                  (client/connection-options value)))
+   :expected {:host "database"}}])
+
+^{:refer lang.runtime.postgres.client/rt-create}
+(Test/check
+ [{:name "creates the Foundation-style PostgreSQL client coordinate"
+   :test (fn [] (let [value (client/rt-create {:id :audit})]
+                  [(:id value) (:language value) (:runtime value)
+                   (deref (:state value))
+                   (deref (:connection value))]))
+   :expected [:audit :postgres :client {:status :created} nil]}])
+
+^{:refer lang.runtime.postgres.client/start-runtime}
+(Test/check
+ [{:name "starts exactly once through the configured PostgreSQL provider"
+   :test (fn [] (let [[value events database] (fixture)]
+                  (client/start-runtime value)
+                  (client/start-runtime value)
+                  [(deref (:state value))
+                   (= database (deref (:connection value)))
+                   (deref events)]))
+   :expected [{:status :started} true [[:open {:host "database"}]]]}])
+
+^{:refer lang.runtime.postgres.client/stop-runtime}
+(Test/check
+ [{:name "stops idempotently and clears the owned connection state"
+   :test (fn [] (let [[value events _] (fixture)]
+                  (client/start-runtime value)
+                  (client/stop-runtime value)
+                  (client/stop-runtime value)
+                  [(deref (:state value))
+                   (deref (:connection value))
+                   (deref (:notifications value))
+                   (deref events)]))
+   :expected [{:status :stopped} nil {}
+              [[:open {:host "database"}] [:close]]]}])
+
+^{:refer lang.runtime.postgres.client/add-notify}
+(Test/check
+ [{:name "adds one notification subscription per caller id"
+   :test (fn [] (let [[value events _] (fixture)]
+                  (client/start-runtime value)
+                  [(client/add-notify value :audit {:channel "audit"})
+                   (client/add-notify value :audit {:channel "ignored"})
+                   (deref (:notifications value))
+                   (deref events)]))
+   :expected [{:id 1 :channel "audit"}
+              {:id 1 :channel "audit"}
+              {:audit {:id 1 :channel "audit"}}
+              [[:open {:host "database"}] [:listen "audit"]]]}])
+
+^{:refer lang.runtime.postgres.client/remove-notify}
+(Test/check
+ [{:name "removes notification subscriptions idempotently"
+   :test (fn [] (let [[value events _] (fixture)]
+                  (client/start-runtime value)
+                  (client/add-notify value :audit {:channel "audit"})
+                  [(client/remove-notify value :audit)
+                   (client/remove-notify value :audit)
+                   (deref (:notifications value))
+                   (deref events)]))
+   :expected [{:id 1 :channel "audit"} nil {}
+              [[:open {:host "database"}] [:listen "audit"] [:unlisten 1]]]}])
+
+^{:refer lang.runtime.postgres.client/execute-only?}
+(Test/check
+ [{:name "classifies command SQL separately from row queries"
+   :test (fn [] [(client/execute-only? "  CREATE TABLE audit(id int)")
+                 (client/execute-only? "select id from audit")])
+   :expected [true false]}])
+
+^{:refer lang.runtime.postgres.client/normalize-query}
+(Test/check
+ [{:name "normalizes scalar and composite PostgreSQL result sets"
+   :test (fn [] [(client/normalize-query {:columns ["id"] :rows [[7] [8]]})
+                 (client/normalize-query {:columns ["id" "name"] :rows [[7 "a"]]})])
+   :expected [[7 8] [7 "a"]]}])
+
+^{:refer lang.runtime.postgres.client/raw-eval}
+(Test/check
+ [{:name "evaluates queries and commands on the active provider connection"
+   :test (fn [] (let [[value events _] (fixture)]
+                  (client/start-runtime value)
+                  [(client/raw-eval value "select id from audit")
+                   (client/raw-eval value "create table audit(id int)")
+                   (deref events)]))
+   :expected [7 {:affected 1}
+              [[:open {:host "database"}]
+               [:query "select id from audit" []]
+               [:exec "create table audit(id int)" []]]]}])
+
+^{:refer lang.runtime.postgres.client/evaluate-async}
+(Test/check
+ [{:name "implements asynchronous evaluation for both context evaluation forms"
+   :test (fn [] (let [[value _ _] (fixture)]
+                  (component/start value)
+                  [(deref (runtime/evaluate value "select id from audit" {}))
+                   (deref (runtime/evaluate-raw value "select id from audit" {}))]))
+   :expected [7 7]}])
+
+^{:refer lang.runtime.postgres.client/PostgresClient}
+(Test/check
+ [{:name "tracks module and pointer lifecycles without retaining removed values"
+   :test (fn [] (let [[value _ _] (fixture)]
+                  [(IContextLifeCycle/has-module? value :demo)
+                   (do (IContextLifeCycle/setup-module value :demo)
+                       (IContextLifeCycle/has-module? value :demo))
+                   (do (IContextLifeCycle/teardown-module value :demo)
+                       (IContextLifeCycle/has-module? value :demo))
+                   (do (IContextLifeCycle/setup-pointer value :pointer)
+                       (IContextLifeCycle/has-pointer? value :pointer))
+                   (do (IContextLifeCycle/teardown-pointer value :pointer)
+                       [(deref (:modules value)) (deref (:pointers value))])]))
+   :expected [false true false true [#{} #{}]]}])
+
+^{:refer lang.runtime.postgres.client/+runtime+}
+(Test/check
+ [{:name "publishes client with the Foundation JDBC compatibility coordinates"
+   :test (fn [] (select-keys client/+runtime+ [:language :runtime :aliases :key :config]))
+   :expected {:language :postgres :runtime :client :aliases [:jdbc :jdbc.client]
+              :key :client :config {}} }])
+
+^{:refer lang.runtime.postgres.client/runtime-entry}
+(Test/check
+ [{:name "builds selectable entries without changing the canonical client runtime"
+   :test (fn [] (select-keys (client/runtime-entry :jdbc.client) [:key :runtime :create]))
+   :expected {:key :jdbc.client :runtime :client :create client/rt-create}}])
+
+^{:refer lang.runtime.postgres.client/install}
+(Test/check
+ [{:name "registers each Foundation PostgreSQL client coordinate explicitly"
+   :test (fn [] (binding [context/*registry* (atom {})]
+                  (context/registry-install :postgres)
+                  (client/install :postgres)
+                  (set (context/registry-rt-list :postgres))))
+   :expected #{:default :client :jdbc :jdbc.client}}])
+
+^{:refer lang.runtime.postgres.client/stop-runtime}
+(Test/check
+ [{:name "stop restores its baseline even when subscription cleanup fails"
+   :test (fn [] (let [[value events _]
+                       (fixture {:unlisten (fn [subscription] (throw "unlisten failed"))})]
+                  (client/start-runtime value)
+                  (client/add-notify value :audit {:channel "audit"})
+                  (let [result (try (client/stop-runtime value) (catch error :failed))]
+                    [result
+                     (deref (:state value))
+                     (deref (:connection value))
+                     (deref (:notifications value))
+                     (deref events)])))
+   :expected [:failed {:status :stopped} nil {}
+              [[:open {:host "database"}] [:listen "audit"] [:close]]]}])

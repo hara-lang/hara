@@ -1,0 +1,98 @@
+(ns db.protocol-test
+  (:require [db.protocol :as protocol]))
+
+(defstruct FakeDatabase [events])
+
+(extend-type FakeDatabase protocol/IDatabase
+  (db-engine [_] :postgresql)
+  (db-provider [_] :test)
+  (db-info [_] {:provider :test :engine :postgresql})
+  (db-exec [value sql parameters]
+    (do (swap! (:events value) conj [:exec sql parameters]) :executed))
+  (db-query [value sql parameters]
+    (do (swap! (:events value) conj [:query sql parameters]) :queried))
+  (db-close [value]
+    (do (swap! (:events value) conj [:close]) :closed)))
+
+(extend-type FakeDatabase protocol/IDatabaseLifecycle
+  (db-reset [value]
+    (do (swap! (:events value) conj [:reset]) :reset)))
+
+^{:refer db.protocol/db-provider-descriptor}
+(Test/check
+ [{:name "keeps provider descriptors explicit, validated, and registry-safe"
+   :test (fn []
+           (let [descriptor (protocol/db-provider-descriptor :test :postgresql [:sql :listen])
+                 registry (protocol/db-register-provider {} descriptor)]
+             [descriptor
+              (protocol/db-provider-descriptor? descriptor)
+              [(protocol/db-provider-id descriptor)
+               (protocol/db-provider-engine descriptor)
+               (protocol/db-provider-capabilities descriptor)
+               (protocol/db-provider-supports? descriptor :listen)
+               (protocol/db-provider-supports? descriptor :copy)]
+              (protocol/db-registered-provider registry :test)
+              (try (protocol/db-register-provider {} {:provider/id :test})
+                   :accepted
+                   (catch error :rejected))]))
+   :expected [{:provider/id :test :provider/engine :postgresql
+               :provider/capabilities [:sql :listen]}
+              true
+              [:test :postgresql [:sql :listen] true false]
+              {:provider/id :test :provider/engine :postgresql
+               :provider/capabilities [:sql :listen]}
+              :rejected]}])
+
+^{:refer db.protocol/db-result}
+(Test/check
+ [{:name "preserves result and error records without provider handles"
+   :test (fn []
+           (let [result (protocol/db-result ["id"] [[7]] 1)
+                 error (protocol/db-error :query "bad query" {:position 3})]
+             [(protocol/db-result? result)
+              [(protocol/db-result-columns result)
+               (protocol/db-result-rows result)
+               (protocol/db-result-affected result)]
+              (protocol/db-error? error)
+              [(protocol/db-error-type error)
+               (protocol/db-error-message error)
+               (protocol/db-error-data error)]]))
+   :expected [true [["id"] [[7]] 1]
+              true [:query "bad query" {:position 3}]]}])
+
+^{:refer db.protocol/db-begin}
+(Test/check
+ [{:name "delegates transaction boundaries and commits successful work"
+   :test (fn []
+           (let [events (atom [])
+                 database (db.protocol-test/FakeDatabase events)]
+             [(protocol/db-begin database)
+              (protocol/db-commit database)
+              (protocol/db-rollback database)
+              (protocol/db-transaction database (fn [_] :value))
+              (deref events)]))
+   :expected [:executed :executed :executed :value
+              [[:exec "begin" []]
+               [:exec "commit" []]
+               [:exec "rollback" []]
+               [:exec "begin" []]
+               [:exec "commit" []]]]}])
+
+^{:refer db.protocol/db-transaction}
+(Test/check
+ [{:name "rolls back failures and resets or closes deterministically"
+   :test (fn []
+           (let [events (atom [])
+                 database (db.protocol-test/FakeDatabase events)]
+             [(try (protocol/db-transaction database (fn [_] (throw "failed")))
+                   :accepted
+                   (catch error :failed))
+              (protocol/db-close-safe nil)
+              (protocol/db-close-safe database)
+              (protocol/db-reset-safe database)
+              (deref events)]))
+   :expected [:failed nil :closed :reset
+              [[:exec "begin" []]
+               [:exec "rollback" []]
+               [:close]
+               [:reset]]]}])

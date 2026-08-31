@@ -1,0 +1,247 @@
+;; ============================================================================
+;; db.postgres.connection — concrete PostgreSQL provider and connection API.
+;;
+;; The selected host owns database handles and authority. Native Hestia hosts
+;; can install the linked Rust provider; browser hosts can install PGlite or a
+;; remote Hestia transport under the same `db.postgres` service identity.
+;; ============================================================================
+(ns db.postgres.connection
+  (:require [db.protocol :as protocol]))
+
+(def SERVICE "db.postgres")
+
+(defstruct PostgresConnection
+  [id engine provider mode capabilities storage endpoint])
+
+(defstruct PostgresSubscription
+  [id connection channel])
+
+(def ^{:dynamic true
+       :doc "Compatibility selector for query or command execution."}
+  *execute*
+  :exec)
+
+(defn query-mode?
+  [mode]
+  (or (= mode :query)
+      (= mode :fetch)))
+
+(defn inferred-array-dimensions
+  [values]
+  (loop [dimensions []
+         current values]
+    (if (vector? current)
+      (recur (conj dimensions [1 (count current)])
+             (first current))
+      dimensions)))
+
+(defn numeric
+  "Tags an exact PostgreSQL NUMERIC parameter without requiring a new ABI type."
+  [value]
+  {"$postgres" "numeric"
+   "value" value})
+
+(defn sql-array
+  "Tags a PostgreSQL ARRAY parameter with its element type and dimensions."
+  ([element-type values]
+   (sql-array element-type values (inferred-array-dimensions values)))
+  ([element-type values dimensions]
+   {"$postgres" "array"
+    "element" (if (keyword? element-type) (name element-type) element-type)
+    "dimensions" dimensions
+    "value" values}))
+
+(defn tagged?
+  "Returns true for a portable PostgreSQL tagged value."
+  [value]
+  (and (map? value)
+       (or (= "numeric" (get value "$postgres"))
+           (= "array" (get value "$postgres")))))
+
+(defn tag-type [value] (get value "$postgres"))
+(defn tag-value [value] (get value "value"))
+
+(defn descriptor-field [descriptor keyword-key string-key]
+  (if (has? descriptor keyword-key)
+    (get descriptor keyword-key)
+    (get descriptor string-key)))
+
+(defn connection [descriptor]
+  (db.postgres.connection/PostgresConnection
+   (descriptor-field descriptor :id "id")
+   :postgresql
+   (keyword (descriptor-field descriptor :provider "provider"))
+   (keyword (descriptor-field descriptor :mode "mode"))
+   (descriptor-field descriptor :capabilities "capabilities")
+   (descriptor-field descriptor :storage "storage")
+   (descriptor-field descriptor :endpoint "endpoint")))
+
+(defn subscription [value descriptor]
+  (db.postgres.connection/PostgresSubscription
+   (descriptor-field descriptor :id "id")
+   value
+   (descriptor-field descriptor :channel "channel")))
+
+(extend-type PostgresConnection protocol/IDatabase
+  (db-engine [_] :postgresql)
+  (db-provider [value] (:provider value))
+  (db-info [value]
+    {:id (:id value)
+     :engine :postgresql
+     :provider (:provider value)
+     :mode (:mode value)
+     :capabilities (:capabilities value)
+     :storage (:storage value)
+     :endpoint (:endpoint value)})
+  (db-exec [value sql parameters]
+    (host/call SERVICE "exec" (:id value) sql parameters))
+  (db-query [value sql parameters]
+    (host/call SERVICE "query" (:id value) sql parameters))
+  (db-close [value]
+    (host/call SERVICE "close" (:id value))))
+
+(extend-type PostgresConnection protocol/IDatabaseProvider
+  (db-provider-contract [value]
+    (protocol/db-provider-descriptor
+     (:provider value)
+     :postgresql
+     (:capabilities value))))
+
+(extend-type PostgresConnection protocol/IDatabaseLifecycle
+  (db-reset [value]
+    (protocol/db-close-safe value)))
+
+(defn describe
+  "Returns the installed PostgreSQL provider descriptor and capabilities."
+  []
+  (host/call SERVICE "describe"))
+
+(defn open
+  "Opens a PostgreSQL connection using host provider auto-selection."
+  ([] (open {}))
+  ([options]
+   (promise/then (host/call SERVICE "open" options) connection)))
+
+(def conn-create open)
+(def conn-open open)
+
+(defn capabilities
+  "Returns the capabilities reported for a connection."
+  [value]
+  (:capabilities value))
+
+(defn provider-descriptor
+  "Returns only the provider identity and capabilities."
+  [value]
+  (protocol/db-provider-contract value))
+
+(defn version
+  "Returns a promise resolving to the selected PostgreSQL engine version."
+  [value]
+  (host/call SERVICE "version" (:id value)))
+
+(defn exec
+  "Dispatches SQL unconditionally through the command execution operation."
+  ([value sql] (exec value sql []))
+  ([value sql parameters] (protocol/db-exec value sql parameters)))
+
+(defn conn-execute
+  "Preserves the historical dynamic execute/query selection point."
+  ([value sql]
+   (conn-execute value sql []))
+  ([value sql parameters]
+   (if (query-mode? *execute*)
+     (protocol/db-query value sql parameters)
+     (protocol/db-exec value sql parameters))))
+
+(def execute conn-execute)
+
+(defn batch-exec
+  "Executes a complete PostgreSQL script without splitting embedded statements."
+  [value sql]
+  (host/call SERVICE "batch-exec" (:id value) sql))
+
+(defn query
+  "Executes row-returning SQL with optional parameters and decode options."
+  ([value sql]
+   (query value sql []))
+  ([value sql parameters]
+   (protocol/db-query value sql parameters))
+  ([value sql parameters options]
+   (host/call SERVICE "query" (:id value) sql parameters options)))
+
+(def conn-query query)
+
+(defn close
+  "Closes a provider-owned connection. Closing nil remains a no-op."
+  [value]
+  (if (nil? value)
+    nil
+    (protocol/db-close value)))
+
+(def conn-close close)
+
+(defn begin [value] (protocol/db-begin value))
+(defn commit [value] (protocol/db-commit value))
+(defn rollback [value] (protocol/db-rollback value))
+
+(defn wait-ready [options]
+  (host/call SERVICE "wait-ready" options))
+
+(defn database-create [options database]
+  (host/call SERVICE "database-create" options database))
+
+(defn database-drop [options database]
+  (host/call SERVICE "database-drop" options database))
+
+(defn server-start [options]
+  (host/call SERVICE "server-start" options))
+
+(defn server-stop [server]
+  (host/call SERVICE "server-stop" server))
+
+(defn notification-channel
+  "Normalizes a direct channel or historical keyword/config value."
+  [config]
+  (let [channel (cond
+                  (map? config) (if (has? config :channel)
+                                  (get config :channel)
+                                  (get config "channel"))
+                  :else config)]
+    (if (keyword? channel)
+      (name channel)
+      channel)))
+
+(defn listen
+  "Starts LISTEN and returns a provider-owned subscription."
+  [value config]
+  (promise/then
+   (host/call SERVICE "listen" (:id value) (notification-channel config))
+   (fn [descriptor] (subscription value descriptor))))
+
+(def notify-create listen)
+
+(defn next-notification
+  "Returns the next notification for a subscription."
+  [value]
+  (host/call SERVICE "notification-next" (:id value)))
+
+(def notify-next next-notification)
+
+(defn unlisten
+  "Stops LISTEN for a subscription."
+  [value]
+  (host/call SERVICE "unlisten" (:id value)))
+
+(def notify-close unlisten)
+
+(defn notify
+  "Publishes a PostgreSQL notification."
+  ([value channel]
+   (notify value channel ""))
+  ([value channel payload]
+   (host/call SERVICE
+              "notify"
+              (:id value)
+              (notification-channel channel)
+              payload)))

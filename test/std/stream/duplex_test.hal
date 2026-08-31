@@ -1,0 +1,108 @@
+(ns std.stream.duplex-test
+  (:require [std.stream.duplex :as duplex]))
+
+(defn source
+  []
+  (Stream/create (fn [] (Promise/from :received))))
+
+^{:refer std.stream.duplex/rejected}
+(Test/check
+ [{:name "returns a recoverable rejected promise"
+   :test (fn []
+           (IPromise/value
+            (IPromise/catch (duplex/rejected :boom)
+                            (fn [error] [:recovered error]))))
+   :expected [:recovered :boom]}])
+
+^{:refer std.stream.duplex/create}
+(Test/check
+ [{:name "constructs only from a stream and write function"
+   :test (fn []
+           (let [connection (duplex/create (source) (fn [value] [:sent value]))]
+             [(duplex/duplex? connection)
+              (duplex/state connection)]))
+   :expected [true {:closed false :error nil}]}
+  {:name "rejects invalid source and write values"
+   :test (fn []
+           [(try (duplex/create nil (fn [value] value)) false (catch error true))
+            (try (duplex/create (source) nil) false (catch error true))])
+   :expected [true true]}])
+
+^{:refer std.stream.duplex/duplex?}
+(Test/check
+ [{:name "recognizes only the duplex protocol implementation"
+   :test (fn [] [(duplex/duplex? (duplex/create (source) identity))
+                 (duplex/duplex? (source))])
+   :expected [true false]}])
+
+^{:refer std.stream.duplex/state}
+(Test/check
+ [{:name "reports the current lifecycle state"
+   :test (fn []
+           (let [connection (duplex/create (source) identity)]
+             (duplex/state connection)))
+   :expected {:closed false :error nil}}])
+
+^{:refer std.stream.duplex/closed?}
+(Test/check
+ [{:name "tracks close state"
+   :test (fn []
+           (let [connection (duplex/create (source) identity)]
+             (duplex/close connection)
+             (duplex/closed? connection)))
+   :expected true}])
+
+^{:refer std.stream.duplex/next-value}
+(Test/check
+ [{:name "delegates the next stream value"
+   :test (fn []
+           (IPromise/value
+            (duplex/next-value (duplex/create (source) identity))))
+   :expected :received}])
+
+^{:refer std.stream.duplex/write-value}
+(Test/check
+ [{:name "delegates writable values and rejects writes after close"
+   :test (fn []
+           (let [connection (duplex/create (source) (fn [value] [:sent value]))]
+             (let [written (IPromise/value (duplex/write-value connection :value))]
+              (duplex/close connection)
+              [written
+              (IPromise/value
+               (IPromise/catch (duplex/write-value connection :again)
+                               (fn [error] :closed)))])))
+   :expected [[:sent :value] :closed]}])
+
+^{:refer std.stream.duplex/close}
+(Test/check
+ [{:name "closes once and invokes close callback once"
+   :test (fn []
+           (let [calls (atom 0)
+                 connection (duplex/create (source) identity (fn [] (swap! calls inc)))]
+             (duplex/close connection)
+             (duplex/close connection)
+             [(deref calls) (duplex/closed? connection)]))
+   :expected [1 true]}])
+
+^{:refer std.stream.duplex/abort}
+(Test/check
+ [{:name "records the abort error and invokes abort callback once"
+   :test (fn []
+           (let [calls (atom [])
+                 connection (duplex/create (source) identity nil (fn [error] (swap! calls conj error)))]
+             (duplex/abort connection :boom)
+             (duplex/abort connection :later)
+             [(duplex/state connection) (deref calls)]))
+   :expected [{:closed true :error :boom} [:boom]]}])
+
+^{:refer std.stream.duplex/from-process}
+(Test/check
+ [{:name "rejects an invalid process provider value"
+   :test (fn [] (try (duplex/from-process nil) false (catch error true)))
+   :expected true}])
+
+^{:refer std.stream.duplex/from-socket}
+(Test/check
+ [{:name "rejects an invalid socket provider value"
+   :test (fn [] (try (duplex/from-socket nil) false (catch error true)))
+   :expected true}])
