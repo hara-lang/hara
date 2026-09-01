@@ -1,0 +1,128 @@
+(ns work.agent.tool
+  (:require [work.agent.result :as result]
+            [work.agent.tool.internal :as internal]))
+
+(defn tool
+  "Creates one schema-backed agent tool.
+
+   Pure tools return values. Effectful tools return a Work definition bundle;
+   their local targets remain outside the portable Work plan."
+  ([name description parameters invoke]
+   (tool name description parameters invoke {}))
+  ([name description parameters invoke options]
+   {:tool/name name
+    :tool/description description
+    :tool/parameters parameters
+    :tool/strict (not (= false (:strict options)))
+    :tool/effect (or (:effect options) :pure)
+    :tool/invoke invoke
+    :tool/targets (or (:targets options) {})}))
+
+(defn normalize
+  "Validates one tool and fills its optional fields."
+  [value]
+  (let [name (:tool/name value)
+        description (:tool/description value)
+        parameters (:tool/parameters value)
+        invoke (:tool/invoke value)
+        targets (or (:tool/targets value) {})]
+    (if (or (not (string? name)) (= name ""))
+      (throw
+       (ex :argument {:tool value}
+           :ex/message "Agent tool name must be a non-empty string")))
+    (if (not (string? description))
+      (throw
+       (ex :argument {:tool/name name}
+           :ex/message "Agent tool description must be a string")))
+    (if (not (map? parameters))
+      (throw
+       (ex :serialization {:tool/name name}
+           :ex/message "Agent tool parameters must be a JSON Schema map")))
+    (if (not (function? invoke))
+      (throw
+       (ex :argument {:tool/name name}
+           :ex/message "Agent tool implementation must be callable")))
+    (if (not (internal/target-map? targets))
+      (throw
+       (ex :argument {:tool/name name}
+           :ex/message "Agent tool targets must be callable map values")))
+    (merge
+     {:tool/strict true
+      :tool/effect :pure
+      :tool/targets {}}
+     value)))
+
+(defn normalize-all
+  "Validates tools and preserves declaration order."
+  [tools]
+  (vec (map normalize (or tools []))))
+
+(defn index
+  "Builds a unique name-to-tool index."
+  [tools]
+  (reduce
+   (fn [output value]
+     (let [value (normalize value)
+           name (:tool/name value)]
+       (if (has? output name)
+         (throw
+          (ex :argument {:tool/name name}
+              :ex/message "Agent tool names must be unique")))
+       (assoc output name value)))
+   {}
+   tools))
+
+(defn declared-targets
+  "Returns the process-local target table declared by effectful tools."
+  [tools]
+  (reduce
+   (fn [output value]
+     (let [value (normalize value)]
+       (reduce
+        (fn [output name]
+          (if (has? output name)
+            (throw
+             (ex :argument {:tool/target name}
+                 :ex/message "Agent tool targets must be unique")))
+          (assoc output name (get (:tool/targets value) name)))
+        output
+        (keys (:tool/targets value)))))
+   {}
+   tools))
+
+(defn openai-spec
+  "Converts one tool to the OpenAI Responses function-tool shape."
+  [value]
+  (let [value (normalize value)]
+    {:type "function"
+     :name (:tool/name value)
+     :description (:tool/description value)
+     :parameters (:tool/parameters value)
+     :strict (:tool/strict value)}))
+
+(defn openai-specs
+  "Converts tools to OpenAI Responses function-tool definitions."
+  [tools]
+  (vec (map openai-spec tools)))
+
+(defn invoke
+  "Invokes one pure model tool call. Effectful tools return a structured
+   requires-work result and are lowered by work.agent.tool.work."
+  [tool-index call]
+  (let [value (get tool-index (:tool/name call))]
+    (if (nil? value)
+      (internal/failed-result
+       call
+       :tool/unknown
+       "The requested tool is not available"
+       {})
+      (internal/invoke-found value call))))
+
+(defn invoke-all
+  "Invokes pure model tool calls and resolves direct and Promise results."
+  [tool-index calls]
+  (result/all
+   (map
+    (fn [call]
+      (invoke tool-index call))
+    calls)))

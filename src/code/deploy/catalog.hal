@@ -1,0 +1,344 @@
+(ns code.deploy.catalog
+  (:config {:role :internal})
+  (:require [code.framework :as framework]
+            [code.framework.cache :as cache]))
+
+(def +default-catalog-path+
+  "config/packages.edn")
+
+(defn project-path
+  "Returns the canonical project declaration location below a deploy root."
+  [root]
+  (File/join root "project.edn"))
+
+(defn read-edn
+  "Reads one UTF-8 EDN document through the capability-gated file boundary."
+  [path]
+  (Edn/read
+   (String/decode-utf8
+    (deref (File/read path)))))
+
+(defn ^{:public true} read-project
+  "Reads the source project's data-only project.edn declaration."
+  [root]
+  (read-edn (project-path root)))
+
+(defn catalog-relative-path
+  "Selects the Foundation-compatible catalogue path declared by a project."
+  [project]
+  (or (get-in project [:project/deploy :catalog])
+      +default-catalog-path+))
+
+(defn ^{:public true} catalog-path
+  "Returns the configured package catalogue path for a deploy root."
+  [root]
+  (File/join root (catalog-relative-path (read-project root))))
+
+(defn catalog-map
+  "Normalises Foundation's direct package map and the optional :packages wrapper."
+  [value]
+  (let [packages (or (:packages value) value)]
+    (cond
+      (map? packages)
+      packages
+
+      :else
+      (throw
+       (ex :code.deploy/invalid-catalog
+           {:catalog value}
+           :ex/message "config/packages.edn must be a package map")))))
+
+(defn ^{:public true} read-catalog
+  "Reads a Foundation-compatible config/packages.edn document."
+  [root]
+  (catalog-map (read-edn (catalog-path root))))
+
+(defn source-path
+  "Returns one project-relative source path as an absolute deploy-root path."
+  [root relative-path]
+  (File/join root relative-path))
+
+(defn source-analysis
+  "Refreshes reader-first analysis using the timestamp-and-bytes framework cache."
+  [root state relative-path]
+  (let [path (source-path root relative-path)
+        result (cache/refresh-path root state path)]
+    (assoc result :source/path relative-path)))
+
+(defn ^{:public true} project-analyses
+  "Returns reader-first analyses for the project's explicit portable sources.
+
+  The deploy graph retains only the Linkage facts it needs during a release;
+  durable full-fidelity source caching remains available through
+  code.framework.cache for editors and source-analysis callers."
+  [root project]
+  (vec
+   (map
+    (fn [relative-path]
+      (let [path (source-path root relative-path)
+            source (String/decode-utf8 (deref (File/read path)))]
+        (assoc (framework/analyse-linkage-source source) :source/path relative-path)))
+    (or (:project/source-files project) []))))
+
+(defn namespace-text
+  "Returns the stable text form used by package selectors and coordinates."
+  [namespace]
+  (str namespace))
+
+(defn within-namespace?
+  "Returns true when a namespace is the selector root or one of its descendants."
+  [root namespace]
+  (let [root (namespace-text root)
+        namespace (namespace-text namespace)]
+    (or (= root namespace)
+        (str/starts-with? namespace (str root ".")))))
+
+(defn base-namespace?
+  "Matches Foundation's :base selector root and .base implementation subtree."
+  [root namespace]
+  (let [root (namespace-text root)
+        namespace (namespace-text namespace)]
+    (or (= root namespace)
+        (str/starts-with? namespace (str root ".base.")))))
+
+(defn selector-matches?
+  "Applies one Foundation selector `[namespace :base|:complete|:exclude]`."
+  [selector namespace]
+  (let [root (first selector)
+        mode (second selector)]
+    (cond
+      (not (vector? selector))
+      (throw
+       (ex :code.deploy/invalid-selector
+           {:selector selector}
+           :ex/message "package selector must be a vector"))
+
+      (not
+       (or (and (= mode :base) (= 2 (count selector)))
+           (and (= mode :complete) (= 2 (count selector)))
+           (and (= mode :exclude) (= 3 (count selector)))))
+      (throw
+       (ex :code.deploy/invalid-selector
+           {:selector selector}
+           :ex/message "package selector has an unsupported Foundation shape"))
+
+      (= mode :base)
+      (base-namespace? root namespace)
+
+      (= mode :complete)
+      (within-namespace? root namespace)
+
+      (= mode :exclude)
+      (and (within-namespace? root namespace)
+           (not
+            (reduce
+             (fn [excluded? excluded-root]
+               (or excluded? (within-namespace? excluded-root namespace)))
+             false
+             (nth selector 2))))
+
+      :else
+      (throw
+       (ex :code.deploy/invalid-selector
+           {:selector selector}
+           :ex/message "package selector has an unsupported Foundation shape")))))
+
+(defn package-definition
+  "Normalises one catalogue entry while retaining its original publication name."
+  [name definition]
+  (cond
+    (not (map? definition))
+    (throw
+     (ex :code.deploy/invalid-package
+         {:package/name name :package/definition definition}
+         :ex/message "package definition must be a map"))
+
+    (not (vector? (:include definition)))
+    (throw
+     (ex :code.deploy/invalid-package
+         {:package/name name :package/definition definition}
+         :ex/message "package definition requires an :include vector"))
+
+    :else
+    (assoc definition :package/name (str name))))
+
+(defn ^{:public true} package-definitions
+  "Returns package definitions in deterministic publication-name order."
+  [catalog]
+  (vec
+   (map
+    (fn [name]
+      (package-definition name (get catalog name)))
+    (sort-by str (keys (catalog-map catalog))))))
+
+(defn selected-namespaces
+  "Expands a package's selectors against reader-analysed source namespaces."
+  [definition analyses]
+  (vec
+   (sort-by
+    str
+    (keep
+     (fn [analysis]
+       (let [namespace (:namespace analysis)]
+         (cond
+           (and namespace
+                (reduce
+                 (fn [selected? selector]
+                   (or selected? (selector-matches? selector namespace)))
+                 false
+                 (:include definition)))
+           namespace
+
+           :else nil)))
+     analyses))))
+
+(defn ^{:public true} ownership
+  "Assigns every selected namespace to exactly one package or raises overlap."
+  [definitions analyses]
+  (reduce
+   (fn [owners definition]
+     (reduce
+      (fn [current namespace]
+        (let [previous (get current namespace)]
+          (cond
+            (nil? previous)
+            (assoc current namespace (:package/name definition))
+
+            :else
+            (throw
+             (ex :code.deploy/namespace-overlap
+                 {:namespace namespace
+                  :previous previous
+                  :package (:package/name definition)}
+                 :ex/message "package selectors assign a namespace more than once")))))
+      owners
+      (selected-namespaces definition analyses)))
+   {}
+   definitions))
+
+(defn ^{:public true} coordinate
+  "Converts a semantic Foundation package name to the native Hara coordinate."
+  [name]
+  (let [name (str name)]
+    (cond
+      (str/includes? name ":") name
+      (str/includes? name "/") (str "hara:" name)
+      :else (str "hara:hara/" name))))
+
+(defn package-dependencies
+  "Infers direct internal dependencies through Linkage, excluding self ownership."
+  [linkage owners definition analyses]
+  (let [name (:package/name definition)
+        namespaces (set (selected-namespaces definition analyses))
+        dependencies (framework/dependency-map linkage)]
+    (set
+     (keep
+      (fn [namespace]
+        (let [owner (get owners namespace)]
+          (cond
+            (or (nil? owner) (= owner name)) nil
+            :else owner)))
+      (mapcat
+       (fn [namespace]
+         (get dependencies namespace #{}))
+       namespaces)))))
+
+(defn unresolved-namespaces
+  "Reports selected source namespaces that no package catalogue entry owns."
+  [owners analyses]
+  (vec
+   (sort-by str
+            (keep
+             (fn [analysis]
+               (let [namespace (:namespace analysis)]
+                 (cond
+                   (and namespace (nil? (get owners namespace))) namespace
+                   :else nil)))
+             analyses))))
+
+(defn ^{:public true} dependency-order
+  "Returns a dependency-first order and rejects cycles before staging any output."
+  [packages]
+  (loop [pending
+         (reduce
+          (fn [output package]
+            (assoc output (:package/name package)
+                   (set (:package/internal-dependencies package))))
+          {}
+          packages)
+         ordered []]
+    (cond
+      (empty? pending)
+      ordered
+
+      :else
+      (let [ready
+            (vec
+             (sort
+              (keep
+               (fn [name]
+                 (cond
+                   (empty? (get pending name)) name
+                   :else nil))
+               (keys pending))))]
+        (cond
+          (empty? ready)
+          (throw
+           (ex :code.deploy/dependency-cycle
+               {:packages (vec (sort (keys pending)))}
+               :ex/message "inferred package dependencies contain a cycle"))
+
+          :else
+          (recur
+           (reduce
+            (fn [next name]
+              (assoc next name
+                     (reduce disj (get next name) ready)))
+            (apply dissoc pending ready)
+            (keys (apply dissoc pending ready)))
+           (into ordered ready)))))))
+
+(defn ^{:public true} plan
+  "Builds the complete package graph from the source project and its catalogue."
+  [root]
+  (let [project (read-project root)
+        catalog (read-catalog root)
+        analyses (project-analyses root project)
+        definitions (package-definitions catalog)
+        owners (ownership definitions analyses)
+        linkage (framework/linkage analyses)
+        packages
+        (vec
+         (map
+          (fn [definition]
+            (let [name (:package/name definition)
+                  namespaces (selected-namespaces definition analyses)]
+              {:package/name name
+               :package/coordinate (coordinate name)
+               :package/definition definition
+               :package/namespaces namespaces
+               :package/source-files
+               (vec
+                (sort
+                 (keep
+                  (fn [analysis]
+                    (cond
+                      (has? (set namespaces) (:namespace analysis))
+                      (:source/path analysis)
+                      :else nil))
+                  analyses)))
+               :package/internal-dependencies
+               (vec
+                (sort
+                 (package-dependencies linkage owners definition analyses)))
+               :package/external-dependencies
+               (vec (sort (map str (or (:dependencies definition) []))))}))
+          definitions))
+        order (dependency-order packages)]
+    {:deploy/root root
+     :deploy/project project
+     :deploy/catalog-path (catalog-path root)
+     :deploy/analyses analyses
+     :deploy/unowned-namespaces (unresolved-namespaces owners analyses)
+     :deploy/packages packages
+     :deploy/order order}))

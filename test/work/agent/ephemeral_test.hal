@@ -1,0 +1,59 @@
+(ns work.agent.ephemeral-test
+  (:require [work.core :as work]
+            [work.agent.ephemeral :as ephemeral]
+            [work.agent.protocol :as protocol]))
+
+(def spec {:agent/id :one})
+
+^{:refer work.agent.ephemeral/agent}
+(Test/check
+ [{:name "wraps a map in the IAgent implementation"
+   :test (fn []
+           (let [value (ephemeral/agent spec)]
+             [(satisfies? protocol/IAgent value)
+              (protocol/agent-spec value)]))
+   :expected [true spec]}])
+
+^{:refer work.agent.ephemeral/driver}
+(Test/check
+ [{:name "wraps a lower driver function"
+   :test (fn []
+           (let [value (ephemeral/driver (fn [agent intent context] :result))]
+             [(satisfies? protocol/IAgentDriver value)
+              (protocol/agent-drive value spec :intent {})]))
+   :expected [true :result]}])
+
+^{:refer work.agent.ephemeral/work-driver}
+(Test/check
+ [{:name "compiles a local driver target into a Work bundle"
+   :test (fn []
+           (let [driver (ephemeral/work-driver
+                         "agent/drive"
+                         (fn [agent intent context input work-context]
+                           [(:agent/id agent) intent input]))
+                 bundle (protocol/agent-drive driver spec :inspect {})]
+             [(work/bundle? bundle)
+              (deref (work/evaluate bundle :payload))]))
+   :expected [true [:one :inspect :payload]]}])
+
+^{:refer work.agent.ephemeral/coordinator}
+(Test/check
+ [{:name "creates an identity coordinator"
+   :test (fn []
+           (let [value (ephemeral/coordinator)]
+             [(satisfies? protocol/IAgentCoordinator value)
+              (protocol/agent-coordinate value {:task/id :one})]))
+   :expected [true {:task/id :one}]}])
+
+^{:refer work.agent.ephemeral/authority}
+(Test/check
+ [{:name "creates authorities with default and explicit decisions"
+   :test (fn []
+           (let [value (ephemeral/authority :authority {:release false})]
+             [(protocol/agent-authorize value {:action :release})
+              (protocol/agent-authorize value {:action :other})
+              (first (:signature
+                      (protocol/agent-sign value {:action :handoff}))) ]))
+   :expected [{:authority/id :authority :authorized? false :request {:action :release}}
+              {:authority/id :authority :authorized? true :request {:action :other}}
+              :authority]}])

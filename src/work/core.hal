@@ -64,10 +64,24 @@
           (merge-targets bundles)))
 
 (defn bind-targets
+  "Installs local targets and promotes bundles returned by a target into the
+   same native registry before returning their portable plan."
   [registry target-map]
   (reduce
    (fn [bound name]
-     (Work/bind-target bound name (get target-map name)))
+     (let [target (get target-map name)]
+       (if (nil? (Work/target registry name))
+         (Work/bind-target
+          bound
+          name
+          (fn [input]
+            (let [value (target input)]
+              (if (bundle? value)
+                (do
+                  (bind-targets registry (targets value))
+                  (plan value))
+                value))))
+         bound)))
    registry
    (keys target-map)))
 

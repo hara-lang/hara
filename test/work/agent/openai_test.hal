@@ -1,0 +1,181 @@
+(ns work.agent.openai-test
+  (:require [work.agent :as agent]
+            [work.agent.openai :as openai]
+            [work.agent.tool :as tool]))
+
+(def echo-tool
+  (agent/tool
+   "echo"
+   "Echoes values."
+   {:type "object"}
+   (fn [arguments] arguments)))
+
+(def client
+  (agent/openai-client
+   {:model "gpt-5"
+    :api-key "test-key"
+    :endpoint "https://example.test/responses"
+    :headers {:x-client "test"}
+    :request {:store false}
+    :transport (fn [request]
+                 {:status 200
+                  :body
+                  (Json/write
+                   (openai/wire-value
+                    {:id "response-1"
+                     :status "completed"
+                  :output [{:type "message"
+                               :content [{:type "output_text" :text "done"}]}]}))})}))
+
+^{:refer work.agent.openai/default-endpoint}
+(Test/check
+ [{:name "uses the Responses API endpoint by default"
+   :test (fn [] (:openai/endpoint (agent/openai-client
+                                   {:model "gpt-5"
+                                    :transport (fn [request] nil)})))
+   :expected "https://api.openai.com/v1/responses"}])
+
+^{:refer work.agent.openai/wire-field}
+(Test/check
+ [{:name "reads a wire field from a keyword map"
+   :test (fn [] (openai/wire-field {:status "ok"} "status"))
+   :expected "ok"}])
+
+^{:refer work.agent.openai/wire-value}
+(Test/check
+ [{:name "converts keyword keys and values for JSON"
+   :test (fn [] (openai/wire-value {:status :completed}))
+   :expected {"status" "completed"}}])
+
+^{:refer work.agent.openai/client}
+(Test/check
+ [{:name "retains client configuration and transport"
+   :test (fn []
+           [(:openai/model client)
+            (:openai/api-key client)
+            (:openai/endpoint client)
+            (function? (:openai/transport client))])
+   :expected ["gpt-5" "test-key" "https://example.test/responses" true]}])
+
+^{:refer work.agent.openai/input-message}
+(Test/check
+ [{:name "creates user and explicit-role messages"
+   :test (fn []
+           [(openai/input-message "hello")
+            (openai/input-message "assistant" "answer")])
+   :expected [{:role "user" :content "hello"}
+              {:role "assistant" :content "answer"}]}])
+
+^{:refer work.agent.openai/request-body}
+(Test/check
+ [{:name "merges request options and serializes tools"
+   :test (fn []
+           (openai/request-body
+            client
+            {:instructions "Use tools."
+             :input [(openai/input-message "hello")]
+             :tools [echo-tool]}))
+   :expected {"store" false
+              "model" "gpt-5"
+              "instructions" "Use tools."
+              "input" [{"role" "user" "content" "hello"}]
+              "tools" [{"type" "function"
+                        "name" "echo"
+                        "description" "Echoes values."
+                        "parameters" {"type" "object"}
+                        "strict" true}]}}])
+
+^{:refer work.agent.openai/http-request}
+(Test/check
+ [{:name "builds a POST request with JSON body and auth"
+   :test (fn []
+           (let [request (openai/http-request client {:input []})]
+             [(:method request)
+              (:url request)
+              (get-in request [:headers "authorization"])
+              (get (Json/read (:body request)) "model")]))
+   :expected ["POST" "https://example.test/responses" "Bearer test-key" "gpt-5"]}])
+
+^{:refer work.agent.openai/response-value}
+(Test/check
+ [{:name "parses direct JSON and successful HTTP envelopes"
+   :test (fn []
+           [(openai/response-value "{\"id\":\"one\"}")
+            (openai/response-value {:status 200 :body "{\"id\":\"two\"}"})])
+   :expected [{"id" "one"} {"id" "two"}]}])
+
+^{:refer work.agent.openai/normalize-response}
+(Test/check
+ [{:name "projects text and function calls into a stable response map"
+   :test (fn []
+           (openai/normalize-response
+            {:id "one"
+             :status "completed"
+             :output [{:type "message"
+                       :content [{:type "output_text" :text "hello"}]}]}))
+   :expected {:response/id "one"
+              :response/status "completed"
+              :response/output [{:type "message"
+                                 :content [{:type "output_text" :text "hello"}]}]
+              :response/text "hello"
+              :response/tool-calls []
+              :response/usage nil
+              :response/raw {:id "one"
+                             :status "completed"
+                             :output [{:type "message"
+                                       :content [{:type "output_text" :text "hello"}]}]}}}])
+
+^{:refer work.agent.openai/complete}
+(Test/check
+ [{:name "uses the injected transport and normalizes its response"
+   :test (fn []
+           (openai/complete client {:input []}))
+   :expected {:response/id "response-1"
+              :response/status "completed"
+              :response/output [{"type" "message"
+                                 "content" [{"type" "output_text" "text" "done"}]}]
+              :response/text "done"
+              :response/tool-calls []
+              :response/usage nil
+              :response/raw {"id" "response-1"
+                             "status" "completed"
+                             "output" [{"type" "message"
+                                         "content" [{"type" "output_text"
+                                                      "text" "done"}]}]}}}])
+
+^{:refer work.agent.openai/complete}
+(Test/check
+ [{:name "composes a Promise-returning transport"
+   :test (fn []
+           (let [async-client
+                 (agent/openai-client
+                  {:model "gpt-5"
+                   :transport
+                   (fn [request]
+                     (Promise/run
+                      (fn []
+                        {:status 200
+                         :body "{\"id\":\"async\",\"status\":\"completed\",\"output\":[]}"})))})]
+             (:response/id
+              (deref (openai/complete async-client {:input []})))))
+   :expected "async"}])
+
+^{:refer work.agent.openai/tool-output-item}
+(Test/check
+ [{:name "serializes one tool result as a function_call_output"
+   :test (fn []
+           (let [item (openai/tool-output-item
+                       {:call/id "one" :tool/status :ok :tool/value 7})]
+             [(:type item) (:call_id item) (Json/read (:output item))]))
+   :expected ["function_call_output" "one" {"ok" true "value" 7}]}])
+
+^{:refer work.agent.openai/tool-output-items}
+(Test/check
+ [{:name "preserves tool output order"
+   :test (fn []
+           (vec
+            (map :call_id
+                 (openai/tool-output-items
+                  [{:call/id "one" :tool/status :ok :tool/value 1}
+                   {:call/id "two" :tool/status :ok :tool/value 2}]))))
+   :expected ["one" "two"]}])

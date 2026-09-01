@@ -1,0 +1,109 @@
+(ns work.agent.tool-test
+  (:require [work.agent :as agent]
+            [work.agent.tool :as tool]))
+
+(def echo-tool
+  (agent/tool
+   "echo"
+   "Echoes decoded arguments."
+   {:type "object"}
+   (fn [arguments] arguments)))
+
+(def target-tool
+  (agent/tool
+   "targeted"
+   "Uses a declared Work target."
+   {:type "object"}
+   (fn [arguments] arguments)
+   {:targets {"tool/target" (fn [input] input)}}))
+
+
+^{:refer work.agent.tool/tool}
+(Test/check
+ [{:name "creates pure tools with strict defaults"
+   :test (fn []
+           [(:tool/name echo-tool)
+            (:tool/effect echo-tool)
+            (:tool/strict echo-tool)])
+   :expected ["echo" :pure true]}])
+
+^{:refer work.agent.tool/normalize}
+(Test/check
+ [{:name "fills missing optional fields on a valid tool"
+   :test (fn []
+           (let [value (tool/normalize
+                        {:tool/name "one"
+                         :tool/description "One"
+                         :tool/parameters {}
+                         :tool/invoke (fn [arguments] arguments)})]
+             [(:tool/strict value) (:tool/effect value) (:tool/targets value)]))
+   :expected [true :pure {}]}])
+
+^{:refer work.agent.tool/normalize-all}
+(Test/check
+ [{:name "preserves declaration order while normalizing tools"
+   :test (fn []
+           (vec (map :tool/name (tool/normalize-all [echo-tool target-tool]))))
+   :expected ["echo" "targeted"]}])
+
+^{:refer work.agent.tool/index}
+(Test/check
+ [{:name "indexes tools by unique model name"
+   :test (fn []
+           (vec (keys (tool/index [echo-tool target-tool]))))
+   :expected ["echo" "targeted"]}])
+
+^{:refer work.agent.tool/declared-targets}
+(Test/check
+ [{:name "projects declared process-local targets"
+   :test (fn []
+           (fn? (get (tool/declared-targets [target-tool]) "tool/target")))
+   :expected true}])
+
+^{:refer work.agent.tool/openai-spec}
+(Test/check
+ [{:name "converts one tool to the Responses function shape"
+   :test (fn []
+           (select-keys (tool/openai-spec echo-tool)
+                        [:type :name :description :strict]))
+   :expected {:type "function"
+              :name "echo"
+              :description "Echoes decoded arguments."
+              :strict true}}])
+
+^{:refer work.agent.tool/openai-specs}
+(Test/check
+ [{:name "converts tools in declaration order"
+   :test (fn []
+           (vec (map :name (tool/openai-specs [echo-tool target-tool]))))
+   :expected ["echo" "targeted"]}])
+
+^{:refer work.agent.tool/invoke}
+(Test/check
+ [{:name "returns exact pure and unknown tool result envelopes"
+   :test (fn []
+           [(tool/invoke
+             (tool/index [echo-tool])
+             {:call/id "one" :tool/name "echo" :call/arguments {"value" 7}})
+            (get-in
+             (tool/invoke
+              {}
+              {:call/id "two" :tool/name "missing" :call/arguments {}})
+             [:tool/error :code])])
+   :expected [{:call/id "one"
+               :tool/name "echo"
+               :tool/status :ok
+               :tool/value {"value" 7}}
+              :tool/unknown]}])
+
+^{:refer work.agent.tool/invoke-all}
+(Test/check
+ [{:name "keeps pure tool result order"
+   :test (fn []
+           (vec
+            (map :call/id
+                 (tool/invoke-all
+                  (tool/index [echo-tool])
+                  [{:call/id "one" :tool/name "echo" :call/arguments {}}
+                   {:call/id "two" :tool/name "echo" :call/arguments {}}]))))
+   :expected ["one" "two"]}])

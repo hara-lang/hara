@@ -1,0 +1,51 @@
+(ns hara.command.deploy-test
+  (:require [hara.command.deploy :as command]
+            [code.deploy :as deploy]))
+
+(defn fixture-root
+  []
+  (let [root (deref (File/temp-directory "." {:prefix "hara-command-deploy-"}))]
+    (deref (File/write (File/join root "project.edn")
+                        (String/encode-utf8 "{:hara/type :project :hara/version \"1.0.0\" :project/id fixture/root :project/version \"1.2.3\" :project/source-paths [\"src\"] :project/source-files [\"src/demo/main.hal\"] :project/test-paths [] :project/extension-paths [] :project/capabilities #{:file :kernel} :project/dependencies {} :project/deploy {:catalog \"config/packages.edn\"}}")
+                        {:mode :replace :parents? true}))
+    (deref (File/write (File/join root "config/packages.edn")
+                        (String/encode-utf8 "{fixture/main {:include [[demo.main :complete]]}}")
+                        {:mode :replace :parents? true}))
+    (deref (File/write (File/join root "src/demo/main.hal")
+                        (String/encode-utf8 "(ns demo.main)")
+                        {:mode :replace :parents? true}))
+    root))
+
+^{:refer hara.command.deploy/action}
+(Test/check
+ [{:name "normalises deploy command actions and defaults to staging"
+   :test (fn [] [(command/action nil)
+                 (command/action "plan")
+                 (command/action "build")])
+   :expected [:stage :plan :build]}
+  {:name "rejects unrecognised deploy actions before planning a project"
+   :test (fn [] (try (command/action "publish") false (catch error true)))
+   :expected true}])
+
+^{:refer hara.command.deploy/project-root}
+(Test/check
+ [{:name "preserves an explicit deploy project root and defaults to the host working directory"
+   :test (fn [] [(command/project-root {:options {:root "/fixture"}})
+                 (= (command/project-root {:options {}}) (OS/cwd))])
+   :expected ["/fixture" true]}])
+
+^{:refer hara.command.deploy/response}
+(Test/check
+ [{:name "formats a planned package graph as a successful native command response"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (select-keys (command/response {:options {:root root}
+                                                    :arguments {:action "plan"}})
+                                 [:stderr :exit])
+                    (finally
+                      (deploy/delete-tree root)))))
+   :expected {:stderr "" :exit 0}}
+  {:name "formats unsupported deploy action errors without touching a project"
+   :test (fn [] (select-keys (command/response {:options {} :arguments {:action "publish"}})
+                              [:stdout :exit]))
+   :expected {:stdout "" :exit 2}}])

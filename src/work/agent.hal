@@ -1,0 +1,137 @@
+(ns work.agent
+  (:require [work.core :as work]
+            [work.agent.protocol :as protocol]
+            [work.agent.internal :as internal]
+            [work.agent.ephemeral :as ephemeral]
+            [work.agent.openai :as openai]
+            [work.agent.driver.openai :as openai-driver]
+            [work.agent.tool :as agent-tool]))
+
+(defn ^{:public true} tool
+  "Creates one schema-backed tool callable by an agent driver."
+  ([name description parameters invoke]
+   (agent-tool/tool name description parameters invoke))
+  ([name description parameters invoke options]
+   (agent-tool/tool name description parameters invoke options)))
+
+(defn ^{:public true} openai-client
+  "Creates an OpenAI Responses client with an injected HTTP transport."
+  [options]
+  (openai/client options))
+
+(defn ^{:public true} openai-driver
+  "Creates an OpenAI-backed IAgentDriver that lowers intent to a Work bundle."
+  [options]
+  (openai-driver/driver options))
+
+(defn ^{:public true} agent-spec
+  "Returns the canonical Agent map."
+  [agent]
+  (cond
+    (map? agent)
+    agent
+
+    (satisfies? protocol/IAgent agent)
+    (let [spec (protocol/agent-spec agent)]
+      (if (map? spec)
+        spec
+        (throw
+         (ex :state {:agent/spec spec}
+             :ex/message "IAgent must project to a map"))))
+
+    :else
+    (throw
+     (ex :argument {:agent agent}
+         :ex/message "Agent must be a map or implement IAgent"))))
+
+(defn ^{:public true} agent-id
+  [agent]
+  (:agent/id (agent-spec agent)))
+
+(defn ^{:public true} capability
+  [agent key]
+  (get (agent-spec agent) key))
+
+(defn ^{:public true} drive
+  "Turns intent into a Work definition bundle through IAgentDriver."
+  ([agent intent]
+   (drive agent intent {}))
+  ([agent intent context]
+   (let [agent-value (agent-spec agent)
+         driver (internal/require-capability
+                 agent-value
+                 :agent/driver
+                 :IAgentDriver
+                 internal/protocol-driver?
+                 (agent-id agent-value))]
+     (internal/assert-bundle
+      (protocol/agent-drive driver agent-value intent (or context {}))
+      :driver))))
+
+(defn ^{:public true} coordinate
+  "Creates a Work bundle for one coordinator request."
+  [agent request]
+  (let [agent-value (agent-spec agent)
+        coordinator (internal/require-capability
+                     agent-value
+                     :agent/coordinator
+                     :IAgentCoordinator
+                     internal/protocol-coordinator?
+                     (agent-id agent-value))
+        target (internal/target-id "work.agent" (agent-id agent-value) "coordinate")]
+    (work/bundle
+     (Work/step target)
+     {target
+      (fn [input]
+        (protocol/agent-coordinate
+         coordinator
+         (assoc (or request {})
+                :agent/id (agent-id agent-value)
+                :work/input input)))})))
+
+(defn ^{:public true} authorize
+  "Creates a Work bundle for one authority decision."
+  [agent request]
+  (let [agent-value (agent-spec agent)
+        authority (internal/require-capability
+                   agent-value
+                   :agent/authority
+                   :IAgentAuthority
+                   internal/protocol-authority?
+                   (agent-id agent-value))
+        target (internal/target-id "work.agent" (agent-id agent-value) "authorize")]
+    (work/bundle
+     (Work/step target)
+     {target
+      (fn [input]
+        (protocol/agent-authorize
+         authority
+         (assoc (or request {})
+                :agent/id (agent-id agent-value)
+                :work/input input)))})))
+
+(defn ^{:public true} sign
+  "Creates a Work bundle for one authority signature."
+  [agent request]
+  (let [agent-value (agent-spec agent)
+        authority (internal/require-capability
+                   agent-value
+                   :agent/authority
+                   :IAgentAuthority
+                   internal/protocol-authority?
+                   (agent-id agent-value))
+        target (internal/target-id "work.agent" (agent-id agent-value) "sign")]
+    (work/bundle
+     (Work/step target)
+     {target
+      (fn [input]
+        (protocol/agent-sign
+         authority
+         (assoc (or request {})
+                :agent/id (agent-id agent-value)
+                :work/input input)))})))
+
+(def ^{:public true} ephemeral-driver ephemeral/driver)
+(def ^{:public true} ephemeral-work-driver ephemeral/work-driver)
+(def ^{:public true} ephemeral-coordinator ephemeral/coordinator)
+(def ^{:public true} ephemeral-authority ephemeral/authority)

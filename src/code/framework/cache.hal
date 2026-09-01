@@ -1,0 +1,108 @@
+(ns code.framework.cache
+  (:config {:role :internal})
+  (:require [code.framework.index :as index]
+            [code.framework.reader :as reader]))
+
+(def +cache-relative-path+
+  ".hara/code/framework/index.edn")
+
+(defn cache-path
+  "Returns the project-local durable reader-analysis cache path."
+  [root]
+  (File/join root +cache-relative-path+))
+
+(defn cache-index?
+  "Recognizes the complete serializable shape used by the link index."
+  [value]
+  (and (map? value)
+       (map? (:entries value))
+       (map? (:links-by-source value))
+       (map? (:links-by-target value))))
+
+(defn load-index
+  "Loads a valid persisted index, treating missing or corrupt cache data as empty."
+  [root]
+  (let [path (cache-path root)]
+    (try
+      (cond
+        (deref (File/exists? path))
+        (let [value
+              (Edn/read
+               (String/decode-utf8
+                (deref (File/read path))))]
+          (cond
+            (cache-index? value) value
+            :else (index/empty-index)))
+
+        :else (index/empty-index))
+      (catch error
+        (index/empty-index)))))
+
+(defn save-index
+  "Persists one already-successful reader index and returns its cache path."
+  [root state]
+  (let [path (cache-path root)]
+    (deref
+     (File/write path
+                 (String/encode-utf8 (Edn/write state))
+                 {:mode :replace :parents? true}))
+    path))
+
+(defn source-revision
+  "Returns the filesystem timestamp and byte count used to reset durable analysis."
+  [source-path]
+  (let [entry (deref (File/stat source-path))]
+    {:modified-at (:modified-at entry)
+     :bytes (:size entry)}))
+
+(defn cached-path-analysis
+  "Returns only an entry whose timestamp and byte count both match."
+  [state source-path revision]
+  (let [entry (get-in state [:entries source-path])]
+    (cond
+      (= revision (:revision entry))
+      (:analysis entry)
+
+      :else
+      nil)))
+
+(defn analyse-path
+  "Reads one path only after its timestamp and byte count invalidate cached analysis."
+  [state source-path]
+  (let [revision (source-revision source-path)
+        cached (cached-path-analysis state source-path revision)]
+    (cond
+      cached
+      {:index state
+       :analysis cached
+       :cached? true}
+
+      :else
+      (let [source (String/decode-utf8 (deref (File/read source-path)))
+            fingerprint (reader/source-fingerprint source)
+            analysis (reader/analyse-source source)
+            next-index
+            (assoc-in
+             (index/upsert-analysis state source-path fingerprint analysis)
+             [:entries source-path :revision]
+             revision)]
+        {:index next-index
+         :analysis analysis
+         :cached? false}))))
+
+(defn refresh-path
+  "Refreshes one source path and durably saves only a successful fresh analysis."
+  [root state source-path]
+  (let [result (analyse-path state source-path)]
+    (cond
+      (:cached? result)
+      result
+
+      :else
+      (assoc result :cache-path (save-index root (:index result))))))
+
+(defn reset-cache
+  "Idempotently removes the persisted cache and returns the empty index baseline."
+  [root]
+  (deref (File/delete (cache-path root) {:missing-ok? true}))
+  (index/empty-index))

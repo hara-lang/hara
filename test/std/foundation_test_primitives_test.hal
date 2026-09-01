@@ -16,12 +16,12 @@
                          "inner throw"
                          (do
                            (swap! evaluations inc)
-                           (throw (ex-info "boom" {:kind :test})))
+                           (throw (ex :generic {:kind :test} :ex/message "boom")))
                          :never)
                  error (Result/error-value thrown)]
              [(Test/passed? thrown) (Result/status thrown)
               (ex-message error) (ex-data error) (deref evaluations)]))
-   :expected [false :error "boom" {:kind :test} 1]}
+   :expected [false :error "boom" {:kind :test :ex/code :hara/generic :ex/class :ex.class/internal :ex/message "boom"} 1]}
   {:name "Test/check compares nested collections"
    :test (fn []
            (Test/passed?
@@ -31,11 +31,23 @@
    :test (fn []
            (let [passing (test-check "pass" 1 1)
                  failing (test-check "fail" 1 2)
-                 thrown (test-check "error" (throw (ex-info "boom" {})) :never)]
+                 thrown (test-check "error" (throw (ex :generic {} :ex/message "boom")) :never)]
              [(Test/passed? passing)
               (Test/passed? failing)
               (Test/passed? thrown)]))
    :expected [true false false]}
+  {:name "Result uses the canonical #result literal"
+   :test (fn []
+           (let [result (Result/create :success {:answer 42} {:trace 8})
+                 reread (Edn/read (Edn/write result))]
+             [(Edn/write result)
+              (Result/status reread)
+              (Result/data reread)
+              (Result/context reread)]))
+   :expected ["#result[:success {:answer 42} nil {:trace 8}]"
+              :success
+              {:answer 42}
+              {:trace 8}]}
   {:name "Test/config validates options without a Foundation forwarding method"
    :test (fn []
            (let [config-result (Test/config {:session-scope :fresh})]

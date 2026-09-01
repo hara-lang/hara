@@ -1,0 +1,299 @@
+(ns code.framework.reader-test
+  (:require [code.framework.reader :as reader]))
+
+(def sample-source
+  "(ns demo.test (:require [demo.subject :as subject :refer [stop]]))\n\n^{:refer demo.subject/run}\n(Test/check [])\n\n(defn answer [] (subject/run 42))\n\n(def value (stop))")
+
+(def sample-analysis
+  (reader/analyse-source sample-source))
+
+(def declaration-source
+  "(ns demo.link (:require [demo.alpha :as alpha]))\n(l/script :xtalk {:require [[xt.core :as xt] [xt.util :refer [run]]]})\n(intern-in [public-call demo.alpha/call])\n(intern-all demo.beta demo.gamma)")
+
+(def declaration-analysis
+  (reader/analyse-source declaration-source))
+
+^{:refer code.framework.reader/form-head}
+(Test/check
+ [{:name "reads list heads and ignores scalar forms"
+   :test (fn [] [(reader/form-head {:form '(defn answer [] 42)})
+                 (reader/form-head {:form :plain})])
+   :expected ['defn nil]}])
+
+^{:refer code.framework.reader/form-records}
+(Test/check
+ [{:name "adds stable top-level structural paths"
+   :test (fn [] (mapv :path (reader/form-records (read-forms-spanned "(def a 1)\n(def b 2)"))))
+   :expected [[0] [1]]}])
+
+^{:refer code.framework.reader/source-fingerprint}
+(Test/check
+ [{:name "uses a content-addressed fingerprint rather than a timestamp"
+   :test (fn [] [(reader/source-fingerprint "abc")
+                 (not= (reader/source-fingerprint "abc")
+                       (reader/source-fingerprint "abd"))])
+   :expected ["sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+              true]}])
+
+^{:refer code.framework.reader/namespace-record}
+(Test/check
+ [{:name "finds the namespace declaration"
+   :test (fn [] (:form (reader/namespace-record (:forms sample-analysis))))
+   :expected '(ns demo.test (:require [demo.subject :as subject :refer [stop]]))}])
+
+^{:refer code.framework.reader/require-entry}
+(Test/check
+ [{:name "normalizes aliases and referred symbols"
+   :test (fn [] [(reader/require-entry 'demo.subject)
+                 (reader/require-entry '[demo.subject :as subject :refer [run stop]])])
+   :expected [{:namespace 'demo.subject :alias nil :refers []}
+              {:namespace 'demo.subject :alias 'subject :refers '[run stop]}]}])
+
+^{:refer code.framework.reader/namespace-routes}
+(Test/check
+ [{:name "derives alias and refer routes from the namespace form"
+   :test (fn [] (:routes sample-analysis))
+   :expected {:aliases {'subject #{'demo.subject}}
+              :refers {'stop #{'demo.subject}}}}])
+
+^{:refer code.framework.reader/definition-record}
+(Test/check
+ [{:name "records declaration heads, metadata, and reader positions"
+   :test (fn [] (select-keys (reader/definition-record (nth (:forms sample-analysis) 2))
+                              [:head :name :path :start]))
+   :expected {:head 'defn :name 'answer :path [2]
+              :start {:offset 112 :line 6 :column 1}}}
+  {:name "retains declaration metadata from the reader form"
+   :test (fn [] (:meta (first (:definitions
+                                (reader/analyse-source "^{:public true}\n(defn ready [] true)")))))
+   :expected {:public true}}])
+
+^{:refer code.framework.reader/definition-records}
+(Test/check
+ [{:name "retains all supported top-level declarations"
+   :test (fn [] (mapv (fn [record] [(:head record) (:name record)])
+                       (:definitions sample-analysis)))
+   :expected [['defn 'answer] ['def 'value]]}])
+
+^{:refer code.framework.reader/zipper-symbols}
+(Test/check
+ [{:name "walks nested form symbols with the form zipper"
+   :test (fn [] (reader/zipper-symbols '(subject/run (stop) 1)))
+   :expected '[subject/run stop]}])
+
+^{:refer code.framework.reader/spanned-symbols}
+(Test/check
+ [{:name "walks reader nodes with exact nested structural paths"
+   :test (fn [] (reader/spanned-symbols
+                 (first
+                  (reader/form-records
+                   (read-forms-spanned "(subject/run (stop))")))))
+   :expected [{:value 'subject/run
+               :from {:path [0 0]
+                      :start {:offset 1 :line 1 :column 2}
+                      :end {:offset 12 :line 1 :column 13}}}
+              {:value 'stop
+               :from {:path [0 1 0]
+                      :start {:offset 14 :line 1 :column 15}
+                      :end {:offset 18 :line 1 :column 19}}}]}])
+
+^{:refer code.framework.reader/routed-reference-state}
+(Test/check
+ [{:name "retains competing refer routes as an ambiguity"
+   :test (fn [] (reader/routed-reference-state
+                 {:aliases {}
+                  :refers {'run #{'demo.left 'demo.right}}}
+                 'run))
+   :expected {:to nil
+              :candidates ['demo.left/run 'demo.right/run]
+              :resolution :ambiguous}}])
+
+^{:refer code.framework.reader/routed-reference}
+(Test/check
+ [{:name "resolves aliases and referred symbols without guessing"
+   :test (fn [] [(reader/routed-reference (:routes sample-analysis) 'subject/run)
+                 (reader/routed-reference (:routes sample-analysis) 'stop)
+                 (reader/routed-reference (:routes sample-analysis) 'unknown)])
+   :expected '[demo.subject/run demo.subject/stop nil]}])
+
+^{:refer code.framework.reader/require-links}
+(Test/check
+ [{:name "links each namespace requirement at its requirement vector"
+   :test (fn [] (reader/require-links
+                 (reader/namespace-record (:forms sample-analysis))))
+   :expected [{:kind :namespace/require
+               :from {:path [0 2 1]
+                      :start {:offset 24 :line 1 :column 25}
+                      :end {:offset 64 :line 1 :column 65}}
+               :to 'demo.subject
+               :resolution :resolved}]}])
+
+^{:refer code.framework.reader/map-value-record}
+(Test/check
+ [{:name "retains the structural path of a spanned map value"
+   :test (fn [] (select-keys
+                 (reader/map-value-record
+                  (first
+                   (reader/form-records
+                    (read-forms-spanned "{:require [demo.core]}")))
+                  :require)
+                 [:form :path]))
+   :expected {:form '[demo.core] :path [0 1]}}])
+
+^{:refer code.framework.reader/script-require-links}
+(Test/check
+ [{:name "links each target-language requirement at its exact vector"
+   :test (fn [] (reader/script-require-links (nth (:forms declaration-analysis) 1)))
+   :expected [{:kind :script/require
+               :language :xtalk
+               :from {:path [1 2 1 0]
+                      :start {:offset 77 :line 2 :column 29}
+                      :end {:offset 93 :line 2 :column 45}}
+               :to 'xt.core
+               :resolution :resolved}
+              {:kind :script/require
+               :language :xtalk
+               :from {:path [1 2 1 1]
+                      :start {:offset 94 :line 2 :column 46}
+                      :end {:offset 116 :line 2 :column 68}}
+               :to 'xt.util
+               :resolution :resolved}]}])
+
+^{:refer code.framework.reader/intern-in-links}
+(Test/check
+ [{:name "links source Vars selected through intern-in"
+   :test (fn [] (reader/intern-in-links (nth (:forms declaration-analysis) 2)))
+   :expected [{:kind :publication/intern-in
+               :from {:path [2 1 1]
+                      :start {:offset 144 :line 3 :column 25}
+                      :end {:offset 159 :line 3 :column 40}}
+               :to 'demo.alpha/call
+               :publication/to 'public-call
+               :resolution :resolved}]}])
+
+^{:refer code.framework.reader/intern-all-links}
+(Test/check
+ [{:name "links every namespace copied through intern-all"
+   :test (fn [] (reader/intern-all-links (nth (:forms declaration-analysis) 3)))
+   :expected [{:kind :publication/intern-all
+               :from {:path [3 1]
+                      :start {:offset 174 :line 4 :column 13}
+                      :end {:offset 183 :line 4 :column 22}}
+               :to 'demo.beta
+               :resolution :resolved}
+              {:kind :publication/intern-all
+               :from {:path [3 2]
+                      :start {:offset 184 :line 4 :column 23}
+                      :end {:offset 194 :line 4 :column 33}}
+               :to 'demo.gamma
+               :resolution :resolved}]}])
+
+^{:refer code.framework.reader/direct-links}
+(Test/check
+ [{:name "keeps namespace, script, and facade dependency declarations distinct"
+   :test (fn [] (mapv
+                 (fn [link]
+                   [(:kind link) (:to link)])
+                 (:links declaration-analysis)))
+   :expected [[:namespace/require 'demo.alpha]
+              [:script/require 'xt.core]
+              [:script/require 'xt.util]
+              [:publication/intern-in 'demo.alpha/call]
+              [:publication/intern-all 'demo.beta]
+              [:publication/intern-all 'demo.gamma]]}])
+
+^{:refer code.framework.reader/reference-records}
+(Test/check
+ [{:name "emits namespace, explicit-test, and exact-spanned call links"
+   :test (fn [] (mapv (fn [link] [(:kind link) (:to link) (get-in link [:from :path])
+                                      (get-in link [:from :start])])
+                       (:links sample-analysis)))
+   :expected [[:namespace/require 'demo.subject [0 2 1]
+               {:offset 24 :line 1 :column 25}]
+              [:test/refer 'demo.subject/run [1 0]
+               {:offset 69 :line 3 :column 2}]
+              [:symbol/reference 'demo.subject/run [2 3 0]
+               {:offset 129 :line 6 :column 18}]
+              [:symbol/reference 'demo.subject/stop [3 2 0]
+               {:offset 159 :line 8 :column 13}]]}
+  {:name "keeps competing refer links explicit rather than guessing"
+   :test (fn [] (let [analysis
+                       (reader/analyse-source
+                        "(ns demo.ambiguous (:require [demo.left :refer [run]] [demo.right :refer [run]]))\n(defn call [] (run))")]
+                   (vec
+                    (map
+                     (fn [link]
+                       (select-keys link [:kind :to :candidates :resolution]))
+                     (filter
+                      (fn [link]
+                        (= :symbol/reference (:kind link)))
+                      (:links analysis))))))
+   :expected [{:kind :symbol/reference
+               :to nil
+               :candidates ['demo.left/run 'demo.right/run]
+               :resolution :ambiguous}]}])
+
+^{:refer code.framework.reader/analyse-forms}
+(Test/check
+ [{:name "combines reader facts without std.block"
+   :test (fn [] (select-keys sample-analysis [:namespace :routes]))
+   :expected {:namespace 'demo.test
+               :routes {:aliases {'subject #{'demo.subject}}
+                       :refers {'stop #{'demo.subject}}}}}])
+
+^{:refer code.framework.reader/analyse-linkage-forms}
+(Test/check
+ [{:name "retains only declaration dependencies for bounded package linkage"
+   :test (fn [] (select-keys (reader/analyse-linkage-forms (read-forms-spanned declaration-source))
+                              [:namespace :links]))
+   :expected {:namespace 'demo.link
+              :links [{:kind :namespace/require :to 'demo.alpha :resolution :resolved
+                       :from {:path [0 2 1]
+                              :start {:offset 24 :line 1 :column 25}
+                              :end {:offset 46 :line 1 :column 47}}}
+                      {:kind :script/require :language :xtalk :to 'xt.core :resolution :resolved
+                       :from {:path [1 2 1 0]
+                              :start {:offset 77 :line 2 :column 29}
+                              :end {:offset 93 :line 2 :column 45}}}
+                      {:kind :script/require :language :xtalk :to 'xt.util :resolution :resolved
+                       :from {:path [1 2 1 1]
+                              :start {:offset 94 :line 2 :column 46}
+                              :end {:offset 116 :line 2 :column 68}}}
+                      {:kind :publication/intern-in :to 'demo.alpha/call :publication/to 'public-call :resolution :resolved
+                       :from {:path [2 1 1]
+                              :start {:offset 144 :line 3 :column 25}
+                              :end {:offset 159 :line 3 :column 40}}}
+                      {:kind :publication/intern-all :to 'demo.beta :resolution :resolved
+                       :from {:path [3 1]
+                              :start {:offset 174 :line 4 :column 13}
+                              :end {:offset 183 :line 4 :column 22}}}
+                      {:kind :publication/intern-all :to 'demo.gamma :resolution :resolved
+                       :from {:path [3 2]
+                              :start {:offset 184 :line 4 :column 23}
+                              :end {:offset 194 :line 4 :column 33}}}]}}])
+
+^{:refer code.framework.reader/analyse-source}
+(Test/check
+ [{:name "reads source through the native spanned reader"
+   :test (fn [] (select-keys (reader/analyse-source "(ns demo.core)\n(defn answer [] 42)")
+                              [:namespace :definitions]))
+   :expected {:namespace 'demo.core
+              :definitions [{:head 'defn :name 'answer :path [1]
+                             :start {:offset 15 :line 2 :column 1}
+                             :end {:offset 34 :line 2 :column 20}
+                             :meta nil}]}}])
+
+^{:refer code.framework.reader/analyse-linkage-source}
+(Test/check
+ [{:name "keeps package linkage independent of ordinary implementation references"
+   :test (fn [] (select-keys
+                 (reader/analyse-linkage-source
+                  "(ns demo.fast (:require [demo.base :as base]))\n(defn run [] (base/call))")
+                 [:namespace :links]))
+   :expected {:namespace 'demo.fast
+              :links [{:kind :namespace/require
+                       :from {:path [0 2 1]
+                              :start {:offset 24 :line 1 :column 25}
+                              :end {:offset 44 :line 1 :column 45}}
+                       :to 'demo.base
+                       :resolution :resolved}]}}])

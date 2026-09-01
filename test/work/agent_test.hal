@@ -1,0 +1,101 @@
+(ns work.agent-test
+  (:require [work.core :as work]
+            [work.agent :as agent]
+            [work.agent.ephemeral :as ephemeral]
+            [work.agent.protocol :as protocol]))
+
+(def sample-agent
+  {:agent/id :sample
+   :agent/driver
+   (agent/ephemeral-work-driver
+    "work.agent.test/driver"
+    (fn [agent intent context input work-context]
+      {:agent/id (:agent/id agent)
+       :intent intent
+       :input input}))
+   :agent/coordinator (agent/ephemeral-coordinator)
+   :agent/authority (agent/ephemeral-authority :test-authority {:release false})})
+
+^{:refer work.agent/agent-spec}
+(Test/check
+ [{:name "projects protocol agents to their ordinary map specification"
+   :test (fn []
+           (let [protocol-agent (ephemeral/agent sample-agent)]
+             [(agent/agent-spec sample-agent)
+              (agent/agent-spec protocol-agent)
+              (agent/agent-id protocol-agent)]))
+   :expected [sample-agent sample-agent :sample]}])
+
+^{:refer work.agent/drive}
+(Test/check
+ [{:name "lowers an intent to a Work bundle and evaluates through Work"
+   :test (fn []
+           (let [driven (agent/drive sample-agent :inspect)]
+             [(work/bundle? driven)
+              (deref (work/evaluate driven :payload))]))
+   :expected [true {:agent/id :sample :intent :inspect :input :payload}]}])
+
+^{:refer work.agent/drive}
+(Test/check
+ [{:name "rejects a driver that does not return a Work bundle"
+   :test (fn []
+           (try
+             (agent/drive
+              {:agent/id :invalid
+               :agent/driver (agent/ephemeral-driver
+                              (fn [agent intent context] {:not :work}))}
+              :intent)
+             :not-rejected
+             (catch Throwable error
+               (:agent/boundary (ex-data error)))))
+   :expected :driver}])
+
+^{:refer work.agent/capability}
+(Test/check
+ [{:name "projects configured capabilities from an agent map"
+   :test (fn []
+           [(satisfies? protocol/IAgentDriver
+                        (agent/capability sample-agent :agent/driver))
+            (agent/capability sample-agent :agent/missing)])
+   :expected [true nil]}])
+
+^{:refer work.agent/coordinate}
+(Test/check
+ [{:name "keeps coordination in a Work step"
+   :test (fn []
+           (let [value (deref (work/evaluate
+                               (agent/coordinate sample-agent {:task/id :compile})
+                               {:source :unit}))]
+             [(get value :task/id)
+              (:agent/id value)
+              (:work/input value)]))
+   :expected [:compile :sample {:source :unit}]}])
+
+^{:refer work.agent/authorize}
+(Test/check
+ [{:name "returns the authority decision as the Work result"
+   :test (fn []
+           (let [value (deref (work/evaluate
+                               (agent/authorize sample-agent {:action :release})
+                               nil))]
+             [(:authorized? value) (:authority/id value)]))
+   :expected [false :test-authority]}])
+
+^{:refer work.agent/sign}
+(Test/check
+ [{:name "returns the authority signature as the Work result"
+   :test (fn []
+           (let [value (deref (work/evaluate
+                               (agent/sign sample-agent {:action :handoff})
+                               nil))]
+             [(:authority/id value) (first (:signature value))]))
+   :expected [:test-authority :test-authority]}])
+
+^{:refer work.agent/tool}
+(Test/check
+ [{:name "creates an agent tool through the facade"
+   :test (fn []
+           (:tool/name
+            (agent/tool "echo" "Echoes values." {:type "object"}
+                        (fn [arguments] arguments))))
+   :expected "echo"}])

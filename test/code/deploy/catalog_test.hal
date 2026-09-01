@@ -1,0 +1,256 @@
+(ns code.deploy.catalog-test
+  (:require [code.deploy.catalog :as catalog]
+            [code.framework :as framework]))
+
+(def sample-analyses
+  [{:namespace 'demo.base
+    :source/path "src/demo/base.hal"
+    :links []}
+   {:namespace 'demo.base.util
+    :source/path "src/demo/base/util.hal"
+    :links [{:kind :namespace/require :to 'demo.base :resolution :resolved}]}
+   {:namespace 'demo.app
+    :source/path "src/demo/app.hal"
+    :links [{:kind :namespace/require :to 'demo.base.util :resolution :resolved}]}
+   {:namespace 'demo.app.internal
+    :source/path "src/demo/app/internal.hal"
+    :links []}])
+
+(def sample-catalog
+  {'demo/base {:include ['[demo.base :complete]]}
+   'demo/app {:include ['[demo.app :exclude [demo.app.internal]]]}})
+
+(defn clean-root
+  [root paths]
+  (doseq [path paths]
+    (deref (File/delete (File/join root path) {:missing-ok? true})))
+  (deref (File/delete root {:missing-ok? true})))
+
+^{:refer code.deploy.catalog/project-path}
+(Test/check
+ [{:name "derives the project declaration below a deploy root"
+   :test (fn [] (catalog/project-path "fixture"))
+   :expected "/fixture/project.edn"}])
+
+^{:refer code.deploy.catalog/read-edn}
+(Test/check
+ [{:name "reads an EDN document through the native file boundary"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-edn-"}))
+                      path (File/join root "value.edn")]
+                  (try
+                    (deref (File/write path (String/encode-utf8 "{:value 42}")
+                                        {:mode :replace :parents? true}))
+                    (catalog/read-edn path)
+                    (finally
+                      (clean-root root ["value.edn"])))))
+   :expected {:value 42}}])
+
+^{:refer code.deploy.catalog/read-project}
+(Test/check
+ [{:name "reads the current project's portable declaration"
+   :test (fn [] (select-keys (catalog/read-project ".") [:project/id :project/version]))
+   :expected {:project/id 'hara/foundation :project/version "0.1.15"}}])
+
+^{:refer code.deploy.catalog/catalog-relative-path}
+(Test/check
+ [{:name "uses an explicit deploy catalogue and the Foundation default"
+   :test (fn [] [(catalog/catalog-relative-path {})
+                 (catalog/catalog-relative-path {:project/deploy {:catalog "packages/release.edn"}})])
+   :expected ["config/packages.edn" "packages/release.edn"]}])
+
+^{:refer code.deploy.catalog/catalog-path}
+(Test/check
+ [{:name "uses the configured catalogue path below a temporary project"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-catalog-"}))]
+                  (try
+                    (deref (File/write (File/join root "project.edn")
+                                        (String/encode-utf8 "{:project/deploy {:catalog \"config/release.edn\"}}")
+                                        {:mode :replace :parents? true}))
+                    (str/ends-with? (catalog/catalog-path root) "/config/release.edn")
+                    (finally
+                      (clean-root root ["project.edn"])))))
+   :expected true}])
+
+^{:refer code.deploy.catalog/catalog-map}
+(Test/check
+ [{:name "accepts direct and wrapped Foundation catalogue shapes"
+   :test (fn [] [(catalog/catalog-map {'demo/base {:include []}})
+                 (catalog/catalog-map {:packages {'demo/base {:include []}}})])
+   :expected [{'demo/base {:include []}} {'demo/base {:include []}}]}
+  {:name "rejects a non-map catalogue"
+   :test (fn [] (try (catalog/catalog-map []) false (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.catalog/read-catalog}
+(Test/check
+ [{:name "reads the configured wrapped catalogue"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-read-"}))]
+                  (try
+                    (deref (File/write (File/join root "project.edn")
+                                        (String/encode-utf8 "{:project/deploy {:catalog \"config/packages.edn\"}}")
+                                        {:mode :replace :parents? true}))
+                    (deref (File/write (File/join root "config/packages.edn")
+                                        (String/encode-utf8 "{:packages {demo/base {:include [[demo.base :complete]]}}}")
+                                        {:mode :replace :parents? true}))
+                    (catalog/read-catalog root)
+                    (finally
+                      (clean-root root ["config/packages.edn" "config" "project.edn"])))))
+   :expected {'demo/base {:include ['[demo.base :complete]]}}}])
+
+^{:refer code.deploy.catalog/source-path}
+(Test/check
+ [{:name "joins an explicit source path below the deploy root"
+   :test (fn [] (catalog/source-path "fixture" "src/demo/main.hal"))
+   :expected "/fixture/src/demo/main.hal"}])
+
+^{:refer code.deploy.catalog/source-analysis}
+(Test/check
+ [{:name "refreshes reader analysis while retaining the project-relative path"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-source-"}))
+                      relative "src/demo/main.hal"]
+                  (try
+                    (deref (File/write (File/join root relative)
+                                        (String/encode-utf8 "(ns demo.main)")
+                                        {:mode :replace :parents? true}))
+                    (select-keys (catalog/source-analysis root
+                                                         {:entries {}
+                                                          :links-by-source {}
+                                                          :links-by-target {}}
+                                                         relative)
+                                 [:source/path :cached?])
+                    (finally
+                      (clean-root root [".hara/code/framework/index.edn"
+                                        ".hara/code/framework"
+                                        ".hara/code"
+                                        ".hara"
+                                        "src/demo/main.hal"
+                                        "src/demo"
+                                        "src"])))))
+   :expected {:source/path "src/demo/main.hal" :cached? false}}])
+
+^{:refer code.deploy.catalog/project-analyses}
+(Test/check
+ [{:name "analyses only explicit portable project source files"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-project-"}))
+                      project {:project/source-files ["src/demo/one.hal"]}]
+                  (try
+                    (deref (File/write (File/join root "src/demo/one.hal")
+                                        (String/encode-utf8 "(ns demo.one)")
+                                        {:mode :replace :parents? true}))
+                    (mapv (fn [analysis] [(:namespace analysis) (:source/path analysis)])
+                          (catalog/project-analyses root project))
+                    (finally
+                      (clean-root root [".hara/code/framework/index.edn"
+                                        ".hara/code/framework"
+                                        ".hara/code"
+                                        ".hara"
+                                        "src/demo/one.hal"
+                                        "src/demo"
+                                        "src"])))))
+   :expected [['demo.one "src/demo/one.hal"]]}])
+
+^{:refer code.deploy.catalog/namespace-text}
+(Test/check
+ [{:name "normalises symbol namespaces to selector text"
+   :test (fn [] (catalog/namespace-text 'demo.main))
+   :expected "demo.main"}])
+
+^{:refer code.deploy.catalog/within-namespace?}
+(Test/check
+ [{:name "matches a namespace root and descendants but not lookalikes"
+   :test (fn [] [(catalog/within-namespace? 'demo.app 'demo.app)
+                 (catalog/within-namespace? 'demo.app 'demo.app.api)
+                 (catalog/within-namespace? 'demo.app 'demo.application)])
+   :expected [true true false]}])
+
+^{:refer code.deploy.catalog/base-namespace?}
+(Test/check
+ [{:name "matches only a base selector root and its .base subtree"
+   :test (fn [] [(catalog/base-namespace? 'demo 'demo)
+                 (catalog/base-namespace? 'demo 'demo.base.io)
+                 (catalog/base-namespace? 'demo 'demo.app)])
+   :expected [true true false]}])
+
+^{:refer code.deploy.catalog/selector-matches?}
+(Test/check
+ [{:name "implements base complete and exclusion selector semantics"
+   :test (fn [] [(catalog/selector-matches? '[demo :base] 'demo.base.io)
+                 (catalog/selector-matches? '[demo :complete] 'demo.app)
+                 (catalog/selector-matches? '[demo :exclude [demo.internal]] 'demo.public)
+                 (catalog/selector-matches? '[demo :exclude [demo.internal]] 'demo.internal.cache)])
+   :expected [true true true false]}
+  {:name "rejects malformed selector vectors"
+   :test (fn [] (try (catalog/selector-matches? '[demo :complete :extra] 'demo) false (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.catalog/package-definition}
+(Test/check
+ [{:name "retains the publication name on a valid definition"
+   :test (fn [] (catalog/package-definition 'demo/base {:include ['[demo :complete]]}))
+   :expected {:include ['[demo :complete]] :package/name "demo/base"}}
+  {:name "rejects definitions without vector selectors"
+   :test (fn [] (try (catalog/package-definition 'demo/base {:include '(demo)}) false (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.catalog/package-definitions}
+(Test/check
+ [{:name "orders catalogue definitions by their stable publication names"
+   :test (fn [] (mapv :package/name (catalog/package-definitions sample-catalog)))
+   :expected ["demo/app" "demo/base"]}])
+
+^{:refer code.deploy.catalog/selected-namespaces}
+(Test/check
+ [{:name "selects only namespaces matched by Foundation include selectors"
+   :test (fn [] (catalog/selected-namespaces {:include ['[demo.app :exclude [demo.app.internal]]]} sample-analyses))
+   :expected ['demo.app]}])
+
+^{:refer code.deploy.catalog/ownership}
+(Test/check
+ [{:name "assigns every selected namespace to one package"
+   :test (fn [] (catalog/ownership (catalog/package-definitions sample-catalog) sample-analyses))
+   :expected {'demo.base "demo/base" 'demo.base.util "demo/base" 'demo.app "demo/app"}}
+  {:name "rejects overlapping selectors"
+   :test (fn [] (try
+                  (catalog/ownership
+                   (catalog/package-definitions {'demo/one {:include ['[demo :complete]]}
+                                                 'demo/two {:include ['[demo.app :complete]]}})
+                   sample-analyses)
+                  false
+                  (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.catalog/coordinate}
+(Test/check
+ [{:name "creates native Hara coordinates from semantic package names"
+   :test (fn [] [(catalog/coordinate "demo/base")
+                 (catalog/coordinate "demo")
+                 (catalog/coordinate "hara:demo/base")])
+   :expected ["hara:demo/base" "hara:hara/demo" "hara:demo/base"]}])
+
+^{:refer code.deploy.catalog/package-dependencies}
+(Test/check
+ [{:name "infers cross-package dependencies from Linkage declarations only"
+   :test (fn [] (let [definitions (catalog/package-definitions sample-catalog)
+                      owners (catalog/ownership definitions sample-analyses)
+                      linkage (framework/linkage sample-analyses)]
+                  (catalog/package-dependencies linkage owners (first definitions) sample-analyses)))
+   :expected #{"demo/base"}}])
+
+^{:refer code.deploy.catalog/unresolved-namespaces}
+(Test/check
+ [{:name "reports namespace declarations omitted by the package catalogue"
+   :test (fn [] (catalog/unresolved-namespaces {'demo.base "demo/base"} sample-analyses))
+   :expected ['demo.app 'demo.app.internal 'demo.base.util]}])
+
+^{:refer code.deploy.catalog/dependency-order}
+(Test/check
+ [{:name "orders dependencies before their dependants deterministically"
+   :test (fn [] (catalog/dependency-order [{:package/name "app" :package/internal-dependencies ["base"]}
+                                           {:package/name "base" :package/internal-dependencies []}]))
+   :expected ["base" "app"]}
+  {:name "rejects cyclic inferred package dependencies"
+   :test (fn [] (try (catalog/dependency-order [{:package/name "one" :package/internal-dependencies ["two"]}
+                                                 {:package/name "two" :package/internal-dependencies ["one"]}])
+                  false
+                  (catch error true)))
+   :expected true}])

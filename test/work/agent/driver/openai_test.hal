@@ -1,0 +1,161 @@
+(ns work.agent.driver.openai-test
+  (:require [work.core :as work]
+            [work.agent :as agent]
+            [work.agent.openai :as openai]))
+
+(def transport
+  (fn [request]
+    (let [body (Json/read (:body request))
+          input (get body "input")
+          response
+          (if (= 1 (count input))
+            {:id "response-1"
+             :status "completed"
+             :output
+             [{:type "message"
+               :role "assistant"
+               :content [{:type "output_text" :text "hello"}]}]}
+            (throw
+             (ex :state {:request/body body}
+                 :ex/message "unexpected OpenAI request")))]
+      {:status 200
+       :body (Json/write (openai/wire-value response))})))
+
+(def client
+  (agent/openai-client {:model "gpt-5" :transport transport}))
+
+(def openai-agent
+  {:agent/id :greeter
+   :agent/driver (agent/openai-driver {:client client})})
+
+(def add-tool
+  (agent/tool
+   "add"
+   "Adds two integers."
+   {:type "object"
+    :properties {:a {:type "integer"} :b {:type "integer"}}}
+   (fn [arguments]
+     (+ (get arguments "a") (get arguments "b")))))
+
+(def multi-client
+  (agent/openai-client
+   {:model "gpt-5"
+    :transport
+    (fn [request]
+      (let [body (Json/read (:body request))
+            input (get body "input")
+            response (if (= 1 (count input))
+                       {:id "tool-response"
+                        :status "completed"
+                        :output [{:type "function_call"
+                                  :call_id "add-1"
+                                  :name "add"
+                                  :arguments "{\"a\":20,\"b\":22}"}]}
+                       {:id "final-response"
+                        :status "completed"
+                        :output [{:type "message"
+                                  :content [{:type "output_text" :text "42"}]}]})]
+        {:status 200
+         :body (Json/write (openai/wire-value response))}))}))
+
+^{:refer work.agent/openai-client}
+(Test/check
+ [{:name "creates a configured OpenAI client"
+   :test (fn []
+           [(:openai/model client)
+            (:openai/endpoint client)
+            (fn? (:openai/transport client))])
+   :expected ["gpt-5" "https://api.openai.com/v1/responses" true]}])
+
+^{:refer work.agent/openai-driver}
+(Test/check
+ [{:name "creates a driver that lowers to a Work bundle"
+   :test (fn []
+           (let [bundle (agent/drive openai-agent "Say hello")]
+             [(work/bundle? bundle)
+              (Work/plan? (work/plan bundle))]))
+   :expected [true true]}])
+
+^{:refer work.agent.driver.openai/driver}
+(Test/check
+ [{:name "constructs the OpenAI driver with explicit options"
+   :test (fn []
+           (Base/type (agent/openai-driver {:client client})))
+   :expected :work.agent.driver.openai.OpenAIDriver}])
+
+^{:refer work.agent/drive}
+(Test/check
+ [{:name "runs pure model tools through Work each and bind"
+   :test (fn []
+           (deref
+            (work/evaluate
+             (agent/drive
+              {:agent/id :calculator
+               :agent/driver (agent/openai-driver
+                              {:client multi-client :tools [add-tool]})}
+              "Calculate")
+             nil)))
+   :expected "42"}])
+
+^{:refer work.agent/drive}
+(Test/check
+ [{:name "runs a no-tool OpenAI turn through native Work bind"
+   :test (fn []
+           (deref (work/evaluate (agent/drive openai-agent "Say hello") nil)))
+   :expected "hello"}])
+
+^{:refer work.agent/drive}
+(Test/check
+ [{:name "keeps the OpenAI plan closure-free and round-trippable"
+   :test (fn []
+           (let [bundle (agent/drive openai-agent "Say hello")
+                 plan (work/plan bundle)
+                 bytes (Work/encode-hta plan)
+                 decoded (Work/decode-hta bytes)]
+             (= bytes (Work/encode-hta decoded))))
+   :expected true}])
+
+^{:refer work.agent/drive}
+(Test/check
+ [{:name "binds effectful tool bundle targets into the same Work runtime"
+   :test (fn []
+           (let [publish-tool
+                 (agent/tool
+                  "publish"
+                  "Publishes a value."
+                  {:type "object"}
+                  (fn [arguments]
+                    (work/bundle
+                     (Work/step "agent/test/publish")
+                     {"agent/test/publish"
+                      (fn [input]
+                        {:published (get input "value")})}))
+                  {:effect :external})
+                 client
+                 (agent/openai-client
+                  {:model "gpt-5"
+                   :transport
+                   (fn [request]
+                     (let [input (get (Json/read (:body request)) "input")
+                           response (if (= 1 (count input))
+                                      {:id "publish-1"
+                                       :status "completed"
+                                       :output [{:type "function_call"
+                                                 :call_id "publish-1"
+                                                 :name "publish"
+                                                 :arguments "{\"value\":7}"}]}
+                                      {:id "publish-2"
+                                       :status "completed"
+                                       :output [{:type "message"
+                                                 :content [{:type "output_text"
+                                                            :text "published"}]}]})]
+                       {:status 200
+                        :body (Json/write (openai/wire-value response))}))})
+                 bundle (agent/drive
+                         {:agent/id :publisher
+                          :agent/driver (agent/openai-driver
+                                         {:client client
+                                          :tools [publish-tool]})}
+                         "Publish seven")]
+             (deref (work/evaluate bundle nil))))
+   :expected "published"}])

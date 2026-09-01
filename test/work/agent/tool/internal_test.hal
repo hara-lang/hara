@@ -1,0 +1,39 @@
+(ns work.agent.tool.internal-test
+  (:require [work.agent.tool.internal :as internal]))
+
+^{:refer work.agent.tool.internal/target-map?}
+(Test/check
+ [{:name "accepts only maps containing callable targets"
+   :test (fn []
+           [(internal/target-map? {"one" (fn [value] value)})
+            (internal/target-map? {"one" :not-callable})])
+   :expected [true false]}])
+
+^{:refer work.agent.tool.internal/failed-result}
+(Test/check
+ [{:name "builds structured tool errors with call identity"
+   :test (fn []
+           (internal/failed-result
+            {:call/id "one" :tool/name "missing"}
+            :tool/unknown
+            "missing"
+            {:extra true}))
+   :expected {:call/id "one"
+              :tool/name "missing"
+              :tool/status :error
+              :tool/error {:code :tool/unknown :message "missing" :extra true}}}])
+
+^{:refer work.agent.tool.internal/invoke-found}
+(Test/check
+ [{:name "refuses non-pure values before invoking their implementation"
+   :test (fn []
+           (internal/invoke-found
+            {:tool/effect :external
+             :tool/invoke (fn [arguments] :unexpected)}
+            {:call/id "one" :tool/name "publish" :call/arguments {}}))
+   :expected {:call/id "one"
+              :tool/name "publish"
+              :tool/status :error
+              :tool/error {:code :tool/requires-work
+                           :message "Effectful agent tools must lower to Work"
+                           :tool/effect :external}}}])

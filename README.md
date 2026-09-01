@@ -205,6 +205,56 @@ and then run the full project suite. The repository workflow requires each
 implementation function to receive a behavioral test rather than a type-only
 or smoke assertion.
 
+## Build semantic source packages
+
+`config/packages.edn` is the Foundation-compatible source-package catalogue.
+Each map key is a semantic package name and each `:include` selector owns a
+non-overlapping namespace family. `code.deploy` reads that catalogue together
+with the explicit `:project/source-files` list, uses reader-first linkage to
+infer cross-package dependencies, and emits standard child projects in
+dependency order.
+
+Use the Hara command once the companion distribution has been built:
+
+```text
+target/hara/bin/hara deploy plan    # read-only graph and ownership check
+target/hara/bin/hara deploy stage   # reset and materialise target/deploy/
+target/hara/bin/hara deploy build   # stage, then build each HARP
+```
+
+The same source API is available to native development and release automation:
+
+```clojure
+(require 'code.deploy)
+(code.deploy/plan (OS/cwd))
+(code.deploy/run (OS/cwd) :build)
+```
+
+The command defaults its root to the physical working directory; pass an
+absolute `--root` path when deploying a different checkout. `plan` is
+read-only. `stage` owns `target/deploy/` and resets it idempotently
+before it writes; it never changes the source project. Each staged child has a
+normal `project.edn`, a preserved source `project.lock.edn` when one exists,
+and inferred sibling dependencies projected as exact package dependencies. A
+child retains the complete declared source graph only as compile context; its
+HARP contains the namespace selection owned by that package. The resulting
+archives are deterministic paths below:
+
+```text
+target/deploy/<semantic-package>/target/package.harp
+```
+
+The compiler understands the direct Foundation selector forms `[namespace
+:base]`, `[namespace :complete]`, and `[namespace :exclude [...]]`. It rejects
+overlap and dependency cycles before staging. Its dependency graph includes
+ordinary `:require`, `l/script`, `intern-in`, and `intern-all` linkage, so
+source-package boundaries remain visible without a full `std.block` analysis.
+
+These HARP files are local build evidence, not a publishing channel. Do not
+upload them directly. A release tag still creates a signed receipt, and the
+protected `hara-lang/hara-packages` workflow remains the only credentialed
+boundary for rebuilding, verifying, and publishing reviewed release artifacts.
+
 ## Work at the source/host boundary
 
 Choose the owning repository before making a change:
@@ -263,6 +313,8 @@ clients do not need a GitHub token or an Identity-policy checkout.
    "$HARA_NATIVE" bundle verify /tmp/hara-source.harp
    "$HARA_NATIVE" bundle build spec --output /tmp/hara-specs.harp
    "$HARA_NATIVE" bundle verify /tmp/hara-specs.harp
+   "$HARA_NATIVE" distribution build . --output /tmp/hara-release
+   /tmp/hara-release/bin/hara deploy build --root .
    ```
 
 3. From a clean, reviewed `main`, push the exact source commit and create a
@@ -282,10 +334,11 @@ clients do not need a GitHub token or an Identity-policy checkout.
    GitHub OIDC, and opens or updates a receipt pull request in `hara-packages`.
    The source workflow has no GHCR credential.
 5. Review and merge that receipt pull request. The protected central workflow
-   checks the source files against the receipt, rebuilds and verifies both
-   HARPs, publishes their immutable version and digest tags, makes them public,
-   and reads the manifests back from GHCR. A merged receipt is the authority;
-   a locally built HARP or a source tag alone is not a published package.
+   checks the source files against the receipt, rebuilds and verifies the root,
+   specs, and semantic `code.deploy` HARPs, publishes their immutable version
+   and digest tags, makes them public, and reads the manifests back from GHCR.
+   A merged receipt is the authority; a locally built HARP or a source tag
+   alone is not a published package.
 
 Never reuse or move a published version tag, upload an archive with `curl`,
 copy an archive into registry storage, or place a GHCR credential in this

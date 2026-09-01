@@ -1,0 +1,91 @@
+(ns code.deploy.task-test
+  (:require [code.deploy.task :as deploy]
+            [code.deploy.stage :as stage]))
+
+(defn clean-root
+  [root]
+  (stage/delete-tree root))
+
+(defn fixture-root
+  []
+  (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-task-"}))]
+    (deref (File/write (File/join root "project.edn")
+                        (String/encode-utf8 "{:hara/type :project :hara/version \"1.0.0\" :project/id fixture/root :project/version \"1.2.3\" :project/source-paths [\"src\"] :project/source-files [\"src/demo/base.hal\" \"src/demo/app.hal\"] :project/test-paths [] :project/extension-paths [] :project/capabilities #{:file :kernel} :project/dependencies {} :project/deploy {:catalog \"config/packages.edn\" :output \"target/deploy\"}}")
+                        {:mode :replace :parents? true}))
+    (deref (File/write (File/join root "config/packages.edn")
+                        (String/encode-utf8 "{fixture/base {:include [[demo.base :complete]]} fixture/app {:include [[demo.app :complete]]}}")
+                        {:mode :replace :parents? true}))
+    (deref (File/write (File/join root "src/demo/base.hal")
+                        (String/encode-utf8 "(ns demo.base) (def answer 42)")
+                        {:mode :replace :parents? true}))
+    (deref (File/write (File/join root "src/demo/app.hal")
+                        (String/encode-utf8 "(ns demo.app (:require [demo.base]))")
+                        {:mode :replace :parents? true}))
+    root))
+
+^{:refer code.deploy.task/package-archive}
+(Test/check
+ [{:name "uses a fixed artifact name inside every staged child project"
+   :test (fn [] (deploy/package-archive {:package/stage "/fixture/stage"}))
+   :expected "/fixture/stage/target/package.harp"}])
+
+^{:refer code.deploy.task/build-package}
+(Test/check
+ [{:name "builds a staged selector project into an inspectable HARP archive"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (let [staged (deploy/action {:root root :action :stage} {})
+                          result (deploy/build-package (first (:deploy/packages staged)))]
+                      [(str/ends-with? (:package/archive result) "target/package.harp")
+                       (deref (File/exists? (:package/archive result)))])
+                    (finally
+                      (clean-root root)))))
+   :expected [true true]}
+  {:name "rejects a staged package without a project directory"
+   :test (fn [] (try (deploy/build-package {:package/stage "target/deploy-missing"}) false (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.task/build-staged}
+(Test/check
+ [{:name "preserves dependency order while mapping every staged package to build"
+   :test (fn [] (try
+                  (deploy/build-staged {:deploy/output "target/deploy"
+                                        :deploy/order ["fixture/missing"]
+                                        :deploy/packages [{:package/stage "target/deploy-missing"}]})
+                  false
+                  (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.task/action}
+(Test/check
+ [{:name "returns a reader-derived plan without creating staging state"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (select-keys (deploy/action {:root root :action :plan} {})
+                                 [:deploy/order :deploy/unowned-namespaces])
+                    (finally
+                      (clean-root root)))))
+   :expected {:deploy/order ["fixture/base" "fixture/app"]
+              :deploy/unowned-namespaces []}}
+  {:name "rejects unknown deploy action keywords"
+   :test (fn [] (try (deploy/action {:action :publish} {}) false (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.task/deploy-work}
+(Test/check
+ [{:name "compiles a native work.flow.task bundle"
+   :test (fn [] (let [bundle (deploy/deploy-work)]
+                  [(:task/schema bundle) (boolean (:work/plan bundle))]))
+   :expected ["work.flow.task.command-task/1" true]}])
+
+^{:refer code.deploy.task/run}
+(Test/check
+ [{:name "runs the plan action through the portable task wrapper"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (select-keys (deploy/run root :plan)
+                                 [:deploy/order :deploy/unowned-namespaces])
+                    (finally
+                      (clean-root root)))))
+   :expected {:deploy/order ["fixture/base" "fixture/app"]
+              :deploy/unowned-namespaces []}}])
