@@ -1,0 +1,344 @@
+(ns postgres.core.graph-view-test
+  (:require [postgres.core.graph-view :as view]))
+
+(def schema
+  {:id [{:type :uuid :primary true :order 0}]
+   :name [{:type :text :order 1}]})
+
+(def task-entry
+  {:id 'Task
+   :module 'demo
+   :table-schema schema
+   :schema {:tree {:Task schema}}})
+
+(def select-descriptor
+  {:table 'demo/Task
+   :table-entry task-entry
+   :key :Task
+   :args [:text 'input-name]
+   :type :select
+   :query-base {:name 'input-name}})
+
+(def return-descriptor
+  {:table 'demo/Task
+   :table-entry task-entry
+   :key :Task
+   :args [:uuid 'task-id]
+   :type :return
+   :query #{:id :name}})
+
+(view/register-table 'Task task-entry)
+
+(view/defsel.pg ^{:- [Task] :args [:text input-name] :tag "by-name"}
+  task-by-name
+  {:name input-name})
+
+(view/defret.pg ^{:- [Task] :tag "basic"}
+  task-basic
+  [:uuid task-id]
+  #{:id :name})
+
+(view/reset-registry!)
+
+^{:refer postgres.core.graph-view/registry-snapshot}
+(Test/check
+ [{:name "captures the empty registry baseline after macro expansion"
+   :test (fn [] (view/registry-snapshot))
+   :expected {:views {} :tables {}}}])
+
+^{:refer postgres.core.graph-view/restore-registry!}
+(Test/check
+ [{:name "restores both state registries from a value snapshot"
+   :test (fn [] (let [snapshot {:views {:saved {:type :select}}
+                                 :tables {:Task task-entry}}]
+                  (view/restore-registry! snapshot)))
+   :expected {:views {:saved {:type :select}}
+              :tables {:Task task-entry}}}
+  {:name "restores the test baseline after the snapshot assertion"
+   :test (fn [] (view/reset-registry!))
+   :expected {:views {} :tables {}}}])
+
+^{:refer postgres.core.graph-view/reset-registry!}
+(Test/check
+ [{:name "clears registry state idempotently"
+   :test (fn [] (do (view/register-table :Task task-entry)
+                    (view/register-view :task {:type :select})
+                    [(view/reset-registry!) (view/reset-registry!)]))
+   :expected [{:views {} :tables {}}
+              {:views {} :tables {}}]}])
+
+^{:refer postgres.core.graph-view/register-table}
+(Test/check
+ [{:name "stores an entry under its caller-selected table key"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-table 'Task task-entry)
+                    (get (:tables (view/registry-snapshot)) 'Task)
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected task-entry}])
+
+^{:refer postgres.core.graph-view/resolve-entry}
+(Test/check
+ [{:name "uses an entry directly or resolves registered local and qualified symbols"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-table 'Task task-entry)
+                    (view/register-table 'demo/Task (assoc task-entry :id 'Qualified))
+                    [(view/resolve-entry task-entry)
+                     (view/resolve-entry 'Task)
+                     (:id (view/resolve-entry 'Task 'demo))
+                     (:id (view/resolve-entry 'postgres.core.graph-view-test/task-entry))
+                     (view/resolve-entry :Task)]
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected [task-entry task-entry 'Qualified 'Task nil]}])
+
+^{:refer postgres.core.graph-view/view-tag}
+(Test/check
+ [{:name "derives a compact tag from a table-prefixed view symbol"
+   :test (fn [] [(view/view-tag 'Task-by-name 'Task)
+                 (view/view-tag 'named task-entry)])
+   :expected ["by-name" "named"]}])
+
+^{:refer postgres.core.graph-view/make-view-prep}
+(Test/check
+ [{:name "prepares view metadata with a registered fully-qualified table"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-table 'Task task-entry)
+                    (view/make-view-prep
+                     (with-meta 'task-named
+                       {:- '[Task] :scope #{:public}
+                        :args [:text :input-name] :tag "named"}))
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected {:table 'demo/Task :table-entry task-entry :key :Task :scope #{:public}
+              :args [:text :input-name] :guards nil :autos nil :tag "named"}}])
+
+^{:refer postgres.core.graph-view/primary-key}
+(Test/check
+ [{:name "reads explicit and inferred primary-key types"
+   :test (fn [] [(view/primary-key task-entry)
+                 (view/primary-key {:table-schema {:code {:primary true :type :text}}})])
+   :expected [:uuid :text]}])
+
+^{:refer postgres.core.graph-view/lead-symbol}
+(Test/check
+ [{:name "selects the first symbolic input and rejects a type-only signature"
+   :test (fn [] [(view/lead-symbol '[:uuid task-id])
+                 (try (view/lead-symbol '[:uuid])
+                      :no-error
+                      (catch error :missing))])
+   :expected ['task-id :missing]}])
+
+^{:refer postgres.core.graph-view/substitute}
+(Test/check
+ [{:name "replaces symbols through nested vector list set and map data"
+   :test (fn [] (view/substitute
+                 ['input-name (list 'f 'input-name) #{'input-name}
+                  {'input-name 'input-name}]
+                 {'input-name "Ada"}))
+   :expected '["Ada" (f "Ada") #{"Ada"} {"Ada" "Ada"}]}])
+
+^{:refer postgres.core.graph-view/argument-symbols}
+(Test/check
+ [{:name "retains only symbolic runtime arguments"
+   :test (fn [] (view/argument-symbols [:uuid 'task-id :text 'input-name]))
+   :expected ['task-id 'input-name]}])
+
+^{:refer postgres.core.graph-view/replacements}
+(Test/check
+ [{:name "pairs positional symbols and values"
+   :test (fn [] (view/replacements ['task-id 'input-name] ["id-1" "Ada"]))
+   :expected {'task-id "id-1" 'input-name "Ada"}}])
+
+^{:refer postgres.core.graph-view/descriptor-entry}
+(Test/check
+ [{:name "uses embedded entries then registered table keys and rejects missing tables"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-table :Task task-entry)
+                    [(view/descriptor-entry select-descriptor)
+                     (view/descriptor-entry {:key :Task})
+                     (try (view/descriptor-entry {:key :Absent})
+                          :no-error
+                          (catch error :missing))]
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected [task-entry task-entry :missing]}])
+
+^{:refer postgres.core.graph-view/run-select}
+(Test/check
+ [{:name "emits a raw table selection from a select descriptor"
+   :test (fn [] (view/run-select select-descriptor ["hello"]))
+   :expected '[:select (--- [#{"id"}]) :from demo/Task
+               \\ :where {"name" [:eq "hello"]}]}])
+
+^{:refer postgres.core.graph-view/run-return}
+(Test/check
+ [{:name "emits a single-row return projection from a return descriptor"
+   :test (fn [] (view/run-return return-descriptor ["id-1"]))
+   :expected '[:with j-ret :as
+               [:select (--- [#{"id"} #{"name"}]) :from demo/Task
+                \\ :where {"id" [:eq "id-1"]} \\ :limit 1]
+               \\ :select (to-jsonb j-ret) :from j-ret]}])
+
+^{:refer postgres.core.graph-view/register-view}
+(Test/check
+ [{:name "stores a descriptor under the supplied view name"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-view :by-name select-descriptor)
+                    (get (:views (view/registry-snapshot)) :by-name)
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected select-descriptor}])
+
+^{:refer postgres.core.graph-view/defsel-fn}
+(Test/check
+ [{:name "builds a definition form and registers select metadata"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-table 'Task task-entry)
+                    (let [form (view/defsel-fn
+                                '(defsel.pg ^{:- [Task] :args [:text input-name]} task-by-name {:name input-name})
+                                {:ns 'demo}
+                                (with-meta 'task-by-name {:- '[Task] :args [:text 'input-name]})
+                                {:name 'input-name})]
+                      [(first form) (second form)
+                       (:type (view/view-descriptor 'demo/task-by-name))])
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected ['defn 'task-by-name :select]}])
+
+^{:refer postgres.core.graph-view/defsel.pg}
+(Test/check
+ [{:name "expands a select view into an executable graph selection"
+   :test (fn [] (task-by-name "hello"))
+   :expected '[:select (--- [#{"id"}]) :from demo/Task
+               \\ :where {"name" [:eq "hello"]}]}])
+
+^{:refer postgres.core.graph-view/defret-fn}
+(Test/check
+ [{:name "builds a definition form and registers return metadata"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-table 'Task task-entry)
+                    (let [form (view/defret-fn
+                                '(defret.pg ^{:- [Task]} task-basic [:uuid task-id] #{:id})
+                                {:ns 'demo}
+                                (with-meta 'task-basic {:- '[Task]})
+                                [:uuid 'task-id]
+                                #{:id})]
+                      [(first form) (second form)
+                       (:type (view/view-descriptor 'demo/task-basic))])
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected ['defn 'task-basic :return]}])
+
+^{:refer postgres.core.graph-view/defret.pg}
+(Test/check
+ [{:name "expands a return view into an executable graph projection"
+   :test (fn [] (task-basic "id-1"))
+   :expected '[:with j-ret :as
+               [:select (--- [#{"id"} #{"name"}]) :from demo/Task
+                \\ :where {"id" [:eq "id-1"]} \\ :limit 1]
+               \\ :select (to-jsonb j-ret) :from j-ret]}])
+
+^{:refer postgres.core.graph-view/descriptor}
+(Test/check
+ [{:name "finds registered names directly and rejects unknown views"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-view 'demo/task-by-name select-descriptor)
+                    (view/register-view 'task-by-name select-descriptor)
+                    [(:type (view/descriptor 'demo/task-by-name))
+                     (:type (view/descriptor 'task-by-name))
+                     (:type (view/descriptor 'postgres.core.graph-view-test/task-by-name))
+                     (try (view/descriptor 'absent)
+                          :no-error
+                          (catch error :missing))]
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected [:select :select :select :missing]}])
+
+^{:refer postgres.core.graph-view/view-descriptor}
+(Test/check
+ [{:name "publishes the registered descriptor lookup"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-view 'task-by-name select-descriptor)
+                    (view/view-descriptor 'task-by-name)
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected select-descriptor}])
+
+^{:refer postgres.core.graph-view/literal-value}
+(Test/check
+ [{:name "unwraps quoted forms and leaves ordinary values unchanged"
+   :test (fn [] [(view/literal-value '(quote task-basic))
+                 (view/literal-value 'task-basic)])
+   :expected ['task-basic 'task-basic]}])
+
+^{:refer postgres.core.graph-view/view-fn}
+(Test/check
+ [{:name "composes compatible return and select descriptors"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-view 'task-basic return-descriptor)
+                    (view/register-view 'task-by-name select-descriptor)
+                    (second (view/view-fn ['task-basic]
+                                          ['task-by-name "hello"]
+                                          {:limit 10}))
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected {:where {:name "hello"} :returning #{:id :name} :limit 10}}
+  {:name "rejects mismatched descriptor roles"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-view 'task-basic return-descriptor)
+                    (view/register-view 'task-by-name select-descriptor)
+                    (try (view/view-fn ['task-by-name]
+                                       ['task-basic "id-1"]
+                                       {})
+                         :no-error
+                         (catch error :invalid))
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected :invalid}])
+
+^{:refer postgres.core.graph-view/view-form}
+(Test/check
+ [{:name "constructs a graph query from compatible descriptors"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-view 'task-basic return-descriptor)
+                    (view/register-view 'task-by-name select-descriptor)
+                    (view/view-form ['task-basic]
+                                    ['task-by-name "hello"]
+                                    {:limit 10})
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected '[:with j-ret :as
+               [:select (--- [#{"id"} #{"name"}]) :from demo/Task
+                \\ :where {"name" [:eq "hello"]} \\ :limit 10]
+               \\ :select (jsonb-agg j-ret) :from j-ret]}])
+
+^{:refer postgres.core.graph-view/view}
+(Test/check
+ [{:name "expands composed descriptors during macro evaluation"
+   :test (fn [] (let [snapshot (view/registry-snapshot)]
+                  (try
+                    (view/register-view 'task-basic return-descriptor)
+                    (view/register-view 'task-by-name select-descriptor)
+                    (let [form (macroexpand '(postgres.core.graph-view/view [task-basic]
+                                                                       [task-by-name "hello"]
+                                                                       {:limit 10}))]
+                      [(first form) (second form) (nth form 2)
+                       (first (nth form 3))
+                       (nth form 5)
+                       (first (nth form 6))])
+                    (finally
+                      (view/restore-registry! snapshot)))))
+   :expected [:with 'j-ret :as :select :select 'jsonb-agg]}])

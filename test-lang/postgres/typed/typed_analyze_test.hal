@@ -1,0 +1,76 @@
+(ns postgres.typed.typed-analyze-test
+  (:require [postgres.typed.typed-analyze :as analyze]
+            [postgres.typed.typed-common :as types]))
+
+^{:refer postgres.typed.typed-analyze/resolve-table}
+(Test/check
+ [{:name "resolves registered table definitions and projected JSONB selections"
+   :test (fn []
+           (do (types/clear-registry)
+               (let [table (types/make-table-def
+                            "demo" "Entry"
+                            [(types/make-column-def :id
+                                                    (types/make-type-ref :primitive nil :uuid))
+                             (types/make-column-def :name
+                                                    (types/make-type-ref :primitive nil :text))]
+                            :id)
+                     _ (types/register-type 'demo/Entry table)
+                     source (types/make-jsonb-shape
+                             {:id {:type :uuid :nullable? false}
+                              :name {:type :text :nullable? true}}
+                             "Entry")
+                     context (types/set-var-shape (types/make-context) 'row source)
+                     projected (analyze/projected-js-select-shape
+                                context 'row '(js ["name"]))]
+                 [(types/table-def? (analyze/resolve-table 'demo/Entry))
+                  (types/table-def? (analyze/resolve-table :Entry))
+                  (:fields projected)])))
+   :expected [true true {:name {:type :text :nullable? true}}]}])
+
+^{:refer postgres.typed.typed-analyze/analyzed->field-info}
+(Test/check
+ [{:name "normalizes primitive array and shaped analysis values"
+   :test (fn []
+           [(analyze/analyzed->shape
+             {:kind :shaped :shape (types/make-jsonb-shape {:id {:type :uuid}})})
+            (analyze/analyzed->field-info {:kind :primitive :type :uuid})
+            (analyze/analyzed->field-info
+             {:kind :array :element-type {:kind :primitive :type :text}})
+            (analyze/merge-analyzed-shapes [])])
+   :expected [(types/make-jsonb-shape {:id {:type :uuid}})
+              {:type :uuid}
+              {:type :array :items {:type :text}}
+              nil]}])
+
+^{:refer postgres.typed.typed-analyze/detect-operations}
+(Test/check
+ [{:name "detects CRUD operations and produces JSON-safe reports"
+   :test (fn []
+           (let [fn-def (types/make-fn-def
+                         "demo" "save-entry" [] [:jsonb]
+                         {:raw-body '((pg/t:insert Entry {:id id})
+                                      (pg/t:select Entry {}))}
+                         nil)
+                 operations (analyze/detect-operations fn-def)]
+             [(count operations)
+              (set (map :op operations))
+              (map? (analyze/json-safe {:operations operations}))
+              (string? (analyze/report-json {:operations operations}))]))
+   :expected [2 #{:insert :select} true true]}])
+
+^{:refer postgres.typed.typed-analyze/reset-cache}
+(Test/check
+ [{:name "resets inference caches without discarding registered analyzers"
+   :test (fn []
+           (let [baseline (deref analyze/+call-analyzers+)]
+             (try
+               (analyze/register-call-analyzer
+                'demo/fn
+                (fn [payload] {:kind :primitive :type :uuid}))
+               (analyze/reset-cache)
+               [(not (nil? (get (deref analyze/+call-analyzers+) 'demo/fn)))
+                (analyze/normalize-table-name 'demo/Entry)
+                (analyze/fn-cache-key
+                 (types/make-fn-def "demo" "entry" [] [:jsonb] {} nil))]
+               (finally (reset! analyze/+call-analyzers+ baseline)))))
+   :expected [true "Entry" ["demo" "entry" nil]]}])

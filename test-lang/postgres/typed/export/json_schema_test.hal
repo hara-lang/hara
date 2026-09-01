@@ -1,0 +1,108 @@
+(ns postgres.typed.export.json-schema-test
+  (:require [postgres.typed.export.json-schema :as json-schema]
+            [postgres.typed.typed-common :as types]))
+
+^{:refer postgres.typed.export.json-schema/name-string}
+(Test/check
+ [{:name "normalizes names for generated schema keys"
+   :test (fn [] [(json-schema/name-string "User")
+                 (json-schema/name-string :User)
+                 (json-schema/name-string 'User)])
+   :expected ["User" "User" "User"]}])
+
+^{:refer postgres.typed.export.json-schema/resolve-type}
+(Test/check
+ [{:name "maps primitive enum and unknown fields to schema types"
+   :test (fn [] [(json-schema/resolve-type
+                  (types/make-type-ref :primitive nil :uuid)
+                  :jschema)
+                 (json-schema/resolve-type
+                  {:type :enum :enum-ref {:ns 'Status}}
+                  :jschema)
+                 (json-schema/resolve-type :unknown :jschema)])
+   :expected [{:type "string" :format "uuid"}
+              {:$ref "#/definitions/Status"}
+              {:type "string"}]}])
+
+^{:refer postgres.typed.export.json-schema/field->json-schema}
+(Test/check
+ [{:name "converts scalar array reference and shaped fields"
+   :test (fn [] [(json-schema/field->json-schema {:type :uuid})
+                 (json-schema/field->json-schema
+                  {:type :array :items {:type :text}})
+                 (json-schema/field->json-schema {:is-ref? true})
+                 (get-in
+                  (json-schema/field->json-schema
+                   {:type :jsonb
+                    :shape (types/make-jsonb-shape {:id {:type :uuid}})})
+                  [:properties "id" :type])])
+   :expected [{:type "string" :format "uuid"}
+              {:type "array" :items {:type "string"}}
+              {:type "string" :format "uuid"}
+              "string"]}])
+
+^{:refer postgres.typed.export.json-schema/shape->json-schema}
+(Test/check
+ [{:name "preserves literal string keys while retaining required fields"
+   :test (fn []
+           (json-schema/shape->json-schema
+            (types/make-jsonb-shape
+             {"db/remove" {:type :jsonb
+                            :shape (types/make-jsonb-shape
+                                    {"UserEmail" {:type :array
+                                                   :items {:type :jsonb}}})}
+              :id {:type :uuid}})))
+   :expected {:type "object"
+              :properties {"db/remove" {:type "object"
+                                          :properties {"UserEmail" {:type "array"
+                                                                       :items {:type "object"}}}
+                                          :additionalProperties false
+                                          :required ["UserEmail"]}
+                           "id" {:type "string" :format "uuid"}}
+              :additionalProperties false
+              :required ["id" "db/remove"]}}])
+
+^{:refer postgres.typed.export.json-schema/distinct-registry-values}
+(Test/check
+ [{:name "deduplicates registry definitions by their emitted name"
+   :test (fn []
+           (let [baseline (deref types/*type-registry*)]
+             (try
+               (types/clear-registry)
+               (types/register-type
+                'demo/First
+                (types/make-enum-def "demo" "Status" [:open] nil))
+               (types/register-type
+                'other/Second
+                (types/make-enum-def "other" "Status" [:closed] nil))
+               [(count (json-schema/distinct-registry-values))
+                (:name (first (json-schema/distinct-registry-values)))]
+               (finally (reset! types/*type-registry* baseline)))))
+   :expected [1 "Status"]}])
+
+^{:refer postgres.typed.export.json-schema/generate-json-schema}
+(Test/check
+ [{:name "generates definitions for registered tables and enums"
+   :test (fn []
+           (let [baseline (deref types/*type-registry*)]
+             (try
+               (types/clear-registry)
+               (types/register-type
+                'demo/User
+                (types/make-table-def
+                 "demo" "User"
+                 [(types/make-column-def
+                   :id
+                   (types/make-type-ref :primitive nil :uuid))]
+                 :id))
+               (types/register-type
+                'demo/Status
+                (types/make-enum-def "demo" "Status" [:open :closed] nil))
+               (json-schema/generate-json-schema)
+               (finally (reset! types/*type-registry* baseline)))))
+   :expected {:$schema "http://json-schema.org/draft-07/schema#"
+              :definitions {"User" {:type "object"
+                                     :properties {"id" {:type "string" :format "uuid"}}
+                                     :additionalProperties false
+                                     :required ["id"]}
+                            "Status" {:type "string" :enum ["open" "closed"]}}}}])

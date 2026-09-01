@@ -1,0 +1,181 @@
+(ns code.test.task-test
+  (:require [code.test.context :as context]
+            [code.test.registry :as registry]
+            [code.test.report :as report]
+            [code.test.task :as task]))
+
+(def fixture-namespace 'code.test.task-test)
+
+(defn fixture
+  [description value]
+  {:desc description :test (fn [] value) :expected value :meta {}})
+
+(defn cleanup
+  []
+  (Test/purge)
+  (registry/reset)
+  (context/reset))
+
+^{:refer code.test.task/lifecycle-error}
+(Test/check
+ [{:name "lifecycle-error creates a summary-compatible error record"
+   :test (fn []
+           (select-keys (task/lifecycle-error "before" (ex-info "boom" {}))
+                        [:desc :status :checks :elapsed]))
+   :expected {:desc "before" :status :error :checks [] :elapsed 0}}])
+
+^{:refer code.test.task/run-facts}
+(Test/check
+ [{:name "run-facts executes in order with suite lifecycle hooks"
+   :test (fn []
+           (try
+             (let [events (atom [])]
+               (registry/register fixture-namespace (fixture "one" 1))
+               (let [summary (task/run-facts
+                              (registry/facts fixture-namespace)
+                              {:before-all (fn [] (swap! events conj :before-all))
+                               :after-all (fn [] (swap! events conj :after-all))})]
+                 [(:status summary) (get-in summary [:counts :passed]) (deref events)]))
+             (finally (cleanup))))
+   :expected [:passed 1 [:before-all :after-all]]}])
+
+^{:refer code.test.task/run-selected}
+(Test/check
+ [{:name "run-selected filters indexed facts and records the latest summary"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (let [summary (task/run-selected 'code.test.task {:persist? false})]
+               [(:status summary) (:facts summary) (= summary (context/latest))])
+             (finally (cleanup))))
+   :expected [:passed 1 true]}])
+
+^{:refer code.test.task/task-input}
+(Test/check
+ [{:name "task-input projects a Work task request into a selected run"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (:status (task/task-input {:selector 'code.test.task :options {:persist? false}} {}))
+             (finally (cleanup))))
+   :expected :passed}])
+
+^{:refer code.test.task/runner-work}
+(Test/check
+ [{:name "runner-work compiles a native Work task bundle"
+   :test (fn [] (Work/plan? (:work/plan (task/runner-work))))
+   :expected true}])
+
+^{:refer code.test.task/+runner-work+}
+(Test/check
+ [{:name "the reusable runner work bundle remains a native Work plan"
+   :test (fn [] (Work/plan? (:work/plan task/+runner-work+)))
+   :expected true}])
+
+^{:refer code.test.task/run}
+(Test/check
+ [{:name "run executes the Work-backed test task"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (:status (task/run 'code.test.task {:persist? false}))
+             (finally (cleanup))))
+   :expected :passed}])
+
+^{:refer code.test.task/run:interrupt}
+(Test/check
+ [{:name "run:interrupt cancels selected facts before execution"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (task/run:interrupt)
+             (get-in (task/run 'code.test.task {:persist? false}) [:counts :cancelled])
+             (finally (cleanup))))
+   :expected 1}])
+
+^{:refer code.test.task/run:current}
+(Test/check
+ [{:name "run:current runs all indexed facts"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (:status (task/run:current {:persist? false}))
+             (finally (cleanup))))
+   :expected :passed}])
+
+^{:refer code.test.task/run:test}
+(Test/check
+ [{:name "run:test narrows execution to one description"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (registry/register fixture-namespace (fixture "two" 2))
+             (:facts (task/run:test "two" {:persist? false}))
+             (finally (cleanup))))
+   :expected 1}])
+
+^{:refer code.test.task/run:load}
+(Test/check
+ [{:name "run:load returns the selector-owned registered facts"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (count (task/run:load 'code.test.task {}))
+             (finally (cleanup))))
+   :expected 1}])
+
+^{:refer code.test.task/run:unload}
+(Test/check
+ [{:name "run:unload returns the selector-owned registered facts"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (count (task/run:unload 'code.test.task {}))
+             (finally (cleanup))))
+   :expected 1}])
+
+^{:refer code.test.task/run:report}
+(Test/check
+ [{:name "run:report reruns descriptions marked non-passing in an artifact"
+   :test (fn []
+           (let [root (deref (File/temp-directory "." {:prefix "hara-code-test-task-report-"}))
+                 options {:report/name "rerun.edn"}
+                 path (report/report-path root options)]
+             (try
+               (registry/register fixture-namespace (fixture "one" 1))
+               (report/write root options {:results [{:desc "one" :status :failed}]})
+               (:facts (task/run:report path {:persist? false}))
+               (finally
+                 (deref (File/delete path {:missing-ok? true}))
+                 (deref (File/delete (File/join root ".hara/test") {:missing-ok? true}))
+                 (deref (File/delete (File/join root ".hara") {:missing-ok? true}))
+                 (deref (File/delete root {:missing-ok? true}))
+                 (cleanup)))))
+   :expected 1}])
+
+^{:refer code.test.task/run-errored}
+(Test/check
+ [{:name "run-errored reruns descriptions from the latest non-passing result"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (context/record-latest {:results [{:desc "one" :status :error}]})
+             (:facts (task/run-errored {:persist? false}))
+             (finally (cleanup))))
+   :expected 1}])
+
+^{:refer code.test.task/print-options}
+(Test/check
+ [{:name "print-options supports documented modes and explicit sets"
+   :test (fn []
+           (try
+             (context/reset)
+             [(task/print-options)
+              (task/print-options :disable)
+              (task/print-options :current)
+              (task/print-options #{:print-success})]
+             (finally (cleanup))))
+   :expected [#{:help :current :default :disable :all}
+              #{}
+              #{}
+              #{:print-success}]}])

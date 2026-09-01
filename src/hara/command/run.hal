@@ -1,0 +1,36 @@
+(ns hara.command.run
+  (:config {:role :internal}))
+
+(defn ^{:public true} run
+  "Loads a namespace and invokes its response-returning main function with argv."
+  [namespace argv]
+  (let [namespace-symbol (symbol namespace)
+        entry-symbol (symbol namespace "main")]
+    (eval (list 'require (list 'quote namespace-symbol)))
+    (let [entry (resolve entry-symbol)]
+      (cond
+        (nil? entry)
+        (throw (ex :command/missing-main
+                   {:ex/message (str "namespace " namespace " does not define " entry-symbol)
+                    :command/namespace namespace
+                    :command/entry entry-symbol}))
+
+        (not (fn? (deref entry)))
+        (throw (ex :command/invalid-main
+                   {:ex/message (str "namespace " namespace " defines a non-function " entry-symbol)
+                    :command/namespace namespace
+                    :command/entry entry-symbol}))
+
+        :else
+        (apply (deref entry) [argv])))))
+
+(defn response
+  "Runs a namespace main function from a parsed native Command request."
+  [request]
+  (try
+    (let [arguments (:arguments request)]
+      (run (:namespace arguments) (or (:argv arguments) [])))
+    (catch error
+      {:stdout ""
+       :stderr (str error "\n")
+       :exit 2})))

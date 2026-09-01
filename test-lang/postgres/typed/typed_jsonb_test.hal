@@ -1,0 +1,170 @@
+(ns postgres.typed.typed-jsonb-test
+  (:require [postgres.typed.typed-common :as types]
+            [postgres.typed.typed-jsonb :as jsonb]))
+
+(defn base-context
+  ([] (base-context nil))
+  ([shape]
+   (types/make-context {'m :jsonb}
+                       (if shape {'m shape} {})
+                       {'m (types/make-jsonb-path [] 'm)})))
+
+^{:refer postgres.typed.typed-jsonb/symbol->field-key}
+(Test/check
+ [{:name "normalizes binding symbols and field descriptors"
+   :test (fn []
+           [(jsonb/symbol->field-key 'm-name)
+            (jsonb/symbol->field-key 'o-profile)
+            (jsonb/symbol->field-key 'plain)
+            (jsonb/symbol->field-key "name")
+            (jsonb/field-info :uuid)
+            (jsonb/field-info nil {:nullable? false})])
+   :expected [:name :profile :plain nil
+              {:type :uuid :nullable? true}
+              {:type :jsonb :nullable? false}]}])
+
+^{:refer postgres.typed.typed-jsonb/typed-binding-form?}
+(Test/check
+ [{:name "recognizes typed bindings and JSONB accessors"
+   :test (fn []
+           [(jsonb/typed-binding-form? '(:uuid v-id))
+            (jsonb/typed-binding-form? 'v-id)
+            (jsonb/accessor-expr? '(:-> m "data"))
+            (jsonb/accessor-expr? '(:->> m "name"))
+            (jsonb/accessor-expr? '(pg/field-id m "org"))
+            (jsonb/accessor-expr? '(other m))])
+   :expected [true false true true true false]}])
+
+^{:refer postgres.typed.typed-jsonb/append-path}
+(Test/check
+ [{:name "appends fields to valid JSONB paths"
+   :test (fn []
+           (let [path (jsonb/append-path (types/make-jsonb-path [:a :b] 'm) :c)]
+             [(:segments path) (:root-var path) (jsonb/append-path nil :c)]))
+   :expected [[:a :b :c] 'm nil]}])
+
+^{:refer postgres.typed.typed-jsonb/access-descriptors}
+(Test/check
+ [{:name "creates descriptors and paths for each JSONB accessor"
+   :test (fn []
+           [(get-in (first (jsonb/access-descriptors (base-context) '(:-> m "data")))
+                    [:field-info])
+            (get-in (first (jsonb/access-descriptors (base-context) '(:->> m "name")))
+                    [:field-info])
+            (count (jsonb/access-descriptors (base-context) '(pg/field-id m "org")))
+            (:segments (jsonb/expr-jsonb-path (base-context) '(:-> m "data")))])
+   :expected [{:type :jsonb :nullable? true}
+              {:type :text :nullable? true}
+              2
+              [:data]]}])
+
+^{:refer postgres.typed.typed-jsonb/source-field-info}
+(Test/check
+ [{:name "uses known source fields when projecting JSONB selections"
+   :test (fn []
+           (let [shape (types/make-jsonb-shape
+                        {:id {:type :uuid :nullable? false}
+                         :name {:type :text :nullable? true}}
+                        "User")
+                 context (base-context shape)
+                 path (types/make-jsonb-path [] 'm)]
+             [(jsonb/source-field-info context path :id :->)
+              (jsonb/source-field-info context path :missing :->>)
+              (get-in (jsonb/js-select-shape context '(js-select m (js ["id" "name"])))
+                      [:fields :name :type])]))
+   :expected [{:type :uuid :nullable? false}
+              {:type :text :nullable? true}
+              :text]}])
+
+^{:refer postgres.typed.typed-jsonb/js-keys-form->keywords}
+(Test/check
+ [{:name "extracts JavaScript selection keys in canonical keyword form"
+   :test (fn []
+           [(jsonb/js-keys-form->keywords ["id" :user_name "email"])
+            (jsonb/js-keys-form->keywords '(js ["a" "b"]))
+            (jsonb/js-keys-form->keywords nil)])
+   :expected [[:id :user-name :email] [:a :b] nil]}])
+
+^{:refer postgres.typed.typed-jsonb/set-binding-descriptors}
+(Test/check
+ [{:name "creates typed descriptors for set binding forms"
+   :test (fn []
+           (let [path (types/make-jsonb-path [:data] 'm)
+                 set-desc (jsonb/set-binding-descriptors path '#{o-profile})
+                 typed-desc (jsonb/set-binding-descriptors path '#{(:uuid v-id)})]
+             [[(:var (first set-desc)) (get-in (first set-desc) [:field-info :type])]
+              [(:var (first typed-desc)) (get-in (first typed-desc) [:field-info :type])]]))
+   :expected [['o-profile :jsonb] ['v-id :uuid]]}])
+
+^{:refer postgres.typed.typed-jsonb/descriptor-shape}
+(Test/check
+ [{:name "constructs nested shapes from field descriptors"
+   :test (fn []
+           [(get-in (jsonb/descriptor-shape
+                     {:path (types/make-jsonb-path [:profile :name] 'm)
+                      :field-info {:type :text}})
+                    [:fields :profile :shape :fields :name :type])
+            (jsonb/descriptor-shape
+             {:path (types/make-jsonb-path [] 'm) :field-info {}})])
+   :expected [:text nil]}])
+
+^{:refer postgres.typed.typed-jsonb/apply-descriptor}
+(Test/check
+ [{:name "applies descriptors to root shapes and binding types"
+   :test (fn []
+           (let [descriptor {:var 'v-id
+                             :path (types/make-jsonb-path [:id] 'm)
+                             :binding-type {:kind :cast :type :uuid}
+                             :field-info {:type :uuid}}
+                 updated (jsonb/apply-descriptor (base-context) descriptor)]
+             [(get-in updated [:jsonb-shapes 'm :fields :id :type])
+              (get-in updated [:bindings 'v-id])]))
+   :expected [:uuid {:kind :cast :type :uuid}]}])
+
+^{:refer postgres.typed.typed-jsonb/js-select-descriptors}
+(Test/check
+ [{:name "projects descriptors for seeded JavaScript selections"
+   :test (fn []
+           (let [shape (types/make-jsonb-shape
+                        {:id {:type :uuid :nullable? false}
+                         :name {:type :text :nullable? true}}
+                        "User")
+                 descriptors (jsonb/js-select-descriptors
+                              (base-context shape)
+                              '(js-select m (js ["id" "name"])))]
+             [(count descriptors)
+              (:field-info (first descriptors))
+              (:field-info (second descriptors))]))
+   :expected [2 {:type :uuid :nullable? false} {:type :text :nullable? true}]}])
+
+^{:refer postgres.typed.typed-jsonb/scan-form}
+(Test/check
+ [{:name "scans let bindings and accumulates JSONB field use"
+   :test (fn []
+           (let [result (jsonb/scan-form
+                         (base-context)
+                         '(let [n (:-> m "id")
+                                (:text v-name) (:->> m "name")]
+                            [n v-name]))]
+             [(get-in result [:bindings 'n])
+              (get-in result [:bindings 'v-name])
+              (get-in result [:jsonb-shapes 'm :fields :id :type])
+              (get-in result [:jsonb-shapes 'm :fields :name :type])]))
+   :expected [:jsonb {:kind :cast :type :text} :jsonb :text]}])
+
+^{:refer postgres.typed.typed-jsonb/infer-jsonb-arg-access-shape}
+(Test/check
+ [{:name "infers argument access shapes from function bodies"
+   :test (fn []
+           (let [fn-def {:body-meta
+                         {:raw-body '((fu/js-select m (js ["a" "b" "c"])))}}
+                 shape (jsonb/infer-jsonb-arg-access-shape 'm fn-def)]
+             [(types/jsonb-shape? shape)
+              (set (keys (:fields shape)))
+              (:confidence shape)
+              (:nullable? shape)
+              (jsonb/infer-jsonb-arg-access-shape 'm
+                                                   {:body-meta {:raw-body []}}
+                                                   nil
+                                                   :track)]))
+   :expected [true #{:a :b :c} :medium true nil]}])

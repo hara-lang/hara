@@ -1,0 +1,78 @@
+(ns code.test.compile
+  (:config {:role :internal})
+  (:require [code.test.base.process :as process]
+            [code.test.registry :as registry]))
+
+(def ^{:public true} => '=>)
+
+(defn ^{:public true} fact-pair
+  "Validates and decomposes the supported v1 `actual => expected` fact body."
+  [body]
+  (if (and (= (count body) 3) (= (nth body 1) =>))
+    {:actual (first body) :expected (nth body 2)}
+    (throw (ex :argument {:body body}
+               :ex/message "fact expects one actual => expected pair"))))
+
+(defmacro ^{:public true} fact
+  "Registers a native Test fact whose checker-aware execution evaluates its
+  actual form once per run."
+  [description & body]
+  (let [pair (fact-pair body)
+        namespace (:ns &env)
+        metadata {}]
+    `(code.test.registry/register
+      '~namespace
+      {:desc ~description
+       :function (fn [_]
+                   (code.test.base.process/check
+                    (fn [] ~(:actual pair))
+                    ~(:expected pair)))
+       :meta ~metadata})))
+
+(defmacro ^{:public true} fact:template
+  [description & body]
+  `(code.test.compile/fact ~description ~@body))
+
+(defmacro ^{:public true} fact:all
+  []
+  `(code.test.registry/facts '~(:ns &env)))
+
+(defmacro ^{:public true} fact:list
+  []
+  `(code.test.registry/list-facts '~(:ns &env)))
+
+(defmacro ^{:public true} fact:get
+  [description]
+  `(code.test.registry/get-fact '~(:ns &env) ~description))
+
+(defmacro ^{:public true} fact:exec
+  [description & arguments]
+  `(code.test.registry/execute '~(:ns &env) ~description ~(or (first arguments) {})))
+
+(defmacro ^{:public true} fact:purge
+  []
+  `(code.test.registry/purge '~(:ns &env)))
+
+(defmacro ^{:public true} fact:missing
+  [descriptions]
+  `(code.test.registry/missing '~(:ns &env) ~descriptions))
+
+(defmacro ^{:public true} fact:setup
+  [description]
+  `(code.test.registry/setup '~(:ns &env) ~description))
+
+(defmacro ^{:public true} fact:setup?
+  [description]
+  `(code.test.registry/setup? '~(:ns &env) ~description))
+
+(defmacro ^{:public true} fact:teardown
+  [description]
+  `(code.test.registry/teardown '~(:ns &env) ~description))
+
+(defmacro ^{:public true} fact:remove
+  [description]
+  `(code.test.registry/remove '~(:ns &env) ~description))
+
+(defmacro ^{:public true} fact:symbol
+  [description]
+  `(get-in (code.test.registry/get-fact '~(:ns &env) ~description) [:meta :refer]))

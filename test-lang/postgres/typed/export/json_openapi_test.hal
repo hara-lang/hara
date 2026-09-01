@@ -1,0 +1,191 @@
+(ns postgres.typed.export.json-openapi-test
+  (:require [postgres.typed.export.json-openapi :as openapi]
+            [postgres.typed.typed-analyze :as analyze]
+            [postgres.typed.typed-common :as types]))
+
+(def +entry-table+
+  (types/make-table-def
+   "demo" "Entry"
+   [(types/make-column-def :id (types/make-type-ref :primitive nil :uuid))]
+   :id))
+
+(def +save-entry+
+  (types/make-fn-def
+   "demo"
+   "save-entry"
+   [(types/FnArg 'i-name :text [:text] :input)]
+   [:text]
+   {:raw-body '[(pg/t:insert 'Entry {:id "e1"})]
+    :expose :sb/auth
+    :docstring "Saves an entry"}
+   "api"))
+
+^{:refer postgres.typed.export.json-openapi/def-name}
+(Test/check
+ [{:name "normalizes structured definition names"
+   :test (fn [] [(openapi/def-name {:name "Entry"})
+                 (openapi/def-name {:name :Entry})
+                 (openapi/def-name {:name 'demo/Entry})])
+   :expected ["Entry" "Entry" "Entry"]}])
+
+^{:refer postgres.typed.export.json-openapi/unique-defs}
+(Test/check
+ [{:name "keeps one definition for each emitted name"
+   :test (fn []
+           (let [definitions
+                 (openapi/unique-defs
+                  [{:name "Entry" :value 1}
+                   {:name "Entry" :value 2}
+                   {:name "Status" :value 3}])]
+             [(count definitions)
+              (set (map :name definitions))
+              (set (map :value definitions))]))
+   :expected [2 #{"Entry" "Status"} #{1 3}]}])
+
+^{:refer postgres.typed.export.json-openapi/field->openapi}
+(Test/check
+ [{:name "converts primitive array and reference fields"
+   :test (fn [] [(openapi/field->openapi {:type :uuid})
+                 (openapi/field->openapi {:type :array :items {:type :text}})
+                 (openapi/field->openapi {:is-ref? true})])
+   :expected [{:type "string" :format "uuid"}
+              {:type "array" :items {:type "string"}}
+              {:type "string" :format "uuid"}]}])
+
+^{:refer postgres.typed.export.json-openapi/shape->openapi}
+(Test/check
+ [{:name "preserves literal property names in OpenAPI objects"
+   :test (fn []
+           (openapi/shape->openapi
+            (types/make-jsonb-shape
+             {"db/sync" {:type :jsonb
+                           :shape (types/make-jsonb-shape
+                                   {"UserProfile" {:type :array
+                                                    :items {:type :jsonb}}})}
+              :id {:type :uuid}})))
+   :expected {:type "object"
+              :properties {"db/sync" {:type "object"
+                                        :properties {"UserProfile" {:type "array"
+                                                                     :items {:type "object"}}
+                                                     }
+                                        :required ["UserProfile"]}
+                           "id" {:type "string" :format "uuid"}}
+              :required ["db/sync" "id"]}}])
+
+^{:refer postgres.typed.export.json-openapi/arg->openapi}
+(Test/check
+ [{:name "strips input prefixes and maps argument types"
+   :test (fn [] [(openapi/arg->openapi
+                  (types/FnArg 'm :text [] :input)
+                  (types/make-fn-def "demo" "save" [] [:text] {} nil))
+                 (openapi/arg->openapi
+                  (types/FnArg 'i-count :integer [] :input)
+                  (types/make-fn-def "demo" "save" [] [:text] {} nil))])
+   :expected [["m" {:type "string"}]
+              ["count" {:type "integer"}]]}])
+
+^{:refer postgres.typed.export.json-openapi/source-table-name}
+(Test/check
+ [{:name "extracts the optional JSONB source table name"
+   :test (fn [] [(openapi/source-table-name
+                  (types/make-jsonb-shape {:id {:type :uuid}} 'demo/Entry))
+                 (openapi/source-table-name
+                  (types/make-jsonb-shape {:id {:type :uuid}}))])
+   :expected ["Entry" nil]}])
+
+^{:refer postgres.typed.export.json-openapi/request-body}
+(Test/check
+ [{:name "constructs an application JSON request schema"
+   :test (fn [] (openapi/request-body +save-entry+))
+   :expected {:content {"application/json"
+                        {:schema {:type "object"
+                                  :properties {"name" {:type "string"}}}}}}}])
+
+^{:refer postgres.typed.export.json-openapi/inferred-response-schema}
+(Test/check
+ [{:name "uses declared scalar output types when inference is absent"
+   :test (fn []
+           (openapi/inferred-response-schema
+            (types/make-fn-def "demo" "read-entry" [] [:uuid] {} nil)
+            nil))
+   :expected {:type "string" :format "uuid"}}])
+
+^{:refer postgres.typed.export.json-openapi/request-parameters}
+(Test/check
+ [{:name "adds schema profile headers only when a request body exists"
+   :test (fn [] [(openapi/request-parameters nil nil)
+                 (openapi/request-parameters "api" {:content {}})])
+   :expected [[{:name "apikey"
+                :in "header"
+                :required true
+                :schema {:type "string"}
+                :description "Supabase API key"}]
+              [{:name "apikey"
+                :in "header"
+                :required true
+                :schema {:type "string"}
+                :description "Supabase API key"}
+               {:name "Accept-Profile"
+                :in "header"
+                :required false
+                :schema {:type "string" :default "api"}
+                :description "Database schema for the response"}
+               {:name "Content-Profile"
+                :in "header"
+                :required false
+                :schema {:type "string" :default "api"}
+                :description "Database schema for the request body"}]]}])
+
+^{:refer postgres.typed.export.json-openapi/fn->openapi}
+(Test/check
+ [{:name "produces authenticated operations with request and response contracts"
+   :test (fn []
+           (let [infer-before (deref analyze/*infer-cache*)
+                 report-before (deref analyze/*report-cache*)]
+             (try
+               (let [operation (openapi/fn->openapi +save-entry+)]
+                 [(:operationId operation)
+                  (:tags operation)
+                  (:summary operation)
+                  (:security operation)
+                  (get-in operation [:requestBody :content "application/json" :schema :properties])
+                  (get-in operation [:responses "200" :content "application/json" :schema])])
+               (finally
+                 (reset! analyze/*infer-cache* infer-before)
+                 (reset! analyze/*report-cache* report-before)))))
+   :expected ["save_entry"
+              ["api"]
+              "Saves an entry"
+              [{"bearerAuth" []}]
+              {"name" {:type "string"}}
+              {:type "string"}]}])
+
+^{:refer postgres.typed.export.json-openapi/generate-openapi}
+(Test/check
+ [{:name "generates complete paths schemas and bearer security metadata"
+   :test (fn []
+           (let [registry-before (deref types/*type-registry*)
+                 infer-before (deref analyze/*infer-cache*)
+                 report-before (deref analyze/*report-cache*)]
+             (try
+               (types/clear-registry)
+               (types/register-type 'demo/Entry +entry-table+)
+               (types/register-type
+                'demo/Status
+                (types/make-enum-def "demo" "Status" [:open :closed] nil))
+               (types/register-type 'demo/save-entry +save-entry+)
+               (let [spec (openapi/generate-openapi 'demo (fn [_] true))]
+                 [(:openapi spec)
+                  (:info spec)
+                  (set (keys (:paths spec)))
+                  (get-in spec [:components :schemas "Status"])
+                  (get-in spec [:components :securitySchemes "bearerAuth" :scheme])])
+               (finally
+                 (reset! types/*type-registry* registry-before)
+                 (reset! analyze/*infer-cache* infer-before)
+                 (reset! analyze/*report-cache* report-before)))))
+   :expected ["3.0.3"
+              {:title "demo API" :version "0.1.0"}
+              #{"/rpc/save_entry"}
+              {:type "string" :enum ["open" "closed"]}
+              "bearer"]}])

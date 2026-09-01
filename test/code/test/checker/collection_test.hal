@@ -1,0 +1,104 @@
+(ns code.test.checker.collection-test
+  (:require [code.test.checker :as checker]
+            [code.test.checker.collection :as collection]))
+
+^{:refer code.test.checker.collection/map-contains?}
+(Test/check
+ [{:name "map-contains? requires each expected key to match"
+   :test (fn [] [(collection/map-contains? {:a (checker/exactly 1)} {:a 1 :b 2})
+                 (collection/map-contains? {:a (checker/exactly 1)} {:a 2})
+                 (collection/map-contains? {:a (checker/exactly 1)} {})])
+   :expected [true false false]}])
+
+^{:refer code.test.checker.collection/map-just?}
+(Test/check
+ [{:name "map-just? rejects extra map keys"
+   :test (fn [] [(collection/map-just? {:a (checker/exactly 1)} {:a 1})
+                 (collection/map-just? {:a (checker/exactly 1)} {:a 1 :b 2})])
+   :expected [true false]}])
+
+^{:refer code.test.checker.collection/contiguous?}
+(Test/check
+ [{:name "contiguous? finds a consecutive matcher pattern"
+   :test (fn [] [(collection/contiguous? [(checker/exactly 2) (checker/exactly 3)] [1 2 3 4])
+                 (collection/contiguous? [(checker/exactly 2) (checker/exactly 4)] [1 2 3 4])])
+   :expected [true false]}])
+
+^{:refer code.test.checker.collection/gapped?}
+(Test/check
+ [{:name "gapped? permits intervening sequence values while preserving order"
+   :test (fn [] [(collection/gapped? [(checker/exactly 1) (checker/exactly 3)] [1 2 3])
+                 (collection/gapped? [(checker/exactly 3) (checker/exactly 1)] [1 2 3])])
+   :expected [true false]}])
+
+^{:refer code.test.checker.collection/first-match-index}
+(Test/check
+ [{:name "first-match-index returns the first matching position"
+   :test (fn [] [(collection/first-match-index (checker/exactly 2) [1 2 2])
+                 (collection/first-match-index (checker/exactly 4) [1 2 2])])
+   :expected [1 nil]}])
+
+^{:refer code.test.checker.collection/remove-index}
+(Test/check
+ [{:name "remove-index removes precisely one vector value"
+   :test (fn [] (collection/remove-index [1 2 3] 1))
+   :expected [1 3]}])
+
+^{:refer code.test.checker.collection/any-order?}
+(Test/check
+ [{:name "any-order? consumes distinct matching values"
+   :test (fn [] [(collection/any-order? [(checker/exactly 2) (checker/exactly 1)] [1 2 3])
+                 (collection/any-order? [(checker/exactly 1) (checker/exactly 1)] [1 2])])
+   :expected [true false]}])
+
+^{:refer code.test.checker.collection/sequence-match?}
+(Test/check
+ [{:name "sequence-match? selects contiguous gapped and unordered policies"
+   :test (fn [] [(collection/sequence-match? [(checker/exactly 1) (checker/exactly 3)] [1 2 3] #{})
+                 (collection/sequence-match? [(checker/exactly 1) (checker/exactly 3)] [1 2 3] #{:gaps-ok})
+                 (collection/sequence-match? [(checker/exactly 3) (checker/exactly 1)] [1 2 3] #{:in-any-order})])
+   :expected [false true true]}])
+
+^{:refer code.test.checker.collection/sequence-contains?}
+(Test/check
+ [{:name "sequence-contains? accepts sequence and set actual values"
+   :test (fn [] [(collection/sequence-contains? [(checker/exactly 2)] [1 2 3] #{})
+                 (collection/sequence-contains? [(checker/exactly 2)] #{1 2 3} #{})
+                 (collection/sequence-contains? [(checker/exactly 2)] :not-a-sequence #{})])
+   :expected [true true false]}])
+
+^{:refer code.test.checker.collection/sequence-just?}
+(Test/check
+ [{:name "sequence-just? requires matching cardinality"
+   :test (fn [] [(collection/sequence-just? [(checker/exactly 1) (checker/exactly 2)] [1 2] #{})
+                 (collection/sequence-just? [(checker/exactly 1) (checker/exactly 2)] [1 2 3] #{})])
+   :expected [true false]}])
+
+^{:refer code.test.checker.collection/contains}
+(Test/check
+ [{:name "contains supports map and sequence subset matching"
+   :test (fn [] [(checker/matches? (collection/contains {:a (checker/satisfies (fn [value] (= value 1)))}) {:a 1 :b 2})
+                 (checker/matches? (collection/contains [1 3] :gaps-ok) [1 2 3])])
+   :expected [true true]}])
+
+^{:refer code.test.checker.collection/just}
+(Test/check
+ [{:name "just rejects map keys and sequence values outside the expected shape"
+   :test (fn [] [(checker/matches? (collection/just {:a 1}) {:a 1})
+                 (checker/matches? (collection/just {:a 1}) {:a 1 :b 2})
+                 (checker/matches? (collection/just [2 1] :in-any-order) [1 2])])
+   :expected [true false true]}])
+
+^{:refer code.test.checker.collection/contains-in}
+(Test/check
+ [{:name "contains-in composes nested map and predicate matchers"
+   :test (fn [] (checker/matches? (collection/contains-in {:a {:b (fn [value] (= value 2))}})
+                                  {:a {:b 2 :c 3}}))
+   :expected true}])
+
+^{:refer code.test.checker.collection/just-in}
+(Test/check
+ [{:name "just-in requires exact nested map structure"
+   :test (fn [] [(checker/matches? (collection/just-in {:a {:b 2}}) {:a {:b 2}})
+                 (checker/matches? (collection/just-in {:a {:b 2}}) {:a {:b 2 :c 3}})])
+   :expected [true false]}])

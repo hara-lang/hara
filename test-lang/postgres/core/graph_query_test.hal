@@ -1,0 +1,165 @@
+(ns postgres.core.graph-query-test
+  (:require [postgres.core.graph-query :as query]))
+
+(def user-schema
+  {:id [{:type :uuid :primary true :required true :order 0}]
+   :name [{:type :text :order 1}]
+   :org [{:type :ref :order 2
+          :ref {:type :forward :link {:id 'Organisation :module 'demo}}}]})
+
+(def organisation-schema
+  {:id [{:type :uuid :primary true :required true :order 0}]
+   :handle [{:type :text :order 1}]})
+
+(def schema
+  {:tree {:User user-schema
+          :Organisation organisation-schema}})
+
+(def user-entry
+  {:id 'User
+   :module 'demo
+   :table-schema user-schema
+   :schema schema})
+
+(def options {:schema schema})
+(def prepared [user-entry user-schema options])
+
+^{:refer postgres.core.graph-query/attrs}
+(Test/check
+ [{:name "reads both archive column representations"
+   :test (fn [] [(query/attrs user-schema :id)
+                 (query/attrs {:handle {:type :text}} :handle)])
+   :expected [{:type :uuid :primary true :required true :order 0}
+              {:type :text}]}])
+
+^{:refer postgres.core.graph-query/table-col-token}
+(Test/check
+ [{:name "constructs qualified foreign-key access tokens"
+   :test (fn [] (let [token (query/table-col-token 'demo/User :org)]
+                  [(first token) (second token) (first (nth token 2))]))
+   :expected ['. 'demo/User "org_id"]}])
+
+^{:refer postgres.core.graph-query/table-id-token}
+(Test/check
+ [{:name "constructs qualified primary-key access tokens"
+   :test (fn [] (let [token (query/table-id-token 'demo/User)]
+                  [(first token) (second token) (first (nth token 2))]))
+   :expected ['. 'demo/User "id"]}])
+
+^{:refer postgres.core.graph-query/linked-prepared}
+(Test/check
+ [{:name "prepares linked table entries with their schema"
+   :test (fn [] (query/linked-prepared {:id 'Organisation :module 'demo} options))
+   :expected [{:id 'Organisation :module 'demo :table-schema organisation-schema}
+              organisation-schema
+              options]}])
+
+^{:refer postgres.core.graph-query/intersect?}
+(Test/check
+ [{:name "detects overlapping graph predicate keys"
+   :test (fn [] [(query/intersect? #{:id} #{:id :name})
+                 (query/intersect? #{:id} #{:name})])
+   :expected [true false]}])
+
+^{:refer postgres.core.graph-query/merge-where}
+(Test/check
+ [{:name "merges distinct predicates and preserves duplicate keys as hashvec clauses"
+   :test (fn [] [(query/merge-where user-schema {:id "u-1"} {:name "Ada"} options)
+                 (query/merge-where user-schema {:id "u-1"} {:id "u-2"} options)])
+   :expected [{:id [:eq "u-1"] :name [:eq "Ada"]}
+              #{[:id [:eq "u-1"] :and :id [:eq "u-2"]]}]}])
+
+^{:refer postgres.core.graph-query/returning-block}
+(Test/check
+ [{:name "builds a nested forward-reference query with an ID token"
+   :test (fn [] (let [attr (assoc (query/attrs user-schema :org) :ident :org)
+                      block (query/returning-block user-entry attr {} [:id] {}
+                                                   (fn [_ params] params) options)
+                      nested (first (second block))
+                      token (second (get (:where nested) :id))]
+                  [(first block)
+                   (:returning nested)
+                   (:single nested)
+                   (first token)
+                   (second token)
+                   (first (nth token 2))
+                   (first (nth (second block) 2))]))
+   :expected ['% [:id] true '. 'demo/User "org_id" "org"]}])
+
+^{:refer postgres.core.graph-query/returning-map-markers}
+(Test/check
+ [{:name "converts reference markers to expressions and rejects scalar markers"
+   :test (fn [] (let [output (query/returning-map-markers
+                              user-entry user-schema [[:org [:id]]]
+                              (fn [_ params] params) options)]
+                  [(count output)
+                   (list? (:expr (first output)))
+                   (try (query/returning-map-markers
+                         user-entry user-schema [[:name]]
+                         (fn [_ params] params) options)
+                        :no-error
+                        (catch error :invalid))]))
+   :expected [1 true :invalid]}])
+
+^{:refer postgres.core.graph-query/reverse-keys}
+(Test/check
+ [{:name "collects reverse relational columns only"
+   :test (fn [] (query/reverse-keys
+                 {:id [{:type :uuid}]
+                  :tasks [{:type :ref :ref {:type :reverse}}]
+                  :owner [{:type :ref :ref {:type :forward}}]}))
+   :expected #{:tasks}}])
+
+^{:refer postgres.core.graph-query/default-keys}
+(Test/check
+ [{:name "selects ordered non-reverse non-ignored columns by default"
+   :test (fn [] (query/default-keys
+                 {:id [{:type :uuid :order 0}]
+                  :name [{:type :text :order 1}]
+                  :tasks [{:type :ref :order 2 :ref {:type :reverse}}]
+                  :hidden [{:type :text :order 3 :ignore true}]}))
+   :expected #{:id :name}}])
+
+^{:refer postgres.core.graph-query/returning-all-markers}
+(Test/check
+ [{:name "combines default scalar markers and requested relational markers"
+   :test (fn [] (let [defaults (query/returning-all-markers
+                                user-entry user-schema :*/default
+                                (fn [_ params] params) options)
+                      related (query/returning-all-markers
+                               user-entry user-schema #{[:org [:id]]}
+                               (fn [_ params] params) options)]
+                  [(count defaults)
+                   (query/intersect? defaults #{:id :name :org})
+                   (count related)
+                   (list? (:expr (first related)))]))
+   :expected [3 true 1 true]}])
+
+^{:refer postgres.core.graph-query/nested-query}
+(Test/check
+ [{:name "quotes nested graph query forms for relational projections"
+   :test (fn [] (let [output (query/nested-query prepared
+                                                  {:as :raw :returning #{:id}})
+                      nested (first (second output))]
+                  [(first output)
+                   (first nested)
+                   (nth nested 2)]))
+   :expected ['quote :select :from]}])
+
+^{:refer postgres.core.graph-query/query-raw-fn}
+(Test/check
+ [{:name "constructs raw graph SELECT forms from prepared tables"
+   :test (fn [] (query/query-raw-fn prepared
+                                    {:as :raw :returning #{:id}
+                                     :where {:name "Ada"}}))
+   :expected '[:select (--- [#{"id"}]) :from demo/User
+               \\ :where {"name" [:eq "Ada"]}]}])
+
+^{:refer postgres.core.graph-query/query-fn}
+(Test/check
+ [{:name "prepares portable table entries before constructing graph SELECT forms"
+   :test (fn [] (query/query-fn user-entry
+                                {:as :raw :returning #{:id}
+                                 :where {:name "Ada"}}))
+   :expected '[:select (--- [#{"id"}]) :from demo/User
+               \\ :where {"name" [:eq "Ada"]}]}])

@@ -1,0 +1,127 @@
+(ns code.test.registry
+  (:config {:role :internal})
+  (:require [work.flow.task.selector :as selector]))
+
+(def +facts+ (atom {}))
+(def +setup+ (atom #{}))
+
+(defn ^{:public true} fact-key
+  [namespace description]
+  [namespace description])
+
+(defn ^{:public true} reset
+  "Clears the code.test fact index and setup flags without resetting native
+  Test facts that were not registered through this façade."
+  []
+  (reset! +facts+ {})
+  (reset! +setup+ #{})
+  {:facts (deref +facts+) :setup (deref +setup+)})
+
+(defn ^{:public true} snapshot
+  "Captures the library's selector index and explicit setup lifecycle state."
+  []
+  {:facts (deref +facts+) :setup (deref +setup+)})
+
+(defn ^{:public true} restore
+  "Restores an index snapshot without changing unrelated native Test facts."
+  [snapshot]
+  (reset! +facts+ (:facts snapshot))
+  (reset! +setup+ (:setup snapshot))
+  snapshot)
+
+(defn ^{:public true} register
+  "Registers one fact with native Test and indexes it for selector execution."
+  [namespace descriptor]
+  (let [descriptor (assoc descriptor
+                          :meta (merge {:code.test/namespace namespace}
+                                       (or (:meta descriptor) {})))
+        native-fact (Test/register descriptor)
+        fact (assoc native-fact :namespace namespace)]
+    (swap! +facts+ assoc (fact-key namespace (:desc fact)) fact)
+    fact))
+
+(defn ^{:public true} facts
+  ([] (vec (vals (deref +facts+))))
+  ([namespace]
+   (vec
+    (filter (fn [fact] (= namespace (:namespace fact)))
+            (vals (deref +facts+))))))
+
+(defn ^{:public true} list-facts
+  [namespace]
+  (vec (map :desc (facts namespace))))
+
+(defn ^{:public true} get-fact
+  [namespace description]
+  (get (deref +facts+) (fact-key namespace description)))
+
+(defn ^{:public true} remove
+  [namespace description]
+  (let [fact (get-fact namespace description)]
+    (if fact
+      (do
+        (Test/remove namespace description)
+        (swap! +facts+ dissoc (fact-key namespace description))
+        (swap! +setup+ disj (fact-key namespace description))
+        fact)
+      nil)))
+
+(defn ^{:public true} purge
+  [namespace]
+  (let [removed (facts namespace)]
+    (Test/purge namespace)
+    (reduce (fn [_ fact] (remove namespace (:desc fact))) nil removed)
+    removed))
+
+(defn ^{:public true} setup?
+  [namespace description]
+  (has? (deref +setup+) (fact-key namespace description)))
+
+(defn ^{:public true} setup
+  [namespace description]
+  (let [fact (get-fact namespace description)
+        before (:before fact)]
+    (if (and fact before) (before))
+    (if fact (swap! +setup+ conj (fact-key namespace description)))
+    fact))
+
+(defn ^{:public true} teardown
+  [namespace description]
+  (let [fact (get-fact namespace description)
+        after (:after fact)]
+    (try
+      (if (and fact after) (after))
+      (finally
+        (swap! +setup+ disj (fact-key namespace description))))
+    fact))
+
+(defn ^{:public true} execute
+  [namespace description options]
+  (let [fact (get-fact namespace description)]
+    (if fact
+      (Test/run-fact fact (or options {}))
+      (throw (ex :not-found {:namespace namespace :description description}
+                 :ex/message "code.test fact is not registered")))))
+
+(defn ^{:public true} fact-matches?
+  [fact selector-value options]
+  (and (selector/matches? selector-value (:namespace fact))
+       (selector/matches-options? (:meta fact) (or options {}))))
+
+(defn ^{:public true} select
+  "Selects indexed facts in registration order by namespace and metadata."
+  [selector-value options]
+  (let [selector-value (or selector-value :all)
+        descriptions (:descriptions options)]
+    (vec
+     (filter
+      (fn [fact]
+        (and (fact-matches? fact selector-value options)
+             (or (nil? descriptions) (has? descriptions (:desc fact)))))
+      (facts)))))
+
+(defn ^{:public true} missing
+  "Returns declared descriptions that have not been indexed in a namespace."
+  [namespace descriptions]
+  (vec
+   (filter (fn [description] (nil? (get-fact namespace description))) descriptions)))

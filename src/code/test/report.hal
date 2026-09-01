@@ -1,0 +1,38 @@
+(ns code.test.report
+  (:config {:role :internal}))
+
+(def ^{:public true} +report-directory+ ".hara/test")
+
+(defn ^{:public true} report-path
+  "Builds a report path in the new project-local `.hara/test` layout."
+  [root options]
+  (File/join (File/join (or root ".") +report-directory+)
+             (or (:report/name options) "latest.edn")))
+
+(defn ^{:public true} create
+  [summary]
+  {:report/type :code.test/report
+   :report/version 1
+   :summary (dissoc summary :results)
+   :results (:results summary)})
+
+(defn ^{:public true} write
+  "Writes an EDN-shaped report, creating the report directory when needed."
+  [root options report]
+  (let [path (report-path root options)]
+    (deref (File/write path (str/encode-utf8 (str report))
+                       {:mode :replace :parents? true}))
+    path))
+
+(defn ^{:public true} read
+  [path]
+  (read-string (str/decode-utf8 (deref (File/read path)))))
+
+(defn ^{:public true} failed-descriptions
+  "Returns descriptions from failed, errored, timed out, or cancelled facts."
+  [report]
+  (set
+   (map :desc
+        (filter (fn [result]
+                  (not (= :passed (:status result))))
+                (:results report)))))

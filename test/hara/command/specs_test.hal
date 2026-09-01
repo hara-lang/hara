@@ -1,0 +1,74 @@
+(ns hara.command.specs-test
+  (:require [hara.command.specs :as specs]))
+
+^{:refer hara.command.specs/spec-content}
+(Test/check
+ [{:name "fails with a structured boundary when the specification HARP is not mounted"
+   :test (fn []
+           (try
+             (specs/spec-content "content/01-lang/000-metaspec/draft/metaspec-metaspec.edn")
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer hara.command.specs/conformance-report}
+(Test/check
+ [{:name "runs every declared metaspec case against supplied package content"
+   :test
+   (fn []
+     (let [document {:document/id :demo/document
+                     :document/version "1.0.0"
+                     :document/type :demo/spec
+                     :meta/document-schema {:schema/id :demo/document-schema
+                                            :schema/type :map
+                                            :schema/required [:document/id :document/version]}
+                     :meta/schemas []
+                     :meta/cross-references []
+                     :meta/checkers []
+                     :spec/conforms-to {:spec/id :demo/document :spec/version "1.0.0"}}
+           cases [{:case/id :root :case/type :verify
+                   :case/input "../metaspec-metaspec.edn" :case/expected :pass}
+                  {:case/id :artifact :case/type :verify
+                   :case/input "../../../../00-unsorted/artifact/metaspec/artifact-metaspec.edn"
+                   :case/expected :pass}
+                  {:case/id :missing-key :case/type :lint
+                   :case/input {:document/type :hara/metaspec}
+                   :case/expected :hara.metaspec.rule/required-key}
+                  {:case/id :extension-key :case/type :lint
+                   :case/input {:extension true}
+                   :case/expected :hara.metaspec.rule/qualified-key}
+                  {:case/id :duplicate-id :case/type :lint
+                   :case/input [{:schema/id :demo/value} {:schema/id :demo/value}]
+                   :case/expected :hara.metaspec.rule/duplicate-id}
+                  {:case/id :schema-reference :case/type :verify
+                   :case/input {:schema/ref :missing/schema}
+                   :case/expected :hara.metaspec.rule/schema-reference}
+                  {:case/id :repair :case/type :report
+                   :case/input :missing-required-key
+                   :case/expected {:action/type :add-key :action/path [] :action/key :document/id}}]
+           report (specs/conformance-report "hara/metaspec-metaspec" document document cases)]
+       [(select-keys report [:report/type :report/status :summary])
+        (vec (map :case/status (:cases report)))]))
+   :expected [{:report/type :hara/specs-test
+               :report/status :pass
+               :summary {:pass 7 :fail 0}}
+              [:pass :pass :pass :pass :pass :pass :pass]]}])
+
+^{:refer hara.command.specs/target-report}
+(Test/check
+ [{:name "requires the mounted specification package before loading a target"
+   :test (fn []
+           (try
+             (specs/target-report "hara/not-a-spec")
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer hara.command.specs/test-response}
+(Test/check
+ [{:name "reports an unavailable specification HARP as a command failure"
+   :test (fn []
+           (select-keys
+            (specs/test-response {:arguments {:target "hara/metaspec-metaspec"}})
+            [:stdout :exit]))
+   :expected {:stdout "" :exit 2}}])

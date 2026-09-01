@@ -1,0 +1,39 @@
+(ns hara.command.run-test
+  (:require [hara.command.run :as run]))
+
+(def main "not a function")
+
+^{:refer hara.command.run/run}
+(Test/check
+ [{:name "loads a namespace and invokes its main function with argv"
+   :test (fn [] (run/run "hara.command.core" ["--version"]))
+   :expected {:stdout "hara 0.1.0\n" :stderr "" :exit 0}}
+  {:name "rejects a dynamically loaded namespace without a main function"
+   :test (fn []
+           (try
+             (run/run "hara.command.version" [])
+             :missing-error
+             (catch error (:ex/code (ex-data error)))))
+   :expected :command/missing-main}
+  {:name "rejects namespaces whose main value is not a function"
+   :test (fn []
+           (try
+             (run/run "hara.command.run-test" [])
+             :missing-error
+             (catch error (:ex/code (ex-data error)))))
+   :expected :command/invalid-main}])
+
+^{:refer hara.command.run/response}
+(Test/check
+ [{:name "projects parsed namespace and trailing argv into the main invocation"
+   :test (fn []
+           (run/response {:arguments {:namespace "hara.command.core" :argv []}}))
+   :expected {:stdout "Usage: hara [--version|help|headless|run NAMESPACE [ARGS...]|specs test TARGET]\n"
+              :stderr ""
+              :exit 0}}
+  {:name "formats a missing main function as a command failure"
+   :test (fn []
+           (select-keys
+            (run/response {:arguments {:namespace "hara.command.version" :argv []}})
+            [:stdout :exit]))
+   :expected {:stdout "" :exit 2}}])

@@ -1,0 +1,34 @@
+(ns code.test.manage-test
+  (:require [code.test.context :as context]
+            [code.test.manage :as manage]
+            [code.test.registry :as registry]))
+
+^{:refer code.test.manage/fact:global}
+(Test/check
+ [{:name "fact:global replaces and reads the portable run settings"
+   :test (fn []
+           (try
+             (context/reset)
+             [(manage/fact:global {:parallel 2}) (manage/fact:global)]
+             (finally (context/reset))))
+   :expected [{:parallel 2} {:parallel 2}]}])
+
+^{:refer code.test.manage/fact:ns}
+(Test/check
+ [{:name "fact:ns preserves CLI-owned namespace operation requests"
+   :test (fn [] (manage/fact:ns [:load 'fixture.test] [:unload 'fixture.test]))
+   :expected [[:load 'fixture.test] [:unload 'fixture.test]]}])
+
+^{:refer code.test.manage/fact:ns-load}
+(Test/check
+ [{:name "fact:ns-load exposes facts indexed for a namespace"
+   :test (fn []
+           (try
+             (registry/reset)
+             (registry/register 'code.test.manage-test
+                                {:desc "one" :test (fn [] 1) :expected 1 :meta {}})
+             (count (manage/fact:ns-load 'code.test.manage-test))
+             (finally
+               (Test/purge)
+               (registry/reset))))
+   :expected 1}])

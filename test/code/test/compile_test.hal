@@ -1,0 +1,154 @@
+(ns code.test.compile-test
+  (:require [code.test.compile :as compile]
+            [code.test.registry :as registry]))
+
+(defn cleanup
+  []
+  (Test/purge)
+  (registry/reset))
+
+^{:refer code.test.compile/=>}
+(Test/check
+ [{:name "=> retains the v1 arrow symbol"
+   :test (fn [] compile/=>)
+   :expected '=>}])
+
+^{:refer code.test.compile/fact-pair}
+(Test/check
+ [{:name "fact-pair recognises exactly one arrow pair"
+   :test (fn [] (compile/fact-pair ['(+ 1 1) '=> 2]))
+   :expected {:actual '(+ 1 1) :expected 2}}])
+
+^{:refer code.test.compile/fact}
+(Test/check
+ [{:name "fact registers checker-aware native Test functions"
+   :test (fn []
+           (try
+             (let [fact (compile/fact "macro fact" (+ 1 1) => 2)]
+               [(:desc fact) (:status (Test/run-fact fact))])
+             (finally (cleanup))))
+   :expected ["macro fact" :passed]}])
+
+^{:refer code.test.compile/fact:template}
+(Test/check
+ [{:name "fact:template registers the same supported fact form"
+   :test (fn []
+           (try
+             (let [fact (compile/fact:template "template fact" (+ 1 2) => 3)]
+               (:desc fact))
+             (finally (cleanup))))
+   :expected "template fact"}])
+
+^{:refer code.test.compile/fact:all}
+(Test/check
+ [{:name "fact:all returns facts for the caller namespace"
+   :test (fn []
+           (try
+             (compile/fact "all fact" 1 => 1)
+             (count (compile/fact:all))
+             (finally (cleanup))))
+   :expected 1}])
+
+^{:refer code.test.compile/fact:list}
+(Test/check
+ [{:name "fact:list returns caller fact descriptions"
+   :test (fn []
+           (try
+             (compile/fact "listed fact" 1 => 1)
+             (compile/fact:list)
+             (finally (cleanup))))
+   :expected ["listed fact"]}])
+
+^{:refer code.test.compile/fact:get}
+(Test/check
+ [{:name "fact:get resolves a caller fact by description"
+   :test (fn []
+           (try
+             (compile/fact "get fact" 1 => 1)
+             (:desc (compile/fact:get "get fact"))
+             (finally (cleanup))))
+   :expected "get fact"}])
+
+^{:refer code.test.compile/fact:exec}
+(Test/check
+ [{:name "fact:exec runs one caller fact"
+   :test (fn []
+           (try
+             (compile/fact "exec fact" 1 => 1)
+             (:status (compile/fact:exec "exec fact"))
+             (finally (cleanup))))
+   :expected :passed}])
+
+^{:refer code.test.compile/fact:purge}
+(Test/check
+ [{:name "fact:purge removes caller facts"
+   :test (fn []
+           (try
+             (compile/fact "purge fact" 1 => 1)
+             [(count (compile/fact:purge)) (compile/fact:list)]
+             (finally (cleanup))))
+   :expected [1 []]}])
+
+^{:refer code.test.compile/fact:missing}
+(Test/check
+ [{:name "fact:missing identifies caller descriptions not registered"
+   :test (fn []
+           (try
+             (compile/fact "present fact" 1 => 1)
+             (compile/fact:missing ["present fact" "missing fact"])
+             (finally (cleanup))))
+   :expected ["missing fact"]}])
+
+^{:refer code.test.compile/fact:setup}
+(Test/check
+ [{:name "fact:setup records the caller setup state"
+   :test (fn []
+           (try
+             (compile/fact "setup fact" 1 => 1)
+             (compile/fact:setup "setup fact")
+             (compile/fact:setup? "setup fact")
+             (finally (cleanup))))
+   :expected true}])
+
+^{:refer code.test.compile/fact:setup?}
+(Test/check
+ [{:name "fact:setup? is false before setup"
+   :test (fn []
+           (try
+             (compile/fact "unset fact" 1 => 1)
+             (compile/fact:setup? "unset fact")
+             (finally (cleanup))))
+   :expected false}])
+
+^{:refer code.test.compile/fact:teardown}
+(Test/check
+ [{:name "fact:teardown clears the setup flag"
+   :test (fn []
+           (try
+             (compile/fact "teardown fact" 1 => 1)
+             (compile/fact:setup "teardown fact")
+             (compile/fact:teardown "teardown fact")
+             (compile/fact:setup? "teardown fact")
+             (finally (cleanup))))
+   :expected false}])
+
+^{:refer code.test.compile/fact:remove}
+(Test/check
+ [{:name "fact:remove removes the caller fact"
+   :test (fn []
+           (try
+             (compile/fact "remove fact" 1 => 1)
+             [(:desc (compile/fact:remove "remove fact"))
+              (compile/fact:get "remove fact")]
+             (finally (cleanup))))
+   :expected ["remove fact" nil]}])
+
+^{:refer code.test.compile/fact:symbol}
+(Test/check
+ [{:name "fact:symbol returns a fact's declared refer metadata"
+   :test (fn []
+           (try
+             (compile/fact "symbol fact" 1 => 1)
+             (compile/fact:symbol "symbol fact")
+             (finally (cleanup))))
+   :expected nil}])

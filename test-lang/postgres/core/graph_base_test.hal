@@ -1,0 +1,178 @@
+(ns postgres.core.graph-base-test
+  (:require [postgres.core.graph-base :as graph]))
+
+(def user-schema
+  {:id [{:type :uuid :primary true :required true :order 0}]
+   :name [{:type :text :order 1}]
+   :org [{:type :ref :order 2
+          :ref {:type :forward :link {:id 'Organisation :module 'demo}}}]})
+
+(def organisation-schema
+  {:id [{:type :uuid :primary true :required true :order 0}]
+   :handle [{:type :text :order 1}]})
+
+(def schema
+  {:tree {:User user-schema
+          :Organisation organisation-schema}})
+
+(def user-entry
+  {:id 'User
+   :module 'demo
+   :table-schema user-schema
+   :schema schema})
+
+(def prepared [user-entry user-schema {:schema schema}])
+
+^{:refer postgres.core.graph-base/attrs}
+(Test/check
+ [{:name "normalizes archive vector-backed and direct column attributes"
+   :test (fn [] [(graph/attrs user-schema :id)
+                 (graph/attrs {:name {:type :text}} :name)])
+   :expected [{:type :uuid :primary true :required true :order 0}
+              {:type :text}]}])
+
+^{:refer postgres.core.graph-base/normalize-key}
+(Test/check
+ [{:name "normalizes SQL underscore keys without changing keyword input"
+   :test (fn [] [(graph/normalize-key "org_id")
+                 (graph/normalize-key "user_name")
+                 (graph/normalize-key :name)])
+   :expected [:org :user-name :name]}])
+
+^{:refer postgres.core.graph-base/linked-prepared}
+(Test/check
+ [{:name "constructs linked prepared triples from the owning schema"
+   :test (fn [] (graph/linked-prepared {:id 'Organisation :module 'demo}
+                                        {:schema schema}))
+   :expected [{:id 'Organisation :module 'demo :table-schema organisation-schema}
+              organisation-schema
+              {:schema schema}]}])
+
+^{:refer postgres.core.graph-base/prepare}
+(Test/check
+ [{:name "prepares direct portable table entries with their schema context"
+   :test (fn [] (graph/prepare user-entry))
+   :expected prepared}])
+
+^{:refer postgres.core.graph-base/where-pair-ref}
+(Test/check
+ [{:name "keeps wildcard reference predicates and handles scalar and vector ids"
+   :test (fn [] (let [attr (graph/attrs user-schema :org)
+                      transform (fn [_ value _] {:id [:eq (:id value)]})]
+                  [(graph/where-pair-ref [:org :*] transform attr {:schema schema})
+                   (graph/where-pair-ref [:org "org-1"] transform attr {:schema schema})
+                   (graph/where-pair-ref [:org {:id ["org-1" "org-2"]}]
+                                         transform attr {:schema schema})]))
+   :expected [[:org :*]
+              [:org [:eq "org-1"]]
+              [:org ["org-1" "org-2"]]]}])
+
+^{:refer postgres.core.graph-base/where-pair-fn}
+(Test/check
+ [{:name "normalizes scalar graph predicates and rejects unavailable columns"
+   :test (fn [] [(graph/where-pair-fn ["name" "Ada"] graph/where-fn user-schema {})
+                 (try (graph/where-pair-fn [:missing 1] graph/where-fn user-schema {})
+                      :no-error
+                      (catch error :missing))])
+   :expected [[:name [:eq "Ada"]] :missing]}])
+
+^{:refer postgres.core.graph-base/transform-pairs}
+(Test/check
+ [{:name "transforms map entries through the graph predicate contract"
+   :test (fn [] (let [output (graph/transform-pairs user-schema {:name "Ada"} {})]
+                  [(first (first output))
+                   (first (second (first output)))
+                   (second (second (first output)))
+                   (count output)]))
+   :expected [:name :eq "Ada" 1]}])
+
+^{:refer postgres.core.graph-base/pairs-output}
+(Test/check
+ [{:name "keeps unique pairs as a map and repeated pairs as a hashvec"
+   :test (fn [] [(graph/pairs-output [[:name [:eq "Ada"]]])
+                 (graph/pairs-output [[:name [:eq "Ada"]]
+                                      [:name [:eq "Grace"]]])])
+   :expected [{:name [:eq "Ada"]}
+              #{[:name [:eq "Ada"] :name [:eq "Grace"]]}]}])
+
+^{:refer postgres.core.graph-base/where-fn}
+(Test/check
+ [{:name "constructs map hashvec and nil graph predicates"
+   :test (fn [] [(graph/where-fn user-schema {:name "Ada"} {})
+                 (graph/where-fn user-schema #{[:name [:eq "Ada"] :or :name [:eq "Grace"]]} {})
+                 (graph/where-fn user-schema nil {})
+                 (try (graph/where-fn user-schema :invalid {}) :no-error
+                      (catch error :invalid))])
+   :expected [{:name [:eq "Ada"]}
+              #{[:name [:eq "Ada"] :or :name [:eq "Grace"]]}
+              nil
+              :invalid]}])
+
+^{:refer postgres.core.graph-base/id-where-fn}
+(Test/check
+ [{:name "rewrites graph reference keys to concrete foreign-key columns"
+   :test (fn [] (graph/id-where-fn user-entry {:where {:org "org-1" :name "Ada"}}))
+   :expected [{:org_id [:eq "org-1"] :name [:eq "Ada"]}]}])
+
+^{:refer postgres.core.graph-base/id-fn}
+(Test/check
+ [{:name "delegates normalized predicates to the archive ID form constructor"
+   :test (fn [] (graph/id-fn user-entry {:where {:id "user-1"}}))
+   :expected '(pg:scalar
+               [:select (--- [#{"id"}]) :from demo/User
+                \\ :where {"id" [:eq "user-1"]}
+                \\ :limit 1])}])
+
+^{:refer postgres.core.graph-base/count-fn}
+(Test/check
+ [{:name "delegates normalized predicates to the archive count form constructor"
+   :test (fn [] (graph/count-fn user-entry {:where {:name "Ada"}}))
+   :expected '(pg:scalar
+               [:select (count *) :from demo/User
+                \\ :where {"name" [:eq "Ada"]}])}])
+
+^{:refer postgres.core.graph-base/exists-fn}
+(Test/check
+ [{:name "delegates normalized predicates to the archive existence form constructor"
+   :test (fn [] (graph/exists-fn user-entry {:where {:name "Ada"}}))
+   :expected '(pg:scalar
+               [:select (exists [:select 1 :from demo/User
+                                  \\ :where {"name" [:eq "Ada"]}])])}])
+
+^{:refer postgres.core.graph-base/select-fn-raw}
+(Test/check
+ [{:name "uses prepared tables while normalizing their graph predicates"
+   :test (fn [] (graph/select-fn-raw prepared {:as :raw :where {:name "Ada"}}))
+   :expected '[:select * :from demo/User \\ :where {"name" [:eq "Ada"]}]}])
+
+^{:refer postgres.core.graph-base/select-fn}
+(Test/check
+ [{:name "prepares direct table entries before constructing graph SELECT forms"
+   :test (fn [] (graph/select-fn user-entry {:as :raw :where {:name "Ada"}}))
+   :expected '[:select * :from demo/User \\ :where {"name" [:eq "Ada"]}]}])
+
+^{:refer postgres.core.graph-base/delete-fn}
+(Test/check
+ [{:name "constructs a graph DELETE with the normalized predicate"
+   :test (fn [] (graph/delete-fn user-entry {:as :raw :where {:name "Ada"}}))
+   :expected '[:delete :from demo/User :where {"name" [:eq "Ada"]}]}])
+
+^{:refer postgres.core.graph-base/update-fn}
+(Test/check
+ [{:name "constructs a graph UPDATE with the normalized predicate"
+   :test (fn [] (graph/update-fn user-entry {:as :raw :set {:name "Grace"}
+                                              :where {:id "user-1"}}))
+   :expected '[:update demo/User :set
+               (== (>-< [#{"name"}]) (row (:text "Grace")))
+               :where {"id" [:eq "user-1"]}]}])
+
+^{:refer postgres.core.graph-base/modify-fn}
+(Test/check
+ [{:name "constructs a graph MODIFY form through the archive update seam"
+   :test (fn [] (let [form (graph/modify-fn user-entry
+                                             {:as :raw :set {:name "Grace"}
+                                              :where {:id "user-1"}})]
+                  [(get (meta form) :assign/fn)
+                   (first form)
+                   (first (first (second form)))]))
+   :expected ['postgres.core.impl-update/t-modify-assign 'let '++]}])

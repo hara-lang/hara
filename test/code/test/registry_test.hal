@@ -1,0 +1,191 @@
+(ns code.test.registry-test
+  (:require [code.test.registry :as registry]))
+
+(def fixture-namespace 'code.test.registry-test)
+
+(defn fixture
+  [description value]
+  {:desc description :test (fn [] value) :expected value :meta {}})
+
+(defn cleanup
+  []
+  (Test/purge)
+  (registry/reset))
+
+^{:refer code.test.registry/fact-key}
+(Test/check
+ [{:name "fact-key combines namespace and description deterministically"
+   :test (fn [] (registry/fact-key fixture-namespace "one"))
+   :expected ['code.test.registry-test "one"]}])
+
+^{:refer code.test.registry/reset}
+(Test/check
+ [{:name "reset is idempotent for the library fact index"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             [(registry/reset) (registry/reset)]
+             (finally (cleanup))))
+   :expected [{:facts {} :setup #{}} {:facts {} :setup #{}}]}])
+
+^{:refer code.test.registry/snapshot}
+(Test/check
+ [{:name "snapshot captures indexed facts and setup state"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             [(count (:facts (registry/snapshot))) (:setup (registry/snapshot))]
+             (finally (cleanup))))
+   :expected [1 #{}]}])
+
+^{:refer code.test.registry/restore}
+(Test/check
+ [{:name "restore reinstates a selector index snapshot"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (let [snapshot (registry/snapshot)]
+               (registry/reset)
+               (registry/restore snapshot)
+               (registry/list-facts fixture-namespace))
+             (finally (cleanup))))
+   :expected ["one"]}])
+
+^{:refer code.test.registry/register}
+(Test/check
+ [{:name "register indexes the native Test fact under its explicit namespace"
+   :test (fn []
+           (try
+             (let [fact (registry/register fixture-namespace (fixture "one" 1))]
+               [(:namespace fact) (:desc (registry/get-fact fixture-namespace "one"))])
+             (finally (cleanup))))
+   :expected ['code.test.registry-test "one"]}])
+
+^{:refer code.test.registry/facts}
+(Test/check
+ [{:name "facts supports all-index and namespace selections"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             [(count (registry/facts)) (count (registry/facts fixture-namespace))]
+             (finally (cleanup))))
+   :expected [1 1]}])
+
+^{:refer code.test.registry/list-facts}
+(Test/check
+ [{:name "list-facts returns registered descriptions"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (registry/list-facts fixture-namespace)
+             (finally (cleanup))))
+   :expected ["one"]}])
+
+^{:refer code.test.registry/get-fact}
+(Test/check
+ [{:name "get-fact returns nil for an absent description"
+   :test (fn []
+           (try
+             (registry/get-fact fixture-namespace "missing")
+             (finally (cleanup))))
+   :expected nil}])
+
+^{:refer code.test.registry/remove}
+(Test/check
+ [{:name "remove deletes an indexed fact and is safe for missing descriptions"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             [(:desc (registry/remove fixture-namespace "one"))
+              (registry/remove fixture-namespace "one")]
+             (finally (cleanup))))
+   :expected ["one" nil]}])
+
+^{:refer code.test.registry/purge}
+(Test/check
+ [{:name "purge removes every indexed fact in one namespace"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (registry/register fixture-namespace (fixture "two" 2))
+             [(count (registry/purge fixture-namespace))
+              (registry/facts fixture-namespace)]
+             (finally (cleanup))))
+   :expected [2 []]}])
+
+^{:refer code.test.registry/setup?}
+(Test/check
+ [{:name "setup? reflects the registry setup lifecycle flag"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             [(registry/setup? fixture-namespace "one")
+              (do (registry/setup fixture-namespace "one")
+                  (registry/setup? fixture-namespace "one"))]
+             (finally (cleanup))))
+   :expected [false true]}])
+
+^{:refer code.test.registry/setup}
+(Test/check
+ [{:name "setup invokes the native before hook exactly once"
+   :test (fn []
+           (try
+             (let [calls (atom 0)]
+               (registry/register fixture-namespace
+                                  (assoc (fixture "one" 1) :before (fn [] (swap! calls inc))))
+               (registry/setup fixture-namespace "one")
+               (deref calls))
+             (finally (cleanup))))
+   :expected 1}])
+
+^{:refer code.test.registry/teardown}
+(Test/check
+ [{:name "teardown invokes after and clears setup even after partial state"
+   :test (fn []
+           (try
+             (let [calls (atom 0)]
+               (registry/register fixture-namespace
+                                  (assoc (fixture "one" 1) :after (fn [] (swap! calls inc))))
+               (registry/setup fixture-namespace "one")
+               (registry/teardown fixture-namespace "one")
+               [(deref calls) (registry/setup? fixture-namespace "one")])
+             (finally (cleanup))))
+   :expected [1 false]}])
+
+^{:refer code.test.registry/execute}
+(Test/check
+ [{:name "execute delegates the fact to native Test/run-fact"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (:status (registry/execute fixture-namespace "one" {}))
+             (finally (cleanup))))
+   :expected :passed}])
+
+^{:refer code.test.registry/fact-matches?}
+(Test/check
+ [{:name "fact-matches? applies selector and metadata filters"
+   :test (fn [] [(registry/fact-matches? {:namespace 'code.test.registry-test :meta {}} 'code.test {})
+                 (registry/fact-matches? {:namespace 'other.test :meta {}} 'code.test {})])
+   :expected [true false]}])
+
+^{:refer code.test.registry/select}
+(Test/check
+ [{:name "select filters indexed facts by namespace selector"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             [(count (registry/select 'code.test {}))
+              (count (registry/select 'other {}))]
+             (finally (cleanup))))
+   :expected [1 0]}])
+
+^{:refer code.test.registry/missing}
+(Test/check
+ [{:name "missing identifies only unregistered declared descriptions"
+   :test (fn []
+           (try
+             (registry/register fixture-namespace (fixture "one" 1))
+             (registry/missing fixture-namespace ["one" "two"])
+             (finally (cleanup))))
+   :expected ["two"]}])

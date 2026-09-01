@@ -1,0 +1,199 @@
+(ns postgres.core.graph-insert-test
+  (:require [postgres.core.graph-insert :as insert]
+            [postgres.core.impl-insert :as impl]))
+
+(def user-schema
+  {:id [{:type :uuid :primary true :required true :order 0}]
+   :name [{:type :text :order 1}]})
+
+(def schema {:tree {:User user-schema}})
+
+(def user-entry
+  {:id 'User
+   :module 'demo
+   :table-schema user-schema
+   :schema schema})
+
+(def options {:schema schema :module 'demo})
+(def prepared [user-entry user-schema options])
+(def tree-data {:id "root" :children [{:id "child-1"} {:id "child-2"}]})
+
+^{:refer postgres.core.graph-insert/annotate-value}
+(Test/check
+ [{:name "annotates nested maps and vectors in depth-first order"
+   :test (fn [] (let [output (insert/annotate-value tree-data (atom 0))]
+                  [(insert/graph-id output)
+                   (insert/graph-data? output)
+                   (insert/graph-id (:children output))
+                   (insert/graph-id (nth (:children output) 0))
+                   (insert/graph-id (nth (:children output) 1))]))
+   :expected [0 nil 1 2 3]}])
+
+^{:refer postgres.core.graph-insert/insert-walk-ids}
+(Test/check
+ [{:name "starts graph annotation with a fresh deterministic counter"
+   :test (fn [] (let [output (insert/insert-walk-ids {:User {:name "Ada"}})]
+                  [(insert/graph-id output)
+                   (insert/graph-data? output)
+                   (insert/graph-id (:User output))
+                   (insert/graph-data? (:User output))]))
+   :expected [0 true 1 true]}])
+
+^{:refer postgres.core.graph-insert/graph-data?}
+(Test/check
+ [{:name "identifies wrapper maps that carry graph data"
+   :test (fn [] [(insert/graph-data? (insert/insert-walk-ids {:User {:name "Ada"}}))
+                 (insert/graph-data? (insert/insert-walk-ids {:id "u-1"}))])
+   :expected [true nil]}])
+
+^{:refer postgres.core.graph-insert/graph-id}
+(Test/check
+ [{:name "reads the graph identifier metadata"
+   :test (fn [] [(insert/graph-id (insert/insert-walk-ids {:User {:name "Ada"}}))
+                 (insert/graph-id {:plain true})])
+   :expected [0 nil]}])
+
+^{:refer postgres.core.graph-insert/collect-graph!}
+(Test/check
+ [{:name "collects parent-to-child graph dependencies"
+   :test (fn [] (let [lookup (atom {})
+                      data (insert/insert-walk-ids tree-data)]
+                  (insert/collect-graph! lookup data)
+                  (deref lookup)))
+   :expected {0 {:children 1}
+              1 [2 3]
+              2 {}
+              3 {}}}])
+
+^{:refer postgres.core.graph-insert/insert-generate-graph-tree}
+(Test/check
+ [{:name "returns annotated data and its dependency graph"
+   :test (fn [] (let [output (insert/insert-generate-graph-tree
+                              (insert/insert-walk-ids tree-data))]
+                  [(insert/graph-id (first output))
+                   (second output)]))
+   :expected [0 {0 {:children 1}
+                 1 [2 3]
+                 2 {}
+                 3 {}}]}])
+
+^{:refer postgres.core.graph-insert/collect-data!}
+(Test/check
+ [{:name "associates concrete row identifiers with graph identifiers"
+   :test (fn [] (let [lookup (atom {})
+                      data (insert/insert-walk-ids tree-data)]
+                  (insert/collect-data! lookup data)
+                  (deref lookup)))
+   :expected {"root" 0 "child-1" 2 "child-2" 3}}])
+
+^{:refer postgres.core.graph-insert/dependency-values}
+(Test/check
+ [{:name "normalizes vector map and scalar dependency representations"
+    :test (fn [] [(insert/dependency-values [:a :b])
+                 (let [values (insert/dependency-values {:left :a :right :b})]
+                   [(count values) (or (= :a (first values)) (= :b (first values)))])
+                 (insert/dependency-values :none)])
+   :expected [[:a :b] [2 true] []]}])
+
+^{:refer postgres.core.graph-insert/topo-visit!}
+(Test/check
+ [{:name "orders dependencies before parents and reports graph cycles"
+   :test (fn [] (let [visiting (atom #{})
+                      visited (atom #{})
+                      output (atom [])]
+                  (insert/topo-visit! {:root [:child] :child []}
+                                      :root visiting visited output)
+                  [(deref output)
+                   (try (insert/topo-visit! {:a [:a]} :a (atom #{}) (atom #{}) (atom []))
+                        :no-error
+                        (catch error :cycle))]))
+   :expected [[:child :root] :cycle]}])
+
+^{:refer postgres.core.graph-insert/insert-associate-graph-data}
+(Test/check
+ [{:name "combines dependency order symbols and concrete identifier lookup"
+   :test (fn [] (let [generated (insert/insert-generate-graph-tree
+                                 (insert/insert-walk-ids tree-data))
+                      output (insert/insert-associate-graph-data (first generated)
+                                                                  (second generated))]
+                  [(count (first output))
+                   (get (second output) 0)
+                   (get (nth output 2) "child-2")]))
+   :expected [4 'gid_0 3]}])
+
+^{:refer postgres.core.graph-insert/table-entry}
+(Test/check
+ [{:name "uses registered table entries or builds portable defaults"
+   :test (fn [] [(insert/table-entry :User options user-schema)
+                 (insert/table-entry :User {:entries {:User {:id 'Registered}}} user-schema)])
+   :expected [{:id 'User :module 'demo :table-schema user-schema}
+              {:id 'Registered}]}])
+
+^{:refer postgres.core.graph-insert/declaration-data}
+(Test/check
+ [{:name "pairs generated graph symbols with raw INSERT forms"
+   :test (fn [] (let [data (insert/insert-walk-ids {:User {:id "u-1" :name "Ada"}})
+                      generated (insert/insert-generate-graph-tree data)
+                      associated (insert/insert-associate-graph-data data (second generated))
+                      output (insert/declaration-data data {} options
+                                                      (nth associated 2) (second associated))]
+                  [(count output) (first output) (first (second output))]))
+   :expected [2 'gid_0 :insert]}])
+
+^{:refer postgres.core.graph-insert/reconstruction-data}
+(Test/check
+ [{:name "reconstructs map and vector relationships from dependency symbols"
+   :test (fn [] (let [output (insert/reconstruction-data
+                              {:parent {:child :child}
+                               :children [:child-a :child-b]}
+                              [:parent :children]
+                              {:parent 'p :child 'c :children 'cs
+                               :child-a 'a :child-b 'b})]
+                  [(count output)
+                   (first output)
+                   (first (second output))
+                   (nth output 2)
+                   (first (nth output 3))]))
+   :expected [4 '_ := 'cs 'js]}])
+
+^{:refer postgres.core.graph-insert/insert-gen-sql-assign}
+(Test/check
+ [{:name "builds assignment-capable INSERT graph forms"
+   :test (fn [] (let [form (insert/insert-gen-sql-assign
+                            {:User {:id "u-1" :name "Ada"}} {} options 'result)]
+                  [(first form)
+                   (first (second form))
+                   (first (nth form 2))
+                   (nth (nth form 2) 2)]))
+   :expected ['let 'gid_0 :select 'result]}])
+
+^{:refer postgres.core.graph-insert/insert-gen-sql}
+(Test/check
+ [{:name "marks generated graph INSERT forms with their assignment function"
+   :test (fn [] (let [form (insert/insert-gen-sql {:User {:id "u-1" :name "Ada"}}
+                                                {} options)]
+                  [(get (meta form) :assign/fn) (first form) (nth (nth form 2) 2)]))
+   :expected ['postgres.core.graph-insert/insert-gen-sql-assign 'let nil]}])
+
+^{:refer postgres.core.graph-insert/insert-fn-raw}
+(Test/check
+ [{:name "links portable table data before generating raw INSERT forms"
+   :test (fn [] (let [form (insert/insert-fn-raw prepared {:id "u-1" :name "Ada"} {})]
+                  [(get (meta form) :assign/fn) (first form)]))
+   :expected ['postgres.core.graph-insert/insert-gen-sql-assign 'let]}])
+
+^{:refer postgres.core.graph-insert/insert-fn}
+(Test/check
+ [{:name "prepares direct portable table entries before graph INSERT generation"
+   :test (fn [] (let [form (insert/insert-fn user-entry {:id "u-1" :name "Ada"} {})]
+                  [(get (meta form) :assign/fn) (first form)]))
+   :expected ['postgres.core.graph-insert/insert-gen-sql-assign 'let]}])
+
+(let [safe (fn [f]
+             (try (f)
+                  (catch error [:error error])))]
+  (throw
+   (ex :generic
+       {:ex/message "graph-insert-debug"
+        :output [(safe (fn [] (impl/t-insert-map user-schema {:id "u-1" :name "Ada"} {} options)))
+                 (safe (fn [] (impl/t-insert-raw prepared {:id "u-1" :name "Ada"} {})))]})))

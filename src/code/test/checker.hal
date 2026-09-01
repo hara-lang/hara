@@ -1,0 +1,121 @@
+(ns code.test.checker
+  (:config {:role :internal}))
+
+(defn ^{:public true} checker
+  "Creates a portable matcher with a process-local predicate."
+  [checker-type form matches]
+  {:checker/type checker-type
+   :checker/form form
+   :checker/matches matches})
+
+(defn ^{:public true} checker?
+  [value]
+  (and (map? value)
+       (keyword? (:checker/type value))
+       (has? value :checker/form)
+       (function? (:checker/matches value))))
+
+(defn ^{:public true} checker-view
+  "Removes the process-local predicate before exposing expected matcher data."
+  [value]
+  (if (checker? value)
+    (dissoc value :checker/matches)
+    value))
+
+(defn ^{:public true} matches?
+  [expected actual]
+  (if (checker? expected)
+    ((:checker/matches expected) actual)
+    (= expected actual)))
+
+(defn ^{:public true} exactly
+  [value]
+  (checker :exactly value (fn [actual] (= actual value))))
+
+(defn ^{:public true} satisfies
+  [predicate]
+  (checker :satisfies predicate
+           (fn [actual]
+             (cond (= predicate actual) true
+                   (set? predicate) (has? predicate actual)
+                   (regexp? predicate) (not (nil? (re-find predicate (str actual))))
+                   (function? predicate) (predicate actual)
+                   :else false))))
+
+(defn ^{:public true} approx
+  "Creates a numeric matcher with an inclusive absolute tolerance."
+  ([value] (approx value 0.001))
+  ([value threshold]
+   (checker
+    :approx
+    {:value value :threshold threshold}
+    (fn [actual]
+      (and (number? actual)
+           (<= (- value threshold) actual)
+           (<= actual (+ value threshold)))))))
+
+(defn ^{:public true} stores
+  "Creates a matcher for a dereferenceable value's current contents."
+  [expected]
+  (checker
+   :stores
+   expected
+   (fn [actual]
+     (try
+       (matches? expected (deref actual))
+       (catch error false)))))
+
+(defn ^{:public true} anything
+  []
+  (checker :anything :any (fn [_] true)))
+
+(def +capture+ (atom nil))
+
+(defn ^{:public true} capture-value
+  "Returns the last value captured by the process-local capture matcher."
+  []
+  (deref +capture+))
+
+(defmacro ^{:public true} capture
+  "Creates a matcher that records its actual value. With an atom holder, the
+  holder receives the captured value; the one-argument form treats its input
+  as an expected matcher."
+  ([]
+   `(fn [actual#]
+      (reset! code.test.checker/+capture+ actual#)
+      true))
+  ([expected]
+   `(fn [actual#]
+      (reset! code.test.checker/+capture+ actual#)
+      (code.test.checker/matches? ~expected actual#)))
+  ([holder expected]
+   `(fn [actual#]
+      (reset! ~holder actual#)
+      (reset! code.test.checker/+capture+ actual#)
+      (code.test.checker/matches? ~expected actual#))))
+
+(defn ^{:public true} throws
+  ([] (throws nil nil))
+  ([error-type] (throws error-type nil))
+  ([error-type message]
+   (checker
+    :throws
+    {:type error-type :message message}
+    (fn [actual]
+      (try
+        (and (or (nil? error-type) (= error-type (Base/type actual)))
+             (or (nil? message) (= message (ex-message actual))))
+        (catch error false))))))
+
+(defn ^{:public true} throws-info
+  ([] (throws-info {}))
+  ([expected-data]
+   (checker
+    :throws-info
+    expected-data
+    (fn [actual]
+      (try
+        (every? (fn [entry]
+                  (= (val entry) (get (ex-data actual) (key entry))))
+                expected-data)
+        (catch error false))))))

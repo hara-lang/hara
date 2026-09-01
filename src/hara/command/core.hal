@@ -1,0 +1,73 @@
+(ns hara.command.core
+  (:config {:role :internal})
+  (:require [hara.command.version :as version :lazy true]
+            [hara.command.help :as help :lazy true]
+            [hara.command.headless :as headless :lazy true]
+            [hara.command.run :as run :lazy true]
+            [hara.command.test :as test :lazy true]
+            [hara.command.specs :as specs :lazy true]))
+
+(defn application
+  "Creates one ephemeral Hara command application for an argv invocation."
+  []
+  (let [app (Command/create {:id 'hara/command
+                             :desc "Hara command"})]
+    (Command/install app
+                                {:id :version
+                                 :path ["--version"]
+                                 :aliases [["version"]]
+                                 :desc "Print the Hara version"
+                                 :handler (fn [request] (version/response request))})
+    (Command/install app
+                                {:id :help
+                                 :path []
+                                 :aliases [["help"] ["--help"]]
+                                 :desc "Print command usage"
+                                 :handler (fn [request] (help/response request))})
+    (Command/install app
+                                {:id :headless
+                                 :path ["headless"]
+                                 :desc "Start the loopback RESP companion"
+                                 :options [{:id :project :type :string}
+                                           {:id :root :type :string}
+                                           {:id :host :type :string}
+                                           {:id :port :type :string}]
+                                 :handler (fn [request] (headless/response request))})
+    (Command/install app
+                                {:id :run
+                                 :path ["run"]
+                                 :desc "Run namespace/main with trailing arguments"
+                                 :passthrough? true
+                                 :arguments [{:id :namespace :type :string}
+                                             {:id :argv :type :string :required? false :many? true}]
+                                 :handler (fn [request] (run/response request))})
+    (Command/install app
+                                {:id :test
+                                 :path ["test"]
+                                 :desc "Run registered code.test facts"
+                                 :arguments [{:id :argv :type :string :required? false :many? true}]
+                                 :handler (fn [request] (test/response request))})
+    (Command/install app
+                                {:id :specs-test
+                                 :path ["specs" "test"]
+                                 :desc "Run a packaged specification conformance target"
+                                 :arguments [{:id :target :type :string}]
+                                 :handler (fn [request] (specs/test-response request))})
+    app))
+
+(defn normalise-argv
+  "Moves a legacy trailing headless command before its global options."
+  [argv]
+  (cond
+    (= (last argv) "headless") (vec (concat ["headless"] (drop-last argv)))
+    :else argv))
+
+(defn ^{:public true} main
+  "Runs argv through lazy Command routes and declares the RESP host action."
+  [argv]
+  (let [argv (normalise-argv argv)
+        response (Command/run (application) {:argv argv})]
+    (cond
+      (and (= (first argv) "headless")
+           (= (:exit response) 0)) {:hara/host-action :resp}
+      :else response)))

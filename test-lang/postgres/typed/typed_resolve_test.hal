@@ -1,0 +1,73 @@
+(ns postgres.typed.typed-resolve-test
+  (:require [postgres.typed.typed-common :as types]
+            [postgres.typed.typed-resolve :as resolve]))
+
+^{:refer postgres.typed.typed-resolve/canonical-fn-sym}
+(Test/check
+ [{:name "canonicalizes only legacy PostgreSQL runtime function symbols"
+   :test (fn []
+           [(resolve/canonical-fn-sym 'rt.postgres.foo/bar)
+            (resolve/canonical-fn-sym 'rt.postgres/one)
+            (resolve/canonical-fn-sym 'other.namespace/foo)
+            (resolve/canonical-fn-sym 'plain)
+            (resolve/canonical-fn-sym :keyword)
+            (resolve/canonical-fn-sym nil)])
+   :expected ['lang.runtime.postgres.foo/bar 'rt.postgres/one
+              'other.namespace/foo 'plain :keyword nil]}])
+
+^{:refer postgres.typed.typed-resolve/app-name-from-static}
+(Test/check
+ [{:name "normalizes vector and scalar static application values"
+   :test (fn []
+           [(resolve/app-name-from-static ["demo"])
+            (resolve/app-name-from-static "demo")
+            (resolve/app-name-from-static nil)])
+   :expected ["demo" "demo" nil]}])
+
+^{:refer postgres.typed.typed-resolve/fn-ref->fn-sym}
+(Test/check
+ [{:name "resolves unqualified and dereferenceable function references"
+   :test (fn []
+           [(resolve/fn-ref->fn-sym 'blank?)
+            (resolve/fn-ref->fn-sym
+             (atom {:module 'demo.rpc :id 'find-user}))
+            (resolve/fn-ref->fn-sym
+             (atom {:id 'demo.rpc/find-user}))])
+   :expected ['postgres.typed.typed-resolve/blank?
+              'demo.rpc/find-user
+              'demo.rpc/find-user]}])
+
+^{:refer postgres.typed.typed-resolve/fn-ref->app-name}
+(Test/check
+ [{:name "reads application names from definitions and pointers"
+   :test (fn []
+           [(resolve/fn-ref->app-name nil {:body-meta {:static/application ["demo"]}})
+            (resolve/fn-ref->app-name (atom {:static/application ["pointer-app"]}) {})])
+   :expected ["demo" "pointer-app"]}])
+
+^{:refer postgres.typed.typed-resolve/resolve-called-fn}
+(Test/check
+ [{:name "resolves aliases while leaving qualified misses strict"
+   :test (fn []
+           (do (types/clear-registry)
+               (let [fn-def (types/make-fn-def "demo.rpc" "user-set-handle" [] [:jsonb] {} nil)]
+                 (types/register-type 'demo.rpc/user-set-handle fn-def)
+                 [(first (resolve/resolve-called-fn
+                          'rpc/user-set-handle {'rpc 'demo.rpc}))
+                  (types/fn-def?
+                   (second (resolve/resolve-called-fn
+                            'rpc/user-set-handle {'rpc 'demo.rpc})))
+                  (resolve/resolve-called-fn 'other/user-set-handle {})])))
+   :expected ['demo.rpc/user-set-handle true ['other/user-set-handle nil]]}])
+
+^{:refer postgres.typed.typed-resolve/resolve-function-def}
+(Test/check
+ [{:name "resolves direct registered and unqualified function definitions"
+   :test (fn []
+           (do (types/clear-registry)
+               (let [fn-def (types/make-fn-def "demo" "inner" [] [:jsonb] {} nil)]
+                 (types/register-type 'demo/inner fn-def)
+                 [(types/fn-def? (second (resolve/resolve-called-fn 'inner {})))
+                  (types/fn-def? (resolve/resolve-function-def fn-def))
+                  (types/fn-def? (resolve/resolve-function-def 'demo/inner))])))
+   :expected [true true true]}])

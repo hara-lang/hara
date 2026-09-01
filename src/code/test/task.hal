@@ -1,0 +1,114 @@
+(ns code.test.task
+  (:config {:role :internal})
+  (:require [code.test.context :as context]
+            [code.test.registry :as registry]
+            [code.test.report :as report]
+            [work.flow.task :as task]))
+
+(defn ^{:public true} lifecycle-error
+  [name error]
+  {:namespace :code.test
+   :desc name
+   :status :error
+   :checks []
+   :elapsed 0
+   :error (str error)})
+
+(defn ^{:public true} run-facts
+  "Runs facts in deterministic registration order, applying native Test's
+  before/after-each and cancellation hooks to every fact."
+  [facts options]
+  (let [before-all (:before-all options)
+        after-all (:after-all options)
+        fact-options (assoc options :cancelled (fn [_] (context/interrupted?)))]
+    (try
+      (if before-all (before-all))
+      (let [results (vec (map (fn [fact] (Test/run-fact fact fact-options)) facts))]
+        (Test/summary results))
+      (catch error
+        (Test/summary [(lifecycle-error "code.test before-all" error)]) )
+      (finally
+        (if after-all (after-all))))))
+
+(defn ^{:public true} run-selected
+  "Runs facts selected by the v1 selector and metadata filters."
+  [selector-value options]
+  (let [facts (registry/select selector-value options)
+        summary (run-facts facts options)
+        report-value (report/create summary)
+        persisted (if (:persist? options)
+                    (report/write (or (:root options) ".") options report-value)
+                    nil)
+        summary (if persisted (assoc summary :report/path persisted) summary)]
+    (context/record-latest summary)
+    summary))
+
+(defn ^{:public true} task-input
+  [input context]
+  (run-selected (:selector input) (or (:options input) {})))
+
+(defn ^{:public true} runner-work
+  "Builds the portable Work task used by all code.test run entry points."
+  []
+  (task/compile {:id :code.test/run :run task-input}))
+
+(def ^{:public true} +runner-work+ (runner-work))
+
+(defn ^{:public true} run
+  ([] (run :all {}))
+  ([selector-value] (run selector-value {}))
+  ([selector-value options]
+   (dissoc
+    (deref (task/invoke +runner-work+
+                         {:selector selector-value :options (or options {})}))
+    :item/input :item/id :item/prepared :item/display)))
+
+(defn ^{:public true} run:interrupt
+  []
+  (context/interrupt!))
+
+(defn ^{:public true} run:current
+  ([] (run :all {}))
+  ([options] (run :all options)))
+
+(defn ^{:public true} run:test
+  [description options]
+  (run :all (assoc (or options {}) :descriptions #{description})))
+
+(defn ^{:public true} run:load
+  "Returns the registered facts selected for a CLI-owned source load."
+  [selector-value options]
+  (registry/select selector-value options))
+
+(defn ^{:public true} run:unload
+  "Returns the registered facts selected for a CLI-owned source unload."
+  [selector-value options]
+  (registry/select selector-value options))
+
+(defn ^{:public true} run:report
+  [path options]
+  (let [saved (report/read path)]
+    (run :all (assoc (or options {})
+                     :descriptions (report/failed-descriptions saved)))))
+
+(defn ^{:public true} run-errored
+  ([] (run-errored {}))
+  ([options]
+   (let [latest (context/latest)
+         descriptions (set (map :desc
+                                (filter (fn [result]
+                                          (not (= :passed (:status result))) )
+                                        (:results latest))))]
+     (run :all (assoc (or options {}) :descriptions descriptions)))))
+
+(defn ^{:public true} print-options
+  ([] #{:help :current :default :disable :all})
+  ([options]
+   (cond (= options :help) (print-options)
+         (= options :current) (context/print-options)
+         (= options :default) (context/set-print-options #{:print-throw :print-failed :print-timeout :print-bulk})
+         (= options :disable) (context/set-print-options #{})
+         (= options :all) (context/set-print-options #{:print-throw :print-success :print-timeout :print-facts :print-facts-success :print-failed :print-bulk})
+         (set? options) (context/set-print-options options)
+         :else (throw (ex :argument {:options options}
+                          :ex/message "code.test print options must be a known mode or set")))))

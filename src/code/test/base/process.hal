@@ -1,0 +1,30 @@
+(ns code.test.base.process
+  (:config {:role :internal})
+  (:require [code.test.checker :as checker]
+            [code.test.result :as result]))
+
+(defn ^{:public true} error-result
+  "Converts evaluation failure into a native error Result with portable expectation data."
+  [expected error]
+  (Test/result
+   "code.test/check"
+   nil
+   (checker/checker-view expected)
+   (Result/create
+    :error
+    error
+    {:test {:actual nil :expected (checker/checker-view expected)}
+     :failures []})))
+
+(defn ^{:public true} check
+  "Evaluates a thunk once and compares its outcome against a code.test matcher."
+  [thunk expected]
+  (try
+    (let [actual (thunk)
+          comparison (result/compare actual expected)]
+      (result/comparison-result "code.test/check" actual expected comparison))
+    (catch error
+      (if (checker/matches? expected error)
+        (let [comparison (result/compare error expected)]
+          (result/comparison-result "code.test/check" error expected comparison))
+        (error-result expected error)))))

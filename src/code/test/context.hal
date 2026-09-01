@@ -1,0 +1,89 @@
+(ns code.test.context
+  (:config {:role :internal})
+  (:require [code.test.registry :as registry]))
+
+(def +defaults+
+  {:interrupted? false
+   :latest nil
+   :print #{:print-throw :print-failed :print-timeout :print-bulk}
+   :settings {}})
+
+(def +state+ (atom +defaults+))
+
+(defn ^{:public true} state
+  "Returns the process-local code.test control state."
+  []
+  (deref +state+))
+
+(defn ^{:public true} reset
+  "Idempotently restores code.test control state to its documented baseline."
+  []
+  (reset! +state+ +defaults+))
+
+(defn ^{:public true} configure
+  "Merges explicit run configuration into the current context."
+  [options]
+  (swap! +state+ merge (or options {})))
+
+(defn ^{:public true} latest
+  []
+  (:latest (state)))
+
+(defn ^{:public true} record-latest
+  [result]
+  (swap! +state+ assoc :latest result)
+  result)
+
+(defn ^{:public true} print-options
+  []
+  (:print (state)))
+
+(defn ^{:public true} set-print-options
+  [options]
+  (swap! +state+ assoc :print options)
+  options)
+
+(defn ^{:public true} interrupt!
+  []
+  (swap! +state+ assoc :interrupted? true)
+  true)
+
+(defn ^{:public true} interrupted?
+  []
+  (:interrupted? (state)))
+
+(defn ^{:public true} clear-interrupt!
+  []
+  (swap! +state+ assoc :interrupted? false)
+  false)
+
+(defn ^{:public true} snapshot
+  "Captures the current namespace's native facts, code.test selector index,
+  and local control state."
+  []
+  {:facts (Test/facts)
+   :registry (registry/snapshot)
+   :state (state)})
+
+(defn ^{:public true} restore
+  "Restores a snapshot taken by snapshot. The fact registry is restored in
+  registration order, making nested contexts deterministic."
+  [snapshot]
+  (Test/purge)
+  (reduce (fn [_ fact] (Test/register fact)) nil (:facts snapshot))
+  (registry/restore (:registry snapshot))
+  (reset! +state+ (:state snapshot))
+  (state))
+
+(defmacro ^{:public true} with-new-context
+  "Runs body with a fresh code.test context and restores the prior Test facts
+  index, and control state on every exit path. Native Test currently scopes a
+  namespace snapshot rather than a host-level Test/with-context binding."
+  [options & body]
+  `(let [snapshot# (code.test.context/snapshot)]
+     (try
+       (code.test.context/reset)
+       (code.test.context/configure ~options)
+       ~@body
+       (finally
+         (code.test.context/restore snapshot#)))))

@@ -1,0 +1,154 @@
+(ns postgres.typed.typed-common-test
+  (:require [postgres.typed.typed-common :as types]))
+
+^{:refer postgres.typed.typed-common/normalize-key}
+(Test/check
+  [{:name "normalizes PostgreSQL identifiers and preserves literal keys"
+    :test (fn []
+            [(types/normalize-key :foo-bar)
+             (types/normalize-key (symbol "m"))
+             (types/emitted-key "literal-key")
+             (types/emitted-key 42)
+             (types/typescript-key :foo-bar)
+             (types/typescript-key "two words")])
+    :expected ["foo_bar" "m" "literal-key" "42" "foo_bar" "\"two words\""]}])
+
+^{:refer postgres.typed.typed-common/make-type-ref}
+(Test/check
+ [{:name "constructs each typed model record"
+   :test (fn []
+           [(types/type-ref? (types/make-type-ref :primitive nil :uuid))
+            (types/table-def? (types/make-table-def :core "User" [] :id))
+            (types/enum-def? (types/make-enum-def :core "Status" [:active] nil))
+            (types/fn-def? (types/make-fn-def :core "get-user" [] :jsonb {} nil))
+            (types/jsonb-shape? (types/make-jsonb-shape {:id :uuid}))
+            (types/jsonb-path? (types/make-jsonb-path [:profile] 'm))
+            (types/jsonb-merge? (types/make-jsonb-merge :left :right))
+            (types/jsonb-array? (types/make-jsonb-array :uuid))
+            (types/type-union? (types/make-type-union [:uuid :text]))
+            (types/binding-context? (types/make-context))])
+   :expected [true true true true true true true true true true]}])
+
+^{:refer postgres.typed.typed-common/primitive?}
+(Test/check
+ [{:name "classifies primitive table enum and reference types"
+   :test (fn []
+           [(types/primitive? :uuid)
+            (types/primitive? :unknown)
+            (types/table? (types/make-type-ref :table :core "User"))
+            (types/enum? (types/make-type-ref :enum :core "Status"))
+            (types/ref? (types/make-type-ref :ref nil "User"))])
+   :expected [true false true true true]}])
+
+^{:refer postgres.typed.typed-common/register-type}
+(Test/check
+ [{:name "registers valid type keys and rejects malformed keys"
+   :test (fn []
+           (do (types/clear-registry)
+               [(types/valid-key? 'demo/User)
+                (types/valid-key? 'User)
+                (do (types/register-type 'demo/User
+                                         (types/make-type-ref :table :demo "User"))
+                    (:name (types/get-type 'demo/User)))
+                (try (types/register-type :demo/User :bad)
+                     false
+                     (catch error true))
+                (do (types/clear-registry) (types/get-type 'demo/User))]))
+   :expected [true false "User" true nil]}])
+
+^{:refer postgres.typed.typed-common/analysis->typed}
+(Test/check
+ [{:name "builds and merges typed application payloads"
+   :test (fn []
+           (let [table (types/make-table-def "demo" "User" [] :id)
+                 enum (types/make-enum-def "demo" "Status" [:active] nil)
+                 function (types/make-fn-def "demo" "get-user" [] :jsonb {} nil)
+                 typed (types/analysis->typed {:tables [table]
+                                                :enums [enum]
+                                                :functions [function]})]
+             [[(keys (:tables typed))
+               (keys (:enums typed))
+               (keys (:functions typed))]
+              (types/merge-typed
+               {:tables {'a/Table :table} :enums {} :functions {}}
+               {:tables {} :enums {'a/Status :enum} :functions {'a/work :fn}})]))
+   :expected [[['demo/User] ['demo/Status] ['demo/get-user]]
+              {:tables {'a/Table :table}
+               :enums {'a/Status :enum}
+               :functions {'a/work :fn}}]}])
+
+^{:refer postgres.typed.typed-common/make-column-def}
+(Test/check
+ [{:name "retains typed column and table extension options"
+   :test (fn []
+           (let [column (types/make-column-def :email :text {:required true :unique true})
+                 table (types/make-table-def :core "User" [column] :id
+                                             {:audit true} {:entity :user} nil)]
+             [(:name column) (:type column) (:required column) (:unique column)
+              (:name table) (:addons table) (:entity-meta table)
+              (count (:types (types/make-type-union [:uuid :uuid :text])))]))
+   :expected [:email :text true true "User" {:audit true} {:entity :user} 2]}])
+
+^{:refer postgres.typed.typed-common/add-binding}
+(Test/check
+ [{:name "inherits typed bindings and JSONB shapes across scopes"
+   :test (fn []
+           (let [shape (types/make-jsonb-shape {:id {:type :uuid}})
+                 parent (types/add-binding (types/make-context) 'user :jsonb :shape shape)
+                 child (types/push-scope parent)]
+             [(types/lookup-binding child 'user)
+              (:fields (types/get-var-shape child 'user))
+              (:bindings (types/pop-scope child))]))
+   :expected [:jsonb {:id {:type :uuid}} {'user :jsonb}]}])
+
+^{:refer postgres.typed.typed-common/set-var-path}
+(Test/check
+ [{:name "resolves JSONB shapes by recorded paths"
+   :test (fn []
+           (let [profile (types/make-jsonb-shape {:name {:type :text}})
+                 root (types/make-jsonb-shape {:profile {:type :jsonb :shape profile}
+                                               :detail {:type :jsonb}})
+                 path (types/make-jsonb-path [:profile] 'payload)
+                 context (types/set-var-path
+                          (types/set-var-shape (types/make-context) 'payload root)
+                          'profile path)]
+             [(:fields (types/shape-at-path root [:profile]))
+              (:fields (types/shape-at-path root [:detail]))
+              (:fields (types/get-var-shape context 'profile))]))
+   :expected [{:name {:type :text}} {} {:name {:type :text}}]}])
+
+^{:refer postgres.typed.typed-common/add-key}
+(Test/check
+ [{:name "adds and reads JSONB fields"
+   :test (fn []
+           (let [shape (types/add-key (types/empty-jsonb-shape) :status {:type :boolean})]
+             [(types/get-key-type shape :status)
+              (types/has-key? shape :status)
+              (types/has-key? shape :missing)]))
+   :expected [{:type :boolean} true false]}])
+
+^{:refer postgres.typed.typed-common/merge-shapes}
+(Test/check
+ [{:name "merges compatible JSONB shapes and retains type conflicts"
+   :test (fn []
+           (let [left (types/make-jsonb-shape {:id :uuid} :User :high)
+                 right (types/make-jsonb-shape {:name :text} :User :medium)
+                 merged (types/merge-shapes left right)
+                 conflict (types/merge-shapes
+                           (types/make-jsonb-shape {:id :uuid})
+                           (types/make-jsonb-shape {:id :text}))]
+             [(:fields merged) (:source-table merged) (:confidence merged)
+              (types/type-union? (get-in conflict [:fields :id]))]))
+   :expected [{:id :uuid :name :text} :User :medium true]}])
+
+^{:refer postgres.typed.typed-common/flatten-shape}
+(Test/check
+ [{:name "flattens JSONB merge and ordinary shape values"
+   :test (fn []
+           [(types/flatten-shape
+             (types/make-jsonb-merge
+              (types/make-jsonb-shape {:id :uuid})
+              (types/make-jsonb-shape {:name :text})))
+            (types/flatten-shape {:fields {:x :uuid}})
+            (types/flatten-shape nil)])
+   :expected [{:id :uuid :name :text} {:x :uuid} {}]}])

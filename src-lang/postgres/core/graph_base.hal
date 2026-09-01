@@ -1,0 +1,232 @@
+(ns postgres.core.graph-base
+  (:config {})
+  (:require [lang.common.util :as util]
+            [postgres.core.impl-base :as base]
+            [postgres.core.impl-main :as main]
+            [postgres.core.impl-update :as update]))
+
+(defn attrs
+  "Returns a column attribute map from either archive schema representation."
+  [schema key]
+  (let [entry (get schema key)]
+    (if (vector? entry) (first entry) entry)))
+
+(defn normalize-key
+  "Normalizes a PostgreSQL input key to Foundation's dashed keyword spelling."
+  [key]
+  (if (string? key)
+    (let [plain (if (str/ends-with? key "_id")
+                  (str/slice key 0 (- (str/length key) 3))
+                  key)]
+      (keyword (util/sym-default-inverse-str plain)))
+    key))
+
+(defn linked-prepared
+  "Builds the prepared schema tuple for a linked table reference."
+  [link options]
+  (let [schema (:schema options)
+        table-key (keyword (name (:id link)))
+        table-schema (get-in schema [:tree table-key])
+        entry (merge link {:table-schema table-schema})]
+    [entry table-schema options]))
+
+(declare where-fn)
+
+(defn prepare
+  "Prepares an archive table specification for graph query construction."
+  [spec]
+  (let [prepared (base/prep-table spec true {})
+        entry (first prepared)
+        options (nth prepared 2)]
+    [entry (second prepared)
+     (if (:schema entry)
+       (assoc options :schema (:schema entry))
+       options)]))
+
+(defn where-pair-ref
+  "Constructs a graph-aware predicate for a reference column."
+  [pair where-transform attr options]
+  (let [key (first pair)
+        value (second pair)
+        ref (:ref attr)
+        direction (:type ref)
+        link (:link ref)
+        reverse-value (:rval ref)]
+    (cond
+      (= value :*) [key :*]
+
+      (and (= :forward direction)
+           (not (map? value))
+           (not (util/hashvec? value)))
+      [key [:eq value]]
+
+      (and (= :forward direction)
+           (map? value)
+           (= [:id] (vec (keys value)))
+           (not (vector? (:id value))))
+      [key [:eq (:id value)]]
+
+      (and (= :forward direction)
+           (map? value)
+           (= [:id] (vec (keys value)))
+           (vector? (:id value)))
+      [key (:id value)]
+
+      :else
+      (let [prepared (linked-prepared link options)
+            linked-schema (second prepared)
+            nested (if (or (map? value) (util/hashvec? value))
+                     value
+                     {:id value})]
+        (if (= :reverse direction)
+          [:id [:in (main/t-select-raw
+                     prepared
+                     {:returning #{reverse-value}
+                      :where (where-transform linked-schema nested options)
+                      :as :raw})]]
+          (let [clause (where-transform linked-schema nested options)
+                multi (or (map? value) (set? value))]
+            [key [(if multi :in :eq)
+                  (main/t-id-raw
+                   prepared
+                   {:where clause :as :raw :single (not multi)})]]))))))
+
+(defn where-pair-fn
+  "Constructs one normalized graph WHERE pair."
+  [pair where-transform schema options]
+  (let [raw-key (first pair)
+        value (second pair)
+        key (normalize-key raw-key)
+        attr (attrs schema key)]
+    (if (nil? attr)
+      (throw (ex :not-found {:key key :allowed (keys schema)}
+                 :ex/message "Key not found"))
+      (if (= :ref (:type attr))
+        (where-pair-ref [key value] where-transform attr options)
+        [key (if (vector? value) value [:eq value])]))))
+
+(defn transform-pairs
+  "Transforms a sequence of input pairs through the graph predicate rules."
+  [schema input options]
+  (vec (map (fn [pair]
+              (where-pair-fn pair where-fn schema options))
+            input)))
+
+(defn pairs-output
+  "Retains ordinary maps for unique keys and hashvec form for repeated keys."
+  [pairs]
+  (let [seen (reduce (fn [output pair]
+                       (conj output (first pair)))
+                     #{}
+                     pairs)]
+    (if (= (count seen) (count pairs))
+      (reduce (fn [output pair]
+                (assoc output (first pair) (second pair)))
+              {}
+              pairs)
+      #{(vec (reduce (fn [output pair]
+                       (conj (conj output (first pair)) (second pair)))
+                     []
+                     pairs))})))
+
+(defn where-fn
+  "Constructs a graph-aware PostgreSQL WHERE clause from map or hashvec input."
+  [schema where options]
+  (cond
+    (map? where)
+    (pairs-output (transform-pairs schema where options))
+
+    (util/hashvec? where)
+    (base/t-where-hashvec
+     where
+     (fn [input]
+       (pairs-output (transform-pairs schema input options))))
+
+    (nil? where) nil
+
+    :else
+    (throw (ex :argument {:schema (keys schema) :input where}
+               :ex/message "Entry not valid"))))
+
+(defn id-where-fn
+  "Constructs graph predicates with reference keys rewritten as *_id columns."
+  [spec params]
+  (let [prepared (prepare spec)
+        schema (second prepared)
+        output (where-fn schema (:where params) (nth prepared 2))]
+    [(reduce-kv
+      (fn [result key value]
+        (assoc result
+               (if (= :ref (:type (attrs schema key)))
+                 (keyword (str (name key) "_id"))
+                 key)
+               value))
+      {}
+      output)]))
+
+(defn id-fn
+  "Constructs the graph ID query form."
+  [spec params]
+  (let [prepared (prepare spec)]
+    (main/t-id-raw
+     prepared
+     (assoc params :where
+            (where-fn (second prepared) (:where params) (nth prepared 2))))))
+
+(defn count-fn
+  "Constructs the graph count query form."
+  [spec params]
+  (let [prepared (prepare spec)]
+    (main/t-count-raw
+     prepared
+     (assoc params :where
+            (where-fn (second prepared) (:where params) (nth prepared 2))))))
+
+(defn exists-fn
+  "Constructs the graph existence query form."
+  [spec params]
+  (let [prepared (prepare spec)]
+    (main/t-exists-raw
+     prepared
+     (assoc params :where
+            (where-fn (second prepared) (:where params) (nth prepared 2))))))
+
+(defn select-fn-raw
+  "Constructs a graph SELECT from an already prepared table tuple."
+  [prepared params]
+  (main/t-select-raw
+   prepared
+   (assoc params :where
+          (where-fn (second prepared) (:where params) (nth prepared 2)))))
+
+(defn select-fn
+  "Constructs a graph SELECT form."
+  [spec params]
+  (select-fn-raw (prepare spec) params))
+
+(defn delete-fn
+  "Constructs a graph DELETE form."
+  [spec params]
+  (let [prepared (prepare spec)]
+    (main/t-delete-raw
+     prepared
+     (assoc params :where
+            (where-fn (second prepared) (:where params) (nth prepared 2))))))
+
+(defn update-fn
+  "Constructs a graph UPDATE form."
+  [spec params]
+  (let [prepared (prepare spec)]
+    (update/t-update-raw
+     prepared
+     (assoc params :where
+            (where-fn (second prepared) (:where params) (nth prepared 2))))))
+
+(defn modify-fn
+  "Constructs a graph MODIFY form."
+  [spec params]
+  (let [prepared (prepare spec)]
+    (update/t-modify-raw
+     prepared
+     (assoc params :where
+            (where-fn (second prepared) (:where params) (nth prepared 2))))))

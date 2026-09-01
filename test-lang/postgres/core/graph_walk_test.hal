@@ -1,0 +1,79 @@
+(ns postgres.core.graph-walk-test
+  (:require [postgres.core.graph-walk :as walk]))
+
+(def schema
+  {:tree
+   {:Cache {:id [{:type :uuid :primary true :order 0}]
+            :tasks [{:type :ref :ref {:type :reverse :ns :Task :rval :cache}
+                     :cardinality :many}]}
+    :Task {:id [{:type :uuid :primary true :order 0}]
+           :name [{:type :text :order 1}]
+           :cache [{:type :ref :order 2 :ref {:type :forward :ns :Cache}}]}}})
+
+^{:refer postgres.core.graph-walk/schema-attrs}
+(Test/check
+ [{:name "normalizes vector-backed schema attributes"
+   :test (fn []
+           [(walk/schema-attrs [{:type :uuid}])
+            (walk/schema-attrs {:type :text})
+            (walk/primary-key (get-in schema [:tree :Task]))
+            (walk/schema-table schema :Task)])
+   :expected [{:type :uuid} {:type :text} :id (get-in schema [:tree :Task])]}])
+
+^{:refer postgres.core.graph-walk/next-id}
+(Test/check
+ [{:name "creates typed synthetic primary-key symbols"
+   :test (fn []
+           (let [value (walk/next-id (atom 0) {:type :uuid :sql {:default "uuid"}})]
+             [(symbol? value) (:type (meta value)) (:sql (meta value))]))
+   :expected [true :uuid {:default "uuid"}]}])
+
+^{:refer postgres.core.graph-walk/link-data}
+(Test/check
+ [{:name "seeds missing keys and retains scalar references"
+   :test (fn []
+           (let [linked (walk/link-data {:Task {:name "one" :cache "c"}} schema)]
+             [(symbol? (get-in linked [:Task :id]))
+              (get-in linked [:Task :cache])]))
+   :expected [true "c"]}])
+
+^{:refer postgres.core.graph-walk/link-child}
+(Test/check
+ [{:name "propagates reverse parent keys into child rows"
+   :test (fn []
+           (let [linked (walk/link-data
+                         {:Cache {:id "c" :tasks [{:name "one"} {:name "two"}]}}
+                         schema)]
+             [(get-in linked [:Cache :tasks 0 :cache])
+              (symbol? (get-in linked [:Cache :tasks 0 :id]))]))
+   :expected ["c" true]}])
+
+^{:refer postgres.core.graph-walk/flatten-data}
+(Test/check
+ [{:name "flattens nested rows and top-level vectors by table"
+   :test (fn []
+           [(walk/flatten-data
+             {:Cache {:id "c" :tasks [{:id "t1" :name "one" :cache "c"}
+                                      {:id "t2" :name "two" :cache "c"}]}}
+             schema)
+            (walk/flatten-data {:Task [{:id "a" :name "one"}
+                                        {:id "b" :name "two"}]}
+                               schema)])
+   :expected [{:Cache [{:id "c"}]
+               :Task [{:id "t1" :name "one" :cache "c"}
+                      {:id "t2" :name "two" :cache "c"}]}
+              {:Task [{:id "a" :name "one"}
+                      {:id "b" :name "two"}]}]}])
+
+^{:refer postgres.core.graph-walk/wrap-seed-id}
+(Test/check
+ [{:name "wraps seed and output extension points without changing values"
+   :test (fn []
+           [(walk/wrap-link-attr identity)
+            ((walk/wrap-output identity) :value)
+            ((walk/wrap-sym-id (fn [data attr] [:wrapped data attr]))
+             'raw {:type :ref})
+            ((walk/wrap-seed-id (fn [data schema table state] data))
+             {:name "one"} (get-in schema [:tree :Task]) :Task
+             {:schema schema :counter (atom 0)})])
+   :expected [identity :value 'raw {:name "one" :id '?id-1}]}])

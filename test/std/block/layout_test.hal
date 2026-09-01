@@ -1,4 +1,4 @@
-(ns std.block.layout-compact-candidate-test
+(ns std.block.layout-test
   (:require [std.block.construct :as construct]
             [std.block.layout :as layout]))
 
@@ -78,3 +78,62 @@
 (Test/check [{:name "renders a simple call into one layout line"
               :test (fn [] (construct/get-lines (layout/layout-main '(+ 1 2 3))))
               :expected ["(+ 1 2 3)"]}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "formats a documented function declaration"
+              :test (fn [] (construct/get-lines (layout/layout-main '(defn calculate-sum "Calculates the sum of two numbers." [a b] (+ a b)))))
+              :expected ["(defn calculate-sum" "  \"Calculates the sum of two numbers.\"" "  [a b]" "  (+ a b))"]}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "formats a documented Postgres declaration"
+              :test (fn [] (construct/get-lines (layout/layout-main '(defn.pg create-user "Creates a user in Postgres." [db user-data] (pg/insert! db :users user-data)))))
+              :expected ["(defn.pg create-user" "  \"Creates a user in Postgres.\"" "  [db user-data]" "  (pg/insert! db" "    :users" "    user-data))"]}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "formats a local binding declaration"
+              :test (fn [] (construct/get-lines (layout/layout-main '(let [a 10 b 20] (println (+ a b))))))
+              :expected ["(let [a 10 b 20]" "  (println (+ a b)))"]}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "formats a component lifecycle form"
+              :test (fn [] (construct/get-lines (layout/layout-main '(component/with [sys system] (start sys) (run sys)))))
+              :expected ["(component/with [sys system]" "  (start sys)" "  (run sys))"]}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "formats an argument destructuring map"
+              :test (fn []
+                      (construct/get-lines
+                       (layout/layout-main
+                        (list 'defn 'configure [(Algo/ordered-map :keys '[host port] :as 'opts)] '(connect host port)))))
+              :expected ["(defn configure" "  [{:as opts :keys [host port]}]" "  (connect host port))"]}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "formats nested configuration maps"
+              :test (fn []
+                      (construct/get-lines
+                       (layout/layout-main
+                        (list 'def 'config
+                              (Algo/ordered-map
+                               :server (Algo/ordered-map :host "localhost" :port 8080)
+                               :db (Algo/ordered-map :type "postgres" :url "jdbc:postgresql://..."))))))
+              :expected ["(def config" "  {:server {:host \"localhost\"" "            :port 8080}" "   :db     {:type \"postgres\"" "            :url  \"jdbc:postgresql://...\"}})"]}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "aligns sibling compound calls"
+              :test (fn [] (construct/get-lines (layout/layout-main '(do-things (first-step a b c) (second-step d e f)))))
+              :expected ["(do-things (first-step a b c)" "           (second-step d e f))"]}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "indents a nested compound call"
+              :test (fn [] (construct/get-lines (layout/layout-main '(do-things (first-step-complex (sub-step-1 a) (sub-step-2 b))))))
+              :expected ["(do-things" " (first-step-complex" "  (sub-step-1 a)" "  (sub-step-2 b)))"]}])
+
+^{:refer std.block.layout/layout-main}
+(Test/check [{:name "wraps long argument destructuring"
+              :test (fn []
+                      (construct/get-lines
+                       (layout/layout-main
+                        (list 'defn 'foo
+                              [(Algo/ordered-map :keys '[a b c d e f g h i j k l m n o p] :as 'opts)]
+                              '(println a)))))
+              :expected ["(defn foo" "  [{:keys [a" "           b" "           c" "           d" "           e" "           f" "           g" "           h" "           i" "           j" "           k" "           l" "           m" "           n" "           o" "           p]" "    :as opts}]" "  (println a))"]}])

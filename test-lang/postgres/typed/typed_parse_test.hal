@@ -1,0 +1,140 @@
+(ns postgres.typed.typed-parse-test
+  (:require [postgres.typed.typed-common :as types]
+            [postgres.typed.typed-parse :as parse]))
+
+^{:refer postgres.typed.typed-parse/read-forms}
+(Test/check
+ [{:name "reads portable source from the src-lang tree"
+   :test (fn []
+           (let [forms (parse/read-forms "src-lang/postgres/typed/typed_common.hal")]
+             [(vector? forms) (> (count forms) 1)]))
+   :expected [true true]}])
+
+^{:refer postgres.typed.typed-parse/deftype?}
+(Test/check
+ [{:name "identifies PostgreSQL source definition forms"
+   :test (fn []
+           [(parse/deftype? '(deftype.pg User [:id {:type :uuid}]))
+            (parse/deftype? '(deftype User []))
+            (parse/defenum? '(defenum.pg Status [:active]))
+            (parse/defenum? '(defenum Status [:active]))
+            (parse/defn? '(defn.pg test [:uuid id]))
+            (parse/defn? '(defn test []))
+            (parse/script? '(script :postgres {:require []}))
+            (parse/script? '(script :mysql {:require []}))])
+   :expected [true false true false true false true false]}])
+
+^{:refer postgres.typed.typed-parse/parse-schema}
+(Test/check
+ [{:name "extracts schemas aliases and input constraints"
+   :test (fn []
+           [(parse/parse-schema '(script :postgres {:static {:all {:schema ["gw_data"]}}}))
+            (parse/parse-schema '(script :postgres {:static {:seed {:schema ["gw_seed"]}}}))
+            (parse/parse-schema '(script :postgres {}))
+            (parse/extract-aliases '[[postgres.core :as pg]
+                                    [lang.runtime.util :refer [foo]]])
+            (parse/parse-aliases '(script :postgres {:require [[postgres.core :as pg]]}))
+            (parse/parse-process-constraints
+             '((as-limit-length 100) (as-lower-formatted) (as-email)))
+            (parse/parse-process-constraints nil)])
+   :expected ["gw_data" "gw_seed" nil
+              '{pg postgres.core}
+              '{pg postgres.core}
+              {:max-length 100 :format :email}
+              {}]}])
+
+^{:refer postgres.typed.typed-parse/parse-column-spec}
+(Test/check
+ [{:name "parses typed columns table enum and function definitions"
+   :test (fn []
+           (let [column (parse/parse-column-spec
+                         [:settings {:type :map :map {:theme {:type :text}}}])
+                 table (parse/parse-deftype
+                        '(deftype.pg Organisation {:! (et/E {:addons [:feed]})}
+                           [:id {:type :uuid :primary true}])
+                        "test.ns" nil)
+                 enum (parse/parse-defenum
+                       '(defenum.pg Priority "Priority levels" [:low :medium :high])
+                       "test.ns" nil)
+                 fn-def (parse/parse-defn
+                         '(defn.pg ^{:%% :sql :- Entry}
+                            insert-entry
+                            "inserts an entry"
+                            [:text i-name :jsonb i-tags]
+                            (pg/t:insert Entry {:name i-name :tags i-tags}))
+                         "test.ns" nil)]
+             [[(:name column) (:map-schema column)]
+              [(:name table) (:primary-key table) (:addons table)]
+              [(:name enum) (:values enum)]
+              [(:name fn-def) (:output fn-def)
+               (map (fn [arg] (:name arg)) (:inputs fn-def))]]))
+   :expected [[:settings {:theme {:type :text}}]
+              ["Organisation" :id [:feed]]
+              ["Priority" #{:low :medium :high}]
+              ["insert-entry" 'Entry '[i-name i-tags]]]}])
+
+^{:refer postgres.typed.typed-parse/infer-fn-arg-role}
+(Test/check
+ [{:name "infers tracking roles from mutation bodies"
+   :test (fn []
+           [(parse/infer-fn-arg-role
+             'o-op
+             '((pg/t:update -/Task {:set {:status o-op} :track o-op})))
+            (parse/infer-fn-arg-role 'x '((return x)))])
+   :expected [:track :payload]}])
+
+^{:refer postgres.typed.typed-parse/transform-col-opts}
+(Test/check
+ [{:name "normalizes runtime ref links before parsing"
+   :test (fn []
+           (parse/transform-col-opts
+            {:type :ref :ref {:link {:module :Organisation :id :id}}}))
+   :expected {:type :ref :ref {:key :Organisation/id}}}])
+
+^{:refer postgres.typed.typed-parse/parse-runtime-table}
+(Test/check
+ [{:name "parses runtime tables and table map analyses"
+   :test (fn []
+           (let [table (parse/parse-runtime-table
+                        :User
+                        [:id {:type :uuid :primary true}
+                         :org-id {:type :ref
+                                  :ref {:link {:module :Organisation :id :id}}}])
+                 analysis (parse/analyze-tables
+                           {:User [:id {:type :uuid :primary true}
+                                   :name {:type :text}]
+                            :Organisation [:id {:type :uuid :primary true}
+                                           :handle {:type :citext}]}
+                           "gwdb")]
+             [[(:name table) (:primary-key table) (count (:columns table))]
+              [(count (:tables analysis)) (:enums analysis) (:functions analysis)]]))
+   :expected [["User" :id 2] [2 [] []]]}])
+
+^{:refer postgres.typed.typed-parse/analyze-file}
+(Test/check
+ [{:name "analyzes source files and namespaces under the new roots"
+   :test (fn []
+           (let [file-analysis (parse/analyze-file "src-lang/postgres/typed/typed_common.hal")
+                 namespace-analysis (parse/analyze-namespace 'postgres.typed.typed-common)]
+             [(has? file-analysis :tables)
+              (has? file-analysis :enums)
+              (has? file-analysis :functions)
+              (has? namespace-analysis :tables)
+              (has? namespace-analysis :enums)
+              (has? namespace-analysis :functions)]))
+   :expected [true true true true true true]}])
+
+^{:refer postgres.typed.typed-parse/register-types}
+(Test/check
+ [{:name "registers every analyzed typed definition"
+   :test (fn []
+           (do (types/clear-registry)
+               (parse/register-types
+                {:tables [(types/make-table-def "ns" "TestTable" [] :id)]
+                 :enums [(types/make-enum-def "ns" "TestEnum" [:a :b] nil)]
+                 :functions [(types/make-fn-def "ns" "testFn" [] [:jsonb] {} nil)]})
+               [(types/table-def? (types/get-type 'ns/TestTable))
+                (types/enum-def? (types/get-type 'ns/TestEnum))
+                (types/fn-def? (types/get-type 'ns/testFn))
+                (do (types/clear-registry) true)]))
+   :expected [true true true true]}])

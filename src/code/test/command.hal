@@ -1,0 +1,24 @@
+(ns code.test.command
+  (:config {:role :internal})
+  (:require [code.test.task :as task]))
+
+(defn ^{:public true} selector
+  "Normalises the optional first CLI test selector; no selector means all
+  registered code.test facts."
+  [argv]
+  (if (empty? argv) :all (symbol (first argv))))
+
+(defn ^{:public true} response
+  "Handles a parsed Hara command request by forwarding argv to the code.test
+  Work runner. Command owns parsing; code.test owns selection and execution."
+  [request]
+  (try
+    (let [argv (or (:argv (:arguments request)) [])
+          summary (task/run (selector argv) {:persist? true})]
+      {:stdout (str summary "\n")
+       :stderr ""
+       :exit (if (= :passed (:status summary)) 0 1)})
+    (catch error
+      {:stdout ""
+       :stderr (str error "\n")
+       :exit 2})))

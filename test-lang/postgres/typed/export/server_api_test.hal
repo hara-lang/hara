@@ -1,0 +1,96 @@
+(ns postgres.typed.export.server-api-test
+  (:require [postgres.typed.export.server-api :as server-api]
+            [postgres.typed.typed-analyze :as analyze]
+            [postgres.typed.typed-common :as types]))
+
+(def +shape-fn+
+  (types/make-fn-def
+   "demo.core"
+   "create-user"
+   []
+   :jsonb
+   {:raw-body '[(pg/t:insert 'UserAccount {:id "u1"})]
+    :sync/mode :manual
+    :sync/tables ['UserAccount]}
+   nil))
+
+(def +manual-sync-fn+
+  (types/make-fn-def
+   "demo.core"
+   "create-user-manual"
+   []
+   :jsonb
+   {:raw-body '[(pg/t:insert 'UserAccount {:id "u1"})]
+    :sync/mode :manual
+    :sync/tables ['UserAccount 'UserProfile]}
+   nil))
+
+^{:refer postgres.typed.export.server-api/xtalk-contract-input}
+(Test/check
+ [{:name "normalizes the XTalk contract template payload"
+   :test (fn []
+           (server-api/xtalk-contract-input
+            {:contract-sym 'create-user-contract
+             :wrapper-sym 'create-user-sync
+             :fn-def +manual-sync-fn+
+             :sync-spec {:mode :manual
+                         :tables ["UserAccount" "UserProfile"]}}))
+   :expected {'contract-sym 'create-user-contract
+              'id "create_user_manual"
+              'sync-mode :manual
+              'tables ["UserAccount" "UserProfile"]
+              'handler-sym 'create-user-sync}}])
+
+^{:refer postgres.typed.export.server-api/target-entry}
+(Test/check
+ [{:name "assigns the configured XTalk contract suffix"
+   :test (fn []
+           (let [infer-before (deref analyze/*infer-cache*)
+                 report-before (deref analyze/*report-cache*)]
+             (try
+               (select-keys (server-api/target-entry +shape-fn+ :xtalk-contracts)
+                            [:target :emitted-sym :fn-def])
+               (finally
+                 (reset! analyze/*infer-cache* infer-before)
+                 (reset! analyze/*report-cache* report-before)))))
+   :expected {:target :xtalk-contracts
+              :emitted-sym 'create-user-contract
+              :fn-def +shape-fn+}}])
+
+^{:refer postgres.typed.export.server-api/emit-target}
+(Test/check
+ [{:name "renders an XTalk contract when synchronization is enabled"
+   :test (fn []
+           (let [infer-before (deref analyze/*infer-cache*)
+                 report-before (deref analyze/*report-cache*)]
+             (try
+               [(str/includes?
+                 (server-api/emit-target +manual-sync-fn+ :xtalk-contracts)
+                 "create-user-manual-contract")
+                (server-api/emit-target +manual-sync-fn+ :unknown)]
+               (finally
+                 (reset! analyze/*infer-cache* infer-before)
+                 (reset! analyze/*report-cache* report-before)))))
+   :expected [true nil]}])
+
+^{:refer postgres.typed.export.server-api/emit-targets}
+(Test/check
+ [{:name "emits each selected XTalk target"
+   :test (fn []
+           (let [infer-before (deref analyze/*infer-cache*)
+                 report-before (deref analyze/*report-cache*)]
+             (try
+               [(set (keys (server-api/emit-targets +manual-sync-fn+)))
+                (string?
+                 (:xtalk-contracts
+                  (server-api/emit-targets +manual-sync-fn+ [:xtalk-contracts])))]
+               (finally
+                 (reset! analyze/*infer-cache* infer-before)
+                 (reset! analyze/*report-cache* report-before)))))
+   :expected [#{:xtalk-contracts} true]}])
+
+^{:refer postgres.typed.export.server-api/list-targets}
+(Test/check
+ [{:name "lists the supported XTalk contract target"
+   :test (fn [] (server-api/list-targets))
+   :expected [:xtalk-contracts]}])

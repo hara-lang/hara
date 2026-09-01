@@ -1,146 +1,15 @@
 (ns hara.command-test
-  (:require [hara.command]
-            [std.foundation.bootstrap :as bootstrap]))
-
-^{:refer hara.command/version-response}
-(Test/check
- [{:name "creates the version command response"
-   :test (fn [] (hara.command/version-response {}))
-   :expected {:stdout "hara 0.1.0\n" :stderr "" :exit 0}}])
-
-^{:refer hara.command/help-response}
-(Test/check
- [{:name "creates the help command response"
-   :test (fn [] (hara.command/help-response {}))
-   :expected {:stdout "Usage: hara [--version|help|headless|specs test TARGET]\n" :stderr "" :exit 0}}])
-
-^{:refer hara.command/headless-response}
-(Test/check
- [{:name "creates the successful headless command response"
-   :test (fn [] (hara.command/headless-response {}))
-   :expected {:stdout "" :stderr "" :exit 0}}])
-
-^{:refer hara.command/spec-content}
-(Test/check
- [{:name "fails with a structured boundary when the specification HARP is not mounted"
-   :test (fn []
-           (try
-             (hara.command/spec-content "content/01-lang/000-metaspec/draft/metaspec-metaspec.edn")
-             false
-             (catch error true)))
-   :expected true}])
-
-^{:refer hara.command/specs-target-report}
-(Test/check
- [{:name "requires the mounted specification package before loading a target"
-   :test (fn []
-           (try
-             (hara.command/specs-target-report "hara/not-a-spec")
-             false
-             (catch error true)))
-   :expected true}])
-
-^{:refer hara.command/specs-conformance-report}
-(Test/check
- [{:name "runs every declared metaspec case against supplied package content"
-   :test
-   (fn []
-     (let [document {:document/id :demo/document
-                     :document/version "1.0.0"
-                     :document/type :demo/spec
-                     :meta/document-schema {:schema/id :demo/document-schema
-                                            :schema/type :map
-                                            :schema/required [:document/id :document/version]}
-                     :meta/schemas []
-                     :meta/cross-references []
-                     :meta/checkers []
-                     :spec/conforms-to {:spec/id :demo/document :spec/version "1.0.0"}}
-           cases [{:case/id :root :case/type :verify
-                   :case/input "../metaspec-metaspec.edn" :case/expected :pass}
-                  {:case/id :artifact :case/type :verify
-                   :case/input "../../../../00-unsorted/artifact/metaspec/artifact-metaspec.edn"
-                   :case/expected :pass}
-                  {:case/id :missing-key :case/type :lint
-                   :case/input {:document/type :hara/metaspec}
-                   :case/expected :hara.metaspec.rule/required-key}
-                  {:case/id :extension-key :case/type :lint
-                   :case/input {:extension true}
-                   :case/expected :hara.metaspec.rule/qualified-key}
-                  {:case/id :duplicate-id :case/type :lint
-                   :case/input [{:schema/id :demo/value} {:schema/id :demo/value}]
-                   :case/expected :hara.metaspec.rule/duplicate-id}
-                  {:case/id :schema-reference :case/type :verify
-                   :case/input {:schema/ref :missing/schema}
-                   :case/expected :hara.metaspec.rule/schema-reference}
-                  {:case/id :repair :case/type :report
-                   :case/input :missing-required-key
-                   :case/expected {:action/type :add-key :action/path [] :action/key :document/id}}]
-           report (hara.command/specs-conformance-report "hara/metaspec-metaspec"
-                                                          document document cases)]
-       [(select-keys report [:report/type :report/status :summary])
-        (vec (map :case/status (:cases report)))]))
-   :expected [{:report/type :hara/specs-test
-               :report/status :pass
-               :summary {:pass 7 :fail 0}}
-              [:pass :pass :pass :pass :pass :pass :pass]]}])
-
-^{:refer hara.command/specs-test-response}
-(Test/check
- [{:name "reports an unavailable specification HARP as a command failure"
-   :test (fn [] (select-keys (hara.command/specs-test-response
-                              {:arguments {:target "hara/metaspec-metaspec"}})
-                             [:stdout :exit]))
-   :expected {:stdout "" :exit 2}}])
-
-^{:refer hara.command/application}
-(Test/check
- [{:name "installs version, help, headless, and packaged specification routes"
-   :test (fn []
-           (let [app (hara.command/application)]
-             [(= (:id (std.native.Command/config app)) 'hara/command)
-              (vec (map :id (std.native.Command/routes app)))
-              (std.native.Command/run app {:argv ["version"]})
-              (select-keys (std.native.Command/run app {:argv ["specs" "test" "hara/metaspec-metaspec"]})
-                           [:stdout :exit])]))
-   :expected [true [:version :help :headless :specs-test]
-              {:stdout "hara 0.1.0\n" :stderr "" :exit 0}
-              {:stdout "" :exit 2}]}])
-
-^{:refer hara.command/normalise-argv}
-(Test/check
- [{:name "keeps ordinary argv and preserves legacy trailing headless options"
-   :test (fn []
-           [(hara.command/normalise-argv ["--version"])
-            (hara.command/normalise-argv ["headless" "--port" "0"])
-            (hara.command/normalise-argv ["--project" "/tmp/demo" "--port" "0" "headless"])])
-   :expected [["--version"]
-              ["headless" "--port" "0"]
-              ["headless" "--project" "/tmp/demo" "--port" "0"]]}])
+  (:require [hara.command]))
 
 ^{:refer hara.command/main}
 (Test/check
- [{:name "routes version, help, legacy headless, and unknown commands"
+ [{:name "publishes the lazy command entrypoint"
    :test (fn []
            [(hara.command/main ["--version"])
-            (hara.command/main [])
-            (hara.command/main ["--port" "0" "headless"])
-            (select-keys (hara.command/main ["specs" "test" "hara/metaspec-metaspec"])
-                         [:stdout :exit])
+            (hara.command/main ["run" "hara.command.core"])
             (hara.command/main ["build"])])
    :expected [{:stdout "hara 0.1.0\n" :stderr "" :exit 0}
-              {:stdout "Usage: hara [--version|help|headless|specs test TARGET]\n" :stderr "" :exit 0}
-              {:hara/host-action :resp}
-              {:stdout "" :exit 2}
+              {:stdout "Usage: hara [--version|help|headless|run NAMESPACE [ARGS...]|specs test TARGET]\n"
+               :stderr ""
+               :exit 0}
               {:stdout "" :stderr ":command/unknown-route: unknown command: build\n" :exit 2}]}])
-
-^{:refer std.foundation.bootstrap/scaffold}
-(Test/check
- [{:name "bootstraps the public command namespace Test/check inventory"
-   :test (fn []
-           (let [preview (bootstrap/scaffold 'hara.command ""
-                                             {:test-namespace 'fixture.command-test
-                                              :alias 'command})]
-             [(:changed preview)
-              (empty? (:missing (:coverage preview)))
-              (not (empty? (:pending (:coverage preview))))]))
-   :expected [true true true]}])

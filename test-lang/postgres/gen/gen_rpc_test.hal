@@ -1,0 +1,137 @@
+(ns postgres.gen.gen-rpc-test
+  (:require [postgres.gen.gen-rpc :as rpc]))
+
+^{:refer postgres.gen.gen-rpc/identifier-name}
+(Test/check [{:name "normalizes identifier values into names"
+              :test (fn [] [(rpc/identifier-name "User") (rpc/identifier-name :User) (rpc/identifier-name 'app/User)])
+              :expected ["User" "User" "User"]}])
+
+^{:refer postgres.gen.gen-rpc/snake-name}
+(Test/check [{:name "normalizes symbols keywords and underscores"
+              :test (fn [] [(rpc/snake-name 'Brand_MEMBER_ADD) (rpc/snake-name :I_USER_ID) (rpc/snake-name nil)])
+              :expected ["brand-member-add" "i-user-id" nil]}])
+
+^{:refer postgres.gen.gen-rpc/aggregate-token}
+(Test/check [{:name "lowercases aggregate names"
+              :test (fn [] (rpc/aggregate-token "Campaign"))
+              :expected "campaign"}])
+
+^{:refer postgres.gen.gen-rpc/first-value}
+(Test/check [{:name "returns the first non-nil transformed value"
+              :test (fn [] (rpc/first-value (fn [value] (if (= value 2) :found nil)) [1 2 3]))
+              :expected :found}])
+
+^{:refer postgres.gen.gen-rpc/name-token?}
+(Test/check [{:name "matches whole normalized command tokens only"
+              :test (fn [] [(rpc/name-token? 'app/brand-member-add "brand")
+                            (rpc/name-token? 'app/rebrand-member-add "brand")])
+              :expected [true false]}])
+
+^{:refer postgres.gen.gen-rpc/infer-aggregate}
+(Test/check [{:name "uses metadata command tokens then table names"
+              :test (fn [] [(rpc/infer-aggregate {:notify {:entity :Campaign}})
+                            (rpc/infer-aggregate {:function-name 'app/brand-member-add})
+                            (rpc/infer-aggregate {:source-tables ["UserProfile"]})
+                            (rpc/infer-aggregate {})])
+              :expected ["Campaign" "Brand" "User" nil]}])
+
+^{:refer postgres.gen.gen-rpc/shape-rows}
+(Test/check [{:name "enumerates root nested and collection table rows"
+              :test (fn []
+                      (rpc/shape-rows
+                       {:source-table "Envelope"
+                        :fields {:users {:items {:shape {:source-table "User" :fields {}}}}
+                                 :role {:shape {:source-table "AccessRole" :fields {}}}}}))
+              :expected [["Envelope" [] :one]
+                         ["AccessRole" ["role"] :one]
+                         ["User" ["users"] :many]]}])
+
+^{:refer postgres.gen.gen-rpc/normal-token}
+(Test/check [{:name "removes non-alphanumeric separators"
+              :test (fn [] (rpc/normal-token :Brand-Role_1))
+              :expected "brandrole1"}])
+
+^{:refer postgres.gen.gen-rpc/inferred-shape-rows}
+(Test/check [{:name "recovers only uniquely matching symbolic fields"
+              :test (fn [] [(rpc/inferred-shape-rows {:fields {:role {:kind :symbol} :brand {:kind :unknown}}}
+                                                         ["AccessRole" "Brand"])
+                            (rpc/inferred-shape-rows {:fields {:role {:kind :symbol}}}
+                                                      ["AccessRole" "OtherAccessRole"])])
+              :expected [[["AccessRole" ["role"] :one] ["Brand" ["brand"] :one]] []]}])
+
+^{:refer postgres.gen.gen-rpc/input-names}
+(Test/check [{:name "creates a normalized input-name set"
+              :test (fn [] (rpc/input-names [{:name 'I_User_Id} {:name "i-brand-id"}]))
+              :expected #{"i-user-id" "i-brand-id"}}])
+
+^{:refer postgres.gen.gen-rpc/infer-topic-id}
+(Test/check [{:name "uses explicit argument session and result strategies"
+              :test (fn [] [(rpc/infer-topic-id {:aggregate "Brand" :notify {:path [:brand :id]}})
+                            (rpc/infer-topic-id {:aggregate "Brand" :notify {:arg :i-brand-id}})
+                            (rpc/infer-topic-id {:aggregate "User" :function-name 'app/user-update
+                                                 :inputs [{:name "i-user-id"}]})
+                            (rpc/infer-topic-id {:aggregate "Topic" :output-shape {:source-table "Topic"}})])
+              :expected [{:kind :result :path ["brand" "id"]}
+                         {:kind :arg :name "i-brand-id"}
+                         {:kind :session :name "i-user-id"}
+                         {:kind :result :path ["id"]}]}])
+
+^{:refer postgres.gen.gen-rpc/notification-plan}
+(Test/check [{:name "builds mutation plans and ignores read-only functions"
+              :test (fn [] [(rpc/notification-plan
+                             {:function-name 'app/user-delete
+                              :inputs [{:name "i-user-id"}]
+                              :report {:analysis {:mutating true :source-tables ["User"]}}
+                              :output-shape {:source-table "User" :fields {}}})
+                            (rpc/notification-plan {:function-name 'app/user-get
+                                                    :report {:analysis {:mutating false}}})])
+              :expected [{:aggregate "User" :topic-id {:kind :session :name "i-user-id"}
+                          :event "db/remove" :rows [["User" [] :one]] :private true}
+                         nil]}])
+
+^{:refer postgres.gen.gen-rpc/result-path-form}
+(Test/check [{:name "builds nested JSON paths with text extraction at the leaf"
+              :test (fn [] [(rpc/result-path-form 'o-result [] false)
+                            (rpc/result-path-form 'o-result ["request" "id"] false)
+                            (rpc/result-path-form 'o-result ["request" "id"] true)])
+              :expected ['o-result
+                         '(:-> (:-> o-result "request") "id")
+                         '(:->> (:-> o-result "request") "id")]}])
+
+^{:refer postgres.gen.gen-rpc/notification-payload}
+(Test/check [{:name "groups paths by table and preserves cardinality semantics"
+              :test (fn [] [(rpc/notification-payload {:event "db/sync"
+                                                        :rows [["User" [] :one]
+                                                               ["Role" ["roles"] :many]]}
+                                                       'o-result)
+                            (rpc/notification-payload {:event "db/remove"
+                                                       :rows [["User" [] :one]]}
+                                                      'o-result)])
+              :expected [{"db/sync" {"Role" '(:-> o-result "roles") "User" ['o-result]}}
+                         {"db/remove" {"User" ['(:->> o-result "id")]}}]}])
+
+^{:refer postgres.gen.gen-rpc/topic-id-form}
+(Test/check [{:name "materializes session argument and result topic forms"
+              :test (fn []
+                      (let [forms {:auth-form '(auth/uid)
+                                   :result-sym 'o-result
+                                   :arg-form (fn [value]
+                                               (if (= value "i-brand-id") 'brand-id nil))}]
+                        [(rpc/topic-id-form {:kind :session} forms)
+                         (rpc/topic-id-form {:kind :arg :name "i-brand-id"} forms)
+                         (rpc/topic-id-form {:kind :result :path ["brand" "id"]} forms)]))
+              :expected ['(auth/uid) 'brand-id '(:->> (:-> o-result "brand") "id")]}])
+
+^{:refer postgres.gen.gen-rpc/realtime-send-form}
+(Test/check [{:name "wraps the canonical private realtime notification form"
+              :test (fn []
+                      (rpc/realtime-send-form
+                       {:aggregate "Brand" :topic-id {:kind :arg :name "i-brand-id"}
+                        :event "db/sync" :rows [["Brand" [] :one]]}
+                       {:auth-form '(auth/uid) :result-sym 'o-result
+                        :arg-form (fn [value]
+                                    (if (= value "i-brand-id") 'brand-id nil))}))
+              :expected '(s/realtime-send-request
+                          (|| "Brand:" brand-id)
+                          {"db/sync" {"Brand" [o-result]}}
+                          true)}])

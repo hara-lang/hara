@@ -1,0 +1,155 @@
+(ns code.test.checker.collection
+  (:config {:role :internal})
+  (:require [code.test.checker :as checker]))
+
+(defn ^{:public true} map-contains?
+  [expected actual]
+  (and
+   (map? actual)
+   (reduce
+    (fn [matched entry]
+      (and matched
+           (has? actual (key entry))
+           (checker/matches? (val entry) (get actual (key entry)))))
+    true
+    expected)))
+
+(defn ^{:public true} map-just?
+  [expected actual]
+  (and (map-contains? expected actual)
+       (= (set (keys expected)) (set (keys actual)))))
+
+(defn ^{:public true} contiguous?
+  [expected actual]
+  (let [patterns (vec expected)
+        values (vec actual)
+        length (count patterns)
+        limit (- (count values) length)]
+    (if (< limit 0)
+      false
+      (reduce
+       (fn [matched start]
+         (or matched
+             (reduce
+              (fn [valid index]
+                (and valid
+                     (checker/matches? (nth patterns index)
+                                       (nth values (+ start index)))))
+              true
+              (range length))))
+       false
+       (range (+ limit 1))))))
+
+(defn ^{:public true} gapped?
+  [expected actual]
+  (loop [patterns (vec expected) values (vec actual)]
+    (cond (empty? patterns) true
+          (empty? values) false
+          (checker/matches? (first patterns) (first values))
+          (recur (vec (rest patterns)) (vec (rest values)))
+          :else
+          (recur patterns (vec (rest values))))))
+
+(defn ^{:public true} first-match-index
+  [expected values]
+  (reduce
+   (fn [index candidate]
+     (if (nil? index)
+       (if (checker/matches? expected (nth values candidate)) candidate nil)
+       index))
+   nil
+   (range (count values))))
+
+(defn ^{:public true} remove-index
+  [values index]
+  (vec (concat (take index values) (drop (+ index 1) values))))
+
+(defn ^{:public true} any-order?
+  [expected actual]
+  (:matched?
+   (reduce
+    (fn [state pattern]
+      (if (not (:matched? state))
+        state
+        (let [index (first-match-index pattern (:remaining state))]
+          (if (nil? index)
+            (assoc state :matched? false)
+            (assoc state :remaining (remove-index (:remaining state) index))))))
+    {:matched? true :remaining (vec actual)}
+    expected)))
+
+(defn ^{:public true} sequence-match?
+  [expected actual modifiers]
+  (let [any-order (or (set? actual) (has? modifiers :in-any-order))
+        gaps (has? modifiers :gaps-ok)]
+    (cond any-order (any-order? expected actual)
+          gaps (gapped? expected actual)
+          :else (contiguous? expected actual))))
+
+(defn ^{:public true} sequence-contains?
+  [expected actual modifiers]
+  (and (or (vector? actual) (set? actual) (sequential? actual))
+       (sequence-match? expected actual modifiers)))
+
+(defn ^{:public true} sequence-just?
+  [expected actual modifiers]
+  (and (sequence-contains? expected actual modifiers)
+       (= (count expected) (count actual))))
+
+(defn ^{:public true} contains
+  "Creates a matcher that accepts maps with required keys and sequences with
+  a required contiguous, gapped, or unordered pattern."
+  [expected & modifiers]
+  (let [modifiers (set modifiers)]
+    (cond (map? expected)
+          (checker/checker :contains expected (fn [actual] (map-contains? expected actual)))
+          (or (vector? expected) (set? expected) (sequential? expected))
+          (checker/checker :contains expected
+                           (fn [actual] (sequence-contains? expected actual modifiers)))
+          :else
+          (throw (ex :argument {:expected expected}
+                     :ex/message "contains expects a map or sequential pattern")))))
+
+(defn ^{:public true} just
+  "Creates a matcher that requires exactly the expected map keys or sequence
+  element count in addition to value matching."
+  [expected & modifiers]
+  (let [modifiers (set modifiers)]
+    (cond (map? expected)
+          (checker/checker :just expected (fn [actual] (map-just? expected actual)))
+          (or (vector? expected) (set? expected) (sequential? expected))
+          (checker/checker :just expected
+                           (fn [actual] (sequence-just? expected actual modifiers)))
+          :else
+          (throw (ex :argument {:expected expected}
+                     :ex/message "just expects a map or sequential pattern")))))
+
+(defn ^{:public true} contains-in
+  "Recursively converts nested collection expectations to contains matchers."
+  [expected]
+  (cond (map? expected)
+        (contains
+         (reduce (fn [output entry]
+                   (assoc output (key entry) (contains-in (val entry))))
+                 {} expected))
+        (set? expected)
+        (apply contains (vec (map contains-in expected)) [:in-any-order])
+        (or (vector? expected) (sequential? expected))
+        (contains (vec (map contains-in expected)))
+        :else
+        (checker/satisfies expected)))
+
+(defn ^{:public true} just-in
+  "Recursively converts nested collection expectations to just matchers."
+  [expected]
+  (cond (map? expected)
+        (just
+         (reduce (fn [output entry]
+                   (assoc output (key entry) (just-in (val entry))))
+                 {} expected))
+        (set? expected)
+        (apply just (vec (map just-in expected)) [:in-any-order])
+        (or (vector? expected) (sequential? expected))
+        (just (vec (map just-in expected)))
+        :else
+        (checker/satisfies expected)))

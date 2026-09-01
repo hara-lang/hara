@@ -1,0 +1,166 @@
+(ns postgres.core.impl-base-test
+  (:require [postgres.core.impl-base :as base]))
+
+(def table-schema
+  {:id [{:type :uuid :primary true :required true}]
+   :status [{:type :enum :enum {:ns 'demo/Status}}]
+   :name [{:type :text}]
+   :cache [{:type :ref :ref {:type :uuid :link {:module 'demo :id 'Cache}}}]})
+
+^{:refer postgres.core.impl-base/prep-entry}
+(Test/check
+ [{:name "keeps direct table entries and reports unresolved symbols"
+   :test (fn [] [(base/prep-entry {:id 'Entry :table-schema table-schema} {})
+                 (try (base/prep-entry 'demo/Missing {}) :no-error
+                      (catch error :missing))])
+   :expected [[nil {:id 'Entry :table-schema table-schema}] :missing]}])
+
+^{:refer postgres.core.impl-base/t-input-check}
+(Test/check
+ [{:name "accepts complete inputs and rejects missing or unknown schema keys"
+   :test (fn []
+           [(base/t-input-check table-schema {:id "a"})
+            (try (base/t-input-check table-schema {}) false (catch error true))
+            (try (base/t-input-check table-schema {:id "a" :unknown 1}) false (catch error true))])
+   :expected [{:id "a"} true true]}])
+
+^{:refer postgres.core.impl-base/t-input-collect}
+(Test/check
+ [{:name "pairs input values with their schema attributes"
+   :test (fn [] (base/t-input-collect table-schema {:status 'active}))
+   :expected {:status ['active {:type :enum :enum {:ns 'demo/Status}}]}}])
+
+^{:refer postgres.core.impl-base/t-val-process}
+(Test/check
+ [{:name "applies ordered value-process forms around an expression"
+   :test (fn [] (base/t-val-process [['add 5] ['sub 5]] 'input))
+   :expected '(sub (add input 5) 5)}])
+
+^{:refer postgres.core.impl-base/t-val-fn}
+(Test/check
+ [{:name "casts text, enum, and reference values from table attributes"
+   :test (fn []
+           [(base/t-val-fn table-schema :name "hello" {} {})
+            (base/t-val-fn table-schema :status 'active {} {})
+            (base/t-val-fn table-schema :cache 'cache-id {} {})])
+   :expected ['(:text "hello") '(++ active demo/Status) '(:uuid cache-id)]}])
+
+^{:refer postgres.core.impl-base/t-key-fn}
+(Test/check
+ [{:name "uses identifier suffixes for reference columns"
+   :test (fn [] [(base/t-key-fn table-schema :name)
+                 (base/t-key-fn table-schema :cache)])
+   :expected ["name" "cache_id"]}])
+
+^{:refer postgres.core.impl-base/t-sym-fn}
+(Test/check
+ [{:name "reads typed JSON values and coalesces reference identifiers"
+   :test (fn []
+           [(base/t-sym-fn table-schema :name 'row)
+            (base/t-sym-fn table-schema :cache 'row)])
+   :expected ['(:text (:->> row "name"))
+              '(:uuid (coalesce (:->> row "cache_id") (:->> (:-> row "cache") "id")))]}])
+
+^{:refer postgres.core.impl-base/t-build-js-map}
+(Test/check
+ [{:name "builds JSON object forms for each supplied schema key"
+   :test (fn []
+           (= (set
+               (partition
+                2
+                (rest
+                 (base/t-build-js-map
+                  table-schema
+                  (base/t-input-collect table-schema {:id 'id :name "hello"})
+                  {}
+                  {}))))
+              #{["id" '(:uuid id)]
+                ["name" '(:text "hello")]}))
+   :expected true}])
+
+^{:refer postgres.core.impl-base/t-join-target-sym}
+(Test/check
+ [{:name "normalizes module and namespace reference links"
+   :test (fn []
+           [(base/t-join-target-sym {:module 'demo :id 'Cache})
+            (base/t-join-target-sym {:ns 'demo :id 'Cache})
+            (base/t-join-target-sym {:module 'demo})])
+   :expected ['demo/Cache 'demo/Cache nil]}])
+
+^{:refer postgres.core.impl-base/t-returning}
+(Test/check
+ [{:name "formats returning columns, star, and external symbols"
+   :test (fn []
+           [(= (base/t-returning table-schema #{:id :name})
+               '(--- [#{"id"} #{"name"}]))
+            (= (base/t-returning table-schema '*)
+               '*)
+            (= (base/t-returning table-schema '#{external-id})
+               '(--- [#{"external_id"}]))])
+   :expected [true true true]}])
+
+^{:refer postgres.core.impl-base/t-where-hashvec}
+(Test/check
+ [{:name "preserves OR and AND hash-vector query clauses under identity transformation"
+   :test (fn []
+           [(base/t-where-hashvec #{[:id 1]} identity)
+            (base/t-where-hashvec #{[:id 1 :or :name "a"]} identity)])
+   :expected [#{[:id 1]} #{[:id 1 :or :name "a"]}]}])
+
+^{:refer postgres.core.impl-base/t-where-transform}
+(Test/check
+ [{:name "transforms typed where maps into SQL column clauses"
+   :test (fn []
+           [(base/t-where-transform table-schema {:id 1} {})
+            (base/t-where-transform table-schema {:cache 1} {})
+            (base/t-where-transform table-schema {:status 'active} {})])
+   :expected [{"id" [:eq 1]}
+              {"cache_id" [:eq 1]}
+              '{"status" [:eq (++ active demo/Status)]}]}])
+
+^{:refer postgres.core.impl-base/t-wrap-json}
+(Test/check
+ [{:name "wraps selections as JSON aggregate queries"
+   :test (fn []
+           [(base/t-wrap-json '<FORM> :json 'json-agg 'output nil)
+            (base/t-wrap-json '<FORM> :json 'json-agg 'output :id)])
+   :expected ['[:with j-ret :as <FORM> \\ :select (json-agg j-ret) :from j-ret]
+              '[:with j-ret :as <FORM> \\ :select (json-agg (. j-ret #{:id})) :from j-ret]]}])
+
+^{:refer postgres.core.impl-base/t-join-transform}
+(Test/check
+ [{:name "expands reference joins with source and target identifiers"
+   :test (fn []
+           (let [result (base/t-join-transform table-schema [:cache] 'Entry {})]
+             [(first (first result)) (second (first result))]))
+   :expected [:left-join 'demo/Cache]}])
+
+^{:refer postgres.core.impl-base/t-wrap-where}
+(Test/check
+ [{:name "appends the standard query clauses with their canonical forms"
+   :test (fn []
+           [(base/t-wrap-where [] {:id 1} table-schema {} {})
+            (base/t-wrap-order-by [] [:id :status] table-schema {})
+            (base/t-wrap-limit [] 10 {})
+            (base/t-wrap-offset [] 20 {})
+            (base/t-wrap-into [] 'output {})
+            (base/t-wrap-returning [] [#{"id"}] {})
+            (base/t-wrap-group-by [] [#{"id"}] {})
+            (base/t-wrap-having [] {:id 1} table-schema {} {})
+            (base/t-wrap-args [] [:extra] {})])
+   :expected '[[:where {"id" [:eq 1]}]
+              [:order-by (quote [#{"id"} #{"status"}])]
+              [:limit 10] [:offset 20] [:into output]
+              [:returning [#{"id"}]] [:group-by [#{"id"}]]
+              [:having {"id" [:eq 1]}] [:extra]]}])
+
+^{:refer postgres.core.impl-base/t-wrap-lock}
+(Test/check
+ [{:name "appends supported lock modes and rejects unsupported modes"
+   :test (fn []
+           [(base/t-wrap-lock [] [:update] {})
+            (base/t-wrap-lock [:select '*] [:share :nowait] {:newline true})
+            (try (base/t-wrap-lock [] [:invalid] {}) false (catch error true))])
+   :expected [[:for :update]
+              [:select '* \\ :for :share :nowait]
+              true]}])

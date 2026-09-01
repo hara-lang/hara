@@ -1,0 +1,45 @@
+(ns hara.command.core-test
+  (:require [hara.command.core :as core]))
+
+^{:refer hara.command.core/application}
+(Test/check
+ [{:name "installs lazy command routes without evaluating their handlers"
+   :test (fn []
+           (let [app (core/application)]
+              [(= (:id (Command/config app)) 'hara/command)
+              (vec (map :id (Command/routes app)))
+              (:passthrough? (nth (Command/routes app) 3))]))
+   :expected [true [:version :help :headless :run :test :specs-test] true]}])
+
+^{:refer hara.command.core/normalise-argv}
+(Test/check
+ [{:name "keeps ordinary argv and preserves legacy trailing headless options"
+   :test (fn []
+           [(core/normalise-argv ["--version"])
+            (core/normalise-argv ["headless" "--port" "0"])
+            (core/normalise-argv ["--project" "/tmp/demo" "--port" "0" "headless"])])
+   :expected [["--version"]
+              ["headless" "--port" "0"]
+              ["headless" "--project" "/tmp/demo" "--port" "0"]]}])
+
+^{:refer hara.command.core/main}
+(Test/check
+ [{:name "runs version namespace passthrough and forwarded test routes while retaining RESP handoff"
+   :test (fn []
+           (try
+             [(core/main ["--version"])
+              (core/main ["run" "hara.command.core"])
+              (core/main ["run" "hara.command.core" "--version"])
+              (select-keys (core/main ["test"]) [:stderr :exit])
+              (core/main ["--port" "0" "headless"])]
+             (finally
+               (deref (File/delete "/.hara/test/latest.edn" {:missing-ok? true}))
+               (deref (File/delete "/.hara/test" {:missing-ok? true}))
+               (deref (File/delete "/.hara" {:missing-ok? true})))))
+   :expected [{:stdout "hara 0.1.0\n" :stderr "" :exit 0}
+              {:stdout "Usage: hara [--version|help|headless|run NAMESPACE [ARGS...]|test [SELECTOR...]|specs test TARGET]\n"
+               :stderr ""
+               :exit 0}
+              {:stdout "hara 0.1.0\n" :stderr "" :exit 0}
+              {:stderr "" :exit 0}
+              {:hara/host-action :resp}]}])

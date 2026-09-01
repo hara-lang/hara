@@ -1,0 +1,63 @@
+(ns code.test.report-test
+  (:require [code.test.report :as report]))
+
+^{:refer code.test.report/report-path}
+(Test/check
+ [{:name "report-path uses the project-local .hara/test layout"
+   :test (fn [] (report/report-path "fixture-root" {:report/name "run.edn"}))
+   :expected "/fixture-root/.hara/test/run.edn"}])
+
+^{:refer code.test.report/create}
+(Test/check
+ [{:name "create separates summary counters from fact result detail"
+   :test (fn []
+           (report/create {:status :passed :facts 1 :results [{:desc "one" :status :passed}]}))
+   :expected {:report/type :code.test/report
+              :report/version 1
+              :summary {:status :passed :facts 1}
+              :results [{:desc "one" :status :passed}]}}])
+
+^{:refer code.test.report/write}
+(Test/check
+ [{:name "write and read round-trip an EDN report and remove the temporary tree"
+   :test (fn []
+           (let [root (deref (File/temp-directory "." {:prefix "hara-code-test-report-"}))
+                 options {:report/name "run.edn"}
+                 value (report/create {:status :failed :facts 1
+                                       :results [{:desc "one" :status :failed}]})
+                 path (report/report-path root options)]
+             (try
+               (report/write root options value)
+               (= value (report/read path))
+               (finally
+                 (deref (File/delete path {:missing-ok? true}))
+                 (deref (File/delete (File/join root ".hara/test") {:missing-ok? true}))
+                 (deref (File/delete (File/join root ".hara") {:missing-ok? true}))
+                 (deref (File/delete root {:missing-ok? true}))))))
+   :expected true}])
+
+^{:refer code.test.report/read}
+(Test/check
+ [{:name "read parses an EDN-shaped report from a native file"
+   :test (fn []
+           (let [root (deref (File/temp-directory "." {:prefix "hara-code-test-read-"}))
+                 path (File/join root "input.edn")]
+             (try
+               (deref (File/write path (str/encode-utf8 "{:fixture true}")
+                                   {:mode :replace :parents? true}))
+               (report/read path)
+               (finally
+                 (deref (File/delete path {:missing-ok? true}))
+                 (deref (File/delete root {:missing-ok? true}))))))
+   :expected {:fixture true}}])
+
+^{:refer code.test.report/failed-descriptions}
+(Test/check
+ [{:name "failed-descriptions selects every non-passing fact status"
+   :test (fn []
+           (report/failed-descriptions
+            {:results [{:desc "pass" :status :passed}
+                       {:desc "failed" :status :failed}
+                       {:desc "error" :status :error}
+                       {:desc "cancelled" :status :cancelled}]}))
+   :expected #{"failed" "error" "cancelled"}}])

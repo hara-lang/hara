@@ -1,0 +1,36 @@
+(ns postgres.core.impl-update-test
+  (:require [postgres.core.impl-update :as update]))
+
+(def schema
+  {:id [{:type :uuid :primary true :order 0}]
+   :status [{:type :enum :order 1 :enum {:ns 'demo/Status}}]
+   :name [{:type :text :order 2}]})
+
+(def prepared [{:id 'Entry :module 'demo} schema {}])
+
+^{:refer postgres.core.impl-update/t-update-map}
+(Test/check
+ [{:name "constructs map updates in archive schema order"
+   :test (fn [] (update/t-update-map schema {:name "n" :status "open"} {} {}))
+   :expected '(== (>-< [#{"status"} #{"name"}])
+                  (row (++ "open" demo/Status) (:text "n")))}])
+
+^{:refer postgres.core.impl-update/t-update-raw}
+(Test/check
+ [{:name "keeps raw UPDATE output unwrapped when no RETURNING form is requested"
+   :test (fn [] (update/t-update-raw prepared
+                                      {:as :raw :set {:name "n"}
+                                       :where {:id "entry-1"}}))
+   :expected '[:update demo/Entry
+               :set (== (>-< [#{"name"}]) (row (:text "n")))
+               :where {"id" [:eq "entry-1"]}]}])
+
+^{:refer postgres.core.impl-update/t-modify-assign}
+(Test/check
+ [{:name "retains the archive nil body when MODIFY has no assignment target"
+   :test (fn [] (let [form (update/t-modify-assign prepared
+                                                     {:as :raw :set {:name "n"}
+                                                      :where {:id "entry-1"}}
+                                                     nil)]
+                  [(first form) (nth form 2)]))
+   :expected ['let nil]}])

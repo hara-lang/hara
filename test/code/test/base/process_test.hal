@@ -1,0 +1,33 @@
+(ns code.test.base.process-test
+  (:require [code.test.base.process]
+            [code.test.checker]
+            [code.test.result]))
+
+^{:refer code.test.base.process/error-result}
+(Test/check
+ [{:name "error-result retains the expected portable matcher and error status"
+   :test (fn []
+           (let [result (code.test.base.process/error-result
+                         (code.test.checker/exactly :ready)
+                         (ex-info "boom" {:kind :fixture}))]
+             [(Result/error? result) (Test/expected result)
+              (ex-message (Result/error-value result))]))
+   :expected [true {:checker/type :exactly :checker/form :ready} "boom"]}])
+
+^{:refer code.test.base.process/check}
+(Test/check
+ [{:name "check evaluates once and handles literal matcher and error outcomes"
+   :test (fn []
+           (let [calls (atom 0)
+                 passing (code.test.base.process/check (fn [] (swap! calls inc)) 1)
+                 failing (code.test.base.process/check (fn [] 1) 2)
+                 expected-error (code.test.base.process/check
+                                 (fn [] (throw (ex-info "boom" {:kind :fixture})))
+                                 (code.test.checker/throws))
+                 unexpected-error (code.test.base.process/check
+                                   (fn [] (throw (ex-info "boom" {:kind :fixture})))
+                                   :ready)]
+             [(Test/passed? passing) (deref calls)
+              (Test/passed? failing) (Test/failure-count failing)
+              (Test/passed? expected-error) (Result/error? unexpected-error)]))
+   :expected [true 1 false 1 true true]}])

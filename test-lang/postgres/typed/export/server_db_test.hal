@@ -1,0 +1,157 @@
+(ns postgres.typed.export.server-db-test
+  (:require [postgres.typed.export.server-db :as server-db]
+            [postgres.typed.typed-analyze :as analyze]
+            [postgres.typed.typed-common :as types]))
+
+(def +shape-fn+
+  (types/make-fn-def
+   "demo.core"
+   "create-user"
+   [(types/FnArg 'm :jsonb [:jsonb] :payload)]
+   :jsonb
+   {:raw-body '[(pg/t:insert 'UserAccount {:id "u1"})]}
+   nil))
+
+(def +manual-sync-fn+
+  (types/make-fn-def
+   "demo.core"
+   "create-user-manual"
+   []
+   :jsonb
+   {:raw-body '[(pg/t:insert 'UserAccount {:id "u1"})]
+    :sync/mode :manual
+    :sync/tables ['UserAccount 'UserProfile]}
+   nil))
+
+(def +read-fn+
+  (types/make-fn-def
+   "demo.core"
+   "get-user"
+   []
+   :jsonb
+   {:raw-body '[(pg/t:get 'UserAccount {:where {:id "u1"}})]}
+   nil))
+
+^{:refer postgres.typed.export.server-db/collect-pg-ops*}
+(Test/check
+ [{:name "accumulates nested operation symbols into the supplied set"
+   :test (fn []
+           (server-db/collect-pg-ops*
+            '(do (pg/t:insert Task {:name "a"})
+                 (pg/t:update Task {:name "b"} {:id 1}))
+            #{:delete}))
+   :expected #{:delete :insert :update}}])
+
+^{:refer postgres.typed.export.server-db/collect-pg-ops}
+(Test/check
+ [{:name "collects supported PostgreSQL operations from nested forms"
+   :test (fn [] [(server-db/collect-pg-ops '(pg/t:insert Task {:name "test"}))
+                 (server-db/collect-pg-ops '(let [x 1] (pg/t:update Task {} {:id x})))
+                 (server-db/collect-pg-ops '(+ 1 2 3))])
+   :expected [#{:insert} #{:update} #{}]}])
+
+^{:refer postgres.typed.export.server-db/mutating-operation?}
+(Test/check
+ [{:name "recognizes mutations and excludes read operations"
+   :test (fn [] [(server-db/mutating-operation? #{:insert :select})
+                 (server-db/mutating-operation? #{:get :count})])
+   :expected [true false]}])
+
+^{:refer postgres.typed.export.server-db/table-name}
+(Test/check
+ [{:name "converts table identifiers into stable output names"
+   :test (fn [] [(server-db/table-name "User")
+                 (server-db/table-name :User)
+                 (server-db/table-name 'demo/User)])
+   :expected ["User" "User" "User"]}])
+
+^{:refer postgres.typed.export.server-db/infer-sync-spec}
+(Test/check
+ [{:name "respects manual mode and leaves read operations unsynchronized"
+   :test (fn []
+           (let [infer-before (deref analyze/*infer-cache*)
+                 report-before (deref analyze/*report-cache*)]
+             (try
+               [(select-keys (server-db/infer-sync-spec +manual-sync-fn+)
+                             [:mode :mutating? :tables])
+                (select-keys (server-db/infer-sync-spec +read-fn+)
+                             [:mode :mutating? :tables])]
+               (finally
+                 (reset! analyze/*infer-cache* infer-before)
+                 (reset! analyze/*report-cache* report-before)))))
+   :expected [{:mode :manual :mutating? false :tables ["UserAccount" "UserProfile"]}
+              {:mode :none :mutating? false :tables []}]}])
+
+^{:refer postgres.typed.export.server-db/db-sync-merge}
+(Test/check
+ [{:name "preserves nil and existing sync payloads and adds missing payloads"
+   :test (fn [] [(server-db/db-sync-merge nil ["UserAccount"])
+                 (server-db/db-sync-merge
+                  {:id "u1" :db/sync {"UserAccount" [{:id "u1"}]}}
+                  ["UserAccount" "UserProfile"])
+                 (server-db/db-sync-merge {:id "u1"} ["UserAccount"])])
+   :expected [nil
+              {:id "u1" :db/sync {"UserAccount" [{:id "u1"}]}}
+              {:id "u1" :db/sync {"UserAccount" [{:id "u1"}]}}]}])
+
+^{:refer postgres.typed.export.server-db/supabase-db-input}
+(Test/check
+ [{:name "normalizes the wrapper-generation input payload"
+   :test (fn []
+           (server-db/supabase-db-input
+            {:wrapper-sym 'create-user-manual-sync
+             :fn-def +manual-sync-fn+
+             :sync-spec {:sync-fn 'postgres.typed.export.server-db/db-sync-merge
+                          :tables ["UserAccount" "UserProfile"]}}))
+   :expected {'wrapper-sym 'create-user-manual-sync
+              'input []
+              'inner-sym 'demo.core/create-user-manual
+              'call-args []
+              'sync-fn 'postgres.typed.export.server-db/db-sync-merge
+              'tables ["UserAccount" "UserProfile"]}}])
+
+^{:refer postgres.typed.export.server-db/target-entry}
+(Test/check
+ [{:name "assigns the configured database target suffix"
+   :test (fn []
+           (select-keys (server-db/target-entry +shape-fn+ :supabase-db)
+                        [:target :emitted-sym :fn-def]))
+   :expected {:target :supabase-db
+              :emitted-sym 'create-user-sync
+              :fn-def +shape-fn+}}])
+
+^{:refer postgres.typed.export.server-db/emit-target}
+(Test/check
+ [{:name "renders a database wrapper for enabled synchronization"
+   :test (fn []
+           (let [infer-before (deref analyze/*infer-cache*)
+                 report-before (deref analyze/*report-cache*)]
+             (try
+               (str/includes? (server-db/emit-target +manual-sync-fn+ :supabase-db)
+                              "create-user-manual-sync")
+               (finally
+                 (reset! analyze/*infer-cache* infer-before)
+                 (reset! analyze/*report-cache* report-before)))))
+   :expected true}])
+
+^{:refer postgres.typed.export.server-db/emit-targets}
+(Test/check
+ [{:name "emits every selected database target"
+   :test (fn []
+           (let [infer-before (deref analyze/*infer-cache*)
+                 report-before (deref analyze/*report-cache*)]
+             (try
+               [(set (keys (server-db/emit-targets +manual-sync-fn+)))
+                (string?
+                 (:supabase-db
+                  (server-db/emit-targets +manual-sync-fn+ [:supabase-db])))]
+               (finally
+                 (reset! analyze/*infer-cache* infer-before)
+                 (reset! analyze/*report-cache* report-before)))))
+   :expected [#{:supabase-db} true]}])
+
+^{:refer postgres.typed.export.server-db/list-targets}
+(Test/check
+ [{:name "lists the supported database target"
+   :test (fn [] (server-db/list-targets))
+   :expected [:supabase-db]}])

@@ -1,0 +1,88 @@
+(ns hara.command.specs
+  (:config {:role :internal})
+  (:require [std.package.runtime :as package]
+            [tool.metaspec :as metaspec]))
+
+(def +specs-coordinate+ "hara:hara/foundation.specs")
+
+(defn spec-content
+  "Reads UTF-8 specification content from the mounted versioned package."
+  [path]
+  (let [descriptor (package/find +specs-coordinate+)]
+    (cond
+      descriptor (String/decode-utf8 (package/read descriptor path))
+      :else
+      (throw (ex :package/specs-unavailable
+                 {:ex/message "specification package is not installed"
+                  :package/coordinate +specs-coordinate+})))))
+
+(defn ^{:public true} conformance-report
+  "Runs one supplied metaspec conformance corpus without package I/O."
+  [target root artifact cases]
+  (cond
+    (= target "hara/metaspec-metaspec")
+    (let [outcomes
+          (vec
+           (map
+            (fn [case]
+              (let [case-type (:case/type case)
+                    input (:case/input case)
+                    expected (:case/expected case)
+                    actual
+                    (cond
+                      (and (= case-type :verify)
+                           (= input "../metaspec-metaspec.edn"))
+                      (:report/status (metaspec/conforms root {:metaspec root}))
+                      (and (= case-type :verify)
+                           (= input "../../../../00-unsorted/artifact/metaspec/artifact-metaspec.edn"))
+                      (:report/status (metaspec/conforms artifact {:metaspec root}))
+                      (= case-type :lint)
+                      (let [rule-ids (set (map :rule/id (metaspec/lint input)))]
+                        (cond (has? rule-ids expected) expected :else :fail))
+                      (= case-type :verify)
+                      (let [rule-ids (set (map :rule/id (metaspec/verify input)))]
+                        (cond (has? rule-ids expected) expected :else :fail))
+                      (= case-type :report)
+                      (:finding/repair (first (metaspec/lint {})))
+                      :else :unsupported)]
+                {:case/id (:case/id case)
+                 :case/expected expected
+                 :case/actual actual
+                 :case/status (cond (= actual expected) :pass :else :fail)}))
+            cases))
+          failures (count (filter (fn [outcome] (= :fail (:case/status outcome))) outcomes))]
+      {:report/type :hara/specs-test
+       :target target
+       :report/status (cond (= 0 failures) :pass :else :fail)
+       :summary {:pass (- (count outcomes) failures) :fail failures}
+       :cases outcomes})
+    :else
+    (throw (ex :specs/unsupported-target
+               {:ex/message (str "unsupported specification target: " target)
+                :spec/target target}))))
+
+(defn ^{:public true} target-report
+  "Loads and runs the declared metaspec conformance cases from the mounted specs HARP."
+  [target]
+  (let [root (read-string (spec-content
+                           "content/01-lang/000-metaspec/draft/metaspec-metaspec.edn"))
+        artifact (read-string (spec-content
+                               "content/00-unsorted/artifact/metaspec/artifact-metaspec.edn"))
+        cases (:conformance/cases
+               (read-string (spec-content
+                             "content/01-lang/000-metaspec/draft/conformance/metaspec.edn")))]
+    (conformance-report target root artifact cases)))
+
+(defn ^{:public true} test-response
+  "Formats a package-backed specification report as a native command response."
+  [request]
+  (try
+    (let [target (:target (:arguments request))
+          report (target-report target)]
+      {:stdout (str report "\n")
+       :stderr ""
+       :exit (cond (= :pass (:report/status report)) 0 :else 1)})
+    (catch error
+      {:stdout ""
+       :stderr (str error "\n")
+       :exit 2})))

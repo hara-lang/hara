@@ -1,0 +1,167 @@
+(ns code.test.context-test
+  (:require [code.test.compile :as compile]
+            [code.test.context :as context]
+            [code.test.registry :as registry]))
+
+^{:refer code.test.context/state}
+(Test/check
+ [{:name "state starts with the documented control baseline"
+   :test (fn []
+           (try
+             (context/reset)
+             (select-keys (context/state) [:interrupted? :latest :settings])
+             (finally (context/reset))))
+   :expected {:interrupted? false :latest nil :settings {}}}])
+
+^{:refer code.test.context/reset}
+(Test/check
+ [{:name "reset is idempotent and restores defaults"
+   :test (fn []
+           (try
+             (context/configure {:latest :changed :interrupted? true})
+             [(context/reset) (context/reset)]
+             (finally (context/reset))))
+   :expected [{:interrupted? false :latest nil
+               :print #{:print-throw :print-failed :print-timeout :print-bulk}
+               :settings {}}
+              {:interrupted? false :latest nil
+               :print #{:print-throw :print-failed :print-timeout :print-bulk}
+               :settings {}}]}])
+
+^{:refer code.test.context/configure}
+(Test/check
+ [{:name "configure merges explicit control settings"
+   :test (fn []
+           (try
+             (context/reset)
+             (context/configure {:settings {:parallel 2}})
+             (:settings (context/state))
+             (finally (context/reset))))
+   :expected {:parallel 2}}])
+
+^{:refer code.test.context/latest}
+(Test/check
+ [{:name "latest reads the stored latest run"
+   :test (fn []
+           (try
+             (context/reset)
+             (context/record-latest {:status :passed})
+             (context/latest)
+             (finally (context/reset))))
+   :expected {:status :passed}}])
+
+^{:refer code.test.context/record-latest}
+(Test/check
+ [{:name "record-latest stores and returns its supplied result"
+   :test (fn []
+           (try
+             (context/reset)
+             (context/record-latest {:status :failed})
+             (finally (context/reset))))
+   :expected {:status :failed}}])
+
+^{:refer code.test.context/print-options}
+(Test/check
+ [{:name "print-options exposes the current configured set"
+   :test (fn []
+           (try
+             (context/reset)
+             (context/print-options)
+             (finally (context/reset))))
+   :expected #{:print-throw :print-failed :print-timeout :print-bulk}}])
+
+^{:refer code.test.context/set-print-options}
+(Test/check
+ [{:name "set-print-options replaces the active print set"
+   :test (fn []
+           (try
+             (context/reset)
+             (context/set-print-options #{:print-success})
+             (context/print-options)
+             (finally (context/reset))))
+   :expected #{:print-success}}])
+
+^{:refer code.test.context/interrupt!}
+(Test/check
+ [{:name "interrupt! sets the interruption flag"
+   :test (fn []
+           (try
+             (context/reset)
+             [(context/interrupt!) (context/interrupted?)]
+             (finally (context/reset))))
+   :expected [true true]}])
+
+^{:refer code.test.context/interrupted?}
+(Test/check
+ [{:name "interrupted? is false after a reset"
+   :test (fn []
+           (try
+             (context/reset)
+             (context/interrupted?)
+             (finally (context/reset))))
+   :expected false}])
+
+^{:refer code.test.context/clear-interrupt!}
+(Test/check
+ [{:name "clear-interrupt! clears an active interruption"
+   :test (fn []
+           (try
+             (context/reset)
+             (context/interrupt!)
+             [(context/clear-interrupt!) (context/interrupted?)]
+             (finally (context/reset))))
+   :expected [false false]}])
+
+^{:refer code.test.context/snapshot}
+(Test/check
+ [{:name "snapshot captures state and the current namespace fact sequence"
+   :test (fn []
+           (try
+             (context/reset)
+             (let [snapshot (context/snapshot)]
+               [(map? snapshot) (vector? (:facts snapshot)) (:state snapshot)])
+             (finally (context/reset))))
+   :expected [true true {:interrupted? false :latest nil
+                          :print #{:print-throw :print-failed :print-timeout :print-bulk}
+                          :settings {}}]}])
+
+^{:refer code.test.context/restore}
+(Test/check
+ [{:name "restore reinstates captured control state"
+   :test (fn []
+           (try
+             (context/reset)
+             (let [snapshot (context/snapshot)]
+               (context/configure {:latest :changed})
+               (context/restore snapshot)
+               (context/latest))
+             (finally (context/reset))))
+   :expected nil}])
+
+^{:refer code.test.context/with-new-context}
+(Test/check
+ [{:name "with-new-context isolates configuration and restores the parent"
+   :test (fn []
+           (try
+             (context/reset)
+             (context/configure {:latest :outer})
+             [(context/with-new-context {:latest :inner} (context/latest))
+              (context/latest)]
+             (finally (context/reset))))
+   :expected [:inner :outer]}])
+
+^{:refer code.test.context/with-new-context}
+(Test/check
+ [{:name "with-new-context restores the code.test fact index on exit"
+   :test (fn []
+           (try
+             (registry/reset)
+             [(context/with-new-context {}
+                (compile/fact "scoped fact" 1 => 1)
+                (count (registry/facts)))
+              (count (registry/facts))]
+             (finally
+               (Test/purge)
+               (registry/reset)
+               (context/reset))))
+   :expected [1 0]}])

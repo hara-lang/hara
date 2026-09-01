@@ -1,0 +1,116 @@
+(ns code.test.checker-test
+  (:require [code.test.checker]))
+
+^{:refer code.test.checker/checker}
+(Test/check
+ [{:name "checker retains its type form and executable predicate"
+   :test (fn []
+           (let [value (code.test.checker/checker :fixture {:a 1} (fn [actual] (= actual 1)))]
+             [(code.test.checker/checker? value)
+              (:checker/type value)
+              (:checker/form value)
+              (code.test.checker/matches? value 1)]))
+   :expected [true :fixture {:a 1} true]}])
+
+^{:refer code.test.checker/checker?}
+(Test/check
+ [{:name "checker? rejects values without the matcher contract"
+   :test (fn [] [(code.test.checker/checker? (code.test.checker/exactly 1))
+                 (code.test.checker/checker? {:checker/type :exactly})
+                 (code.test.checker/checker? 1)])
+   :expected [true false false]}])
+
+^{:refer code.test.checker/checker-view}
+(Test/check
+ [{:name "checker-view removes executable matcher state"
+   :test (fn [] [(code.test.checker/checker-view (code.test.checker/exactly {:a 1}))
+                 (code.test.checker/checker-view :plain)])
+   :expected [{:checker/type :exactly :checker/form {:a 1}} :plain]}])
+
+^{:refer code.test.checker/matches?}
+(Test/check
+ [{:name "matches? dispatches matchers and literal expectations"
+   :test (fn [] [(code.test.checker/matches? (code.test.checker/exactly 2) 2)
+                 (code.test.checker/matches? (code.test.checker/exactly 2) 3)
+                 (code.test.checker/matches? {:a 1} {:a 1})
+                 (code.test.checker/matches? {:a 1} {:a 2})])
+   :expected [true false true false]}])
+
+^{:refer code.test.checker/exactly}
+(Test/check
+ [{:name "exactly preserves and compares its expected value"
+   :test (fn [] (code.test.checker/checker-view (code.test.checker/exactly [1 2])))
+   :expected {:checker/type :exactly :checker/form [1 2]}}])
+
+^{:refer code.test.checker/satisfies}
+(Test/check
+ [{:name "satisfies accepts a predicate function"
+   :test (fn [] [(code.test.checker/matches? (code.test.checker/satisfies (fn [value] (= value 3))) 3)
+                 (code.test.checker/matches? (code.test.checker/satisfies (fn [value] (= value 3))) 4)
+                 (code.test.checker/matches? (code.test.checker/satisfies 3) 3)
+                 (code.test.checker/matches? (code.test.checker/satisfies #{:ready :done}) :ready)
+                 (code.test.checker/matches? (code.test.checker/satisfies #{:ready :done}) :waiting)])
+   :expected [true false true true false]}])
+
+^{:refer code.test.checker/approx}
+(Test/check
+ [{:name "approx accepts values within its inclusive tolerance"
+   :test (fn [] [(code.test.checker/matches? (code.test.checker/approx 10 0.5) 9.5)
+                 (code.test.checker/matches? (code.test.checker/approx 10 0.5) 10.5)
+                 (code.test.checker/matches? (code.test.checker/approx 10 0.5) 10.6)
+                 (code.test.checker/matches? (code.test.checker/approx 10) "10")])
+   :expected [true true false false]}])
+
+^{:refer code.test.checker/stores}
+(Test/check
+ [{:name "stores compares a dereferenceable value's contents"
+   :test (fn [] [(code.test.checker/matches? (code.test.checker/stores {:a 1}) (atom {:a 1}))
+                 (code.test.checker/matches? (code.test.checker/stores {:a 1}) (atom {:a 2}))
+                 (code.test.checker/matches? (code.test.checker/stores {:a 1}) :not-a-reference)])
+   :expected [true false false]}])
+
+^{:refer code.test.checker/anything}
+(Test/check
+ [{:name "anything accepts all actual values"
+   :test (fn [] [(code.test.checker/matches? (code.test.checker/anything) nil)
+                 (code.test.checker/matches? (code.test.checker/anything) {:nested [1]})])
+   :expected [true true]}])
+
+^{:refer code.test.checker/capture-value}
+(Test/check
+ [{:name "capture-value exposes the last captured actual value"
+   :test (fn []
+           (let [matcher (code.test.checker/capture)
+                 _ (matcher {:captured true})]
+             (code.test.checker/capture-value)))
+   :expected {:captured true}}])
+
+^{:refer code.test.checker/capture}
+(Test/check
+ [{:name "capture records through the process holder and supplied atom"
+   :test (fn []
+           (let [holder (atom nil)
+                 matcher (code.test.checker/capture holder (code.test.checker/exactly 3))]
+             [(matcher 3) (deref holder) (code.test.checker/capture-value)]))
+   :expected [true 3 3]}])
+
+^{:refer code.test.checker/throws}
+(Test/check
+ [{:name "throws matches exception messages when supplied"
+   :test (fn []
+           (let [error (try (throw (ex-info "boom" {:kind :fixture}))
+                            (catch error error))]
+             [(code.test.checker/matches? (code.test.checker/throws) error)
+              (code.test.checker/matches? (code.test.checker/throws nil "boom") error)
+              (code.test.checker/matches? (code.test.checker/throws nil "other") error)]))
+   :expected [true true false]}])
+
+^{:refer code.test.checker/throws-info}
+(Test/check
+ [{:name "throws-info matches a subset of exception data"
+   :test (fn []
+           (let [error (try (throw (ex-info "boom" {:kind :fixture :count 1}))
+                            (catch error error))]
+             [(code.test.checker/matches? (code.test.checker/throws-info {:kind :fixture}) error)
+              (code.test.checker/matches? (code.test.checker/throws-info {:count 2}) error)]))
+   :expected [true false]}])
