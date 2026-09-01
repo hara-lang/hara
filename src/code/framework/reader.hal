@@ -1,0 +1,482 @@
+(ns code.framework.reader
+  (:config {:role :internal})
+  (:require [std.lib.zip :as zip]))
+
+(def +definition-heads+
+  #{'def 'defn 'defmacro 'defstruct 'defmutable 'defprotocol})
+
+(def +script-heads+
+  #{'l/script 'l/script-})
+
+(defn form-head
+  [record]
+  (let [form (:form record)]
+    (cond
+      (and (list? form) (seq form))
+      (first form)
+
+      :else nil)))
+
+(defn form-records
+  [nodes]
+  (vec
+   (map-indexed
+    (fn [index node]
+      (assoc node :path [index]))
+    nodes)))
+
+(defn ^{:public true} source-fingerprint
+  "Returns the content-addressed fingerprint used for reader analysis cache entries."
+  [source]
+  (str "sha256:" (Crypto/sha256 (String/encode-utf8 source))))
+
+(defn namespace-record
+  [records]
+  (first
+   (filter
+    (fn [record]
+      (has? #{'ns 'ns+} (form-head record)))
+    records)))
+
+(defn require-entry
+  [entry]
+  (cond
+    (not (vector? entry))
+    {:namespace entry :alias nil :refers []}
+
+    :else
+    (loop [remaining (vec (rest entry))
+           alias nil
+           refers []]
+      (cond
+        (empty? remaining)
+        {:namespace (first entry) :alias alias :refers refers}
+
+        (= :as (first remaining))
+        (recur (vec (drop 2 remaining)) (second remaining) refers)
+
+        (and (= :refer (first remaining))
+             (vector? (second remaining)))
+        (recur (vec (drop 2 remaining)) alias (second remaining))
+
+        :else
+        (recur (vec (rest remaining)) alias refers)))))
+
+(defn namespace-routes
+  [record]
+  (cond
+    (nil? record)
+    {:aliases {} :refers {}}
+
+    :else
+    (let [requirements
+          (reduce
+           (fn [output clause]
+             (cond
+               (and (list? clause) (= :require (first clause)))
+               (into output (map require-entry (rest clause)))
+
+               :else output))
+           []
+           (drop 2 (:form record)))]
+      {:aliases
+       (reduce
+        (fn [output requirement]
+          (cond
+            (:alias requirement)
+            (update output
+                    (:alias requirement)
+                    (fn [namespaces]
+                      (conj (or namespaces #{}) (:namespace requirement))))
+
+            :else output))
+        {}
+        requirements)
+       :refers
+       (reduce
+        (fn [output requirement]
+          (reduce
+           (fn [current name]
+             (update current
+                     name
+                     (fn [namespaces]
+                       (conj (or namespaces #{}) (:namespace requirement)))))
+           output
+           (:refers requirement)))
+        {}
+        requirements)})))
+
+(defn definition-record
+  [record]
+  (let [head (form-head record)
+        form (:form record)
+        name (second form)]
+    (cond
+      (and (has? +definition-heads+ head) (symbol? name))
+      (merge
+       (select-keys record [:path :start :end])
+       {:head head
+        :name name
+        :meta (meta form)})
+
+      :else nil)))
+
+(defn definition-records
+  [records]
+  (vec (keep definition-record records)))
+
+(defn zipper-symbols
+  [form]
+  (loop [cursor (zip/form-zip form)
+         output []]
+    (cond
+      (nil? cursor)
+      output
+
+      :else
+      (let [value (zip/right-element cursor)
+            next-output (cond
+                          (symbol? value) (conj output value)
+                          :else output)]
+        (recur (zip/step-next cursor) next-output)))))
+
+(defn spanned-symbols
+  "Walks native reader nodes and retains exact structural paths and spans."
+  [record]
+  (loop [pending [record]
+         output []]
+    (cond
+      (empty? pending)
+      output
+
+      :else
+      (let [node (first pending)
+            children
+            (map-indexed
+             (fn [index child]
+               (assoc child :path (conj (:path node) index)))
+             (:children node))
+            next-pending (into (vec (rest pending)) children)
+            next-output
+            (cond
+              (symbol? (:form node))
+              (conj output {:value (:form node)
+                            :from (select-keys node [:path :start :end])})
+
+              :else output)]
+        (recur next-pending next-output)))))
+
+(defn routed-reference-state
+  "Describes a routed symbol without collapsing ambiguous namespace routes."
+  [routes value]
+  (let [parts (str/split (str value) "/")]
+    (cond
+      (= 2 (count parts))
+      (let [qualifier (symbol (first parts))
+            member (second parts)
+            namespaces (get (:aliases routes) qualifier #{})
+            candidates
+            (vec
+             (sort
+              (map
+               (fn [namespace]
+                 (symbol (str namespace) member))
+               namespaces)))]
+        (cond
+          (= 1 (count candidates))
+          {:to (first candidates) :resolution :resolved}
+
+          (< 1 (count candidates))
+          {:to nil :candidates candidates :resolution :ambiguous}
+
+          (and (str/includes? (first parts) ".")
+               (not (= "code.test" (first parts))))
+          {:to value :resolution :resolved}
+
+          :else nil))
+
+      (= 1 (count parts))
+      (let [namespaces (get (:refers routes) value #{})
+            candidates
+            (vec
+             (sort
+              (map
+               (fn [namespace]
+                 (symbol (str namespace) (str value)))
+               namespaces)))]
+        (cond
+          (= 1 (count candidates))
+          {:to (first candidates) :resolution :resolved}
+
+          (< 1 (count candidates))
+          {:to nil :candidates candidates :resolution :ambiguous}
+
+          :else nil))
+
+      :else nil)))
+
+(defn routed-reference
+  [routes value]
+  (:to (routed-reference-state routes value)))
+
+(defn require-links
+  "Emits direct source links for each :require entry in a namespace form."
+  [record]
+  (cond
+    (not (has? #{'ns 'ns+} (form-head record)))
+    []
+
+    :else
+    (vec
+     (mapcat
+      (fn [clause]
+        (cond
+          (and (list? (:form clause))
+               (= :require (first (:form clause))))
+          (map-indexed
+           (fn [entry-index entry]
+             (let [requirement (require-entry (:form entry))]
+               {:kind :namespace/require
+                :from {:path (conj (:path clause) (+ entry-index 1))
+                       :start (:start entry)
+                       :end (:end entry)}
+                :to (:namespace requirement)
+                :resolution :resolved}))
+           (rest (:children clause)))
+
+          :else []))
+      (map-indexed
+       (fn [index clause]
+         (assoc clause :path (conj (:path record) (+ index 2))))
+       (drop 2 (:children record)))))))
+
+(defn map-value-record
+  "Returns one value node from a spanned map while preserving its structural path."
+  [record key]
+  (loop [remaining (vec (:children record))
+         index 0]
+    (cond
+      (empty? remaining)
+      nil
+
+      (= key (:form (first remaining)))
+      (assoc (second remaining) :path (conj (:path record) (+ index 1)))
+
+      :else
+      (recur (vec (drop 2 remaining)) (+ index 2)))))
+
+(defn script-require-links
+  "Emits dependencies declared by an `l/script` target form."
+  [record]
+  (let [children (:children record)
+        language (second children)
+        options (assoc (first (drop 2 children)) :path (conj (:path record) 2))
+        requirements (map-value-record options :require)]
+    (cond
+      (nil? requirements)
+      []
+
+      :else
+      (vec
+       (map-indexed
+        (fn [entry-index entry]
+          (let [requirement (require-entry (:form entry))]
+            {:kind :script/require
+             :language (:form language)
+             :from (select-keys
+                    (assoc entry :path (conj (:path requirements) entry-index))
+                    [:path :start :end])
+             :to (:namespace requirement)
+             :resolution :resolved}))
+        (:children requirements))))))
+
+(defn intern-in-links
+  "Emits the selected source Vars copied through `intern-in`."
+  [record]
+  (let [arguments
+        (vec
+         (map-indexed
+          (fn [argument-index argument]
+            (assoc argument :path (conj (:path record) (+ argument-index 1))))
+          (rest (:children record))))
+        first-argument (first arguments)
+        implicit?
+        (or (vector? (:form first-argument))
+            (and (symbol? (:form first-argument))
+                 (namespace (:form first-argument))))
+        entries
+        (cond
+          implicit? arguments
+          :else (vec (rest arguments)))]
+    (vec
+     (keep
+      (fn [entry]
+        (let [form (:form entry)
+              source
+              (cond
+                (vector? form)
+                (assoc (second (:children entry)) :path (conj (:path entry) 1))
+
+                (symbol? form)
+                entry
+
+                :else nil)
+              target
+              (cond
+                (vector? form)
+                (first form)
+
+                (symbol? form)
+                form
+
+                :else nil)]
+          (cond
+            (and source (symbol? (:form source)))
+            {:kind :publication/intern-in
+             :from (select-keys source [:path :start :end])
+             :to (:form source)
+             :publication/to target
+             :resolution :resolved}
+
+            :else nil)))
+      entries))))
+
+(defn intern-all-links
+  "Emits namespace dependencies copied through `intern-all`."
+  [record]
+  (vec
+   (keep
+    (fn [entry]
+      (let [entry-index (first entry)
+            value (second entry)
+            node (assoc value :path (conj (:path record) (+ entry-index 1)))]
+        (cond
+          (symbol? (:form node))
+          {:kind :publication/intern-all
+           :from (select-keys node [:path :start :end])
+           :to (:form node)
+           :resolution :resolved}
+
+          :else nil)))
+    (map-indexed
+     (fn [entry-index entry]
+       [entry-index entry])
+     (rest (:children record))))))
+
+(defn direct-links
+  "Extracts declaration-level dependencies without inferring call-site references."
+  [record]
+  (let [head (form-head record)]
+    (cond
+      (has? #{'ns 'ns+} head)
+      (require-links record)
+
+      (has? +script-heads+ head)
+      (script-require-links record)
+
+      (= 'intern-in head)
+      (intern-in-links record)
+
+      (= 'intern-all head)
+      (intern-all-links record)
+
+      :else
+      [])))
+
+(defn reference-records
+  [records routes]
+  (vec
+   (mapcat
+    (fn [record]
+      (let [direct (direct-links record)]
+        (cond
+          (seq direct)
+          direct
+
+          :else
+          (let [form (:form record)
+              metadata-reference (:refer (meta form))
+              metadata-node
+              (first
+               (filter
+                (fn [node]
+                  (= (:form node) (meta form)))
+                (map-indexed
+                 (fn [index node]
+                   (assoc node :path (conj (:path record) index)))
+                 (:children record))))
+              metadata-from
+              (select-keys (or metadata-node record) [:path :start :end])
+              metadata-path
+              (cond
+                metadata-node (:path metadata-from)
+                :else nil)
+              explicit
+              (cond
+                (symbol? metadata-reference)
+                [{:kind :test/refer
+                  :from metadata-from
+                  :to metadata-reference
+                  :resolution :resolved}]
+
+                :else [])
+              inferred
+              (keep
+               (fn [entry]
+                 (let [state (routed-reference-state routes (:value entry))]
+                   (cond
+                     (:resolution state)
+                     (merge {:kind :symbol/reference
+                             :from (:from entry)}
+                            state)
+
+                     :else nil)))
+               (filter
+                (fn [entry]
+                  (cond
+                    metadata-path
+                    (not
+                     (= metadata-path
+                        (vec
+                         (take (count metadata-path)
+                               (get-in entry [:from :path])))))
+
+                    :else true))
+                (spanned-symbols record)))]
+            (vec (distinct (into explicit inferred)))))))
+    records)))
+
+(defn ^{:public true} analyse-forms
+  [nodes]
+  (let [records (form-records nodes)
+        namespace (namespace-record records)
+        routes (namespace-routes namespace)]
+    {:namespace (cond namespace (second (:form namespace)) :else nil)
+     :forms records
+     :routes routes
+     :definitions (definition-records records)
+     :links (reference-records records routes)}))
+
+(defn ^{:public true} analyse-linkage-forms
+  "Extracts only declaration-level linkage facts without walking call-site forms.
+
+  Package planning needs require, l/script, intern-in, and intern-all edges;
+  retaining the full reference zipper for every source file would make a
+  monorepo release graph depend on implementation-body size."
+  [nodes]
+  (let [records (form-records nodes)
+        namespace (namespace-record records)]
+    {:namespace (cond namespace (second (:form namespace)) :else nil)
+     :definitions (definition-records records)
+     :links (vec (mapcat direct-links records))}))
+
+(defn ^{:public true} analyse-source
+  [source]
+  (assoc (analyse-forms (read-forms-spanned source))
+         :fingerprint (source-fingerprint source)))
+
+(defn ^{:public true} analyse-linkage-source
+  "Reads the bounded declaration surface used by dependency packaging."
+  [source]
+  (assoc (analyse-linkage-forms (read-forms-spanned source))
+         :fingerprint (source-fingerprint source)))

@@ -1,0 +1,67 @@
+(ns work.agent.ephemeral
+  (:require [work.core :as work]
+            [work.agent.protocol :as protocol]
+            [work.agent.internal :as internal]))
+
+(defstruct EphemeralAgent [spec])
+(defstruct EphemeralDriver [lower])
+(defstruct EphemeralCoordinator [])
+(defstruct EphemeralAuthority [id decisions])
+
+(extend-type EphemeralAgent protocol/IAgent
+  (agent-spec [agent]
+    (:spec agent)))
+
+(extend-type EphemeralDriver protocol/IAgentDriver
+  (agent-drive [driver agent intent context]
+    ((:lower driver) agent intent context)))
+
+(extend-type EphemeralCoordinator protocol/IAgentCoordinator
+  (agent-coordinate [coordinator request]
+    request))
+
+(extend-type EphemeralAuthority protocol/IAgentAuthority
+  (agent-authorize [authority request]
+    (let [decisions (:decisions authority)
+          action (:action request)
+          allowed? (if (has? decisions action)
+                     (get decisions action)
+                     true)]
+      {:authority/id (:id authority)
+       :authorized? allowed?
+       :request request}))
+  (agent-sign [authority request]
+    {:authority/id (:id authority)
+     :signature [(:id authority) request]
+     :request request}))
+
+(defn agent
+  [spec]
+  (work.agent.ephemeral/EphemeralAgent spec))
+
+(defn driver
+  [lower]
+  (work.agent.ephemeral/EphemeralDriver lower))
+
+(defn work-driver
+  [id function]
+  (let [target (str id)]
+    (driver
+     (fn [agent intent context]
+       (work/bundle
+        (Work/step target)
+        {target
+         (fn [input]
+           (function agent intent context input {}))})))))
+
+(defn coordinator
+  []
+  (work.agent.ephemeral/EphemeralCoordinator))
+
+(defn authority
+  ([ ]
+   (authority :ephemeral-authority {}))
+  ([id]
+   (authority id {}))
+  ([id decisions]
+   (work.agent.ephemeral/EphemeralAuthority id (or decisions {}))))

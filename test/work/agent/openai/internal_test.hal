@@ -1,0 +1,124 @@
+(ns work.agent.openai.internal-test
+  (:require [work.agent.openai.internal :as internal]))
+
+(def response
+  {:id "response-1"
+   :status "completed"
+   :output
+   [{:type "message"
+     :content [{:type "output_text" :text "hello"}]}
+    {:type "function_call"
+     :call_id "call-1"
+     :name "echo"
+     :arguments "{\"value\":7}"}]})
+
+^{:refer work.agent.openai.internal/wire-field}
+(Test/check
+ [{:name "reads both string and keyword fields"
+   :test (fn []
+           [(internal/wire-field {"id" 1} "id")
+            (internal/wire-field {:id 2} "id")])
+   :expected [1 2]}])
+
+^{:refer work.agent.openai.internal/named-value}
+(Test/check
+ [{:name "renders a keyword as its JSON name"
+   :test (fn [] (internal/named-value :completed))
+   :expected "completed"}])
+
+^{:refer work.agent.openai.internal/wire-map}
+(Test/check
+ [{:name "converts keyword map keys recursively"
+   :test (fn [] (internal/wire-map {:mode :fast :nested {:ok true}}))
+   :expected {"mode" "fast" "nested" {"ok" true}}}])
+
+^{:refer work.agent.openai.internal/wire-sequence}
+(Test/check
+ [{:name "converts sequence values to a JSON vector"
+   :test (fn [] (internal/wire-sequence '(:one :two)))
+   :expected ["one" "two"]}])
+
+^{:refer work.agent.openai.internal/wire-value}
+(Test/check
+ [{:name "converts nested portable values into JSON-safe values"
+   :test (fn [] (internal/wire-value {:values #{:one :two}}))
+   :expected {"values" ["one" "two"]}}])
+
+^{:refer work.agent.openai.internal/request-headers}
+(Test/check
+ [{:name "adds JSON and bearer headers"
+   :test (fn []
+           (internal/request-headers
+            {:openai/headers {:x-client "test"}
+             :openai/api-key "key"}))
+   :expected {"content-type" "application/json"
+              "x-client" "test"
+              "authorization" "Bearer key"}}])
+
+^{:refer work.agent.openai.internal/parsed-body}
+(Test/check
+ [{:name "accepts both decoded maps and JSON strings"
+   :test (fn []
+           [(internal/parsed-body {"id" 1})
+            (internal/parsed-body "{\"id\":2}")])
+   :expected [{"id" 1} {"id" 2}]}])
+
+^{:refer work.agent.openai.internal/output-items}
+(Test/check
+ [{:name "projects output items and defaults missing output to empty"
+   :test (fn []
+           [(internal/output-items response)
+            (internal/output-items {})])
+   :expected [[{:type "message" :content [{:type "output_text" :text "hello"}]}
+               {:type "function_call" :call_id "call-1" :name "echo" :arguments "{\"value\":7}"}]
+              []]}])
+
+^{:refer work.agent.openai.internal/output-text}
+(Test/check
+ [{:name "joins output_text content from message items"
+   :test (fn [] (internal/output-text response))
+   :expected "hello"}])
+
+^{:refer work.agent.openai.internal/decode-arguments}
+(Test/check
+ [{:name "decodes JSON function arguments"
+   :test (fn []
+           (internal/decode-arguments {:arguments "{\"value\":7}"}))
+   :expected {"value" 7}}])
+
+^{:refer work.agent.openai.internal/function-call}
+(Test/check
+ [{:name "normalizes one function call item"
+   :test (fn []
+           (select-keys
+            (internal/function-call
+             {:type "function_call" :call_id "one" :name "echo"
+              :arguments "{}"})
+            [:call/id :tool/name :call/arguments]))
+   :expected {:call/id "one" :tool/name "echo" :call/arguments {}}}])
+
+^{:refer work.agent.openai.internal/function-calls}
+(Test/check
+ [{:name "selects and normalizes function calls in output order"
+   :test (fn []
+           (internal/function-calls response))
+   :expected [{:call/id "call-1"
+               :tool/name "echo"
+               :call/arguments {"value" 7}
+               :call/raw {:type "function_call"
+                          :call_id "call-1"
+                          :name "echo"
+                          :arguments "{\"value\":7}"}}]}])
+
+^{:refer work.agent.openai.internal/tool-result-body}
+(Test/check
+ [{:name "creates wire result bodies for success and failure"
+   :test (fn []
+           [(internal/tool-result-body
+             {:tool/status :ok :tool/value {:ready true}}
+             internal/wire-value)
+            (internal/tool-result-body
+             {:tool/status :error :tool/error {:code :tool/failed}}
+             internal/wire-value)])
+   :expected [{:ok true :value {"ready" true}}
+              {:ok false :error {"code" "tool/failed"}}]}])

@@ -1,5 +1,11 @@
 (ns std.foundation-test)
 
+^{:refer std.foundation/type}
+(Test/check
+ [{:name "returns the portable runtime type keyword"
+   :test (fn [] [(type 42) (type "hara") (type :foundation)])
+   :expected [:std.native.Long :std.native.String :std.native.Keyword]}])
+
 (defprotocol IDeclarationParent
   (declaration-parent [self]))
 
@@ -249,6 +255,21 @@
                  (std.foundation/ex? :not-an-exception)])
    :expected [true false]}])
 
+^{:refer std.foundation/ex}
+(Test/check
+ [{:name "prints and reads canonical #ex literals without the legacy constructor"
+   :test (fn []
+           (let [error (ex :argument {:input :fixture} :ex/message "bad input")
+                 reread (Edn/read (Edn/write error))]
+             [(String/starts-with? (Edn/write error) "#ex[")
+              (ex-message reread)
+              (ex-data reread)
+              (nil? (std.foundation/resolve (symbol (str "std.foundation/" "ex" "-" "info"))))]))
+   :expected [true
+              "bad input"
+              {:input :fixture :ex/code :hara/argument :ex/class :ex.class/argument :ex/message "bad input"}
+              true]}])
+
 ^{:refer std.foundation/get}
 (Test/check
  [{:name "dispatches associative access through ILookup"
@@ -348,6 +369,26 @@
 
 ^{:refer std.foundation/read-forms}
 (Test/check [])
+
+^{:refer std.foundation/read-forms-spanned}
+(Test/check
+ [{:name "reads nested source positions without evaluating forms"
+   :test (fn []
+           (let [node (first (std.foundation/read-forms-spanned "; comment\n(defn sample [x]\n  (inc x))"))
+                 call (last (:children node))
+                 metadata (first (std.foundation/read-forms-spanned "^{:refer demo.subject/run}\n(def run [] 1)"))
+                 unevaluated (first (std.foundation/read-forms-spanned "(throw (ex :host {} :ex/message \"not evaluated\"))"))]
+             [(= (:form node) (quote (defn sample [x] (inc x))))
+              (= [(:offset (:start node)) (:line (:start node)) (:column (:start node))
+                  (:offset (:end node)) (:line (:end node)) (:column (:end node))]
+                 [10 2 1 37 3 11])
+              (= (:form call) (quote (inc x)))
+              (= [(:offset (:start call)) (:line (:start call)) (:column (:start call))
+                  (:offset (:end call)) (:line (:end call)) (:column (:end call))]
+                 [29 3 3 36 3 10])
+              (= (:refer (meta (:form metadata))) (quote demo.subject/run))
+              (= (:form unevaluated) (quote (throw (ex :host {} :ex/message "not evaluated"))))]))
+   :expected [true true true true true true]}])
 
 ^{:refer std.foundation/result?}
 (Test/check

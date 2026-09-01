@@ -1,0 +1,85 @@
+(ns code.framework-test
+  (:require [code.framework :as framework]))
+
+^{:refer code.framework/analyse-source}
+(Test/check
+ [{:name "publishes reader-first source facts through the framework facade"
+   :test (fn [] (select-keys
+                 (framework/analyse-source
+                  "(ns demo.facade (:require [demo.core :as core]))\n(defn call [] (core/run))")
+                 [:namespace :links]))
+   :expected {:namespace 'demo.facade
+              :links [{:kind :namespace/require
+                       :from {:path [0 2 1]
+                              :start {:offset 26 :line 1 :column 27}
+                              :end {:offset 46 :line 1 :column 47}}
+                       :to 'demo.core
+                       :resolution :resolved}
+                      {:kind :symbol/reference
+                       :from {:path [1 3 0]
+                              :start {:offset 64 :line 2 :column 16}
+                              :end {:offset 72 :line 2 :column 24}}
+                       :to 'demo.core/run
+              :resolution :resolved}]}}])
+
+^{:refer code.framework/analyse-linkage-source}
+(Test/check
+ [{:name "publishes the bounded declaration-only analyser for package planners"
+   :test (fn [] (framework/analyse-linkage-source
+                 "(ns demo.package (:require [demo.base]))\n(defn use [] demo.base/value)"))
+   :expected {:namespace 'demo.package
+              :definitions [{:head 'defn :name 'use :path [1]
+                             :start {:offset 41 :line 2 :column 1}
+                             :end {:offset 70 :line 2 :column 30}
+                             :meta nil}]
+              :links [{:kind :namespace/require
+                       :from {:path [0 2 1]
+                              :start {:offset 27 :line 1 :column 28}
+                              :end {:offset 38 :line 1 :column 39}}
+                       :to 'demo.base
+                       :resolution :resolved}]
+              :fingerprint "sha256:e6caa8cd1ab03c31f59345cc4556f3a20f1e3576c3fcba318bc6d05a5b76306a"}}])
+
+^{:refer code.framework/enrich-reader-analysis}
+(Test/check
+ [{:name "publishes opt-in detailed enrichment without changing semantics"
+   :test (fn [] (let [analysis (framework/analyse-source "(ns demo.facade)")
+                      enriched (framework/enrich-reader-analysis analysis "(ns demo.facade)")]
+                  [(framework/semantic-facts enriched)
+                   (:rendered (:detail enriched))]))
+   :expected [{:namespace 'demo.facade
+               :routes {:aliases {} :refers {}}
+               :definitions []
+               :links []
+               :fingerprint "sha256:29ff27bb6c87d6b37dafa0983f4f1ba3e9768accdb4df7e41457265916a26955"}
+              "(ns demo.facade)"]}])
+
+^{:refer code.framework/links-to}
+(Test/check
+ [{:name "publishes reversible source-to-target link lookup"
+   :test (fn [] (let [state (framework/upsert-analysis
+                            (framework/empty-index)
+                            "demo.hal"
+                            "sha256:demo"
+                            {:links [{:kind :symbol/reference
+                                     :from {:path [0]}
+                                     :to 'demo.core/run
+                                     :resolution :resolved}]})]
+                  (framework/links-to state 'demo.core/run)))
+   :expected [{:kind :symbol/reference
+               :from {:path [0]}
+               :to 'demo.core/run
+               :resolution :resolved
+               :source/path "demo.hal"
+               :source/fingerprint "sha256:demo"}]}])
+
+^{:refer code.framework/linkage}
+(Test/check
+ [{:name "publishes an IDeps linkage over reader dependency declarations"
+   :test (fn [] (let [analysis
+                       (framework/analyse-source
+                        "(ns demo.facade (:require [demo.core :as core]))\n(intern-in [public-run demo.core/run])")
+                       linkage (framework/linkage [analysis])]
+                   [(framework/linkage? linkage)
+                    (framework/dependency-map linkage)]))
+   :expected [true {'demo.facade #{'demo.core}}]}])

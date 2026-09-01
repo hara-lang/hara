@@ -1,0 +1,102 @@
+(ns code.framework.link
+  (:config {:role :internal}))
+
+(def +dependency-kinds+
+  #{:namespace/require
+    :script/require
+    :publication/intern-in
+    :publication/intern-all})
+
+(defstruct ^{:public true} Linkage [entries]
+  IDeps
+  (dep-get [linkage id]
+    (:entry (get (:entries linkage) id)))
+  (dep-entries [linkage id]
+    (set (or (:deps (get (:entries linkage) id)) #{})))
+  (dep-keys [linkage]
+    (vec (keys (:entries linkage)))))
+
+(defn ^{:public true} linkage?
+  "Recognizes a dependency linkage built from reader-first source facts."
+  [value]
+  (instance? Linkage value))
+
+(defn namespace-exports
+  "Returns the namespace and declared Var exports in Foundation linkage form."
+  [analysis]
+  (let [namespace (:namespace analysis)]
+    (cond
+      (nil? namespace)
+      #{}
+
+      :else
+      (set
+       (concat
+        [[:hara namespace]]
+        (map
+         (fn [definition]
+           [:hara (symbol (str namespace) (str (:name definition)))])
+         (:definitions analysis)))))))
+
+(defn dependency-id
+  "Normalizes one resolved declaration link to the namespace graph identifier."
+  [link]
+  (let [target (:to link)]
+    (cond
+      (not (has? +dependency-kinds+ (:kind link)))
+      nil
+
+      (not (= :resolved (:resolution link)))
+      nil
+
+      (not (symbol? target))
+      nil
+
+      (namespace target)
+      (symbol (namespace target))
+
+      :else
+      target)))
+
+(defn linkage-entry
+  "Builds one IDeps entry from the declaration-level imports and exports of analysis."
+  [analysis]
+  (let [namespace (:namespace analysis)
+        dependencies (set (keep dependency-id (:links analysis)))
+        exports (namespace-exports analysis)
+        imports (set (map (fn [dependency] [:hara dependency]) dependencies))]
+    {:id namespace
+     :entry (assoc analysis :exports exports :imports imports)
+     :deps dependencies}))
+
+(defn ^{:public true} linkage
+  "Builds an IDeps namespace graph from reader analyses."
+  [analyses]
+  (map->Linkage
+   {:entries
+    (reduce
+     (fn [output analysis]
+       (let [entry (linkage-entry analysis)
+             id (:id entry)]
+         (cond
+           id
+           (assoc output id (select-keys entry [:entry :deps]))
+
+           :else
+           output)))
+     {}
+     analyses)}))
+
+(defn ^{:public true} linkage-from-index
+  "Projects every cached reader analysis in an index into one IDeps linkage."
+  [index]
+  (linkage (keep :analysis (vals (:entries index)))))
+
+(defn ^{:public true} dependency-map
+  "Returns all direct namespace dependencies through the Linkage IDeps contract."
+  [context]
+  (reduce
+   (fn [output id]
+     (assoc output id (set (IDeps/dep-entries context id))))
+   {}
+   (IDeps/dep-keys context)))

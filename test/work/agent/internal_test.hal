@@ -1,0 +1,71 @@
+(ns work.agent.internal-test
+  (:require [work.core :as work]
+            [work.agent.internal :as internal]
+            [work.agent.ephemeral :as ephemeral]))
+
+(def agent-value {:agent/id :one})
+
+^{:refer work.agent.internal/require-capability}
+(Test/check
+ [{:name "returns a matching capability and reports missing capabilities"
+   :test (fn []
+           (let [driver (ephemeral/driver (fn [agent intent context] nil))]
+             [(internal/protocol-driver?
+               (internal/require-capability
+                (assoc agent-value :agent/driver driver)
+                :agent/driver
+                :IAgentDriver
+                internal/protocol-driver?
+                :one))
+              (try
+                (internal/require-capability
+                 agent-value :agent/driver :IAgentDriver
+                 internal/protocol-driver? :one)
+                :not-rejected
+                (catch Throwable error
+                  (:agent/capability (ex-data error))))]))
+   :expected [true :agent/driver]}])
+
+^{:refer work.agent.internal/assert-bundle}
+(Test/check
+ [{:name "accepts bundles and rejects arbitrary values"
+   :test (fn []
+           [(work/bundle? (internal/assert-bundle
+                           (work/bundle (Work/pure "one") {"one" (fn [input] input)})
+                           :test))
+            (try
+              (internal/assert-bundle {:not :work} :test)
+              :not-rejected
+              (catch Throwable error
+                (:agent/boundary (ex-data error))))])
+   :expected [true :test]}])
+
+^{:refer work.agent.internal/target-id}
+(Test/check
+ [{:name "creates namespaced stable target names"
+   :test (fn [] (internal/target-id "work.agent" :one "drive"))
+   :expected "work.agent/:one/drive"}])
+
+^{:refer work.agent.internal/protocol-driver?}
+(Test/check
+ [{:name "recognises the driver protocol"
+   :test (fn []
+           [(internal/protocol-driver? (ephemeral/driver (fn [a i c] nil)))
+            (internal/protocol-driver? {})])
+   :expected [true false]}])
+
+^{:refer work.agent.internal/protocol-coordinator?}
+(Test/check
+ [{:name "recognises the coordinator protocol"
+   :test (fn []
+           [(internal/protocol-coordinator? (ephemeral/coordinator))
+            (internal/protocol-coordinator? {})])
+   :expected [true false]}])
+
+^{:refer work.agent.internal/protocol-authority?}
+(Test/check
+ [{:name "recognises the authority protocol"
+   :test (fn []
+           [(internal/protocol-authority? (ephemeral/authority))
+            (internal/protocol-authority? {})])
+   :expected [true false]}])

@@ -86,6 +86,22 @@
              (Work/target-names registry)))
    :expected ["fixture/id"]}])
 
+^{:refer work.core/bind-targets}
+(Test/check
+ [{:name "binds a bundle returned by a continuation into the same registry"
+   :test (fn []
+           (let [bundle
+                 (work.core/bundle
+                  (Work/bind (Work/pure "fixture/source") "fixture/expand")
+                  {"fixture/source" (fn [input] 7)
+                   "fixture/expand"
+                   (fn [input]
+                     (work.core/bundle
+                      (Work/step "fixture/child")
+                      {"fixture/child" (fn [value] (+ value 1))}))})]
+             (deref (work.core/evaluate bundle nil))))
+   :expected 8}])
+
 ^{:refer work.core/prepare}
 (Test/check
  [{:name "creates opaque native registry and runtime values"
@@ -104,6 +120,29 @@
              (work.core/reset prepared)
              (Work/target-names (:work/registry prepared))))
    :expected []}])
+
+^{:refer work.core/reset}
+(Test/check
+ [{:name "clears dynamically promoted continuation targets"
+   :test (fn []
+           (let [bundle
+                 (work.core/bundle
+                  (Work/bind (Work/pure "fixture/source") "fixture/expand")
+                  {"fixture/source" (fn [input] 7)
+                   "fixture/expand"
+                   (fn [input]
+                     (work.core/bundle
+                      (Work/step "fixture/child")
+                      {"fixture/child" (fn [value] (+ value 1))}))})
+                 prepared (work.core/prepare bundle)
+                 _ (deref (work.core/evaluate prepared bundle nil))
+                 before (not (nil? (Work/target
+                                    (:work/registry prepared)
+                                    "fixture/child")))]
+             (work.core/reset prepared)
+             (work.core/reset prepared)
+             [before (Work/target-names (:work/registry prepared))]))
+   :expected [true []]}])
 
 ^{:refer work.core/evaluate}
 (Test/check

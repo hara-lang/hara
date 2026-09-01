@@ -1,0 +1,93 @@
+(ns code.framework.link-test
+  (:require [code.framework.index :as index]
+            [code.framework.link :as link]
+            [code.framework.reader :as reader]))
+
+(def alpha-analysis
+  (reader/analyse-source
+   "(ns demo.alpha (:require [demo.base :as base]))\n(defn run [] (base/call))"))
+
+(def facade-analysis
+  (reader/analyse-source
+   "(ns demo.facade)\n(intern-in [public-run demo.alpha/run])\n(intern-all demo.shared)"))
+
+(def script-analysis
+  (reader/analyse-source
+   "(ns demo.script)\n(l/script :xtalk {:require [[xt.core :as xt]]})"))
+
+(def fixture-linkage
+  (link/linkage [alpha-analysis facade-analysis script-analysis]))
+
+^{:refer code.framework.link/Linkage}
+(Test/check
+ [{:name "Linkage implements the intrinsic IDeps contract"
+   :test (fn [] [(link/linkage? fixture-linkage)
+                 (:namespace (IDeps/dep-get fixture-linkage 'demo.alpha))
+                 (IDeps/dep-entries fixture-linkage 'demo.facade)
+                 (set (IDeps/dep-keys fixture-linkage))])
+   :expected [true 'demo.alpha #{'demo.alpha 'demo.shared}
+              #{'demo.alpha 'demo.facade 'demo.script}]}])
+
+^{:refer code.framework.link/linkage?}
+(Test/check
+ [{:name "distinguishes Linkage values from ordinary maps"
+   :test (fn [] [(link/linkage? fixture-linkage) (link/linkage? {})])
+   :expected [true false]}])
+
+^{:refer code.framework.link/namespace-exports}
+(Test/check
+ [{:name "models the namespace and declared Vars as Hara exports"
+   :test (fn [] [(link/namespace-exports alpha-analysis)
+                 (link/namespace-exports {:namespace nil :definitions []})])
+   :expected [#{[:hara 'demo.alpha] [:hara 'demo.alpha/run]} #{}]}])
+
+^{:refer code.framework.link/dependency-id}
+(Test/check
+ [{:name "keeps only resolved declaration dependencies and normalizes Var imports"
+   :test (fn [] [(link/dependency-id {:kind :namespace/require :to 'demo.base :resolution :resolved})
+                 (link/dependency-id {:kind :publication/intern-in
+                                      :to 'demo.alpha/run :resolution :resolved})
+                 (link/dependency-id {:kind :symbol/reference
+                                      :to 'demo.alpha/run :resolution :resolved})
+                 (link/dependency-id {:kind :script/require
+                                      :to nil :resolution :unresolved})])
+   :expected ['demo.base 'demo.alpha nil nil]}])
+
+^{:refer code.framework.link/linkage-entry}
+(Test/check
+ [{:name "retains analysis and exposes typed import/export sets for one namespace"
+   :test (fn [] (let [entry (link/linkage-entry facade-analysis)]
+                  [(:id entry)
+                   (get-in entry [:entry :imports])
+                   (get-in entry [:entry :exports])
+                   (:deps entry)]))
+   :expected ['demo.facade
+              #{[:hara 'demo.alpha] [:hara 'demo.shared]}
+              #{[:hara 'demo.facade]}
+              #{'demo.alpha 'demo.shared}]}])
+
+^{:refer code.framework.link/linkage}
+(Test/check
+ [{:name "builds a reader-first namespace dependency graph"
+   :test (fn [] (link/dependency-map fixture-linkage))
+   :expected {'demo.alpha #{'demo.base}
+              'demo.facade #{'demo.alpha 'demo.shared}
+              'demo.script #{'xt.core}}}])
+
+^{:refer code.framework.link/linkage-from-index}
+(Test/check
+ [{:name "projects cached analyses without reading source again"
+   :test (fn [] (let [state (-> (index/empty-index)
+                                 (index/upsert-analysis "alpha.hal" "one" alpha-analysis)
+                                 (index/upsert-analysis "facade.hal" "two" facade-analysis))]
+                  (link/dependency-map (link/linkage-from-index state))))
+   :expected {'demo.alpha #{'demo.base}
+              'demo.facade #{'demo.alpha 'demo.shared}}}])
+
+^{:refer code.framework.link/dependency-map}
+(Test/check
+ [{:name "uses IDeps methods rather than the Linkage representation directly"
+   :test (fn [] (link/dependency-map fixture-linkage))
+   :expected {'demo.alpha #{'demo.base}
+              'demo.facade #{'demo.alpha 'demo.shared}
+              'demo.script #{'xt.core}}}])

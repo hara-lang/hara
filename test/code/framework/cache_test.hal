@@ -1,0 +1,221 @@
+(ns code.framework.cache-test
+  (:require [code.framework.cache :as cache]
+            [code.framework.index :as index]))
+
+(def one-source
+  "(ns demo.cache (:require [demo.one :refer [run]]))\n(defn call [] (run))")
+
+(def two-source
+  "(ns demo.cache (:require [demo.two :refer [run]]))\n(defn call [] (run))")
+
+^{:refer code.framework.cache/cache-path}
+(Test/check
+ [{:name "uses a project-local durable cache location"
+   :test (fn [] (cache/cache-path "fixture-root"))
+   :expected "/fixture-root/.hara/code/framework/index.edn"}])
+
+^{:refer code.framework.cache/cache-index?}
+(Test/check
+ [{:name "accepts only a complete index state"
+   :test (fn [] [(cache/cache-index? (index/empty-index))
+                 (cache/cache-index? {:entries {}})])
+   :expected [true false]}])
+
+^{:refer code.framework.cache/load-index}
+(Test/check
+ [{:name "uses an empty index when no cache has been persisted"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-load-"}))]
+                  (try
+                    (cache/load-index root)
+                    (finally
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected {:entries {} :links-by-source {} :links-by-target {}}}
+  {:name "rejects corrupt durable cache data"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-corrupt-"}))
+                      path (cache/cache-path root)]
+                  (try
+                    (deref (File/write path (String/encode-utf8 "{:entries {}}")
+                                             {:mode :replace :parents? true}))
+                    (cache/load-index root)
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code/framework") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara") {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected {:entries {} :links-by-source {} :links-by-target {}}}])
+
+^{:refer code.framework.cache/save-index}
+(Test/check
+ [{:name "round-trips a serializable successful index through durable storage"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-save-"}))
+                      state (index/upsert-analysis (index/empty-index) "demo.hal" "sha256:one"
+                                                  {:links []})
+                      path (cache/cache-path root)]
+                  (try
+                    (cache/save-index root state)
+                    (= state (cache/load-index root))
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code/framework") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara") {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected true}])
+
+^{:refer code.framework.cache/source-revision}
+(Test/check
+ [{:name "reads modification time and byte count from filesystem metadata"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-revision-"}))
+                      path (File/join root "demo.hal")]
+                  (try
+                    (deref (File/write path (String/encode-utf8 one-source)
+                                        {:mode :replace :parents? true}))
+                    (let [revision (cache/source-revision path)]
+                      [(number? (:modified-at revision))
+                       (= (:bytes revision) (count (String/encode-utf8 one-source)))])
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected [true true]}])
+
+^{:refer code.framework.cache/cached-path-analysis}
+(Test/check
+ [{:name "resets cached analysis when either modification time or byte count changes"
+   :test (fn [] (let [state
+                       (assoc-in
+                        (index/upsert-analysis (index/empty-index) "demo.hal" "sha256:one"
+                                               {:links []})
+                        [:entries "demo.hal" :revision]
+                        {:modified-at 100 :bytes 20})]
+                  [(cache/cached-path-analysis state "demo.hal" {:modified-at 100 :bytes 20})
+                   (cache/cached-path-analysis state "demo.hal" {:modified-at 101 :bytes 20})
+                   (cache/cached-path-analysis state "demo.hal" {:modified-at 100 :bytes 21})]))
+   :expected [{:links []} nil nil]}])
+
+^{:refer code.framework.cache/analyse-path}
+(Test/check
+ [{:name "returns reader analysis and fingerprints it before caching"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-analyse-"}))
+                      path (File/join root "demo.hal")]
+                  (try
+                    (deref (File/write path (String/encode-utf8 one-source)
+                                        {:mode :replace :parents? true}))
+                    (let [result (cache/analyse-path (index/empty-index) path)]
+                       [(:cached? result)
+                       (= (get-in result [:analysis :fingerprint])
+                          (get-in result [:index :entries path :fingerprint]))
+                       (count (index/links-to (:index result) 'demo.one/run))
+                       (number? (get-in result [:index :entries path :revision :modified-at]))
+                       (= (get-in result [:index :entries path :revision :bytes])
+                          (count (String/encode-utf8 one-source)))])
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected [false true 1 true true]}
+  {:name "reanalyses an exact source when its recorded timestamp is stale"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-modified-"}))
+                      path (File/join root "demo.hal")]
+                  (try
+                    (deref (File/write path (String/encode-utf8 one-source)
+                                        {:mode :replace :parents? true}))
+                    (let [first-result (cache/analyse-path (index/empty-index) path)
+                          stale-index
+                          (assoc-in (:index first-result)
+                                    [:entries path :revision :modified-at]
+                                    -1)
+                          next-result (cache/analyse-path stale-index path)]
+                      [(:cached? first-result) (:cached? next-result)])
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected [false false]}])
+
+^{:refer code.framework.cache/refresh-path}
+(Test/check
+ [{:name "uses an exact persisted cache entry after process-style reload"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-restart-"}))
+                      path (File/join root "demo.hal")
+                      durable (cache/cache-path root)]
+                  (try
+                    (deref (File/write path (String/encode-utf8 one-source)
+                                        {:mode :replace :parents? true}))
+                    (let [first-result (cache/refresh-path root (index/empty-index) path)
+                          restarted (cache/analyse-path (cache/load-index root) path)]
+                      [(:cached? first-result)
+                       (:cached? restarted)
+                       (= (:analysis first-result) (:analysis restarted))])
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete durable {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code/framework") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara") {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected [false true true]}
+  {:name "invalidates stale reverse links after an exact source change"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-stale-"}))
+                      path (File/join root "demo.hal")
+                      durable (cache/cache-path root)]
+                  (try
+                    (deref (File/write path (String/encode-utf8 one-source)
+                                        {:mode :replace :parents? true}))
+                    (let [first-result (cache/refresh-path root (index/empty-index) path)]
+                      (deref (File/write path (String/encode-utf8 two-source)
+                                          {:mode :replace :parents? true}))
+                      (let [next-result (cache/refresh-path root (:index first-result) path)]
+                        [(:cached? next-result)
+                         (index/links-to (:index next-result) 'demo.one/run)
+                         (count (index/links-to (:index next-result) 'demo.two/run))]))
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete durable {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code/framework") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara") {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected [false [] 1]}
+  {:name "does not overwrite the last successful durable index after reader failure"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-failure-"}))
+                      path (File/join root "demo.hal")
+                      durable (cache/cache-path root)]
+                  (try
+                    (deref (File/write path (String/encode-utf8 one-source)
+                                        {:mode :replace :parents? true}))
+                    (cache/refresh-path root (index/empty-index) path)
+                    (deref (File/write path (String/encode-utf8 "(")
+                                        {:mode :replace :parents? true}))
+                    [(try
+                       (cache/refresh-path root (cache/load-index root) path)
+                       :unexpected-success
+                       (catch error :reader-failed))
+                     (count (index/links-to (cache/load-index root) 'demo.one/run))]
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete durable {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code/framework") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara") {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected [:reader-failed 1]}])
+
+^{:refer code.framework.cache/reset-cache}
+(Test/check
+ [{:name "removes cache data idempotently and returns the baseline index"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-framework-reset-"}))
+                      state (index/upsert-analysis (index/empty-index) "demo.hal" "sha256:one"
+                                                  {:links []})
+                      durable (cache/cache-path root)]
+                  (try
+                    (cache/save-index root state)
+                    [(cache/reset-cache root)
+                     (cache/reset-cache root)
+                     (deref (File/exists? durable))]
+                    (finally
+                      (deref (File/delete (File/join root ".hara/code/framework") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara/code") {:missing-ok? true}))
+                      (deref (File/delete (File/join root ".hara") {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected [{:entries {} :links-by-source {} :links-by-target {}}
+              {:entries {} :links-by-source {} :links-by-target {}}
+              false]}])

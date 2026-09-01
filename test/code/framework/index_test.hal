@@ -1,0 +1,82 @@
+(ns code.framework.index-test
+  (:require [code.framework.index :as index]))
+
+(def alpha
+  {:links [{:kind :symbol/reference :to 'demo.core/run :from {:path [1]}}]})
+
+(def beta
+  {:links [{:kind :test/refer :to 'demo.core/run :from {:path [2]}}
+           {:kind :symbol/reference :to 'demo.core/stop :from {:path [3]}}]})
+
+^{:refer code.framework.index/empty-index}
+(Test/check
+ [{:name "creates an empty reversible link index"
+   :test (fn [] (index/empty-index))
+   :expected {:entries {} :links-by-source {} :links-by-target {}}}])
+
+^{:refer code.framework.index/source-links}
+(Test/check
+ [{:name "adds source provenance to outgoing links"
+   :test (fn [] (index/source-links "src/demo.hal" "sha256:alpha" alpha))
+   :expected [{:kind :symbol/reference :to 'demo.core/run :from {:path [1]}
+               :source/path "src/demo.hal"
+               :source/fingerprint "sha256:alpha"}]}])
+
+^{:refer code.framework.index/target-links}
+(Test/check
+ [{:name "builds a reverse target index"
+   :test (fn [] (index/target-links {"a.hal" (index/source-links "a.hal" "sha256:a" alpha)
+                                      "b.hal" (index/source-links "b.hal" "sha256:b" beta)}))
+   :expected {'demo.core/run [{:kind :symbol/reference :to 'demo.core/run :from {:path [1]}
+                               :source/path "a.hal" :source/fingerprint "sha256:a"}
+                              {:kind :test/refer :to 'demo.core/run :from {:path [2]}
+                               :source/path "b.hal" :source/fingerprint "sha256:b"}]
+              'demo.core/stop [{:kind :symbol/reference :to 'demo.core/stop :from {:path [3]}
+                                :source/path "b.hal" :source/fingerprint "sha256:b"}]}}])
+
+^{:refer code.framework.index/invalidate-source}
+(Test/check
+ [{:name "removes both forward and reverse links idempotently"
+   :test (fn [] (let [cached (index/upsert-analysis (index/empty-index) "a.hal" "one" alpha)
+                      cleared (index/invalidate-source cached "a.hal")]
+                  [(index/invalidate-source cleared "a.hal")
+                   (index/links-to cleared 'demo.core/run)]))
+   :expected [{:entries {} :links-by-source {} :links-by-target {}}
+              []]}])
+
+^{:refer code.framework.index/reset-index}
+(Test/check
+ [{:name "resets a populated index idempotently"
+   :test (fn [] (let [populated (index/upsert-analysis (index/empty-index) "a.hal" "one" alpha)
+                      cleared (index/reset-index populated)]
+                  [(index/reset-index cleared) cleared]))
+   :expected [{:entries {} :links-by-source {} :links-by-target {}}
+              {:entries {} :links-by-source {} :links-by-target {}}]}])
+
+^{:refer code.framework.index/cached-analysis}
+(Test/check
+ [{:name "returns only a successful exact-fingerprint cache entry"
+   :test (fn [] (let [cached (index/upsert-analysis (index/empty-index) "a.hal" "one" alpha)]
+                  [(index/cached-analysis cached "a.hal" "one")
+                   (index/cached-analysis cached "a.hal" "two")]))
+   :expected [alpha nil]}])
+
+^{:refer code.framework.index/upsert-analysis}
+(Test/check
+ [{:name "replaces stale outgoing links when a source fingerprint changes"
+   :test (fn [] (let [first-index (index/upsert-analysis (index/empty-index) "a.hal" "one" alpha)
+                      next-index (index/upsert-analysis first-index "a.hal" "two" beta)]
+                  [(:fingerprint (get-in next-index [:entries "a.hal"]))
+                   (index/links-to next-index 'demo.core/run)
+                   (index/links-to next-index 'demo.core/stop)]))
+   :expected ["two"
+              [{:kind :test/refer :to 'demo.core/run :from {:path [2]}
+                :source/path "a.hal" :source/fingerprint "two"}]
+              [{:kind :symbol/reference :to 'demo.core/stop :from {:path [3]}
+                :source/path "a.hal" :source/fingerprint "two"}]]}])
+
+^{:refer code.framework.index/links-to}
+(Test/check
+ [{:name "returns an empty collection for an unlinked target"
+   :test (fn [] (index/links-to (index/empty-index) 'demo.core/missing))
+   :expected []}])

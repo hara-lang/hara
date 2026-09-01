@@ -1,0 +1,156 @@
+(ns work.agent.openai.internal
+  (:config {:role :internal}))
+
+(defn wire-field
+  [value name]
+  (cond
+    (not (map? value))
+    nil
+
+    (has? value name)
+    (get value name)
+
+    :else
+    (get value (keyword name))))
+
+(declare wire-value)
+
+(defn named-value
+  [value]
+  (let [ns-value (namespace value)]
+    (if (nil? ns-value)
+      (name value)
+      (str ns-value "/" (name value)))))
+
+(defn wire-map
+  [value]
+  (reduce
+   (fn [output key]
+     (let [wire-key
+           (cond
+             (string? key) key
+             (keyword? key) (named-value key)
+             (symbol? key) (str key)
+             :else
+             (throw
+              (ex :dependency {:key key}
+                  :ex/message "OpenAI JSON maps require string, keyword, or symbol keys")))]
+       (assoc output wire-key (wire-value (get value key)))))
+   {}
+   (keys value)))
+
+(defn wire-sequence
+  [value]
+  (reduce
+   (fn [output item]
+     (conj output (wire-value item)))
+   []
+   value))
+
+(defn wire-value
+  "Converts portable Hara values into strict JSON values."
+  [value]
+  (cond
+    (map? value)
+    (wire-map value)
+
+    (or (vector? value) (list? value) (set? value))
+    (wire-sequence value)
+
+    (keyword? value)
+    (named-value value)
+
+    (symbol? value)
+    (str value)
+
+    :else
+    value))
+
+(defn request-headers
+  [client]
+  (let [headers
+        (merge
+         (wire-value {:content-type "application/json"})
+         (wire-value (:openai/headers client)))
+        api-key (:openai/api-key client)]
+    (if (nil? api-key)
+      headers
+      (assoc headers "authorization" (str "Bearer " api-key)))))
+
+(defn parsed-body
+  [body]
+  (cond
+    (map? body)
+    body
+
+    (string? body)
+    (Json/read body)
+
+    :else
+    (throw
+     (ex :syntax {:body body}
+         :ex/message "OpenAI transport body must be JSON text or a map"))))
+
+(defn output-items
+  [response]
+  (let [output (wire-field response "output")]
+    (if (nil? output) [] (vec output))))
+
+(defn output-text
+  [response]
+  (reduce
+   (fn [text item]
+     (if (= "message" (wire-field item "type"))
+       (reduce
+        (fn [text content]
+          (if (= "output_text" (wire-field content "type"))
+            (str text (or (wire-field content "text") ""))
+            text))
+        text
+        (or (wire-field item "content") []))
+       text))
+   ""
+   (output-items response)))
+
+(defn decode-arguments
+  [call]
+  (let [arguments (wire-field call "arguments")]
+    (cond
+      (nil? arguments)
+      {}
+
+      (map? arguments)
+      arguments
+
+      (string? arguments)
+      (Json/read arguments)
+
+      :else
+      (throw
+       (ex :serialization {:call call}
+           :ex/message "OpenAI function-call arguments must be JSON text or a map")))))
+
+(defn function-call
+  [item]
+  {:call/id (wire-field item "call_id")
+   :tool/name (wire-field item "name")
+   :call/arguments (decode-arguments item)
+   :call/raw item})
+
+(defn function-calls
+  [response]
+  (vec
+   (map
+    function-call
+    (filter
+     (fn [item]
+       (= "function_call" (wire-field item "type")))
+     (output-items response)))))
+
+(defn tool-result-body
+  [value wire]
+  (if (= :ok (:tool/status value))
+    {:ok true
+     :value (wire (:tool/value value))}
+    {:ok false
+     :error (wire (:tool/error value))}))

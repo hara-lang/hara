@@ -1,0 +1,83 @@
+(ns work.agent.tool.work
+  (:config {:role :internal})
+  (:require [work.core :as work]
+            [work.agent.tool :as tool]))
+
+(defn call-id
+  [call suffix]
+  (str "work.agent.tool/" (:call/id call) "/" suffix))
+
+(defn successful-result
+  [call output]
+  {:call/id (:call/id call)
+   :tool/name (:tool/name call)
+   :tool/status :ok
+   :tool/value output})
+
+(defn unknown-call-work
+  [call]
+  (let [target (call-id call "unknown")]
+    (work/bundle
+     (Work/pure target)
+     {target (fn [input] (tool/invoke {} call))})))
+
+(defn pure-call-work
+  [value call]
+  (let [target (call-id call "pure")
+        tool-index {(:tool/name value) value}]
+    (work/bundle
+     (Work/pure target)
+     {target (fn [input] (tool/invoke tool-index call))})))
+
+(defn effect-work
+  "Invokes an effectful tool factory and validates the Work bundle boundary."
+  [value call]
+  (let [produced ((:tool/invoke value) (:call/arguments call))]
+    (if (not (work/bundle? produced))
+      (throw
+       (ex :state
+           {:work/error :work/agent-tool-not-work
+            :tool/name (:tool/name value)
+            :tool/effect (:tool/effect value)
+            :call/id (:call/id call)}
+           :ex/message "Effectful agent tool factory must return a Work bundle")))
+    produced))
+
+(defn effect-call-work
+  [value call]
+  (let [produced (effect-work value call)
+        arguments-target (call-id call "arguments")
+        result-target (call-id call "result")]
+    (work/chain
+     [(work/bundle
+       (Work/pure arguments-target)
+       {arguments-target
+        (fn [input] (:call/arguments call))})
+      produced
+      (work/bundle
+       (Work/pure result-target)
+       {result-target
+        (fn [output] (successful-result call output))})])))
+
+(defn call-work
+  "Lowers one model-selected tool call to a Work definition bundle."
+  [tool-index call]
+  (let [value (get tool-index (:tool/name call))]
+    (cond
+      (nil? value)
+      (unknown-call-work call)
+
+      (= :pure (:tool/effect value))
+      (pure-call-work value call)
+
+      :else
+      (effect-call-work value call))))
+
+(defn call-works
+  "Lowers model-selected tool calls to bundles while preserving call order."
+  [tool-index calls]
+  (vec
+   (map
+    (fn [call]
+      (call-work tool-index call))
+    calls)))

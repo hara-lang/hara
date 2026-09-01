@@ -1,0 +1,47 @@
+(ns work.agent.tool.internal
+  (:config {:role :internal})
+  (:require [work.agent.result :as result]))
+
+(defn target-map?
+  [value]
+  (and (map? value)
+       (reduce
+        (fn [valid name]
+          (and valid (function? (get value name))))
+        true
+        (keys value))))
+
+(defn failed-result
+  [call code message data]
+  {:call/id (:call/id call)
+   :tool/name (:tool/name call)
+   :tool/status :error
+   :tool/error
+   (merge
+    {:code code
+     :message message}
+    (or data {}))})
+
+(defn invoke-found
+  [value call]
+  (if (not= :pure (:tool/effect value))
+    (failed-result
+     call
+     :tool/requires-work
+     "Effectful agent tools must lower to Work"
+     {:tool/effect (:tool/effect value)})
+    (result/attempt
+     (fn []
+       (result/then
+        ((:tool/invoke value) (:call/arguments call))
+        (fn [output]
+          {:call/id (:call/id call)
+           :tool/name (:tool/name call)
+           :tool/status :ok
+           :tool/value output})))
+     (fn [error]
+       (failed-result
+        call
+        :tool/failed
+        (str error)
+        {})))))

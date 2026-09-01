@@ -1,0 +1,200 @@
+(ns work.agent.driver.openai.work-test
+  (:require [work.core :as work]
+            [work.agent :as agent]
+            [work.agent.openai :as openai]
+            [work.agent.driver.openai.internal :as config]
+            [work.agent.driver.openai.work :as openai-work]))
+
+(def client
+  (agent/openai-client
+   {:model "gpt-5"
+    :transport (fn [request]
+                 {:id "response"
+                  :status "completed"
+                  :output [{:type "message"
+                            :content [{:type "output_text" :text "done"}]}]})}))
+
+(def configuration
+  (config/configuration {:client client} {:agent/id :one}))
+
+(def names (openai-work/target-names :one))
+
+(def response-value
+  {:agent/state {:agent/input [(openai/input-message "hello")]
+                 :agent/context {}
+                 :agent/input-value nil
+                 :agent/turn 0
+                 :agent/tool-calls 0}
+   :agent/response {:response/text "done"
+                    :response/output []
+                    :response/tool-calls []}})
+
+^{:refer work.agent.driver.openai.work/failed-limit}
+(Test/check
+ [{:name "raises a typed limit error"
+   :test (fn []
+           (try
+             (openai-work/failed-limit "limit" {:limit 1})
+             :not-rejected
+             (catch Throwable error
+               [(:ex/code (ex-data error)) (:limit (ex-data error))])))
+   :expected [:hara/limit 1]}])
+
+^{:refer work.agent.driver.openai.work/target-name}
+(Test/check
+ [{:name "names an OpenAI Work target by agent and role"
+   :test (fn [] (openai-work/target-name :one "model"))
+   :expected "work.agent.openai/:one/model"}])
+
+^{:refer work.agent.driver.openai.work/target-names}
+(Test/check
+ [{:name "provides all stable targets for one turn graph"
+   :test (fn [] (vec (sort (keys (openai-work/target-names :one)))))
+   :expected [:after-tools :calls :final :initial :model :next-state :response :tool-input :tool-plan]}])
+
+^{:refer work.agent.driver.openai.work/turn-plan}
+(Test/check
+ [{:name "represents one model-response interaction as bind"
+   :test (fn []
+           (:work/op (work/plan
+                      (work/bundle
+                       (openai-work/turn-plan names)
+                       {}))))
+   :expected :bind}])
+
+^{:refer work.agent.driver.openai.work/initial-state}
+(Test/check
+ [{:name "creates the initial transcript state"
+   :test (fn [] (openai-work/initial-state "hello" {:source :test} nil))
+   :expected {:agent/input [{:role "user" :content "hello"}]
+              :agent/context {:source :test}
+              :agent/input-value nil
+              :agent/turn 0
+              :agent/tool-calls 0}}])
+
+^{:refer work.agent.driver.openai.work/model-target}
+(Test/check
+ [{:name "turns a state value into a normalized model response"
+   :test (fn []
+           (let [state (openai-work/initial-state "hello" {} nil)]
+             ((openai-work/model-target configuration) state)))
+   :expected {:agent/state {:agent/input [{:role "user" :content "hello"}]
+                            :agent/context {}
+                            :agent/input-value nil
+                            :agent/turn 0
+                            :agent/tool-calls 0}
+              :agent/response {:response/id "response"
+                               :response/status "completed"
+                               :response/output [{:type "message"
+                                                  :content [{:type "output_text"
+                                                             :text "done"}]}]
+                               :response/text "done"
+                               :response/tool-calls []
+                               :response/usage nil
+                               :response/raw {:id "response"
+                                              :status "completed"
+                                              :output [{:type "message"
+                                                        :content [{:type "output_text"
+                                                                   :text "done"}]}]}}}}])
+
+^{:refer work.agent.driver.openai.work/final-target}
+(Test/check
+ [{:name "projects the final response text"
+   :test (fn [] (openai-work/final-target response-value))
+   :expected "done"}])
+
+^{:refer work.agent.driver.openai.work/calls-target}
+(Test/check
+ [{:name "wraps each model call with its turn state"
+   :test (fn []
+           (openai-work/calls-target
+            (assoc response-value
+                   :agent/response
+                   {:response/tool-calls
+                    [{:call/id "one" :tool/name "echo" :call/arguments {}}]})))
+   :expected [{:agent/state {:agent/input [{:role "user" :content "hello"}]
+                             :agent/context {}
+                             :agent/input-value nil
+                             :agent/turn 0
+                             :agent/tool-calls 0}
+               :agent/response {:response/tool-calls
+                                [{:call/id "one" :tool/name "echo" :call/arguments {}}]}
+               :agent/call {:call/id "one" :tool/name "echo" :call/arguments {}}}]}])
+
+^{:refer work.agent.driver.openai.work/tool-plan}
+(Test/check
+ [{:name "turns a model tool call into a dynamic Work plan"
+   :test (fn []
+           (let [tool (agent/tool "echo" "Echoes." {:type "object"}
+                                  (fn [arguments] arguments))
+                 value (assoc configuration
+                              :tools [tool]
+                              :tool-index {"echo" tool})
+                 envelope {:agent/state (:agent/state response-value)
+                           :agent/response (:agent/response response-value)
+                           :agent/call {:call/id "one"
+                                        :tool/name "echo"
+                                        :call/arguments {"value" 7}}}]
+             (let [bundle (openai-work/tool-plan value envelope)]
+               [(work/bundle? bundle)
+                (Work/plan? (work/plan bundle))])))
+   :expected [true true]}])
+
+^{:refer work.agent.driver.openai.work/next-state}
+(Test/check
+ [{:name "appends model output and tool outputs to the transcript"
+   :test (fn []
+           (openai-work/next-state
+            [{:agent/state (:agent/state response-value)
+              :agent/response {:response/output [{:type "function_call"}]}
+              :agent/tool-result {:call/id "one" :tool/status :ok :tool/value 7}}]))
+   :expected {:agent/input [{:role "user" :content "hello"}
+                            {:type "function_call"}
+                            {:type "function_call_output"
+                             :call_id "one"
+                             :output "{\"value\":7,\"ok\":true}"}]
+              :agent/context {}
+              :agent/input-value nil
+              :agent/turn 1
+              :agent/tool-calls 1}}])
+
+^{:refer work.agent.driver.openai.work/after-tools-target}
+(Test/check
+ [{:name "returns the next state-to-turn Work chain"
+   :test (fn []
+           (Work/plan?
+            (openai-work/after-tools-target names [])))
+   :expected true}])
+
+^{:refer work.agent.driver.openai.work/response-plan}
+(Test/check
+ [{:name "builds the tool round as each followed by bind"
+   :test (fn [] (Work/plan? (openai-work/response-plan names)))
+   :expected true}])
+
+^{:refer work.agent.driver.openai.work/response-target}
+(Test/check
+ [{:name "returns a final pure plan when the model has no calls"
+   :test (fn []
+           (let [plan (openai-work/response-target configuration names response-value)]
+             (Work/plan? plan)))
+   :expected true}])
+
+^{:refer work.agent.driver.openai.work/target-table}
+(Test/check
+ [{:name "binds every execution target required by the graph"
+   :test (fn []
+           (let [table (openai-work/target-table configuration names "hello" {})]
+             [(count (keys table))
+              (function? (get table (:model names)))
+              (function? (get table (:final names)))]))
+   :expected [9 true true]}])
+
+^{:refer work.agent.driver.openai.work/turn-bundle}
+(Test/check
+ [{:name "returns one portable OpenAI bundle"
+   :test (fn []
+           (let [bundle (openai-work/turn-bundle configuration :one "hello" {})]
+             [(work/bundle? bundle)
+              (Work/plan? (work/plan bundle))]))
+   :expected [true true]}])

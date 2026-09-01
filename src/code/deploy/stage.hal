@@ -1,0 +1,210 @@
+(ns code.deploy.stage
+  (:config {:role :internal})
+  (:require [code.deploy.catalog :as catalog]))
+
+(def +default-output+
+  "target/deploy")
+
+(defn output-relative-path
+  "Returns the project-configured deploy staging directory."
+  [project]
+  (or (get-in project [:project/deploy :output])
+      +default-output+))
+
+(defn ^{:public true} output-root
+  "Returns the absolute staging root for a source project."
+  [root project]
+  (File/join root (output-relative-path project)))
+
+(defn package-stage-path
+  "Returns the deterministic project directory for one semantic package name."
+  [output package]
+  (File/join output (:package/name package)))
+
+(defn ^{:public true} project-path
+  "Returns the generated project.edn path below one package stage."
+  [stage]
+  (File/join stage "project.edn"))
+
+(defn lock-path
+  "Returns the generated project lock location below one package stage."
+  [stage]
+  (File/join stage "project.lock.edn"))
+
+(defn source-lock-path
+  "Returns the optional source-project lockfile that staged projects preserve."
+  [root]
+  (File/join root "project.lock.edn"))
+
+(defn lock-document
+  "Creates the empty deterministic lock baseline when the source has no lockfile."
+  []
+  {:lock/format "0.0.1"
+   :packages {}})
+
+(defn internal-dependency-declarations
+  "Projects inferred package edges into ordinary versioned project dependencies."
+  [source-project package]
+  (reduce
+   (fn [dependencies name]
+     (assoc dependencies
+            (catalog/coordinate name)
+            {:version (str "=" (:project/version source-project))}))
+   (or (:project/dependencies source-project) {})
+   (:package/internal-dependencies package)))
+
+(defn ^{:public true} package-project
+  "Builds the individual standard project.edn used to build one semantic package.
+
+  The staged project retains the full explicit source graph solely as native
+  compilation context. Its :project/package selector ensures the resulting
+  HARP contains only this package's owned namespaces."
+  [source-project package]
+  (assoc
+   (select-keys source-project
+                [:hara/type
+                 :hara/version
+                 :project/version
+                 :project/native
+                 :project/source-paths
+                 :project/source-files
+                 :project/capabilities
+                 :project/dependencies])
+   :project/id (:package/coordinate package)
+   :project/dependencies (internal-dependency-declarations source-project package)
+   :project/test-paths []
+   :project/extension-paths []
+   :project/package {:name (:package/name package)
+                     :profile (catalog/catalog-relative-path source-project)}
+   :project/deploy {:source/project (:project/id source-project)
+                    :package/name (:package/name package)
+                    :package/coordinate (:package/coordinate package)
+                    :package/internal-dependencies
+                    (vec (:package/internal-dependencies package))
+                    :package/external-dependencies
+                    (vec (:package/external-dependencies package))}))
+
+(defn write-edn
+  "Writes canonical EDN, creating the parent hierarchy, and returns its path."
+  [path value]
+  (deref
+   (File/write path
+               (String/encode-utf8 (Edn/write value))
+               {:mode :replace :parents? true}))
+  path)
+
+(defn copy-file
+  "Copies one project-relative file into a stage without mutating the source tree."
+  [root stage relative-path]
+  (let [source (File/join root relative-path)
+        target (File/join stage relative-path)]
+    (deref
+     (File/copy source target {:replace? true :parents? true :preserve-modified? true}))
+    target))
+
+(defn copy-source-files
+  "Copies the complete declared source graph used as package compiler context."
+  [root stage project]
+  (vec
+   (map
+    (fn [relative-path]
+      (copy-file root stage relative-path))
+    (or (:project/source-files project) []))))
+
+(defn copy-catalog
+  "Copies the declared Foundation catalogue beside a staged child project."
+  [root stage project]
+  (let [relative-path (catalog/catalog-relative-path project)]
+    (copy-file root stage relative-path)))
+
+(defn copy-lock
+  "Copies the source lockfile, or writes the portable empty baseline when absent."
+  [root stage]
+  (let [source (source-lock-path root)
+        target (lock-path stage)]
+    (cond
+      (deref (File/exists? source))
+      (deref
+       (File/copy source target {:replace? true :parents? true :preserve-modified? true}))
+
+      :else
+      (write-edn target (lock-document)))))
+
+(defn ^{:public true} delete-tree
+  "Deletes a file or complete directory tree and returns its former root path.
+
+  File/delete deliberately refuses non-empty directories. Deploy staging owns
+  generated trees, so it expands directory entries first and removes them in
+  post-order rather than weakening the native file boundary."
+  [path]
+  (cond
+    (not (deref (File/exists? path)))
+    path
+
+    (= :directory (:type (deref (File/stat path))))
+    (do
+     (doseq [entry (deref (File/entries path))]
+       (delete-tree (:path entry)))
+     (deref (File/delete path {:missing-ok? true}))
+     path)
+
+    :else
+    (do
+     (deref (File/delete path {:missing-ok? true}))
+     path)))
+
+(defn ^{:public true} reset-stage
+  "Idempotently removes all generated deploy projects while preserving source state."
+  [root project]
+  (let [output (output-root root project)]
+    (delete-tree output)))
+
+(defn ^{:public true} stage-package
+  "Materialises one generated package project and returns its complete descriptor."
+  [deploy-plan package]
+  (let [root (:deploy/root deploy-plan)
+        source-project (:deploy/project deploy-plan)
+        output (output-root root source-project)
+        stage (package-stage-path output package)
+        manifest (package-project source-project package)]
+    (delete-tree stage)
+    (copy-source-files root stage source-project)
+    (copy-catalog root stage source-project)
+    (write-edn (project-path stage) manifest)
+    (copy-lock root stage)
+    (assoc package
+           :package/stage stage
+           :package/project (project-path stage)
+           :package/lock (lock-path stage))))
+
+(defn package-by-name
+  "Finds one planned package by semantic publication name."
+  [deploy-plan name]
+  (first
+   (filter
+    (fn [package]
+      (= name (:package/name package)))
+    (:deploy/packages deploy-plan))))
+
+(defn ^{:public true} stage-plan
+  "Stages every package in dependency-first order after resetting old generated state."
+  [deploy-plan]
+  (let [root (:deploy/root deploy-plan)
+        project (:deploy/project deploy-plan)
+        output (reset-stage root project)
+        staged
+        (vec
+         (map
+          (fn [name]
+            (let [package (package-by-name deploy-plan name)]
+              (cond
+                package (stage-package deploy-plan package)
+                :else
+                (throw
+                 (ex :code.deploy/missing-package
+                     {:package/name name}
+                     :ex/message "deploy order names a package absent from the plan")))))
+          (:deploy/order deploy-plan)))]
+    {:deploy/output output
+     :deploy/packages staged
+     :deploy/order (:deploy/order deploy-plan)}))
