@@ -1,0 +1,41 @@
+(ns xt.lang.common-notify-test
+  (:require [xt.lang.common-notify :as notify]))
+
+^{:refer xt.lang.common-notify/notify-defaults}
+(Test/check
+ [{:name "derives browser notification coordinates without losing overrides"
+   :test (fn [] (select-keys
+                 (notify/notify-defaults {:type :webpage :path "/notify"})
+                 [:type :host :port :scheme :path]))
+   :expected {:type :webpage :host 'window.location.hostname
+              :port 'window.location.port
+              :scheme '(:? (== window.location.protocol "https:")
+                         "https" "http")
+              :path "/notify"}}])
+
+^{:refer xt.lang.common-notify/direct-notify-form}
+(Test/check
+ [{:name "rewrites notification forms into direct return values"
+   :test (fn [] [(notify/direct-notify-form '(repl/notify value))
+                 (notify/direct-notify-form '(repl/>notify))
+                 (notify/direct-notify-form '(spec-link/x:socket-close conn))])
+   :expected ['(return value)
+              '(fn [value] (return value))
+              '(do)]}])
+
+^{:refer xt.lang.common-notify/direct-notify-result-form}
+(Test/check
+ [{:name "adds a settled result envelope around a rewritten form"
+   :test (fn [] (let [value (notify/direct-notify-result-form '(return value))]
+                  [(= 'do (first value))
+                   (= 'var (first (second value)))
+                   (= 'return (first (last value)))]))
+   :expected [true true true]}])
+
+^{:refer xt.lang.common-notify/wait-on-call}
+(Test/check
+ [{:name "routes target evaluation through the direct wait function"
+   :test (fn [] (macroexpand-1
+                 '(notify/wait-on-call 1000
+                   (fn [] (!.js (+ 1 2))))))
+   :expected '(xt.lang.common-notify/wait-on-fn :js (quote ((+ 1 2))) 1000 nil)}])

@@ -1,0 +1,33 @@
+(ns code.manage.editor-test
+  (:use code.test)
+  (:require [code.manage.editor :as editor]))
+
+^{:refer code.manage.editor/json-key}
+(Test/register
+ {:desc "converts portable keys to JSON object keys"
+  :test (fn [] [(editor/json-key :answer) (editor/json-key (quote demo/value)) (editor/json-key "answer") (editor/json-key 42)])
+  :expected ["answer" "demo/value" "answer" "42"]})
+
+^{:refer code.manage.editor/json-value}
+(Test/register
+ {:desc "recursively converts maps collections keywords and symbols"
+  :test (fn [] (editor/json-value {:call (quote demo/run) :answer :ok :values [:a :b]}))
+  :expected {"values" ["a" "b"] "call" "demo/run" "answer" "ok"}})
+
+^{:refer code.manage.editor/edit-record}
+(Test/register
+ {:desc "projects a source edit into editor JSON fields"
+  :test (fn [] (editor/edit-record {:before "a" :changed true :create false :path "demo.hal" :after "b"}))
+  :expected {"path" "demo.hal" "changed" true "before" "a" "create" false "after" "b"}})
+
+^{:refer code.manage.editor/finding-record}
+(Test/register
+ {:desc "projects finding locations and classifications"
+  :test (fn [] (editor/finding-record {:kind :todo :message "TODO" :path "demo.hal"}))
+  :expected {"refer" nil "path" "demo.hal" "classification" nil "message" "TODO" "column" 1 "kind" "todo" "line" 1}})
+
+^{:refer code.manage.editor/payload}
+(Test/register
+ {:desc "creates a stable editor protocol envelope"
+  :test (fn [] (editor/payload {:edits [{:before "a" :changed true :create false :path "demo.hal" :after "b"}] :summary {:count 1} :operation :missing :findings [{:kind :todo :message "TODO" :path "demo.hal"}]} true))
+  :expected {"schema" "code.manage.editor/0-alpha" "summary" {"count" 1} "operation" "missing" "edits" [{"path" "demo.hal" "changed" true "before" "a" "create" false "after" "b"}] "findings" [{"refer" nil "path" "demo.hal" "classification" nil "message" "TODO" "column" 1 "kind" "todo" "line" 1}] "write" true}})

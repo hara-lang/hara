@@ -1,0 +1,91 @@
+(ns tool.cli.test.runner
+  (:config {:role :internal})
+  (:require [code.project :as project]))
+
+(defn ^{:public true} vector-tail
+  [values start]
+  (vec (drop start values)))
+
+(defn ^{:public true} result-counts
+  [value]
+  (let [value (if (string? value) (Edn/read value) value)]
+    (cond
+      (or (vector? value) (list? value))
+    (reduce
+     (fn [counts result]
+       (if (Test/passed? result)
+         (update counts :passed inc)
+         (update counts :failed inc)))
+     {:passed 0 :failed 0}
+     value)
+
+      (map? value)
+      (let [status (:status value)
+            counts (or (:counts value) value)
+            results (or (:results value) [])
+            failed (+ (or (:failed counts) 0)
+                      (or (:error counts) 0)
+                      (or (:errored counts) 0)
+                      (or (:timeout counts) 0))
+            passed (or (:passed counts) 0)]
+        (if (and (nil? (:counts value)) (seq results))
+          (reduce
+           (fn [output result]
+             (if (= :passed (:status result))
+               (update output :passed inc)
+               (update output :failed inc)))
+           {:passed 0 :failed 0}
+           results)
+          {:passed passed
+           :failed (if (and (keyword? status)
+                            (not= status :passed)
+                            (= failed 0))
+                     1
+                     failed)}))
+
+      :else
+      (throw (ex :state {:value value}
+                 :ex/message "test file must return a native result collection or summary")))))
+
+(defn ^{:public true} run-file
+  [record index]
+  (let [path (:path record)
+        namespace (:namespace record)
+        session (str "tool.cli.test." index)
+        started (time-ms)]
+    (try
+      (Kernel/session-create session)
+      (let [value (Kernel/session-eval session (project/read-text path))
+            value (if (nil? value)
+                    (Kernel/session-eval
+                     session
+                     (str "(code.test/run '" namespace ")"))
+                    value)
+            counts (result-counts value)]
+        (assoc counts :path path :namespace namespace
+               :value value :elapsed (- (time-ms) started)))
+      (catch error
+        {:path path :namespace namespace :passed 0 :failed 1
+         :error (str error) :elapsed (- (time-ms) started)})
+      (finally
+        (try (Kernel/session-close session) (catch error nil))))))
+
+(defn ^{:public true} run-files
+  [records]
+  (loop [remaining (vec records)
+         index 0
+         results []]
+    (if (empty? remaining)
+      results
+      (recur (vector-tail remaining 1)
+             (inc index)
+             (conj results (run-file (first remaining) index))))))
+
+(defn ^{:public true} summary
+  [results]
+  (reduce
+   (fn [output result]
+     (update (update output :passed + (:passed result))
+             :failed + (:failed result)))
+   {:passed 0 :failed 0}
+   results))

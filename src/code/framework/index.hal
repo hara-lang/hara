@@ -1,0 +1,73 @@
+(ns code.framework.index
+  (:config {:role :internal}))
+
+(defn ^{:public true} empty-index
+  []
+  {:entries {}
+   :links-by-source {}
+   :links-by-target {}})
+
+(defn source-links
+  [source fingerprint analysis]
+  (vec
+   (map
+    (fn [link]
+      (assoc link
+             :source/path source
+             :source/fingerprint fingerprint))
+    (:links analysis))))
+
+(defn target-links
+  [links-by-source]
+  (reduce
+   (fn [output links]
+     (reduce
+      (fn [current link]
+        (update current
+                (:to link)
+                (fn [current-links]
+                  (conj (or current-links []) link))))
+      output
+      links))
+   {}
+   (vals links-by-source)))
+
+(defn ^{:public true} invalidate-source
+  [index source]
+  (let [entries (dissoc (:entries index) source)
+        links-by-source (dissoc (:links-by-source index) source)]
+    {:entries entries
+     :links-by-source links-by-source
+     :links-by-target (target-links links-by-source)}))
+
+(defn ^{:public true} reset-index
+  "Idempotently restores an index to its empty baseline."
+  [index]
+  (empty-index))
+
+(defn ^{:public true} cached-analysis
+  "Returns only the analysis cached for the exact requested source fingerprint."
+  [index source fingerprint]
+  (let [entry (get (:entries index) source)]
+    (cond
+      (= fingerprint (:fingerprint entry))
+      (:analysis entry)
+
+      :else nil)))
+
+(defn ^{:public true} upsert-analysis
+  [index source fingerprint analysis]
+  (let [baseline (invalidate-source index source)
+        links (source-links source fingerprint analysis)
+        links-by-source (assoc (:links-by-source baseline) source links)]
+    {:entries
+     (assoc (:entries baseline)
+            source
+            {:fingerprint fingerprint
+             :analysis analysis})
+     :links-by-source links-by-source
+     :links-by-target (target-links links-by-source)}))
+
+(defn ^{:public true} links-to
+  [index target]
+  (get (:links-by-target index) target []))

@@ -1,0 +1,262 @@
+(ns code.manage.unit-test
+  (:use code.test)
+  (:require [code.manage.unit :as unit]))
+
+(def sample-unit
+  {:path "src/sample/core.hal"
+   :type :source
+   :namespace 'sample.core
+   :source "(ns sample.core)\n\n(defn answer \"doc\" [] 42)\n"
+   :test-path "test/sample/core_test.hal"
+   :test-source "(ns sample.core-test)\n\n^{:refer sample.core/answer}\n(fact \"answer\" 42 => 42)\n"
+   :version "1.2.3"})
+
+(def todo-unit
+  (assoc sample-unit
+         :test-source "(ns sample.core-test)\n^{:refer sample.core/answer}\n(fact \"TODO\")\n"))
+
+^{:refer code.manage.unit/analyse}
+(Test/register
+ {:desc "combines source definitions with paired test facts"
+  :test (fn [] (let [analysis (unit/analyse sample-unit)] [(count (:definitions analysis)) (count (:facts analysis)) (count (:test-runs analysis)) (:namespace analysis)]))
+  :expected [1 1 1 (quote sample.core)]})
+
+^{:refer code.manage.unit/extract}
+(Test/register
+ {:desc "extracts source definitions"
+  :test (fn [] (mapv :name (unit/extract sample-unit)))
+  :expected [(quote answer)]})
+
+^{:refer code.manage.unit/vars}
+(Test/register
+ {:desc "returns exact definition source spans"
+  :test (fn [] (unit/vars sample-unit))
+  :expected ["(defn answer \"doc\" [] 42)"]})
+
+^{:refer code.manage.unit/docstrings}
+(Test/register
+ {:desc "returns definition documentation"
+  :test (fn [] (unit/docstrings sample-unit))
+  :expected ["doc"]})
+
+^{:refer code.manage.unit/transform-function}
+(Test/register
+ {:desc "normalizes direct and configured transforms"
+  :test (fn [] [((unit/transform-function nil) "x") ((unit/transform-function {:transform (fn [text] (str text "!"))}) "x")])
+  :expected ["x" "x!"]})
+
+^{:refer code.manage.unit/transform-code}
+(Test/register
+ {:desc "creates a source-preserving dry-run edit"
+  :test (fn [] (select-keys (unit/transform-code sample-unit (fn [text] (str text ";; done\n"))) [:path :before :after :changed :write :create]))
+  :expected {:before "(ns sample.core)\n\n(defn answer \"doc\" [] 42)\n" :changed true :write false :create false :path "src/sample/core.hal" :after "(ns sample.core)\n\n(defn answer \"doc\" [] 42)\n;; done\n"}})
+
+^{:refer code.manage.unit/grep}
+(Test/register
+ {:desc "finds every matching source line"
+  :test (fn [] (mapv :line (unit/grep sample-unit "answer")))
+  :expected [3]})
+
+^{:refer code.manage.unit/grep-replace}
+(Test/register
+ {:desc "performs literal replacement without writing"
+  :test (fn [] (:after (unit/grep-replace sample-unit "answer" "result")))
+  :expected "(ns sample.core)\n\n(defn result \"doc\" [] 42)\n"})
+
+^{:refer code.manage.unit/replacements}
+(Test/register
+ {:desc "normalizes replacement option forms"
+  :test (fn [] [(unit/replacements {:replacements [[:a :b]]}) (unit/replacements {:match "a" :replacement "b"})])
+  :expected [[[:a :b]] [["a" "b"]]]})
+
+^{:refer code.manage.unit/replace-all}
+(Test/register
+ {:desc "applies each literal replacement in order"
+  :test (fn [] (unit/replace-all "a b a" [["a" "x"] ["b" "y"]]))
+  :expected "x y x"})
+
+^{:refer code.manage.unit/heal-code}
+(Test/register
+ {:desc "adds the canonical final newline"
+  :test (fn [] [(:after (unit/heal-code (assoc sample-unit :source "(ns sample.core)"))) (:changed (unit/heal-code (assoc sample-unit :source "(ns sample.core)")))])
+  :expected ["(ns sample.core)\n" true]})
+
+^{:refer code.manage.unit/unclean}
+(Test/register
+ {:desc "reports only source that changes under healing"
+  :test (fn [] [(unit/unclean (assoc sample-unit :source "(ns sample.core)")) (unit/unclean sample-unit)])
+  :expected [["src/sample/core.hal"] []]})
+
+^{:refer code.manage.unit/unclean-findings}
+(Test/register
+ {:desc "classifies trailing whitespace and missing final newline"
+  :test (fn [] (mapv :kind (unit/unclean-findings {:source "a  \nb" :path "demo.hal"})))
+  :expected [:trailing-whitespace :missing-final-newline]})
+
+^{:refer code.manage.unit/definition-names}
+(Test/register
+ {:desc "returns definitions in source order"
+  :test (fn [] (unit/definition-names sample-unit))
+  :expected [(quote answer)]})
+
+^{:refer code.manage.unit/public-definitions}
+(Test/register
+ {:desc "returns definitions marked public by default"
+  :test (fn [] (mapv :name (unit/public-definitions sample-unit)))
+  :expected [(quote answer)]})
+
+^{:refer code.manage.unit/reachable-definitions}
+(Test/register
+ {:desc "returns reachable definitions"
+  :test (fn [] (mapv :name (unit/reachable-definitions sample-unit)))
+  :expected [(quote answer)]})
+
+^{:refer code.manage.unit/public-definition-names}
+(Test/register
+ {:desc "returns public definition names"
+  :test (fn [] (unit/public-definition-names sample-unit))
+  :expected [(quote answer)]})
+
+^{:refer code.manage.unit/reachable-definition-names}
+(Test/register
+ {:desc "returns reachable definition names"
+  :test (fn [] (unit/reachable-definition-names sample-unit))
+  :expected [(quote answer)]})
+
+^{:refer code.manage.unit/fact-source}
+(Test/register
+ {:desc "selects paired tests for source units and own source for test units"
+  :test (fn [] [(unit/fact-source sample-unit) (unit/fact-source {:source "test-source" :type :test})])
+  :expected [(:test-source sample-unit) "test-source"]})
+
+^{:refer code.manage.unit/fact-path}
+(Test/register
+ {:desc "selects paired test paths"
+  :test (fn [] [(unit/fact-path sample-unit) (unit/fact-path {:type :test :path "test.hal"})])
+  :expected ["test/sample/core_test.hal" "test.hal"]})
+
+^{:refer code.manage.unit/facts}
+(Test/register
+ {:desc "extracts facts from the paired test"
+  :test (fn [] (count (unit/facts sample-unit)))
+  :expected 1})
+
+^{:refer code.manage.unit/missing}
+(Test/register
+ {:desc "reports definitions without facts"
+  :test (fn [] (vec (map :refer (unit/missing (assoc sample-unit :test-source "(ns sample.core-test)") {}))))
+  :expected ["sample.core/answer"]})
+
+^{:refer code.manage.unit/todos}
+(Test/register
+ {:desc "reports TODO facts"
+  :test (fn [] (get-in (first (unit/todos todo-unit)) [:kind]))
+  :expected :todo})
+
+^{:refer code.manage.unit/incomplete}
+(Test/register
+ {:desc "combines missing and TODO findings"
+  :test (fn [] [(count (unit/incomplete todo-unit)) (set (map :kind (unit/incomplete todo-unit)))])
+  :expected [1 #{:todo}]})
+
+^{:refer code.manage.unit/commented}
+(Test/register
+ {:desc "returns commented fact findings"
+  :test (fn [] (unit/commented sample-unit))
+  :expected []})
+
+^{:refer code.manage.unit/unchecked}
+(Test/register
+ {:desc "reports facts without assertion checks"
+  :test (fn [] (count (unit/unchecked todo-unit)))
+  :expected 1})
+
+^{:refer code.manage.unit/pedantic}
+(Test/register
+ {:desc "returns findings in historical M/T/N/C order"
+  :test (fn [] (mapv :kind (unit/pedantic todo-unit)))
+  :expected [:todo :unchecked]})
+
+^{:refer code.manage.unit/in-order?}
+(Test/register
+ {:desc "checks lexical definition order"
+  :test (fn [] [(unit/in-order? sample-unit) (unit/in-order? (assoc sample-unit :source "(ns sample.core)\n(defn zebra [])\n(defn alpha [])"))])
+  :expected [true false]})
+
+^{:refer code.manage.unit/orphaned-meta}
+(Test/register
+ {:desc "reports metadata attached to non-definitions"
+  :test (fn [] (mapv :kind (unit/orphaned-meta {:source "^{:orphan true}\n(+ 1 2)" :path "demo.hal"})))
+  :expected [:orphaned-metadata]})
+
+^{:refer code.manage.unit/orphaned}
+(Test/register
+ {:desc "aliases orphaned metadata findings"
+  :test (fn [] (unit/orphaned {:source "(+ 1 2)" :path "demo.hal"}))
+  :expected []})
+
+^{:refer code.manage.unit/purge}
+(Test/register
+ {:desc "plans removal of docstrings and added metadata"
+  :test (fn [] (let [result (unit/purge sample-unit {})] [(:changed result) (:purged result) (:after result)]))
+  :expected [true 1 "(ns sample.core)\n\n(defn answer [] 42)\n"]})
+
+^{:refer code.manage.unit/refactor-code}
+(Test/register
+ {:desc "refactors source with normalized replacement pairs"
+  :test (fn [] (:after (unit/refactor-code sample-unit {:match "answer" :replacement "result"})))
+  :expected "(ns sample.core)\n\n(defn result \"doc\" [] 42)\n"})
+
+^{:refer code.manage.unit/refactor-test}
+(Test/register
+ {:desc "uses the same pure replacement boundary for tests"
+  :test (fn [] (:after (unit/refactor-test sample-unit {:match "answer" :replacement "result"})))
+  :expected "(ns sample.core)\n\n(defn result \"doc\" [] 42)\n"})
+
+^{:refer code.manage.unit/refactor-swap}
+(Test/register
+ {:desc "accepts explicit replacement pairs"
+  :test (fn [] (:after (unit/refactor-swap sample-unit [["answer" "result"]])))
+  :expected "(ns sample.core)\n\n(defn result \"doc\" [] 42)\n"})
+
+^{:refer code.manage.unit/arrange}
+(Test/register
+ {:desc "returns a finding for out-of-order definitions"
+  :test (fn [] (:finding (unit/arrange (assoc sample-unit :source "(ns sample.core)\n(defn zebra [])\n(defn alpha [])"))))
+  :expected {:kind :definitions-out-of-order :definitions [(quote zebra) (quote alpha)] :path "src/sample/core.hal"}})
+
+^{:refer code.manage.unit/scaffold}
+(Test/register
+ {:desc "creates an archive-compatible test edit for a new source unit"
+  :test (fn [] (let [result (unit/scaffold (assoc sample-unit :test-source "") {:version "1.2.3"})] [(:create result) (:changed result) (:new result) (str/includes? (:after result) "(fact \"returns the answer\")") (str/includes? (:after result) "(pr-str (run")]))
+  :expected [true true [(quote answer)] false true]})
+
+^{:refer code.manage.unit/create-tests}
+(Test/register
+ {:desc "aliases the scaffold operation"
+  :test (fn [] (:new (unit/create-tests (assoc sample-unit :test-source "") {:version "1.2.3"})))
+  :expected [(quote answer)]})
+
+^{:refer code.manage.unit/locate-code}
+(Test/register
+ {:desc "locates source units and excludes test units"
+  :test (fn [] [(unit/locate-code sample-unit) (unit/locate-code {:type :test :path "test.hal"})])
+  :expected ["src/sample/core.hal" nil]})
+
+^{:refer code.manage.unit/locate-test}
+(Test/register
+ {:desc "locates paired or direct test paths"
+  :test (fn [] [(unit/locate-test sample-unit) (unit/locate-test {:type :test :path "test.hal"})])
+  :expected ["test/sample/core_test.hal" "test.hal"]})
+
+^{:refer code.manage.unit/includes-any?}
+(Test/register
+ {:desc "checks whether any pattern occurs in a line"
+  :test (fn [] [(unit/includes-any? "alpha beta" ["gamma" "beta"]) (unit/includes-any? "alpha" ["gamma"])])
+  :expected [true false]})
+
+^{:refer code.manage.unit/remove-matching-lines}
+(Test/register
+ {:desc "removes matching lines and restores a final newline"
+  :test (fn [] (unit/remove-matching-lines "keep\nremove\nkeep" ["remove"]))
+  :expected "keep\nkeep\n"})

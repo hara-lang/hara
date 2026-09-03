@@ -1,0 +1,122 @@
+(ns postgres.gen.mcp-test
+  (:require [postgres.application :as application]
+            [postgres.gen.mcp :as mcp]))
+
+(def mcp-entry
+  {:id 'log-append-public
+   :module 'postgres.gen.mcp-test
+   :op-key :defn
+   :static/input [{:symbol 'i_message :modifiers [:text]}]
+   :static/return [:jsonb]
+   :api/meta {:mcp {:name "log_append_public"
+                    :title "Append public log"
+                    :description "Appends a log row for the current authenticated user."}}})
+
+(def non-mcp-entry
+  {:id 'internal-log
+   :module 'postgres.gen.mcp-test
+   :op-key :defn
+   :static/input []
+   :static/return [:text]
+   :api/flags [:internal]})
+
+(def duplicate-mcp-entry
+  {:id 'log-append-duplicate
+   :module 'postgres.gen.mcp-test
+   :op-key :defn
+   :static/input []
+   :static/return [:text]
+   :api/meta {:mcp {:name "log_append_public"
+                    :description "Deliberate duplicate for validation."}}})
+
+(defn with-module [code function]
+  (let [snapshot (application/module-snapshot)
+        module 'postgres.gen.mcp-test]
+    (try
+      (application/install-modules! {module {:id module :code code}})
+      (function)
+      (finally
+        (application/restore-modules! snapshot)))))
+
+^{:refer postgres.gen.mcp/pg-type-schema}
+(Test/check
+ [{:name "maps PostgreSQL types to the portable MCP JSON Schema subset"
+   :test (fn []
+           [(mcp/pg-type-schema "uuid")
+            (mcp/pg-type-schema "numeric")
+            (mcp/pg-type-schema "jsonb")
+            (mcp/pg-type-schema "text")])
+   :expected [{:type "string" :format "uuid"}
+              {:type "number"}
+              {:type "object"}
+              {:type "string"}]}])
+
+^{:refer postgres.gen.mcp/input-schema}
+(Test/check
+ [{:name "preserves argument names and orders required fields deterministically"
+   :test (fn []
+           (mcp/input-schema [{:symbol "z_count" :type "integer"}
+                              {:symbol "a_message" :type "text"}]))
+   :expected {:type "object"
+              :properties {"a_message" {:type "string"}
+                           "z_count" {:type "integer"}}
+              :required ["a_message" "z_count"]
+              :additional_properties false}}])
+
+^{:refer postgres.gen.mcp/output-schema}
+(Test/check
+ [{:name "uses the same conservative schema mapping for function returns"
+   :test (fn [] [(mcp/output-schema "uuid") (mcp/output-schema "bytea")])
+   :expected [{:type "string" :format "uuid"}
+              {:type "string" :contentEncoding "base64"}]}])
+
+^{:refer postgres.gen.mcp/tool-descriptor}
+(Test/check
+ [{:name "extracts opt-in MCP metadata and rejects incomplete descriptors"
+   :test (fn []
+           [(mcp/tool-descriptor mcp-entry)
+            (try
+              (mcp/tool-descriptor
+               (assoc mcp-entry :api/meta {:mcp {:name "missing-description"}}))
+              false
+              (catch Throwable _ true))])
+   :expected [{:name "log_append_public"
+               :title "Append public log"
+               :description "Appends a log row for the current authenticated user."
+               :input_schema {:type "object"
+                              :properties {"i_message" {:type "string"}}
+                              :required ["i_message"]
+                              :additional_properties false}
+               :output_schema {:type "object"}}
+              true]}])
+
+^{:refer postgres.gen.mcp/tool-entries}
+(Test/check
+ [{:name "includes only opt-in definitions and rejects duplicate tool names"
+   :test (fn []
+           [(with-module
+             {'log-append-public mcp-entry 'internal-log non-mcp-entry}
+             (fn []
+               (vec (map (fn [entry] (:name (second entry)))
+                         (mcp/tool-entries ['postgres.gen.mcp-test])))))
+            (with-module
+             {'log-append-public mcp-entry 'log-append-duplicate duplicate-mcp-entry}
+             (fn []
+               (try
+                 (mcp/tool-entries ['postgres.gen.mcp-test])
+                 false
+                 (catch Throwable _ true))))])
+   :expected [["log_append_public"] true]}])
+
+^{:refer postgres.gen.mcp/render-module}
+(Test/check
+ [{:name "renders MCP descriptors through the shared data-only module template"
+   :test (fn []
+           (with-module
+            {'log-append-public mcp-entry 'internal-log non-mcp-entry}
+            (fn []
+              (let [rendered (mcp/render-module 'xt.mcp.sample ['postgres.gen.mcp-test])]
+                [(str/includes? rendered "^{:api/type :mcp}")
+                 (str/includes? rendered ":input_schema")
+                 (not (str/includes? rendered "xt.db"))]))))
+   :expected [true true true]}])

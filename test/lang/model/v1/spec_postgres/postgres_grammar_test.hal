@@ -1,0 +1,69 @@
+(ns lang.model.v1.spec-postgres.postgres-grammar-test
+  (:require [lang.common.emit :as emit]
+            [lang.core.script :as script]
+            [lang.model.v1.spec-postgres.postgres-grammar :as grammar]
+            [lang.model.v1.spec-postgres.postgres-native :as native]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-grammar/pg-vector}
+(Test/check [{:name "composes JSON and SQL vector emission"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context]
+                                                      (if (list? value) "js" (str value)))]
+                             [(grammar/pg-vector [1 2] {} {})
+                              (grammar/pg-vector (IObjType/with-meta [1 2] {:js true}) {} {})]))
+              :expected ["1 2" "js"]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-grammar/+features+}
+(Test/check [{:name "retains Foundation PostgreSQL grammar forms"
+              :test (fn [] (let [value (select-keys grammar/+features+
+                                        [:try :doblk :dosup :letblk :let
+                                         :while :loop :case :forech :fdata :fvec
+                                         :find :findm :remc :remi :array :js
+                                                     :defindex :defpolicy :defpublication :defsubscription
+                                                     :defpartition :defrole])]
+                             (and (= 23 (count value))
+                                  (map? (:defpartition value))
+                                  (= :macro (get-in value [:defpartition :emit]))
+                                  (= [:block] (get-in grammar/+features+ [:defrun :static/return]))
+                                  (= :macro (get-in grammar/+features+ [:def :emit]))
+                                  (= :macro (get-in grammar/+features+ [:for :emit])))))
+              :expected true}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-grammar/+template+}
+(Test/check [{:name "retains the standalone PostgreSQL template"
+              :test (fn [] [(get-in grammar/+template+ [:source/kind])
+                            (get-in grammar/+template+ [:source/id])])
+              :expected [:emit-template :postgres]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/+emit+}
+(Test/check [{:name "uses the archived set emitter for PostgreSQL data"
+              :test (fn [] (fn? (get-in native/+emit+
+                                         [:defaults :data :set :custom])))
+              :expected true}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-grammar/+profile+}
+(Test/check [{:name "retains the standalone PostgreSQL operator profile"
+              :test (fn [] [(get-in grammar/+profile+ [:source/kind])
+                            (get-in grammar/+profile+ [:source/id])])
+              :expected [:profile :postgres]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-grammar/+grammar+}
+(Test/check [{:name "retains the standalone PostgreSQL grammar coordinate"
+              :test (fn [] [(get-in grammar/+grammar+ [:grammar/id])
+                            (get-in grammar/+grammar+ [:grammar/version])
+                            (get-in grammar/+grammar+ [:grammar/parent])])
+              :expected [:postgres 1 nil]}])
+
+^{:refer lang.core.script/compile-form}
+(Test/check [{:name "compiles an archived PostgreSQL partition declaration"
+              :test (fn [] (script/compile-form
+                            :postgres 'demo.a
+                            '(defpartition part [parent]
+                               [{:use :region :in ["west"]}])))
+              :expected "CREATE TABLE IF NOT EXISTS \"parent__west\" PARTITION OF \"parent\" FOR VALUES IN ('west');"}])
+
+^{:refer lang.core.script/compile-form}
+(Test/check [{:name "accepts the archived do-assert tag/data shape"
+              :test (fn [] (script/compile-form
+                            :postgres 'demo.a
+                            '(do:assert (= x 1) [:bad {:value x}])))
+              :expected "IF NOT (x = 1) THEN\n  RAISE EXCEPTION USING DETAIL = (jsonb_build_object('status','error','tag','bad','value',x))::TEXT, MESSAGE = ':bad';\nEND IF"}])

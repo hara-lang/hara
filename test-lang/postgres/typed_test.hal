@@ -1,0 +1,407 @@
+(ns postgres.typed-test
+  (:require [postgres.typed :as typed]
+            [postgres.application :as app]
+            [postgres.typed.typed-analyze :as analyze]
+            [postgres.typed.typed-common :as types]
+            [postgres.typed.typed-parse :as parse]))
+
+(defn fixture-registry []
+  (let [table (types/make-table-def
+               "demo" "Entry"
+               [(types/make-column-def
+                 :id (types/make-type-ref :primitive nil :uuid)
+                 {:required true :primary true})
+                (types/make-column-def
+                 :name (types/make-type-ref :primitive nil :text)
+                 {:required true})]
+               :id)
+        fn-def (parse/parse-defn
+                '(defn.pg make-entry
+                   [:uuid i-id :text i-name]
+                   (return {:id i-id :name i-name}))
+                "demo" nil)]
+    {'demo/Entry table 'demo/make-entry fn-def}))
+
+(defn fixture-shape []
+  (types/make-jsonb-shape
+   {:id {:type :uuid :nullable? false}
+    :name {:type :text :nullable? false}}))
+
+(defn seeded-context []
+  (let [registry (fixture-registry)
+        _ (swap! analyze/*infer-cache*
+                 assoc 'demo/make-entry
+                 {:kind :shaped :shape (fixture-shape)})]
+    (typed/load-registry registry)))
+
+^{:refer postgres.typed/inferred->shape}
+(Test/check
+ [{:name "unwraps direct and inferred JSONB shapes"
+   :test (fn []
+           (let [shape (types/make-jsonb-shape {:id {:type :uuid}} "Entry")]
+             [(:source-table (typed/inferred->shape shape))
+              (:source-table (typed/inferred->shape {:kind :shaped :shape shape}))
+              (typed/inferred->shape {:kind :primitive})]))
+   :expected ["Entry" "Entry" nil]}])
+
+^{:refer postgres.typed/format-shape}
+(Test/check
+ [{:name "formats one JSONB shape in each supported output format"
+   :test (fn []
+           (let [shape (fixture-shape)]
+             [(get-in (typed/format-shape shape :openapi) [:properties "id" :format])
+              (get-in (typed/format-shape shape :json-schema) [:properties "name" :type])
+              (string? (typed/format-shape shape :typescript))]))
+   :expected ["uuid" "string" true]}])
+
+^{:refer postgres.typed/report-json}
+(Test/check
+ [{:name "delegates report serialization to typed analysis"
+   :test (fn [] (string? (typed/report-json {:function {:name "Entry"}})))
+   :expected true}])
+
+^{:refer postgres.typed/arg-type}
+(Test/check
+ [{:name "normalizes keyword and TypeRef argument types"
+   :test (fn []
+           [(typed/arg-type {:type :uuid})
+            (typed/arg-type {:type (types/make-type-ref :primitive nil :text)})
+            (typed/arg-type-name {:type :uuid})])
+   :expected [:uuid nil "uuid"]}])
+
+^{:refer postgres.typed/tracked-position}
+(Test/check
+ [{:name "finds tracked argument positions or nil"
+   :test (fn [] [(typed/tracked-position '[a b c] #{'b}) (typed/tracked-position '[a] #{'b})])
+   :expected [1 nil]}])
+
+^{:refer postgres.typed/track-arg-role?}
+(Test/check
+ [{:name "finds JSONB tracking through direct calls and local aliases"
+   :test (fn []
+           (let [fn-def (types/make-fn-def
+                         "demo" "write"
+                         [(types/->FnArg 'payload :jsonb nil nil)
+                          (types/->FnArg 'change :jsonb nil nil)]
+                         [:jsonb]
+                         {:raw-body '[(let [tracked change]
+                                       (pg/t:update Entry {:track tracked :set payload}))]}
+                         nil)]
+             [(typed/track-arg-role? fn-def 'change)
+              (typed/track-arg-role? fn-def 'payload)
+              (map (fn [arg] (:role arg))
+                   (:inputs (typed/enrich-function-arg-roles fn-def)))]))
+   :expected [true false [:payload :track]]}])
+
+^{:refer postgres.typed/jsonb-arg?}
+(Test/check
+ [{:name "recognizes direct and modifier JSONB arguments"
+   :test (fn [] [(typed/jsonb-arg? {:type :jsonb})
+                 (typed/jsonb-arg? {:type :uuid :modifiers [:jsonb]})
+                 (typed/jsonb-arg? {:type :text})])
+   :expected [true true false]}])
+
+^{:refer postgres.typed/format-primitive}
+(Test/check
+ [{:name "formats primitive values consistently"
+   :test (fn [] [(typed/format-primitive :shape :uuid)
+                 (typed/format-primitive :openapi :uuid)
+                 (typed/format-primitive :typescript :text)])
+   :expected [{:type :uuid} {:type "string" :format "uuid"} "string"]}])
+
+^{:refer postgres.typed/registry->typed}
+(Test/check
+ [{:name "round-trips a flat registry through grouped typed data"
+   :test (fn []
+           (let [registry (fixture-registry)
+                 grouped (typed/registry->typed registry)]
+             [(count (:tables grouped))
+              (count (:functions grouped))
+              (keys (typed/typed->registry grouped))]))
+   :expected [1 1 ['demo/Entry 'demo/make-entry]]}])
+
+^{:refer postgres.typed/load-analysis}
+(Test/check
+ [{:name "loads parsed analysis files namespaces and the live type registry"
+   :test (fn []
+           (let [registry (fixture-registry)
+                 analysis {:ns "demo"
+                           :tables [(get registry 'demo/Entry)]
+                           :enums []
+                           :functions [(get registry 'demo/make-entry)]}]
+             (try
+               (reset! types/*type-registry* registry)
+               [(count (:registry (typed/load-analysis analysis)))
+                (:domain (typed/load-file "src-lang/postgres/typed/typed_common.hal"))
+                (:domain (typed/load-ns 'postgres.typed.typed-common))
+                (count (:registry (typed/load-registry)))]
+               (finally (reset! types/*type-registry* {})))))
+   :expected [2 :postgres :postgres 2]}])
+
+^{:refer postgres.typed/load-app}
+(Test/check
+ [{:name "loads a resettable PostgreSQL application typed payload"
+   :test (fn []
+           (try
+             (app/app-reset)
+             (let [payload (typed/registry->typed (fixture-registry))]
+               (app/register-app :demo {:typed payload})
+               [(:app-name (typed/load-app :demo))
+                (count (:registry (typed/load-app :demo)))
+                (:registry (typed/load-app :missing))])
+             (finally (app/app-reset))))
+   :expected [:demo 2 {}]}])
+
+^{:refer postgres.typed/with-context-registry}
+(Test/check
+ [{:name "temporarily installs context registry state and restores the prior state"
+   :test (fn []
+           (let [ctx (typed/load-registry (fixture-registry))]
+             (try
+               (reset! types/*type-registry* {'before/value :before})
+               [(typed/with-context-registry ctx
+                  (fn []
+                    [(count (typed/entries ctx))
+                     (:name (typed/entry ctx 'demo/make-entry))]))
+                (deref types/*type-registry*)]
+               (finally (reset! types/*type-registry* {})))))
+   :expected [[2 "make-entry"] {'before/value :before}]}])
+
+^{:refer postgres.typed/function-def}
+(Test/check
+ [{:name "resolves typed declarations and distinguishes missing entries"
+   :test (fn []
+           (let [ctx (typed/load-registry (fixture-registry))]
+             [(:name (typed/function-def ctx 'demo/make-entry))
+              (try (typed/function-def ctx 'demo/missing) false (catch error true))
+              (try (typed/throw-missing-function 'demo/missing) false (catch error true))]))
+   :expected ["make-entry" true true]}])
+
+^{:refer postgres.typed/function-input}
+(Test/check
+ [{:name "returns function inputs arguments outputs and missing argument errors"
+   :test (fn []
+           (let [ctx (typed/load-registry (fixture-registry))]
+             [(count (typed/function-input ctx 'demo/make-entry))
+              (:name (typed/function-input ctx 'demo/make-entry 'i-name))
+              (typed/function-output ctx 'demo/make-entry)
+              (try (typed/function-input ctx 'demo/make-entry 'missing) false (catch error true))
+              (try (typed/throw-missing-argument 'demo/make-entry 'missing) false (catch error true))]))
+   :expected [2 'i-name [:jsonb] true true]}])
+
+^{:refer postgres.typed/input-shape}
+(Test/check
+ [{:name "derives input and output shapes and schemas from a seeded context"
+   :test (fn []
+           (let [cache (deref analyze/*infer-cache*)]
+             (try
+               (let [ctx (seeded-context)]
+                 [(typed/input-shape ctx 'demo/make-entry 'i-name)
+                  (typed/input-schema ctx 'demo/make-entry 'i-name)
+                  (:source-table (typed/output-shape ctx 'demo/make-entry))
+                  (get-in (typed/output-schema ctx 'demo/make-entry :json-schema)
+                          [:properties "id" :format])])
+               (finally (reset! analyze/*infer-cache* cache)))))
+   :expected [nil nil nil "uuid"]}])
+
+^{:refer postgres.typed/function-contract}
+(Test/check
+ [{:name "builds reports contracts and every supported export"
+   :test (fn []
+           (let [cache (deref analyze/*infer-cache*)]
+             (try
+               (let [ctx (seeded-context)
+                     contract (typed/function-contract ctx 'demo/make-entry {:format :openapi})]
+                 [(get-in (typed/function-report ctx 'demo/make-entry) [:function :name])
+                  (count (get-in contract [:input :args]))
+                  (get-in contract [:output :schema :properties "id" :format])
+                  (:openapi (typed/export-openapi ctx))
+                  (get-in (typed/export-json-schema ctx) [:definitions "Entry" :type])
+                  (str/includes? (typed/export-typescript ctx) "interface Entry")])
+               (finally (reset! analyze/*infer-cache* cache)))))
+   :expected ["make-entry" 2 "uuid" "3.0.3" "object" true]}])
+
+^{:refer postgres.typed/arg-type-name}
+(Test/check
+ [{:name "renders only recognized keyword argument types"
+   :test (fn [] [(typed/arg-type-name {:type :uuid})
+                 (typed/arg-type-name {:type (types/make-type-ref :primitive nil :text)})])
+   :expected ["uuid" nil]}])
+
+^{:refer postgres.typed/enrich-function-arg-roles}
+(Test/check
+ [{:name "assigns payload roles when a JSONB argument is not tracked"
+   :test (fn []
+           (map (fn [arg] (:role arg))
+                (:inputs
+                 (typed/enrich-function-arg-roles
+                  (types/make-fn-def "demo" "read"
+                                     [(types/->FnArg 'payload :jsonb nil nil)]
+                                     [:jsonb]
+                                     {:raw-body '[(return payload)]}
+                                     nil)))))
+   :expected [:payload]}])
+
+^{:refer postgres.typed/typed->registry}
+(Test/check
+ [{:name "flattens grouped typed maps under their qualified keys"
+   :test (fn [] (set (keys (typed/typed->registry
+                            (typed/registry->typed (fixture-registry))))))
+   :expected #{'demo/Entry 'demo/make-entry}}])
+
+^{:refer postgres.typed/load-file}
+(Test/check
+ [{:name "loads a source file through the typed parser"
+   :test (fn [] (:domain (typed/load-file "src-lang/postgres/typed/typed_common.hal")))
+   :expected :postgres}])
+
+^{:refer postgres.typed/load-ns}
+(Test/check
+ [{:name "loads a source namespace through the typed parser"
+   :test (fn [] (:domain (typed/load-ns 'postgres.typed.typed-common)))
+   :expected :postgres}])
+
+^{:refer postgres.typed/load-registry}
+(Test/check
+ [{:name "loads an explicit registry without mutating global type state"
+   :test (fn [] (count (:registry (typed/load-registry (fixture-registry)))))
+   :expected 2}])
+
+^{:refer postgres.typed/entries}
+(Test/check
+ [{:name "lists every context registry entry"
+   :test (fn [] (count (typed/entries (typed/load-registry (fixture-registry)))))
+   :expected 2}])
+
+^{:refer postgres.typed/entry}
+(Test/check
+ [{:name "finds entries by their canonical or short function symbol"
+   :test (fn []
+           (let [ctx (typed/load-registry (fixture-registry))]
+             [(:name (typed/entry ctx 'demo/make-entry))
+              (:name (typed/entry ctx 'make-entry))]))
+   :expected ["make-entry" nil]}])
+
+^{:refer postgres.typed/throw-missing-function}
+(Test/check
+ [{:name "throws a typed not-found error for absent functions"
+   :test (fn [] (try (typed/throw-missing-function 'demo/missing)
+                     false
+                     (catch error true)))
+   :expected true}])
+
+^{:refer postgres.typed/throw-missing-argument}
+(Test/check
+ [{:name "throws a typed not-found error for absent arguments"
+   :test (fn [] (try (typed/throw-missing-argument 'demo/make-entry 'missing)
+                     false
+                     (catch error true)))
+   :expected true}])
+
+^{:refer postgres.typed/missing-function!}
+(Test/check
+ [{:name "preserves the archive missing-function bang alias"
+   :test (fn [] (try (typed/missing-function! 'demo/missing)
+                     false
+                     (catch error true)))
+   :expected true}])
+
+^{:refer postgres.typed/missing-argument!}
+(Test/check
+ [{:name "preserves the archive missing-argument bang alias"
+   :test (fn [] (try (typed/missing-argument! 'demo/make-entry 'missing)
+                     false
+                     (catch error true)))
+   :expected true}])
+
+^{:refer postgres.typed/function-report}
+(Test/check
+ [{:name "reports the resolved function definition"
+   :test (fn []
+           (let [cache (deref analyze/*infer-cache*)]
+             (try
+               (let [ctx (seeded-context)]
+                 (get-in (typed/function-report ctx 'demo/make-entry) [:function :name]))
+               (finally (reset! analyze/*infer-cache* cache)))))
+   :expected "make-entry"}])
+
+^{:refer postgres.typed/function-output}
+(Test/check
+ [{:name "returns parsed function return declarations"
+   :test (fn [] (typed/function-output
+                 (typed/load-registry (fixture-registry))
+                 'demo/make-entry))
+   :expected [:jsonb]}])
+
+^{:refer postgres.typed/input-schema}
+(Test/check
+ [{:name "returns nil when a non-JSONB argument has no input shape"
+   :test (fn [] (typed/input-schema
+                 (typed/load-registry (fixture-registry))
+                 'demo/make-entry
+                 'i-name))
+   :expected nil}])
+
+^{:refer postgres.typed/output-shape}
+(Test/check
+ [{:name "uses cached inference to recover the output shape"
+   :test (fn []
+           (let [cache (deref analyze/*infer-cache*)]
+             (try
+               (let [ctx (seeded-context)]
+                 (types/jsonb-shape? (typed/output-shape ctx 'demo/make-entry)))
+               (finally (reset! analyze/*infer-cache* cache)))))
+   :expected true}])
+
+^{:refer postgres.typed/output-schema}
+(Test/check
+ [{:name "formats cached output inference to the requested schema target"
+   :test (fn []
+           (let [cache (deref analyze/*infer-cache*)]
+             (try
+               (let [ctx (seeded-context)]
+                 (get-in (typed/output-schema ctx 'demo/make-entry :openapi)
+                         [:properties "name" :type]))
+               (finally (reset! analyze/*infer-cache* cache)))))
+   :expected "string"}])
+
+^{:refer postgres.typed/build-input-schemas}
+(Test/check
+ [{:name "builds primitive input schemas for typed function arguments"
+   :test (fn []
+           (let [ctx (typed/load-registry (fixture-registry))
+                 fn-def (typed/function-def ctx 'demo/make-entry)]
+             (typed/build-input-schemas ctx fn-def :shape)))
+   :expected {:i-id {:type :uuid :schema {:type :uuid}}
+              :i-name {:type :text :schema {:type :text}}}}])
+
+^{:refer postgres.typed/export-openapi}
+(Test/check
+ [{:name "exports a portable OpenAPI document"
+   :test (fn []
+           (let [cache (deref analyze/*infer-cache*)]
+             (try
+               (:openapi (typed/export-openapi (seeded-context)))
+               (finally (reset! analyze/*infer-cache* cache)))))
+   :expected "3.0.3"}])
+
+^{:refer postgres.typed/export-json-schema}
+(Test/check
+ [{:name "exports a portable JSON Schema document"
+   :test (fn []
+           (let [cache (deref analyze/*infer-cache*)]
+             (try
+               (get-in (typed/export-json-schema (seeded-context))
+                       [:definitions "Entry" :type])
+               (finally (reset! analyze/*infer-cache* cache)))))
+   :expected "object"}])
+
+^{:refer postgres.typed/export-typescript}
+(Test/check
+ [{:name "exports TypeScript declarations"
+   :test (fn []
+           (let [cache (deref analyze/*infer-cache*)]
+             (try
+               (str/includes? (typed/export-typescript (seeded-context)) "interface Entry")
+               (finally (reset! analyze/*infer-cache* cache)))))
+   :expected true}])

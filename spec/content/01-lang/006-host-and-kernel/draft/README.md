@@ -11,7 +11,7 @@ its embedding host: kernel and session identity (`[:kernel/id :session/id]`),
 capability grant resolution (available = provider-installed, granted = policy
 ∩ available, deny-by-default), the provider dispatch pipeline
 (`resolve-session → require-grant → validate → invoke-provider`), promise
-settlement with `:host/*` ex-info codes, session transfer rejection of live
+settlement with `:host/*` Exception codes, session transfer rejection of live
 values, managed SandboxSpec validation, sandbox provider dispatch and
 cancellation, private sandbox Session ownership, and the browser/native
 embedding wire contracts.

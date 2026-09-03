@@ -1,0 +1,69 @@
+(ns code.manage.unit.contract-test
+  (:use code.test)
+  (:require [code.manage.unit.contract :as contract]))
+
+(def valid-source
+  (str
+   "## Outcome\nA fresh agent can execute the issue.\n"
+   "## Context\nThe repository is authoritative.\n"
+   "## Scope\nImplement the checker.\n"
+   "## Non-goals\nNo connector mutation.\n"
+   "## Acceptance criteria\nDiagnostics are deterministic.\n"
+   "## Validation\nRun the focused test.\n"
+   "## Relationships\nAdvances https://github.com/greenways-ai/workspace/issues/14.\n"
+   "## Readiness\nReady.\n"
+   "## Delivery\nOne focused change.\n"))
+
+^{:refer code.manage.unit.contract/normalize-title}
+(Test/register
+ {:desc "normalizes section titles"
+  :test (fn [] (contract/normalize-title "  Acceptance Criteria  "))
+  :expected "acceptance criteria"})
+
+^{:refer code.manage.unit.contract/section-key}
+(Test/register
+ {:desc "maps required section labels"
+  :test (fn [] [(contract/section-key "Context") (contract/section-key "Context and authority") (contract/section-key "Delivery boundary") (contract/section-key "Unknown")])
+  :expected [:context :context :delivery nil]})
+
+^{:refer code.manage.unit.contract/parse-document}
+(Test/register
+ {:desc "parses headings and preserves section bodies"
+  :test (fn [] (let [document (contract/parse-document valid-source)] [(vec (map :key (:sections document))) (:body (first (:sections document))) (:body (last (:sections document))) (:malformed document)]))
+  :expected [[:outcome :context :scope :non-goals :acceptance :validation :relationships :readiness :delivery] "A fresh agent can execute the issue." "One focused change." []]})
+
+^{:refer code.manage.unit.contract/canonical-github-link?}
+(Test/register
+ {:desc "accepts canonical HTTPS GitHub links only"
+  :test (fn [] [(contract/canonical-github-link? "https://github.com/greenways-ai/workspace/issues/14") (contract/canonical-github-link? "https://github.com/orgs/hara-lang/projects/2") (contract/canonical-github-link? "http://github.com/greenways-ai/workspace/issues/14") (contract/canonical-github-link? "https://github.com/example/workspace/issues/14")])
+  :expected [true true false false]})
+
+^{:refer code.manage.unit.contract/trim-link-punctuation}
+(Test/register
+ {:desc "removes terminal sentence punctuation"
+  :test (fn [] (contract/trim-link-punctuation "https://github.com/hara-lang/hara."))
+  :expected "https://github.com/hara-lang/hara"})
+
+^{:refer code.manage.unit.contract/extract-links}
+(Test/register
+ {:desc "extracts HTTP links without contacting GitHub"
+  :test (fn [] (contract/extract-links "See https://github.com/greenways-ai/workspace/issues/14, and https://github.com/hara-lang/hara."))
+  :expected ["https://github.com/greenways-ai/workspace/issues/14" "https://github.com/hara-lang/hara"]})
+
+^{:refer code.manage.unit.contract/check-contract}
+(Test/register
+ {:desc "accepts a complete issue contract"
+  :test (fn [] (select-keys (contract/check-contract {:kind :issue-form :source valid-source}) [:status :valid? :findings :summary]))
+  :expected {:valid? true :findings [] :summary {:errors 0 :total 0} :status :pass}})
+
+^{:refer code.manage.unit.contract/check-contract}
+(Test/register
+ {:desc "reports missing, duplicate, malformed, and noncanonical sections or links"
+  :test (fn [] (let [missing (contract/check-contract {:source (str/replace valid-source "## Scope\nImplement the checker.\n" "")}) duplicate (contract/check-contract {:source (str/replace valid-source "## Context\nThe repository is authoritative.\n" "## Context\nFirst.\n## Context\nSecond.\n")}) malformed (contract/check-contract {:source (str/replace valid-source "## Outcome\n" "##Outcome\n")}) link (contract/check-contract {:links ["http://github.com/greenways-ai/workspace/issues/14"] :source valid-source})] [[(get-in missing [:findings 0 :code]) (get-in missing [:findings 0 :path])] [(get-in duplicate [:findings 0 :code]) (get-in duplicate [:findings 0 :path])] [(get-in malformed [:findings 0 :code]) (get-in malformed [:findings 0 :path])] [(get-in link [:findings 0 :code]) (get-in link [:findings 0 :path])]]))
+  :expected [[:section/missing "sections/scope"] [:section/duplicate "sections/context"] [:section/malformed "sections/outcome"] [:link/noncanonical "links/0"]]})
+
+^{:refer code.manage.unit.contract/check-contract}
+(Test/register
+ {:desc "requires Advances for incomplete work but allows explicit completion"
+  :test (fn [] (let [missing (contract/check-contract {:source valid-source :relationship "Relates https://github.com/greenways-ai/workspace/issues/14"}) closes (contract/check-contract {:source valid-source :relationship "Closes https://github.com/greenways-ai/workspace/issues/14"}) complete (contract/check-contract {:source valid-source :complete? true :relationship "Closes https://github.com/greenways-ai/workspace/issues/14"})] [(get-in missing [:findings 0 :code]) (get-in closes [:findings 0 :code]) (:valid? complete)]))
+  :expected [:relationship/advances-missing :relationship/closes-only true]})

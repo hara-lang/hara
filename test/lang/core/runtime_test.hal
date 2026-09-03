@@ -1,0 +1,214 @@
+(ns lang.core.runtime-test
+  (:require [lang.core.registry :as registry]
+            [lang.core.runtime :as runtime]))
+
+(defn isolated
+  [function]
+  (let [snapshot (runtime/runtime-snapshot)]
+    (try
+      (runtime/runtime-reset!)
+      (function)
+      (finally (runtime/runtime-restore! snapshot)))))
+
+^{:refer lang.core.runtime/atom-value}
+(Test/check [{:name "dereferences runtime state atoms"
+              :test (fn [] (runtime/atom-value (atom :value)))
+              :expected :value}])
+
+^{:refer lang.core.runtime/runtime-snapshot}
+(Test/check [{:name "captures both runtime registries"
+              :test (fn [] (isolated runtime/runtime-snapshot))
+              :expected {:languages {} :types {}}}])
+
+^{:refer lang.core.runtime/runtime-restore!}
+(Test/check [{:name "restores exact runtime state"
+              :test (fn [] (isolated (fn []
+                                       (runtime/runtime-restore!
+                                        {:languages {:demo {:version 1}}
+                                         :types {[:demo :test] {:create identity}}}))))
+              :expected {:languages {:demo {:version 1}}
+                         :types {[:demo :test] {:create identity}}}}])
+
+^{:refer lang.core.runtime/runtime-reset!}
+(Test/check [{:name "clears runtime state idempotently"
+              :test (fn [] (isolated (fn [] [(runtime/runtime-reset!)
+                                              (runtime/runtime-reset!)])))
+              :expected [{:languages {} :types {}} {:languages {} :types {}}]}])
+
+^{:refer lang.core.runtime/rt-default:create}
+(Test/check [{:name "creates an unstarted default context"
+              :test (fn [] (let [value (runtime/rt-default:create {:lang :postgres})]
+                           [(:id value) (:lang value) (:runtime value)
+                            (deref (:state value))]))
+              :expected [:postgres.default :postgres :default {:status :created}]}])
+
+^{:refer lang.core.runtime/default-state}
+(Test/check [{:name "reads default context state"
+              :test (fn [] (runtime/default-state (runtime/rt-default:create {:lang :xtalk})))
+              :expected {:status :created}}])
+
+^{:refer lang.core.runtime/start-default}
+(Test/check [{:name "starts a default context"
+              :test (fn [] (let [value (runtime/rt-default:create {:lang :xtalk})]
+                           (deref (:state (runtime/start-default value)))))
+              :expected {:status :started}}])
+
+^{:refer lang.core.runtime/stop-default}
+(Test/check [{:name "stops a default context"
+              :test (fn [] (let [value (runtime/rt-default {:lang :xtalk})]
+                           (deref (:state (runtime/stop-default value)))))
+              :expected {:status :stopped}}])
+
+^{:refer lang.core.runtime/rt-default}
+(Test/check [{:name "creates and starts a default context"
+              :test (fn [] (deref (:state (runtime/rt-default {:lang :xtalk}))))
+              :expected {:status :started}}])
+
+^{:refer lang.core.runtime/default-runtime-spec}
+(Test/check [{:name "defines the compile-only coordinate"
+              :test (fn [] (select-keys (runtime/default-runtime-spec :xtalk)
+                                        [:lang :runtime :component]))
+              :expected {:lang :xtalk :runtime :default :component true}}])
+
+^{:refer lang.core.runtime/RuntimeDefault}
+(Test/check [{:name "implements current context evaluation and lifecycle seams"
+              :test (fn [] (let [value (runtime/rt-default {:lang :xtalk})]
+                           [(IContext/call value :a :b)
+                            (deref (IContextEval/evaluate value :request {}))
+                            (IContextEval/eval-await-ptr value :pointer [] {})
+                            (IContextEval/tags-ptr value :pointer)
+                            (IContextEval/deref-ptr value :pointer)
+                            (IContextEval/transform-in-ptr value :pointer [1])
+                            (IContextEval/transform-out-ptr value :pointer :value)
+                            (IContextLifeCycle/has-module? value :module)
+                            (do (IContextLifeCycle/setup-module value :module)
+                                (IContextLifeCycle/has-module? value :module))
+                            (do (IContextLifeCycle/setup-ptr value :pointer)
+                                (IContextLifeCycle/has-setup-ptr? value :pointer))]))
+              :expected [[:a :b] :request :pointer [] :pointer [1] :value false true true]}])
+
+^{:refer lang.core.runtime/install-lang}
+(Test/check [{:name "installs explicit immutable books"
+              :test (fn [] (isolated (fn []
+                                       (runtime/install-lang :demo
+                                                             {:book {:lang :demo :version 3}}))))
+              :expected {:lang :demo :book-key :default :version 3
+                         :book {:lang :demo :version 3}}}])
+
+^{:refer lang.core.runtime/select-lang-version}
+(Test/check [{:name "selects a real registered book version"
+              :test (fn [] (isolated (fn []
+                                       (select-keys (runtime/select-lang-version :postgres 1)
+                                                    [:lang :version :book-key]))))
+              :expected {:lang :postgres :version 1 :book-key :default}}])
+
+^{:refer lang.core.runtime/install-type}
+(Test/check [{:name "installs explicit runtime specifications"
+              :test (fn [] (isolated (fn []
+                                       (runtime/install-type :demo :test {:create identity}))))
+              :expected {:lang :demo :runtime :test :create identity}}])
+
+^{:refer lang.core.runtime/language-info}
+(Test/check [{:name "returns selected language data"
+              :test (fn [] (isolated (fn []
+                                       (runtime/install-lang :demo {:book {:lang :demo :version 1}})
+                                       (select-keys (runtime/language-info :demo) [:lang :version]))))
+              :expected {:lang :demo :version 1}}])
+
+^{:refer lang.core.runtime/runtime-installed?}
+(Test/check [{:name "recognizes default and explicit coordinates"
+              :test (fn [] (isolated (fn []
+                                       (runtime/install-type :demo :test {:create identity})
+                                       [(runtime/runtime-installed? :demo :default)
+                                        (runtime/runtime-installed? :demo :test)
+                                        (runtime/runtime-installed? :demo :missing)])))
+              :expected [true true false]}])
+
+^{:refer lang.core.runtime/available-runtimes}
+(Test/check [{:name "lists deterministic canonical coordinates"
+              :test (fn [] (isolated (fn []
+                                       (runtime/install-type :demo :test {:create identity})
+                                       (runtime/available-runtimes :demo))))
+              :expected [:default :test]}])
+
+^{:refer lang.core.runtime/require-runtime}
+(Test/check [{:name "rejects unknown coordinates"
+              :test (fn [] (try (runtime/require-runtime :demo :missing)
+                                (catch error (:ex/code (ex-data error)))))
+              :expected :hara/dependency}])
+
+^{:refer lang.core.runtime/registered-runtime-spec}
+(Test/check [{:name "loads the sole PostgreSQL client coordinate"
+              :test (fn [] (select-keys (runtime/registered-runtime-spec :postgres :client)
+                                        [:language :runtime :key]))
+              :expected {:language :postgres :runtime :client :key :client}}])
+
+^{:refer lang.core.runtime/runtime-spec}
+(Test/check [{:name "prefers default and installed specifications"
+              :test (fn [] (isolated (fn []
+                                       (runtime/install-type :demo :test {:create identity})
+                                       [(select-keys (runtime/runtime-spec :demo :default) [:runtime])
+                                        (runtime/runtime-spec :demo :test)])))
+              :expected [{:runtime :default} {:lang :demo :runtime :test :create identity}]}])
+
+^{:refer lang.core.runtime/rt-create}
+(Test/check [{:name "constructs from a canonical runtime spec"
+              :test (fn [] (isolated (fn []
+                                       (runtime/install-type :demo :test
+                                                             {:create (fn [value] value)
+                                                              :config {:base true}})
+                                       (runtime/rt-create :demo :test {:override true}))))
+              :expected {:base true :override true :lang :demo :runtime :test}}])
+
+^{:refer lang.core.runtime/rt-start}
+(Test/check [{:name "starts component contexts"
+              :test (fn [] (deref (:state (runtime/rt-start
+                                            (runtime/rt-default:create {:lang :demo})))))
+              :expected {:status :started}}])
+
+^{:refer lang.core.runtime/rt-stop}
+(Test/check [{:name "stops component contexts"
+              :test (fn [] (let [value (runtime/rt-default {:lang :demo})]
+                           (deref (:state (runtime/rt-stop value)))))
+              :expected {:status :stopped}}])
+
+^{:refer lang.core.runtime/rt-eval}
+(Test/check [{:name "uses semantic context evaluation"
+              :test (fn [] (deref (runtime/rt-eval (runtime/rt-default {:lang :demo}) :value)))
+              :expected :value}])
+
+^{:refer lang.core.runtime/rt-eval-raw}
+(Test/check [{:name "uses raw context evaluation"
+              :test (fn [] (deref (runtime/rt-eval-raw (runtime/rt-default {:lang :demo}) :value)))
+              :expected :value}])
+
+^{:refer lang.core.runtime/rt-eval-trace}
+(Test/check [{:name "records default evaluation in an EvalTrace"
+              :test (fn [] (select-keys
+                            (deref (runtime/rt-eval-trace (runtime/rt-default {:lang :demo}) :value))
+                            [:status :result]))
+              :expected {:status :ok :result :value}}])
+
+^{:refer lang.core.runtime/rt-raw-eval}
+(Test/check [{:name "uses direct context invocation for emitted source"
+              :test (fn [] (runtime/rt-raw-eval (runtime/rt-default {:lang :demo}) "select 1"))
+              :expected "select 1"}])
+
+^{:refer lang.core.runtime/requested-version}
+(Test/check [{:name "prefers per-language and global version selection"
+              :test (fn [] [(runtime/requested-version :postgres 1 {:postgres 1})
+                            (runtime/requested-version :postgres 1 {})
+                            (runtime/requested-version :postgres nil {})])
+              :expected [1 1 1]}])
+
+^{:refer lang.core.runtime/bootstrap}
+(Test/check [{:name "selects configured books without loading providers"
+              :test (fn [] (isolated (fn []
+                                       (select-keys
+                                        (runtime/bootstrap {:languages [:postgres]
+                                                            :runtimes [:default]})
+                                        [:versions :languages :runtimes]))))
+              :expected {:versions {:postgres 1}
+                         :languages {:postgres {:lang :postgres :book-key :default :version 1
+                                                :book (registry/registry-book :postgres)}}
+                         :runtimes {}}}])

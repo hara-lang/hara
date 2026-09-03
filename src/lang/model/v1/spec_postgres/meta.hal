@@ -1,0 +1,291 @@
+(ns lang.model.v1.spec-postgres.meta
+  (:require [lang.common.book-meta :as book-meta]))
+
+(defn identifier-value
+  "Returns the portable name carried by a PostgreSQL identifier value."
+  [value]
+  (cond (keyword? value) (name value)
+        (symbol? value) (name value)
+        :else (str value)))
+
+(defn pointer-entry
+  "Returns the entry payload from either a portable pointer or an entry map."
+  [pointer]
+  (or (get pointer :entry)
+      pointer))
+
+(defn entry-static
+  "Returns normalized static metadata from a portable code entry."
+  [entry]
+  (or (:static entry) {}))
+
+(defn pointer-name
+  "Finds the stable emitted name for one lifecycle pointer."
+  [pointer]
+  (let [entry (pointer-entry pointer)]
+    (or (:name entry)
+        (:id entry)
+        (get pointer :id))))
+
+(defn pointer-schema
+  "Finds the PostgreSQL schema for a lifecycle pointer, defaulting to public."
+  [pointer]
+  (let [static (entry-static (pointer-entry pointer))]
+    (or (:static/schema static)
+        (:schema static)
+        "public")))
+
+(defn pointer-dbtype
+  "Finds the portable PostgreSQL declaration category for one pointer."
+  [pointer]
+  (let [entry (pointer-entry pointer)
+        static (entry-static entry)]
+    (or (:static/dbtype static)
+        (:dbtype entry)
+        (:op-key entry)
+        (:op entry))))
+
+(defn pointer-existing?
+  "Returns whether a pointer describes a pre-existing remote object."
+  [pointer]
+  (let [entry (pointer-entry pointer)
+        static (entry-static entry)]
+    (boolean (or (:existing entry) (:existing static)))))
+
+(defn classify-ptr
+  "Classifies a portable pointer as [name schema dbtype existing op]."
+  [pointer]
+  (let [entry (pointer-entry pointer)]
+    [(identifier-value (pointer-name pointer))
+     (identifier-value (pointer-schema pointer))
+     (pointer-dbtype pointer)
+     (pointer-existing? pointer)
+     (:op entry)]))
+
+(defn has-function
+  "Builds the PostgreSQL catalog check for one stored function."
+  [name schema]
+  [:select
+   (list 'exists
+         [:select '*
+          :from 'pg_catalog.pg_proc
+          :where {:proname name
+                  :pronamespace
+                  [:eq [:select #{'oid}
+                        :from 'pg_catalog.pg_namespace
+                        :where {:nspname schema}]]}])])
+
+(defn has-table
+  "Builds the information-schema existence check for one table."
+  [name schema]
+  [:select
+   (list 'exists
+         [:select '*
+          :from 'information_schema.tables
+          :where {:table-schema schema
+                  :table-name name}])])
+
+(defn has-enum
+  "Builds the PostgreSQL catalog check for one enum type."
+  [name schema]
+  [:select
+   (list 'exists
+         [:select '*
+          :from 'pg_catalog.pg_type
+          :where {:typname name
+                  :typnamespace
+                  [:eq [:select #{'oid}
+                        :from 'pg_catalog.pg_namespace
+                        :where {:nspname schema}]]}])])
+
+(defn has-index
+  "Builds the PostgreSQL catalog check for one named index."
+  [name schema]
+  [:select
+   (list 'exists
+         [:select '*
+          :from 'pg_catalog.pg_class
+          :where {:relkind "i"
+                  :relname name
+                  :relnamespace
+                  [:eq [:select #{'oid}
+                        :from 'pg_catalog.pg_namespace
+                        :where {:nspname schema}]]}])])
+
+(defn has-policy
+  "Builds the pg_policies existence check for one row-level policy."
+  [pointer]
+  (let [entry (pointer-entry pointer)
+        static (entry-static entry)
+        schema (or (:static/policy-schema static)
+                   (:policy-schema static)
+                   (:static/schema static)
+                   (:schema static)
+                   "public")
+        table (or (:static/policy-table static)
+                  (:policy-table static)
+                  (:table static))
+        policy (or (:static/policy-name static)
+                   (:policy-name static)
+                   (:id entry))]
+    (if (or (nil? table) (nil? policy))
+      nil
+      [:select
+       (list 'exists
+             [:select 1
+              :from 'pg_policies
+              :where {:schemaname (identifier-value schema)
+                      :tablename (identifier-value table)
+                      :policyname (identifier-value policy)}])])))
+
+(defn module-static
+  "Returns portable static module metadata."
+  [module]
+  (or (:static module) {}))
+
+(defn module-schemas
+  "Returns the archived schema seed, accepting both seed and all/schema forms."
+  [module]
+  (let [static (module-static module)
+        seed (or (:seed static) [])
+        schemas (or (get-in static [:all :schema]) [])]
+    (vec (distinct (concat seed schemas)))))
+
+(defn extension-name
+  "Extracts an extension name from one archived import descriptor."
+  [value]
+  (cond (string? value) value
+        (symbol? value) (name value)
+        (keyword? value) (name value)
+        (vector? value) (extension-name (first value))
+        (list? value) (extension-name (first value))
+        :else nil))
+
+(defn module-extensions
+  "Returns declared native PostgreSQL extensions in stable source order."
+  [module]
+  (let [imports (or (:import module) [])
+        native (keys (or (:native module) {}))]
+    (vec (distinct
+          (reduce (fn [out value]
+                    (let [extension (extension-name value)]
+                      (if extension (conj out extension) out)))
+                  []
+                  (concat imports native))))))
+
+(defn has-schema
+  "Builds the catalog check for one PostgreSQL schema."
+  [schema]
+  [:select
+   (list 'exists
+         [:select '*
+          :from 'pg_catalog.pg_namespace
+          :where {:nspname (identifier-value schema)}])])
+
+(defn create-schema
+  "Builds idempotent schema setup SQL."
+  [schema]
+  [:create-schema :if-not-exists #{schema}])
+
+(defn drop-schema
+  "Builds idempotent schema teardown SQL."
+  [schema]
+  [:drop-schema :if-exists #{schema} :cascade])
+
+(defn create-extension
+  "Builds idempotent PostgreSQL extension setup SQL."
+  [extension]
+  [:create-extension :if-not-exists #{extension}])
+
+(defn drop-extension
+  "Builds idempotent PostgreSQL extension teardown SQL."
+  [extension]
+  [:drop-extension :if-exists #{extension} :cascade])
+
+(defn drop-policy
+  "Builds idempotent policy teardown SQL."
+  [pointer]
+  (let [entry (pointer-entry pointer)
+        static (entry-static entry)
+        schema (or (:static/policy-schema static)
+                   (:policy-schema static)
+                   (:static/schema static)
+                   (:schema static)
+                   "public")
+        table (or (:static/policy-table static)
+                  (:policy-table static)
+                  (:table static))
+        policy (or (:static/policy-name static)
+                   (:policy-name static)
+                   (:id entry))]
+    (if (or (nil? table) (nil? policy))
+      nil
+      [:drop-policy :if-exists #{policy}
+       :on (list '. #{schema} #{table})])))
+
+(defn pointer-drop-form
+  "Builds archived type/table/index/function teardown SQL for one pointer."
+  [pointer]
+  (let [[object-name schema dbtype existing op] (classify-ptr pointer)
+        type (if (= op :defenum) :type dbtype)]
+    (cond (= dbtype :policy) (drop-policy pointer)
+          (or (nil? type) existing) nil
+          :else
+          (list 'do
+                [:drop type :if-exists
+                 (list '. #{schema} #{object-name})
+                 :cascade]))))
+
+(defn get-schema-seed
+  "Returns the archived schema seed for a PostgreSQL module."
+  [module]
+  (module-schemas module))
+
+(defn get-extensions
+  "Returns the archived PostgreSQL extension declarations for a module."
+  [module]
+  (module-extensions module))
+
+(def +fn+
+  {:has-module
+   (fn [module]
+     (let [schemas (module-schemas module)]
+       (if (empty? schemas)
+         nil
+         (apply list 'do (map has-schema schemas)))))
+
+   :setup-module
+   (fn [module]
+     (let [extensions (module-extensions module)
+           schemas (module-schemas module)
+           body (concat (map create-schema schemas)
+                        (map create-extension extensions))]
+       (if (empty? body) nil (apply list 'do body))))
+
+   :teardown-module
+   (fn [module]
+     (let [extensions (module-extensions module)
+           schemas (module-schemas module)
+           body (concat (map drop-extension extensions)
+                        (map drop-schema schemas))]
+       (if (empty? body) nil (apply list 'do body))))
+
+   :has-ptr
+   (fn [pointer]
+     (let [[name schema dbtype] (classify-ptr pointer)]
+       (case dbtype
+         :table (has-table name schema)
+         :enum (has-enum name schema)
+         :index (has-index name schema)
+         :function (has-function name schema)
+         :policy (has-policy pointer)
+         nil)))
+
+   :setup-ptr
+   (fn [pointer]
+     (let [entry (pointer-entry pointer)]
+       (or (:form-input entry) (:form entry))))
+
+   :teardown-ptr pointer-drop-form})
+
+(def +meta+ (book-meta/book-meta +fn+))

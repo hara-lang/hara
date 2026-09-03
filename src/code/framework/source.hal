@@ -1,0 +1,292 @@
+(ns code.framework.source
+  (:config {:role :internal}))
+
+(defn source-path
+  [unit]
+  (or (:source/path unit)
+      (:path unit)))
+
+(defn target-path
+  [unit]
+  (or (:target/path unit)
+      (:path unit)
+      (source-path unit)))
+
+(defn source-text
+  [unit]
+  (if (has? unit :source/text)
+    (:source/text unit)
+    (:source unit)))
+
+(defn target-text
+  [unit]
+  (if (has? unit :target/text)
+    (:target/text unit)
+    (if (has? unit :target)
+      (:target unit)
+      (if (= (source-path unit) (target-path unit))
+        (source-text unit)
+        nil))))
+
+(defn transform-function
+  [transform-or-options]
+  (cond
+    (function? transform-or-options)
+    transform-or-options
+
+    (map? transform-or-options)
+    (or (:transform transform-or-options) identity)
+
+    (nil? transform-or-options)
+    identity
+
+    :else
+    (throw
+     (ex :code.framework/invalid-transform
+         {:ex/message "code.framework transform must be a function or options map"
+          :transform transform-or-options}))))
+
+(defn result-after
+  [result]
+  (cond
+    (string? result) result
+    (and (map? result) (has? result :after)) (:after result)
+    (and (map? result) (has? result :output)) (:output result)
+    (and (map? result) (has? result :source)) (:source result)
+    :else nil))
+
+(defn result-map
+  [result]
+  (if (map? result) result {}))
+
+(defn normalize-edit
+  "Normalises a string or structured transformer result into one dry-run edit.
+   Same-file units use {:path :source}; source/target units may use
+   :source/path, :source/text, :target/path, and :target/text."
+  [unit result options]
+  (let [source-path (source-path unit)
+        target-path (target-path unit)
+        source (source-text unit)
+        before (target-text unit)
+        data (result-map result)
+        after (result-after result)
+        diagnostics
+        (vec
+         (or (:diagnostics data)
+             (:diagnostics options)
+             []))
+        rules
+        (vec
+         (or (:rules data)
+             (:rules options)
+             (:rules/applied data)
+             []))
+        provenance
+        (merge
+         {:operation :code.framework/transform-code
+          :source/path source-path
+          :target/path target-path}
+         (or (:provenance options) {})
+         (or (:provenance data) {}))]
+    (if (not (string? source-path))
+      (throw
+       (ex :code.framework/source-path-required
+           {:ex/message "Source operation requires a string source path"
+            :unit unit})))
+    (if (not (string? target-path))
+      (throw
+       (ex :code.framework/target-path-required
+           {:ex/message "Source operation requires a string target path"
+            :unit unit})))
+    (if (not (string? source))
+      (throw
+       (ex :code.framework/source-text-required
+           {:ex/message "Source operation requires source text"
+            :source/path source-path})))
+    (if (not (string? after))
+      (throw
+       (ex :code.framework/invalid-transform-result
+           {:ex/message "Transformer must return source text or a structured result containing :after, :output, or :source"
+            :source/path source-path
+            :result result})))
+    (merge
+     data
+     {:path target-path
+      :source/path source-path
+      :target/path target-path
+      :source/text source
+      :before before
+      :after after
+      :changed (not= before after)
+      :create (nil? before)
+      :write false
+      :rules rules
+      :rules/matched
+      (vec (or (:rules/matched data) []))
+      :rules/applied
+      (vec (or (:rules/applied data) rules))
+      :diagnostics diagnostics
+      :provenance provenance})))
+
+(defn transform-code
+  "Applies one pure source transformer and returns a canonical dry-run edit."
+  ([unit transform-or-options]
+   (let [options
+         (if (map? transform-or-options)
+           transform-or-options
+           {})
+         transform (transform-function transform-or-options)
+         result (transform (source-text unit))]
+     (normalize-edit unit result options)))
+  ([unit transform options]
+   (let [options (merge (or options {}) {:transform transform})]
+     (transform-code unit options))))
+
+(defn grep-needle
+  [needle-or-options]
+  (if (map? needle-or-options)
+    (:needle needle-or-options)
+    needle-or-options))
+
+(defn line-matches
+  [line needle]
+  (loop [offset 0 output []]
+    (let [tail (str/slice line offset (count line))
+          relative (str/index-of tail needle)]
+      (if (or (nil? relative) (< relative 0))
+        output
+        (let [index (+ offset relative)]
+          (recur (+ index (max 1 (count needle)))
+                 (conj output (inc index))))))))
+
+(defn grep-code
+  "Returns deterministic literal source findings with the unit path attached."
+  [unit needle-or-options]
+  (let [needle (grep-needle needle-or-options)]
+    (if (or (nil? needle)
+            (not (string? needle))
+            (empty? needle))
+      []
+      (let [lines (str/split-lines (source-text unit))]
+        (loop [index 0 output []]
+          (if (= index (count lines))
+            output
+            (let [line (nth lines index)
+                  columns (line-matches line needle)]
+              (recur
+               (inc index)
+               (into
+                output
+                (map
+                 (fn [column]
+                   {:path (source-path unit)
+                    :line (inc index)
+                    :column column
+                    :text line})
+                 columns))))))))))
+
+(defn replacement
+  ([start end text]
+   (replacement start end text {}))
+  ([start end text metadata]
+   (merge
+    {:start start
+     :end end
+     :text text}
+    (or metadata {}))))
+
+(defn edit-key
+  [edit]
+  [(:start edit) (:end edit)])
+
+(defn valid-edit?
+  [source edit]
+  (and
+   (map? edit)
+   (number? (:start edit))
+   (number? (:end edit))
+   (string? (:text edit))
+   (<= 0 (:start edit))
+   (<= (:start edit) (:end edit))
+   (<= (:end edit) (count source))))
+
+(defn checked-edits
+  [source edits]
+  (let [ordered (vec (sort-by edit-key edits))]
+    (loop [index 0 previous-end 0]
+      (if (= index (count ordered))
+        ordered
+        (let [edit (nth ordered index)]
+          (if (not (valid-edit? source edit))
+            (throw
+             (ex :code.framework/invalid-edit
+                 {:ex/message "Source edit is outside the input range"
+                  :edit edit
+                  :source/length (count source)})))
+          (if (< (:start edit) previous-end)
+            (throw
+             (ex :code.framework/edit-conflict
+                 {:ex/message "Source edits overlap"
+                  :left (nth ordered (dec index))
+                  :right edit})))
+          (recur (inc index) (:end edit)))))))
+
+(defn apply-edits
+  "Applies non-overlapping source replacements while preserving untouched bytes."
+  [source edits]
+  (let [ordered (checked-edits source edits)]
+    (loop [remaining ordered offset 0 output ""]
+      (if (empty? remaining)
+        (str output (str/slice source offset (count source)))
+        (let [edit (first remaining)]
+          (recur
+           (vec (rest remaining))
+           (:end edit)
+           (str output
+                (str/slice source offset (:start edit))
+                (:text edit))))))))
+
+(defn replacements
+  [options]
+  (or (:replacements options)
+      (if (and (:match options)
+               (has? options :replacement))
+        [[(:match options)
+          (:replacement options)]]
+        [])))
+
+(defn replace-all
+  [source pairs]
+  (reduce
+   (fn [output pair]
+     (str/replace output
+                  (str (first pair))
+                  (str (second pair))))
+   source
+   pairs))
+
+(defn grep-replace
+  ([unit options]
+   (if (:match options)
+     (grep-replace unit
+                   (:match options)
+                   (or (:replacement options) ""))
+     (transform-code unit identity)))
+  ([unit match value]
+   (transform-code
+    unit
+    (fn [source]
+      (str/replace source match value)))))
+
+(defn apply-edit-record
+  "Executes an already reviewed edit through an injected writer only."
+  [edit write-text]
+  (if (not (:changed edit))
+    {:path (:path edit)
+     :write false
+     :changed false}
+    (let [result (write-text (:path edit) (:after edit))]
+      {:path (:path edit)
+       :write true
+       :changed true
+       :result result})))

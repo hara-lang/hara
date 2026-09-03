@@ -1,0 +1,92 @@
+(ns lang.core.script-declaration-test
+  (:require [lang.core :as l]
+            [lang.core.script :as script]))
+
+(l/script- :postgres)
+
+^{:refer lang.core.script/script-intern-macros!}
+(Test/check [{:name "interns grammar macros while the script declaration expands"
+              :test (fn [] [(not (nil? (Base/resolve
+                                        'lang.core.script-declaration-test/deftype.pg)))
+                            (not (nil? (Base/resolve
+                                        'lang.core.script-declaration-test/!.pg)))])
+              :expected [true true]}])
+
+(deftype.pg ^{:public true} ScriptLog
+  [:id {:type :uuid :primary true}])
+
+(def$.pg ScriptFragment
+  (auth.uid))
+
+(defmacro.pg script-auth-uid
+  []
+  '(auth.uid))
+
+^{:refer lang.core/script-}
+(Test/check [{:name "installs PostgreSQL declaration macros for following source forms"
+              :test (fn [] (let [entry (get-in (deref script/+modules+)
+                                                ['lang.core.script-declaration-test :code 'ScriptLog])]
+                             [(pointer? ScriptLog)
+                              (IPointer/ptr-context ScriptLog)
+                              (str (:op entry))
+                              (:static/public entry)]))
+              :expected [true :lang/postgres "deftype" true]}])
+
+^{:refer lang.core.script/register-fragment-pointer}
+(Test/check [{:name "installs PostgreSQL fragment pointer declarations for following source forms"
+              :test (fn [] (let [entry (get-in (deref script/+modules+)
+                                                ['lang.core.script-declaration-test
+                                                 :fragment 'ScriptFragment])]
+                             [(pointer? ScriptFragment)
+                              (IPointer/ptr-context ScriptFragment)
+                              (:op entry)
+                              (:form entry)]))
+              :expected [true :lang/postgres 'def$ '(auth.uid)]}])
+
+^{:refer lang.core.script/register-macro-fragment}
+(Test/check [{:name "installs PostgreSQL source macro declarations as target fragments"
+              :test (fn [] (let [entry (get-in (deref script/+modules+)
+                                                ['lang.core.script-declaration-test
+                                                 :fragment 'script-auth-uid])]
+                             [(fn? (:template entry))
+                              ((:template entry))]))
+              :expected [true '(auth.uid)]}])
+
+^{:refer lang.core.script/script-eval-macro-form}
+(Test/check [{:name "installs a caller-local PostgreSQL evaluator macro"
+              :test (fn [] (first (macroexpand-1 '(!.pg (+ 1 2)))))
+              :expected 'lang.core.script/eval-forms}])
+
+^{:refer lang.core.script/script-generated-definition}
+(Test/check [{:name "expands an interned target declaration alias"
+              :test (fn [] (let [form (macroexpand-1
+                                      '(deftype.pg GeneratedLog
+                                         [:id {:type :uuid :primary true}]))]
+                             [(first form) (first (nth form 2))]))
+              :expected ['def 'lang.core.script/register-code-pointer]}])
+
+^{:refer lang.core.script/script-generated-fragment}
+(Test/check [{:name "expands an interned target fragment alias"
+              :test (fn [] (let [form (macroexpand-1 '(def$.pg GeneratedFragment (auth.uid)))]
+                             [(first form) (first (nth form 2))]))
+              :expected ['def 'lang.core.script/register-fragment-pointer]}])
+
+^{:refer lang.core.script/script-generated-defmacro}
+(Test/check [{:name "expands an interned target source-macro alias"
+              :test (fn [] (let [form (macroexpand-1
+                                      '(defmacro.pg generated-auth
+                                         []
+                                         '(auth.uid)))]
+                             [(first form) (first (second form))]))
+              :expected ['do 'defmacro]}])
+
+^{:refer lang.core.script/script-generated-eval}
+(Test/check [{:name "expands an interned PostgreSQL evaluator alias"
+              :test (fn [] (let [form (macroexpand-1 '(!.pg (+ 1 2)))]
+                             [(first form) (second form)]))
+              :expected ['lang.core.script/eval-forms :postgres]}])
+
+^{:refer lang.core.script/script-generated-highlight}
+(Test/check [{:name "keeps an interned grammar highlight alias inert"
+              :test (fn [] (macroexpand-1 '(br)))
+              :expected nil}])

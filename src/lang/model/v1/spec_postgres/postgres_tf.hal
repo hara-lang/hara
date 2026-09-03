@@ -1,0 +1,121 @@
+(ns lang.model.v1.spec-postgres.postgres-tf)
+
+(def ^:dynamic *input-syms* nil)
+
+(defn pg-js-idx
+  "Drops the archived one-letter binding prefix and snake-cases a key."
+  [value]
+  (let [text (str value)
+        text (if (and (> (count text) 2)
+                      (= \- (str/char-at text 1)))
+               (str/slice text 2)
+               text)]
+    (str/snake-case text)))
+
+(defn pg-json-value
+  "Recursively converts one portable value to a JSONB constructor form."
+  [value]
+  (cond
+    (map? value)
+    (apply list 'jsonb-build-object
+           (mapcat (fn [entry]
+                     [(pg-json-value (first entry))
+                      (pg-json-value (second entry))])
+                   (sort-by (fn [entry] (str (first entry))) (seq value))))
+
+    (vector? value)
+    (apply list 'jsonb-build-array (map pg-json-value value))
+
+    (keyword? value)
+    (str/snake-case (name value))
+
+    (set? value)
+    (apply list 'jsonb-build-object
+           (mapcat
+            (fn [entry]
+              (cond
+                (keyword? entry)
+                [(str/snake-case (name entry)) nil]
+
+                (symbol? entry)
+                [(pg-js-idx entry) entry]
+
+                :else
+                (throw (ex :syntax {:value entry}
+                           :ex/message "Invalid PostgreSQL JSONB set entry"))))
+            (seq value)))
+
+    :else value))
+
+(defn pg-tf-js
+  "Converts portable maps, vectors, sets, and scalar values to JSONB forms."
+  [form]
+  (let [value (second form)]
+    (cond (string? value) (str "\"" value "\"")
+          (number? value) (str value)
+          :else (pg-json-value value))))
+
+(defn pg-tf-free-data
+  "Wraps free data in the archived quoted JSONB shape."
+  [form]
+  (list 'quote (list (list 'quote (vec (second form))))))
+
+(defn pg-tf-free-vec
+  "Wraps a free vector in the archived quoted shape."
+  [form]
+  (list 'quote (vec (second form))))
+
+(defn pg-tf-for
+  "Creates the archived PostgreSQL FOR loop form."
+  [form]
+  (let [args (second form)
+        body (drop 2 form)]
+    (vec (concat [:FOR] args [:LOOP \\]
+                 [(list \| (apply list 'do body))]
+                 [\\ :END-LOOP \;]))))
+
+(defn pg-tf-foreach
+  "Creates the archived PostgreSQL FOREACH loop form."
+  [form]
+  (let [args (second form)
+        body (drop 2 form)]
+    (vec (concat [:FOREACH] args [:LOOP \\]
+                 [(list \| (apply list 'do body))]
+                 [\\ :END-LOOP \;]))))
+
+(defn pg-tf-loop
+  "Creates the archived PostgreSQL LOOP form."
+  [form]
+  (let [body (drop 1 form)]
+    [:LOOP \\ (list \| (apply list 'do body)) \\ :END-LOOP \;]))
+
+(defn pg-tf-throw
+  "Creates the archived JSONB-backed PostgreSQL exception form."
+  [form]
+  (let [data (second form)
+        tag (nth form 2)]
+    [:raise-exception
+     :using (list 'quote
+                  [[:detail := (list :text (list '% data))]
+                   [:message := (str tag)]])]))
+
+(defn pg-tf-error
+  "Creates a standardized PostgreSQL error transform."
+  [form]
+  (let [data-value (if (> (count form) 1) (second form) nil)
+        tag (if (> (count form) 2) (nth form 2) nil)
+        data (if (map? data-value) data-value {:value data-value})]
+    (pg-tf-throw [nil (merge {:status "error"} data) tag])))
+
+(defn pg-tf-assert
+  "Creates a PostgreSQL assertion transform."
+  [form]
+  (let [check (second form)
+        tag-data (nth form 2)
+        tag (first tag-data)
+        data (second tag-data)
+        payload (if (map? data)
+                  (merge {:tag tag} data)
+                  {:tag tag :data data})]
+    (list 'if [:NOT (list 'quote (list check))]
+          (pg-tf-error [nil payload tag]))))

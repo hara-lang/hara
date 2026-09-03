@@ -1,0 +1,124 @@
+(ns std.fs-test
+  (:require [std.fs :as fs]
+            [std.fs.path :as path]))
+
+(defn with-temp-directory
+  [function]
+  (let [root (deref (File/temp-directory "." {:prefix "std-fs-test-"}))]
+    (try
+      (function root)
+      (finally
+        (fs/delete root {:recursive? true :missing-ok? true})))))
+
+^{:refer std.fs/stat}
+(Test/check
+ [{:name "returns native metadata for an existing path"
+   :test (fn [] (with-temp-directory
+                 (fn [root] (:type (fs/stat root)))))
+   :expected :directory}])
+
+^{:refer std.fs/exists?}
+(Test/check
+ [{:name "distinguishes existing and absent paths"
+   :test (fn [] (with-temp-directory
+                 (fn [root] [(fs/exists? root)
+                             (fs/exists? (path/join root "missing"))])))
+   :expected [true false]}])
+
+^{:refer std.fs/write-bytes}
+(Test/check
+ [{:name "writes bytes and returns the target path"
+   :test (fn [] (with-temp-directory
+                 (fn [root]
+                   (let [target (path/join root "demo.txt")]
+                     [(str/ends-with?
+                       (fs/write-bytes target (String/encode-utf8 "hello")
+                                       {:parents? true :mode :replace})
+                       "demo.txt")
+                      (fs/exists? target)]))))
+   :expected [true true]}])
+
+^{:refer std.fs/read-bytes}
+(Test/check
+ [{:name "reads the bytes written by the filesystem boundary"
+   :test (fn [] (with-temp-directory
+                 (fn [root]
+                   (let [target (path/join root "demo.txt")]
+                     (fs/write-bytes target (String/encode-utf8 "hello")
+                                     {:parents? true :mode :replace})
+                     (String/decode-utf8 (fs/read-bytes target))))))
+   :expected "hello"}])
+
+^{:refer std.fs/create-directory}
+(Test/check
+ [{:name "creates a nested directory"
+   :test (fn [] (with-temp-directory
+                 (fn [root]
+                   (let [target (path/join root "nested" "child")]
+                     [(str/ends-with?
+                       (fs/create-directory target {:parents? true})
+                       "nested/child")
+                      (fs/exists? target)]))))
+   :expected [true true]}])
+
+^{:refer std.fs/mkdir}
+(Test/check
+ [{:name "publishes mkdir as the directory creation alias"
+   :test (fn [] (= fs/create-directory fs/mkdir))
+   :expected true}])
+
+^{:refer std.fs/temp-file}
+(Test/check
+ [{:name "creates a temporary file below a directory"
+   :test (fn [] (with-temp-directory
+                 (fn [root]
+                   (let [file (fs/temp-file root {:prefix "file-"})]
+                     [(fs/exists? file)
+                      (:type (fs/stat file))]))))
+   :expected [true :file]}])
+
+^{:refer std.fs/temp-directory}
+(Test/check
+ [{:name "creates a temporary directory below a directory"
+   :test (fn [] (with-temp-directory
+                 (fn [root]
+                   (let [directory (fs/temp-directory root {:prefix "directory-"})]
+                     [(fs/exists? directory)
+                      (:type (fs/stat directory))]))))
+   :expected [true :directory]}])
+
+^{:refer std.fs/delete}
+(Test/check
+ [{:name "deletes a file and accepts repeated missing cleanup"
+   :test (fn [] (with-temp-directory
+                 (fn [root]
+                   (let [target (path/join root "demo.txt")]
+                     (fs/write-bytes target (String/encode-utf8 "hello")
+                                     {:parents? true :mode :replace})
+                     (fs/delete target)
+                      [(fs/exists? target)
+                      (do (fs/delete target {:missing-ok? true})
+                          (fs/exists? target))]))))
+   :expected [false false]}
+  {:name "deletes nested files and directories in postorder"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "std-fs-delete-"}))
+                      target (path/join root "nested" "demo.txt")]
+                  (fs/write-bytes target
+                                  (String/encode-utf8 "hello")
+                                  {:parents? true :mode :replace})
+                  (let [deleted (fs/delete root {:recursive? true})]
+                    [(count deleted) (fs/exists? root)])))
+   :expected [3 false]}])
+
+^{:refer std.fs/select}
+(Test/check
+ [{:name "selects walked entries using entry metadata"
+   :test (fn [] (with-temp-directory
+                 (fn [root]
+                   (let [target (path/join root "demo.txt")]
+                     (fs/write-bytes target (String/encode-utf8 "hello")
+                                     {:parents? true :mode :replace})
+                     (vec (map :name
+                               (fs/select root
+                                          (fn [entry] (= :file (:type entry))))))))))
+   :expected ["demo.txt"]}])

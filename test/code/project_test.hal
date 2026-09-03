@@ -1,0 +1,247 @@
+(ns code.project-test
+  (:require [code.project :as project]))
+
+(def fixture-project
+  {:project/root (OS/cwd)
+   :project/source-paths ["src"]
+   :project/test-paths ["test"]})
+
+^{:refer code.project/project-options}
+(Test/check
+ [{:name "adds qualified and unqualified project aliases"
+   :test (fn [] (select-keys (project/project-options {:root "/project"
+                                                        :source-paths ["source"]
+                                                        :test-paths ["checks"]})
+                             [:root :source-paths :test-paths
+                              :project/root :project/source-paths
+                              :project/test-paths]))
+   :expected {:root "/project"
+              :source-paths ["source"]
+              :test-paths ["checks"]
+              :project/root "/project"
+              :project/source-paths ["source"]
+              :project/test-paths ["checks"]}}])
+
+^{:refer code.project/project-root}
+(Test/check
+ [{:name "returns the normalized project root key"
+   :test (fn [] (project/project-root {:root "/project"}))
+   :expected "/project"}])
+
+^{:refer code.project/project-file}
+(Test/check
+ [{:name "locates project.edn below a root"
+   :test (fn [] (project/project-file "/project"))
+   :expected "/project/project.edn"}])
+
+^{:refer code.project/read-text}
+(Test/check
+ [{:name "reads an existing UTF-8 source file"
+   :test (fn [] (str/includes? (project/read-text "project.edn") ":hara/type"))
+   :expected true}])
+
+^{:refer code.project/read-project}
+(Test/check
+ [{:name "reads project.edn and attaches its root"
+   :test (fn [] (select-keys (project/read-project (OS/cwd))
+                             [:project/root :project/source-paths
+                              :project/test-paths]))
+   :expected {:project/root (OS/cwd)
+              :project/source-paths ["src" "src-lang"]
+              :project/test-paths ["test" "test-lang"]}}])
+
+^{:refer code.project/project-directory}
+(Test/check
+ [{:name "normalizes a directory and resolves a file to its parent"
+   :test (fn [] [(project/project-directory (OS/cwd))
+                 (project/project-directory (project/project-file (OS/cwd)))])
+   :expected [(OS/cwd) (OS/cwd)] }])
+
+^{:refer code.project/discover}
+(Test/check
+ [{:name "discovers the nearest project manifest"
+   :test (fn [] (:project/root (project/discover (OS/cwd))))
+   :expected (OS/cwd)}])
+
+^{:refer code.project/namespace-stem}
+(Test/check
+ [{:name "converts namespace separators and hyphens to path spelling"
+   :test (fn [] (project/namespace-stem 'demo-app.core))
+   :expected "demo_app/core"}])
+
+^{:refer code.project/path-namespace}
+(Test/check
+ [{:name "converts HAL paths back into namespace spelling"
+   :test (fn [] (project/path-namespace "demo_app/core.hal"))
+   :expected 'demo-app.core}])
+
+^{:refer code.project/source-namespace}
+(Test/check
+ [{:name "removes the configured test suffix"
+   :test (fn [] [(project/source-namespace fixture-project 'demo.core-test)
+                 (project/source-namespace fixture-project 'demo.core)])
+   :expected ['demo.core 'demo.core]}])
+
+^{:refer code.project/test-namespace}
+(Test/check
+ [{:name "adds the configured test suffix exactly once"
+   :test (fn [] [(project/test-namespace fixture-project 'demo.core)
+                 (project/test-namespace fixture-project 'demo.core-test)])
+   :expected ['demo.core-test 'demo.core-test]}])
+
+^{:refer code.project/project-root-path}
+(Test/check
+ [{:name "resolves relative paths below the project root"
+   :test (fn [] [(project/project-root-path {:root "/project"} "src/demo.hal")
+                 (project/project-root-path {:root "/project"} "/other/demo.hal")])
+   :expected ["/project/src/demo.hal" "/other/demo.hal"]}])
+
+^{:refer code.project/normalized-path}
+(Test/check
+ [{:name "normalizes path separators"
+   :test (fn [] (project/normalized-path "src\\demo\\main.hal"))
+   :expected "src/demo/main.hal"}])
+
+^{:refer code.project/path-under-root?}
+(Test/check
+ [{:name "respects path component boundaries"
+   :test (fn [] [(project/path-under-root? "/project" "/project")
+                 (project/path-under-root? "/project" "/project/src/main.hal")
+                 (project/path-under-root? "/project" "/project-next/main.hal")])
+   :expected [true true false]}])
+
+^{:refer code.project/matching-root}
+(Test/check
+ [{:name "selects the most specific matching root"
+   :test (fn [] (project/matching-root
+                 {:root "/project"}
+                 "/project/src-lang/demo.hal"
+                 ["src" "src-lang"]))
+   :expected "src-lang"}])
+
+^{:refer code.project/path-relative-to-root}
+(Test/check
+ [{:name "returns a root-relative path and nil outside it"
+   :test (fn [] [(project/path-relative-to-root
+                  {:root "/project"} "/project/src/demo.hal" "src")
+                 (project/path-relative-to-root
+                  {:root "/project"} "/other/demo.hal" "src")])
+   :expected ["demo.hal" nil]}])
+
+^{:refer code.project/project-relative-path}
+(Test/check
+ [{:name "returns paths relative to the project root"
+   :test (fn [] [(project/project-relative-path
+                  {:root "/project"} "/project/src/demo.hal")
+                 (project/project-relative-path
+                  {:root "/project"} "/other/demo.hal")])
+   :expected ["src/demo.hal" "/other/demo.hal"]}])
+
+^{:refer code.project/test-root}
+(Test/check
+ [{:name "maps source roots to corresponding test roots"
+   :test (fn [] (project/test-root
+                 {:root "/project"
+                  :source-paths ["src" "src-lang"]
+                  :test-paths ["test" "test-lang"]}
+                 "/project/src-lang/demo.hal"))
+   :expected "test-lang"}])
+
+^{:refer code.project/test-file-name}
+(Test/check
+ [{:name "maps HAL source names to test names"
+   :test (fn [] [(project/test-file-name "demo/core.hal")
+                 (project/test-file-name "demo/core_test.hal")])
+   :expected ["demo/core_test.hal" "demo/core_test.hal"]}])
+
+^{:refer code.project/test-path}
+(Test/check
+ [{:name "maps a source path through its corresponding test root"
+   :test (fn [] (project/test-path
+                 {:root "/project"
+                  :source-paths ["src" "src-lang"]
+                  :test-paths ["test" "test-lang"]}
+                 "/project/src-lang/demo/core.hal"))
+   :expected "/project/test-lang/demo/core_test.hal"}])
+
+^{:refer code.project/file-type}
+(Test/check
+ [{:name "classifies source and test roots"
+   :test (fn [] [(project/file-type fixture-project "/project/src/demo.hal")
+                 (project/file-type fixture-project "/project/test/demo_test.hal")])
+   :expected [:source :test]}])
+
+^{:refer code.project/read-forms}
+(Test/check
+ [{:name "reads a HAL file as a sequence of forms"
+   :test (fn [] (let [forms (project/read-forms "src/code/project.hal")]
+                 [(vector? forms) (first (first forms))]))
+   :expected [true 'ns]}])
+
+^{:refer code.project/namespace-from-forms}
+(Test/check
+ [{:name "finds ns and ns+ declarations while ignoring preceding forms"
+   :test (fn [] [(project/namespace-from-forms
+                  ['(comment ignored) '(ns demo.core)])
+                 (project/namespace-from-forms ['(ns+ demo.ext)])
+                 (project/namespace-from-forms ['(def value 1)])])
+   :expected ["demo.core" "demo.ext" nil]}])
+
+^{:refer code.project/namespace-from-path}
+(Test/check
+ [{:name "uses a declared namespace and a relative fallback"
+   :test (fn [] [(project/namespace-from-path "src/code/project.hal" "code/project.hal")
+                 (project/namespace-from-path "missing.hal" "demo/missing.hal")])
+   :expected ['code.project 'demo.missing]}])
+
+^{:refer code.project/namespace-from-source}
+(Test/check
+ [{:name "parses source text and falls back to its relative path"
+   :test (fn [] [(project/namespace-from-source "(ns demo.core)" "demo/core.hal")
+                 (project/namespace-from-source "(def value 1)" "demo/value.hal")])
+   :expected ['demo.core 'demo.value]}])
+
+^{:refer code.project/files-in}
+(Test/check
+ [{:name "walks only HAL files and supports suffix filtering"
+   :test (fn [] (let [files (project/files-in
+                             {:root (OS/cwd)} ["src/code"] ".hal")]
+                 [(empty? files)
+                  (every? (fn [path] (str/ends-with? path ".hal")) files)]))
+   :expected [false true]}])
+
+^{:refer code.project/project-code-paths}
+(Test/check
+ [{:name "combines configured source and test roots deterministically"
+   :test (fn [] (let [files (project/project-code-paths
+                             {:root (OS/cwd)
+                              :source-paths ["src/code"]
+                              :test-paths []})]
+                 [(empty? files)
+                  (= files (vec (sort-by str files)))
+                  (every? (fn [path] (str/ends-with? path ".hal")) files)]))
+   :expected [false true true]}])
+
+^{:refer code.project/project-file-record}
+(Test/check
+ [{:name "records a source file with declared namespace and source"
+   :test (fn [] (select-keys
+                 (project/project-file-record
+                  {:root (OS/cwd) :source-paths ["src"] :test-paths ["test"]}
+                  "src/code/project.hal")
+                 [:relative-path :namespace :type]))
+   :expected {:relative-path "src/code/project.hal"
+              :namespace 'code.project
+              :type :source}}])
+
+^{:refer code.project/project-file-records}
+(Test/check
+ [{:name "returns deterministic records for configured code roots"
+   :test (fn [] (let [records (project/project-file-records
+                               {:root (OS/cwd)
+                                :source-paths ["src/code"]
+                                :test-paths []})]
+                 [(empty? records)
+                  (= (vec (sort-by :path records)) records)
+                  (every? (fn [record] (has? record :namespace)) records)]))
+   :expected [false true true]}])

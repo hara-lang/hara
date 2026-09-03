@@ -1,0 +1,73 @@
+(ns tool.cli.template-test
+  (:require [tool.cli.template :as template]))
+
+^{:refer tool.cli.template/template-defaults}
+(Test/check
+ [{:name "merges the default profile with a selected profile"
+   :test (fn [] (try
+                 (template/install-defaults :demo {:format :edn :color false})
+                 [(template/template-defaults :default)
+                  (template/template-defaults :demo)]
+                 (finally (template/uninstall-defaults :demo))))
+   :expected [{} {:format :edn :color false}]}])
+
+^{:refer tool.cli.template/install-defaults}
+(Test/check
+ [{:name "installs and returns a template profile"
+   :test (fn [] (try
+                 (template/install-defaults :fixture {:format :json})
+                 (template/template-defaults :fixture)
+                 (finally (template/uninstall-defaults :fixture))))
+   :expected {:format :json}}])
+
+^{:refer tool.cli.template/uninstall-defaults}
+(Test/check
+ [{:name "removes a selected template profile"
+   :test (fn [] (try
+                 (template/install-defaults :fixture {:format :json})
+                 (template/uninstall-defaults :fixture)
+                 (template/template-defaults :fixture)
+                 (finally (template/uninstall-defaults :fixture))))
+   :expected {}}])
+
+^{:refer tool.cli.template/normalise-definition}
+(Test/check
+ [{:name "adds schema and version to a valid definition"
+   :test (fn [] (select-keys
+                 (template/normalise-definition
+                  {:id :fixture
+                   :main {:fn (fn [value] value)}})
+                 [:id :schema :version]))
+   :expected {:id :fixture
+              :schema "tool.cli.template/0-alpha"
+              :version 1}}])
+
+^{:refer tool.cli.template/invoke-main}
+(Test/check
+ [{:name "invokes one and two argument CLI mains"
+   :test (fn [] [(template/invoke-main
+                  {:main {:fn (fn [value] (* value 2)) :argcount 1}}
+                  3 {})
+                 (template/invoke-main
+                  {:main {:fn (fn [value context] [value context]) :argcount 2}}
+                  :value {:runtime :demo})])
+   :expected [6 [:value {:runtime :demo}]]}])
+
+^{:refer tool.cli.template/handler}
+(Test/check
+ [{:name "creates a callable handler from a definition"
+   :test (fn [] (let [handler (template/handler
+                               {:id :fixture
+                                :main {:fn (fn [request] (:value request))}})]
+                 [(template/handler? handler)
+                  (handler {:value 7})]))
+   :expected [true 7]}])
+
+^{:refer tool.cli.template/handler?}
+(Test/check
+ [{:name "checks the template schema metadata"
+   :test (fn [] [(template/handler?
+                  (template/handler {:id :fixture
+                                     :main {:fn identity}}))
+                 (template/handler? identity)])
+   :expected [true false]}])

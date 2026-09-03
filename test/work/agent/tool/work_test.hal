@@ -1,0 +1,125 @@
+(ns work.agent.tool.work-test
+  (:require [work.core :as work]
+            [work.agent :as agent]
+            [work.agent.tool :as tool]
+            [work.agent.tool.work :as tool-work]))
+
+(def pure-tool
+  (agent/tool
+   "echo"
+   "Echoes arguments."
+   {:type "object"}
+   (fn [arguments] arguments)))
+
+(def effect-tool
+  (agent/tool
+   "publish"
+   "Publishes arguments through Work."
+   {:type "object"}
+   (fn [arguments]
+     (work/bundle
+      (Work/step "tool/publish")
+      {"tool/publish" (fn [input] {:published (get input "value")})}))
+   {:effect :external}))
+
+^{:refer work.agent.tool.work/call-id}
+(Test/check
+ [{:name "creates stable target names from a call id"
+   :test (fn [] (tool-work/call-id {:call/id "one"} "result"))
+   :expected "work.agent.tool/one/result"}])
+
+^{:refer work.agent.tool.work/successful-result}
+(Test/check
+ [{:name "wraps a Work output as a provider tool result"
+   :test (fn []
+           (tool-work/successful-result
+            {:call/id "one" :tool/name "publish"}
+            7))
+   :expected {:call/id "one" :tool/name "publish" :tool/status :ok :tool/value 7}}])
+
+^{:refer work.agent.tool.work/unknown-call-work}
+(Test/check
+ [{:name "lowers unknown calls to a runnable Work bundle"
+   :test (fn []
+           (let [bundle (tool-work/unknown-call-work
+                         {:call/id "one" :tool/name "missing" :call/arguments {}})]
+             [(work/bundle? bundle)
+              (get-in (deref (work/evaluate bundle nil)) [:tool/error :code])]))
+   :expected [true :tool/unknown]}])
+
+^{:refer work.agent.tool.work/pure-call-work}
+(Test/check
+ [{:name "uses decoded call arguments for pure tools"
+   :test (fn []
+           (let [call {:call/id "one" :tool/name "echo" :call/arguments {"value" 7}}
+                 bundle (tool-work/pure-call-work pure-tool call)]
+             (deref (work/evaluate bundle :ambient))))
+   :expected {:call/id "one" :tool/name "echo" :tool/status :ok :tool/value {"value" 7}}}])
+
+^{:refer work.agent.tool.work/effect-work}
+(Test/check
+ [{:name "accepts an effectful factory only when it returns a Work bundle"
+   :test (fn []
+           (work/bundle?
+            (tool-work/effect-work
+             effect-tool
+             {:call/id "one" :tool/name "publish" :call/arguments {"value" 7}})))
+   :expected true}])
+
+^{:refer work.agent.tool.work/effect-work}
+(Test/check
+ [{:name "rejects effect factories that return ordinary values"
+   :test (fn []
+           (try
+             (tool-work/effect-work
+              (agent/tool
+               "bad"
+               "Returns a value."
+               {:type "object"}
+               (fn [arguments] {:not :work})
+               {:effect :external})
+              {:call/id "bad-1" :tool/name "bad" :call/arguments {}})
+             :not-rejected
+             (catch Throwable error
+               (:work/error (ex-data error)))))
+   :expected :work/agent-tool-not-work}])
+
+^{:refer work.agent.tool.work/effect-call-work}
+(Test/check
+ [{:name "passes decoded arguments through effect Work and wraps the result"
+   :test (fn []
+           (deref
+            (work/evaluate
+             (tool-work/effect-call-work
+              effect-tool
+              {:call/id "one" :tool/name "publish" :call/arguments {"value" 7}})
+             nil)))
+   :expected {:call/id "one"
+              :tool/name "publish"
+              :tool/status :ok
+              :tool/value {:published 7}}}])
+
+^{:refer work.agent.tool.work/call-work}
+(Test/check
+ [{:name "selects the pure lowering for a pure tool"
+   :test (fn []
+           (let [bundle (tool-work/call-work
+                         (tool/index [pure-tool])
+                         {:call/id "one" :tool/name "echo" :call/arguments {}})]
+             (deref (work/evaluate bundle nil))))
+   :expected {:call/id "one" :tool/name "echo" :tool/status :ok :tool/value {}}}])
+
+^{:refer work.agent.tool.work/call-works}
+(Test/check
+ [{:name "lowers calls in provider order"
+   :test (fn []
+           (vec
+            (map
+             (fn [bundle]
+               (deref (work/evaluate bundle nil)))
+             (tool-work/call-works
+              (tool/index [pure-tool])
+              [{:call/id "one" :tool/name "echo" :call/arguments {}}
+               {:call/id "two" :tool/name "echo" :call/arguments {}}]))))
+   :expected [{:call/id "one" :tool/name "echo" :tool/status :ok :tool/value {}}
+              {:call/id "two" :tool/name "echo" :tool/status :ok :tool/value {}}]}])

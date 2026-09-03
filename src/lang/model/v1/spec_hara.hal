@@ -1,0 +1,49 @@
+(ns lang.model.v1.spec-hara
+  (:require [lang.common.book :as book]
+            [lang.common.compiler :as common-compiler]
+            [lang.common.grammar-api :as grammar]
+            [lang.common.registry :as registry]
+            [lang.model.v1.spec-hara.emit :as hara-emit]
+            [lang.model.v1.spec-hara.hara-grammar :as model]
+            [lang.model.v1.spec-xtalk :as xtalk]
+            [lang.protocol.compiler :as protocol]))
+
+(def +language+ :hara)
+(def +tag+ :hara)
+(def +version+ 1)
+(def +grammar-version+ model/+grammar-version+)
+(def +grammar+ model/+grammar+)
+(defn install-source [catalog source]
+  (if (registry/find catalog (grammar/source-coordinate source)) catalog
+      (registry/install catalog source)))
+(defn install [catalog] (install-source (xtalk/install catalog) +grammar+))
+(defn catalog [] (install (registry/registry)))
+(defn select
+  ([] (select (catalog)))
+  ([catalog] (registry/resolve catalog {:grammar/id +tag+ :grammar/version +grammar-version+})))
+(def +selection+ (select))
+
+(defstruct HaraEmitter [])
+(extend-type HaraEmitter protocol/IEmitter
+  (emit-form [emitter rewritten selected context]
+    (hara-emit/emit-form rewritten
+                         (assoc context
+                                :lang/grammar-coordinate (:coordinate selected)
+                                :lang/grammar-fingerprint (:fingerprint selected)))))
+(defn emitter [] (lang.model.v1.spec-hara/HaraEmitter))
+(defn compiler [] (common-compiler/compiler {:emitter (emitter)}))
+(defn compile-result
+  ([form] (compile-result form {}))
+  ([form context]
+   (common-compiler/compile (compiler) form +selection+ (assoc context :lang :hara))))
+(defn compile
+  ([form] (compile form {}))
+  ([form context] (:output (compile-result form context))))
+(defn emit
+  ([form] (emit form {}))
+  ([form context] (hara-emit/emit-form form context)))
+(def +book+ (book/book {:lang +language+ :parent :xtalk :version +version+
+                        :coordinate (:coordinate +selection+)
+                        :grammar (:grammar +selection+) :selection +selection+
+                        :compiler compiler}))
+(def +init+ +book+)

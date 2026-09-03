@@ -1,0 +1,62 @@
+(ns lang.model.v1.spec-postgres.postgres-form-vec-test
+  (:require [lang.common.emit :as emit]
+            [lang.model.v1.spec-postgres.postgres-form-vec :as form]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/query-symbol}
+(Test/check [{:name "normalizes keyword query symbols"
+              :test (fn [] [(form/query-symbol :user-id)
+                            (form/query-symbol "user-id")])
+              :expected [#{"user_id"} #{"user-id"}]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/pg-section-query-pair}
+(Test/check [{:name "converts query operators and scalar values"
+              :test (fn [] [(form/pg-section-query-pair [:id [:neq 1]])
+                            (form/pg-section-query-pair [:name "sam"])])
+              :expected [[#{"id"} '(:- "!=") 1]
+                         [#{"name"} := (list '% "sam")]]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/emit-query-value}
+(Test/check [{:name "uses the active emitter for query values"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] (str "v:" value))]
+                             (form/emit-query-value 1 {} {})))
+              :expected "v:1"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/query-pair-string}
+(Test/check [{:name "renders quoted predicate keys"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] (str value))]
+                             (form/query-pair-string [#{"id"} 1] {} {} true)))
+              :expected "\"id\" = 1"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/query-groups}
+(Test/check [{:name "splits query groups on a logical operator"
+              :test (fn [] (form/query-groups ["a" "b" :OR "c" "d"] "OR"))
+              :expected [["a" "b"] ["c" "d"]]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/pg-section-query-set-and}
+(Test/check [{:name "renders AND query predicates"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] (str value))]
+                             (form/pg-section-query-set-and [:a 1 :b 2] {} {})))
+              :expected "(a = 1 AND b = 2)"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/pg-section-query-set}
+(Test/check [{:name "renders OR query predicates"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] (str value))]
+                             (form/pg-section-query-set [:a 1 :OR :b 2] {} {})))
+              :expected "(a = 1) OR (b = 2)"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/pg-section-query-map}
+(Test/check [{:name "renders quoted map predicates"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] (str value))]
+                             (form/pg-section-query-map {:a 1 :b 2} {} {})))
+              :expected "\"a\" = 1 AND \"b\" = 2"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/pg-section-fn}
+(Test/check [{:name "renders section keywords"
+              :test (fn [] (form/pg-section-fn :if-not-exists {} {}))
+              :expected "IF NOT EXISTS"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-vec/pg-section}
+(Test/check [{:name "joins complete section items"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] (str value))]
+                             (form/pg-section [:select 1 :from :table] {} {})))
+              :expected "SELECT 1 FROM TABLE"}])

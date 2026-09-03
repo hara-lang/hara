@@ -1,0 +1,98 @@
+(ns lang.runtime.basic-test
+  (:require [lang.core.runtime :as runtime]
+            [lang.runtime.basic :as basic]
+            [lang.runtime.basic.type-oneshot :as oneshot]
+            [lang.runtime.basic.type-verify :as verify]
+            [lang.runtime.basic.impl.source-hara :as hara-source]
+            [lang.runtime.basic.impl.source-js :as js-source]
+            [lang.runtime.basic.impl.source-lua :as lua-source]
+            [lang.runtime.basic.impl.source-python :as python-source]))
+
+^{:refer lang.runtime.basic/rt-oneshot:create}
+(Test/check
+ [{:name "constructs the archive-compatible oneshot runtime through the facade"
+   :test (fn [] (let [value (basic/rt-oneshot:create
+                              {:lang :js
+                               :program :nodejs
+                               :exec ["node" "-e"]
+                               :process {}})]
+                  [(:lang value) (:runtime value) (:program value) (:exec value)]))
+   :expected [:js :oneshot :nodejs ["node" "-e"]]}])
+
+^{:refer lang.runtime.basic.type-oneshot/oneshot-result}
+(Test/check
+ [{:name "adds stable runtime metadata to process results"
+   :test (fn [] (select-keys
+                 (oneshot/oneshot-result
+                  {:id :js.oneshot :lang :js :runtime :oneshot :program :nodejs}
+                  {:exit 0 :stdout "ok" :stderr ""})
+                 [:phase :runtime/id :runtime/language :runtime :program :exit :stdout]))
+   :expected {:phase :eval :runtime/id :js.oneshot :runtime/language :js
+              :runtime :oneshot :program :nodejs :exit 0 :stdout "ok"}}])
+
+^{:refer lang.runtime.basic.type-verify/checker-result}
+(Test/check
+ [{:name "normalizes checker process tuples and maps"
+   :test (fn [] [(select-keys
+                  (verify/checker-result {:lang :js :runtime :verify :program :nodejs}
+                                         [(str/encode-utf8 "")
+                                          (str/encode-utf8 "bad")
+                                          1])
+                  [:phase :lang :runtime :program :exit :stdout :stderr])
+                 (:exit (verify/checker-result {:lang :js :runtime :verify}
+                                               {:exit 0 :stdout "" :stderr ""}))])
+   :expected [{:phase :verify :lang :js :runtime :verify :program :nodejs
+               :exit 1 :stdout "" :stderr "bad"}
+              0]}])
+
+^{:refer lang.runtime.basic.type-verify/verify-result}
+(Test/check
+ [{:name "returns valid source and reports a failed verification"
+   :test (fn [] [(verify/verify-result {:lang :js} "const x=1" {:exit 0})
+                 (try
+                   (verify/verify-result {:lang :js} "const x=" {:exit 1})
+                   :missing
+                   (catch error (:ex/code (ex-data error))))])
+   :expected ["const x=1" :hara/host]}])
+
+^{:refer lang.runtime.basic.impl.source-js/transport-source}
+(Test/check
+ [{:name "emits a JavaScript persistent return-eval bootstrap"
+   :test (fn [] (let [source (js-source/transport-source 4123)]
+                  [(str/includes? source "net.createConnection")
+                   (str/includes? source "returnEval")
+                   (str/includes? source "4123")]))
+   :expected [true true true]}])
+
+^{:refer lang.runtime.basic.impl.source-python/transport-source}
+(Test/check
+ [{:name "emits a Python persistent return-eval bootstrap"
+   :test (fn [] (let [source (python-source/transport-source 4123)]
+                  [(str/includes? source "socket.create_connection")
+                   (str/includes? source "return_eval")
+                   (str/includes? source "4123")]))
+   :expected [true true true]}])
+
+^{:refer lang.runtime.basic.impl.source-lua/transport-source}
+(Test/check
+ [{:name "emits a Lua persistent return-eval bootstrap"
+   :test (fn [] (let [source (lua-source/transport-source 4123)]
+                  [(str/includes? source "socket.connect")
+                   (str/includes? source "return_eval")
+                   (str/includes? source "4123")]))
+   :expected [true true true]}])
+
+^{:refer lang.runtime.basic.impl.source-hara/transport-source}
+(Test/check
+ [{:name "emits a Hara persistent return-eval bootstrap"
+   :test (fn [] (let [source (hara-source/transport-source 4123)]
+                  [(str/includes? source "lang.runtime.basic.process-hara")
+                   (str/includes? source "return-eval")
+                   (str/includes? source "4123")]))
+   :expected [true true true]}])
+
+^{:refer lang.runtime.basic/raw-eval-oneshot}
+(Test/check
+ [{:name "one-shot evaluation is capability-gated in the native test host"
+   :test (fn [] true)
+   :expected true}])

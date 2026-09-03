@@ -1,0 +1,60 @@
+(ns postgres.sample.scratch-v0-test
+  (:require [lang.core.compile :as compile]
+            [lang.core.script :as script]
+            [postgres.sample.scratch-v0 :as scratch]))
+
+^{:refer postgres.sample.scratch-v0/Log}
+(Test/check [{:name "registers the archived scratch-v0 table declaration"
+              :test (fn [] (let [entry (get-in (deref script/+modules+)
+                                                ['postgres.sample.scratch-v0 :code 'Log])]
+                             [(pointer? scratch/Log)
+                              (IPointer/ptr-context scratch/Log)
+                              (:op entry)
+                              (:static/public entry)]))
+              :expected [true :lang/postgres 'deftype true]}])
+
+^{:refer postgres.sample.scratch-v0/ping}
+(Test/check [{:name "compiles the archived scratch-v0 PostgreSQL module"
+              :test (fn [] (let [result (compile/compile-module
+                                        {:lang :postgres
+                                   :main 'postgres.sample.scratch-v0})
+                                   output (:output result)]
+                             [(empty? (:diagnostics result))
+                              (str/includes? output
+                                             "CREATE OR REPLACE FUNCTION \"scratch_v0\".ping")
+                              (str/includes? output "INSERT INTO \"scratch_v0\".\"Log\"")
+                              (str/includes? output "auth.uid()")
+                              (str/includes? output
+                                             "GRANT EXECUTE ON FUNCTION \"scratch_v0\".ping() TO anon,authenticated,service_role;")
+                              (str/includes? output
+                                             "GRANT SELECT ON TABLE \"scratch_v0\".\"Log\" TO authenticated;")]))
+              :expected [true true true true true true]}])
+
+^{:refer postgres.sample.scratch-v0/echo}
+(Test/check [{:name "registers the archived echo routine as a PostgreSQL function pointer"
+              :test (fn [] [(pointer? scratch/echo)
+                             (IPointer/ptr-context scratch/echo)])
+              :expected [true :lang/postgres]}])
+
+^{:refer postgres.sample.scratch-v0/log-append-public}
+(Test/check [{:name "retains MCP metadata on the public append routine"
+              :test (fn [] (get-in (deref script/+modules+)
+                                    ['postgres.sample.scratch-v0
+                                     :code 'log-append-public :api/meta :mcp :name]))
+              :expected "log_append_public"}])
+
+^{:refer postgres.sample.scratch-v0/log-append}
+(Test/check [{:name "registers the authenticated append routine as a PostgreSQL pointer"
+              :test (fn [] [(pointer? scratch/log-append)
+                             (IPointer/ptr-context scratch/log-append)])
+              :expected [true :lang/postgres]}])
+
+^{:refer postgres.sample.scratch-v0/log-all}
+(Test/check [{:name "creates the archived select view declaration"
+              :test (fn [] (fn? scratch/log-all))
+              :expected true}])
+
+^{:refer postgres.sample.scratch-v0/log-default}
+(Test/check [{:name "creates the archived return view declaration"
+              :test (fn [] (fn? scratch/log-default))
+              :expected true}])

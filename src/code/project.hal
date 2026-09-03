@@ -1,0 +1,291 @@
+(ns code.project)
+
+(def ^{:public true} +defaults+
+  {:root "."
+   :source-paths ["src"]
+   :test-paths ["test"]
+   :extension ".hal"
+   :test-suffix "-test"})
+
+(defn ^{:public true} project-options
+  "Adds the unqualified project aliases used by portable project callers."
+  [project]
+  (let [project (or project {})
+        root (or (:project/root project) (:root project) ".")
+        source-paths (or (:project/source-paths project)
+                         (:source-paths project)
+                         (:source-paths +defaults+))
+        test-paths (or (:project/test-paths project)
+                       (:test-paths project)
+                       (:test-paths +defaults+))]
+    (merge +defaults+
+           project
+           {:root root
+            :source-paths source-paths
+            :test-paths test-paths
+            :project/root root
+            :project/source-paths source-paths
+            :project/test-paths test-paths})))
+
+(defn ^{:public true} project-root
+  [project]
+  (:project/root (project-options project)))
+
+(defn ^{:public true} read-text
+  [path]
+  (if (deref (File/exists? path))
+    (String/decode-utf8 (deref (File/read path)))
+    ""))
+
+(defn ^{:public true} project-file
+  [root]
+  (File/join root "project.edn"))
+
+(defn ^{:public true} read-project
+  "Reads project.edn and attaches its absolute project root."
+  [root]
+  (let [root (File/resolve (str root) "")
+        path (project-file root)]
+    (if (deref (File/exists? path))
+      (project-options
+       (assoc (Edn/read (read-text path)) :project/root root))
+      (throw (ex :not-found {:path path}
+                 :ex/message "Cannot find project.edn")))))
+
+(defn ^{:public true} project-directory
+  "Returns the directory represented by a project root or file path."
+  [start]
+  (let [start (File/resolve (str (or start (OS/cwd))) "")
+        stat (if (deref (File/exists? start))
+               (deref (File/stat start))
+               nil)]
+    (if (and stat (= :directory (:type stat)))
+      start
+      (or (File/parent start) start))))
+
+(defn ^{:public true} discover
+  "Loads the nearest project.edn from a root, file, or current directory."
+  [start]
+  (loop [current (project-directory start)]
+    (let [candidate (project-file current)]
+      (cond
+        (deref (File/exists? candidate))
+        (read-project current)
+
+        (nil? (File/parent current))
+        (throw (ex :not-found {:start start}
+                   :ex/message "Cannot discover project.edn"))
+
+        :else
+        (recur (File/parent current))))))
+
+(defn ^{:public true} namespace-stem
+  [namespace]
+  (str/replace (str/replace (str namespace) "." "/") "-" "_"))
+
+(defn ^{:public true} path-namespace
+  "Converts a project-relative HAL path into its namespace convention."
+  [path]
+  (let [path (str path)
+        without-extension (if (str/ends-with? path ".hal")
+                            (str/slice path 0 (- (str/length path) 4))
+                            path)]
+    (symbol (str/replace (str/replace without-extension "/" ".") "_" "-"))))
+
+(defn ^{:public true} source-namespace
+  [project namespace]
+  (let [value (str namespace)
+        suffix (:test-suffix (project-options project))]
+    (if (str/ends-with? value suffix)
+      (symbol (str/slice value 0 (- (str/length value) (str/length suffix))))
+      (symbol value))))
+
+(defn ^{:public true} test-namespace
+  [project namespace]
+  (let [value (str namespace)
+        suffix (:test-suffix (project-options project))]
+    (if (str/ends-with? value suffix)
+      (symbol value)
+      (symbol (str value suffix)))))
+
+(defn ^{:public true} project-root-path
+  [project relative]
+  (let [relative (str relative)]
+    (if (str/starts-with? relative "/")
+      relative
+      (File/resolve (project-root project) relative))))
+
+(defn ^{:public true} normalized-path
+  [path]
+  (str/replace (str path) "\\" "/"))
+
+(defn ^{:public true} path-under-root?
+  [root path]
+  (let [root (normalized-path root)
+        path (normalized-path path)]
+    (or (= root path)
+        (str/starts-with? path (str root "/")))))
+
+(defn ^{:public true} matching-root
+  [project path roots]
+  (let [path (project-root-path project path)]
+    (loop [remaining roots
+           selected nil]
+      (if (empty? remaining)
+        selected
+        (let [root (first remaining)
+              absolute (project-root-path project root)
+              better (and (path-under-root? absolute path)
+                          (or (nil? selected)
+                              (> (str/length absolute)
+                                 (str/length
+                                  (project-root-path project selected)))))]
+          (recur (rest remaining) (if better root selected)))))))
+
+(defn ^{:public true} path-relative-to-root
+  [project path root]
+  (let [path (project-root-path project path)
+        root-path (project-root-path project root)]
+    (if (not (path-under-root? root-path path))
+      nil
+      (if (= path root-path)
+        ""
+        (str/slice path (inc (str/length root-path)) (str/length path))))))
+
+(defn ^{:public true} project-relative-path
+  [project path]
+  (or (path-relative-to-root project path "")
+      (normalized-path (project-root-path project path))))
+
+(defn ^{:public true} test-root
+  [project path]
+  (let [project (project-options project)
+        source-roots (:project/source-paths project)
+        test-roots (:project/test-paths project)
+        current-test (matching-root project path test-roots)
+        source-root (matching-root project path source-roots)]
+    (if current-test
+      current-test
+      (if source-root
+        (let [index (loop [remaining source-roots index 0]
+                      (if (= source-root (first remaining))
+                        index
+                        (recur (rest remaining) (inc index))))]
+          (or (if (< index (count test-roots)) (nth test-roots index) nil)
+              (first test-roots)))
+        (first test-roots)))))
+
+(defn ^{:public true} test-file-name
+  [path]
+  (if (str/ends-with? path "_test.hal")
+    path
+    (if (str/ends-with? path ".hal")
+      (str (str/slice path 0 (- (str/length path) 4)) "_test.hal")
+      (str path "_test.hal"))))
+
+(defn ^{:public true} test-path
+  [project path]
+  (let [project (project-options project)
+        current-test (matching-root project path (:project/test-paths project))
+        source-root (matching-root project path (:project/source-paths project))]
+    (if current-test
+      (project-root-path project path)
+      (if source-root
+        (File/join
+         (project-root-path project (test-root project path))
+         (test-file-name (path-relative-to-root project path source-root)))
+        (test-file-name (project-root-path project path))))))
+
+(defn ^{:public true} file-type
+  [project path]
+  (if (or (matching-root project path (:project/test-paths (project-options project)))
+          (str/ends-with? (normalized-path path) "_test.hal"))
+    :test
+    :source))
+
+(defn ^{:public true} read-forms
+  [path]
+  (Edn/read (str "[" (read-text path) "]")))
+
+(defn ^{:public true} namespace-from-forms
+  [forms]
+  (loop [remaining forms]
+    (if (empty? remaining)
+      nil
+      (let [form (first remaining)]
+        (if (and (list? form)
+                 (or (= 'ns (first form)) (= 'ns+ (first form)))
+                 (< 1 (count form)))
+          (str (nth form 1))
+          (recur (rest remaining)))))))
+
+(defn ^{:public true} namespace-from-path
+  [path relative]
+  (try
+    (let [declared (namespace-from-forms (read-forms path))]
+      (if declared
+        (symbol declared)
+        (if relative (path-namespace relative) nil)))
+    (catch error
+      (if relative (path-namespace relative) nil))))
+
+(defn ^{:public true} namespace-from-source
+  [source relative]
+  (try
+    (let [declared (namespace-from-forms (Edn/read (str "[" source "]")))]
+      (if declared
+        (symbol declared)
+        (if relative (path-namespace relative) nil)))
+    (catch error
+      (if relative (path-namespace relative) nil))))
+
+(defn ^{:public true} files-in
+  ([project roots]
+   (files-in project roots nil))
+  ([project roots suffix]
+   (let [project (project-options project)
+         paths (vec
+                (mapcat
+                 (fn [root]
+                   (let [path (project-root-path project root)]
+                     (if (deref (File/exists? path))
+                       (deref (File/walk path))
+                       [])))
+                 roots))
+         paths (vec
+                (sort-by str
+                         (filter
+                          (fn [path]
+                            (and (str/ends-with? (normalized-path path) ".hal")
+                                 (not (str/includes? (normalized-path path) "/.#"))))
+                          paths)))]
+     (if suffix
+       (vec (filter (fn [path] (str/ends-with? path suffix)) paths))
+       paths))))
+
+(defn ^{:public true} project-code-paths
+  [project]
+  (let [project (project-options project)]
+    (files-in project
+              (vec (concat (:project/source-paths project)
+                           (:project/test-paths project))))))
+
+(defn ^{:public true} project-file-record
+  [project path]
+  (let [project (project-options project)
+        type (file-type project path)
+        roots (if (= :test type)
+                (:project/test-paths project)
+                (:project/source-paths project))
+        root (or (matching-root project path roots) (first roots))
+        relative (path-relative-to-root project path root)]
+    {:path (project-root-path project path)
+     :relative-path (project-relative-path project path)
+     :namespace (namespace-from-path (project-root-path project path) relative)
+     :type type
+     :source (read-text (project-root-path project path))}))
+
+(defn ^{:public true} project-file-records
+  [project]
+  (vec (map (fn [path] (project-file-record project path))
+            (project-code-paths project))))

@@ -1,10 +1,16 @@
 (ns lang.runtime.postgres.client
-  (:require [db.postgres.connection :as connection]
-            [lang.protocol.runtime :as runtime]
+  (:require [db.protocol :as protocol]
+            [db.postgres.connection :as connection]
+            [lang.core.compile :as compile]
+            [lang.core.registry :as registry]
+            [lang.core.script :as script]
             [std.lib.context.registry :as context]))
 
 (defstruct PostgresClient
   [id language runtime options connection state modules pointers notifications])
+
+(def +required-capabilities+ ["sql"])
+(def +notification-capability+ "notifications")
 
 (defn await
   "Returns a settled promise value or an already synchronous adapter value."
@@ -20,6 +26,35 @@
   "Removes runtime-local settings before opening a PostgreSQL connection."
   [client]
   (dissoc (:options client) :id :runtime :adapter :timeout))
+
+(defn provider-capabilities
+  "Reads the selected provider's advertised capabilities without retaining its handle."
+  [value]
+  (or (:capabilities (protocol/db-info value)) []))
+
+(defn missing-capabilities
+  "Returns required capabilities that are absent from a selected provider."
+  [value required]
+  (vec
+   (filter (fn [capability]
+             (nil? (some (fn [candidate] (= candidate capability))
+                         (provider-capabilities value))))
+           required)))
+
+(defn require-capabilities
+  "Returns a compatible provider value or raises a stable capability error."
+  [client value required]
+  (let [missing (missing-capabilities value required)]
+    (if (empty? missing)
+      value
+      (throw
+       (ex :database/unsupported-capability
+           {:id (:id client)
+            :provider (protocol/db-provider value)
+            :required (vec required)
+            :available (provider-capabilities value)
+            :missing missing}
+           :ex/message "PostgreSQL provider does not support the requested capability")))))
 
 (defn rt-create
   "Creates an unstarted PostgreSQL client runtime."
@@ -45,14 +80,18 @@
       client)
     (try
       (let [open (adapter client :open connection/open)
-            value (await (open (connection-options client)))]
+            value (require-capabilities
+                   client
+                   (await (open (connection-options client)))
+                   +required-capabilities+)]
         (reset! (:connection client) value)
         (reset! (:state client) {:status :started})
         client)
       (catch error
-        (reset! (:connection client) nil)
-        (reset! (:state client) {:status :created})
-        (throw error)))))
+        (do
+          (reset! (:connection client) nil)
+          (reset! (:state client) {:status :created})
+          (throw error))))))
 
 (defn stop-runtime
   "Closes every notification and the connection, restoring a stopped baseline."
@@ -82,7 +121,8 @@
         (if (nil? value)
           (throw (ex :database {:id (:id client)}
                      :ex/message "PostgreSQL runtime is not started"))
-          (let [listen (adapter client :listen connection/listen)
+          (let [value (require-capabilities client value [+notification-capability+])
+                listen (adapter client :listen connection/listen)
                 subscription (await (listen value config))]
             (swap! (:notifications client) assoc id subscription)
             subscription))))))
@@ -136,11 +176,166 @@
   [client source options]
   (promise/run (fn [] (raw-eval client source))))
 
-(extend-type PostgresClient runtime/IContextEval
+(defn postgres-book
+  "Returns the registered standalone PostgreSQL book and its lifecycle metadata."
+  []
+  (registry/registry-book :postgres :default nil))
+
+(defn lifecycle-hook
+  "Returns one BookMeta lifecycle function when PostgreSQL declares it."
+  [hook]
+  (get (:meta (postgres-book)) hook))
+
+(defn lifecycle-module
+  "Resolves a module id to its registered portable source module when available."
+  [module]
+  (if (map? module)
+    module
+    (let [loaded (if (symbol? module)
+                   (try (script/load-module module) (catch error module))
+                   module)]
+      (or (get (deref script/+modules+) loaded)
+          {:id module :lang :postgres :code {} :fragment {}}))))
+
+(defn lifecycle-module-id
+  "Returns the stable lifecycle identity for a source module or caller id."
+  [module]
+  (if (map? module) (or (:id module) module) module))
+
+(defn lifecycle-form
+  "Builds one BookMeta form against a module or pointer lifecycle target."
+  [hook target]
+  (let [function (lifecycle-hook hook)]
+    (if function (function target) nil)))
+
+(defn lifecycle-forms
+  "Normalizes one lifecycle form into executable units while preserving do composition."
+  [form]
+  (cond (nil? form) []
+        (and (list? form) (= 'do (first form))) (vec (rest form))
+        :else [form]))
+
+(defn compile-lifecycle-form
+  "Compiles a BookMeta form through the configured PostgreSQL grammar boundary."
+  [client module form]
+  (let [compile-form (get-in (:options client) [:adapter :compile-lifecycle])]
+    (if compile-form
+      (await (compile-form client module form))
+      (script/compile-form :postgres (:id module) form))))
+
+(defn lifecycle-eval
+  "Executes compiled lifecycle output, allowing an isolated adapter in tests."
+  [client source]
+  (let [evaluate (get-in (:options client) [:adapter :lifecycle-eval])]
+    (if evaluate
+      (await (evaluate client source))
+      (raw-eval client source))))
+
+(defn run-lifecycle-form
+  "Compiles then executes one lifecycle form, retaining the provider result."
+  [client module form]
+  (if (nil? form)
+    nil
+    (lifecycle-eval client (compile-lifecycle-form client module form))))
+
+(defn run-lifecycle-forms
+  "Executes a composed BookMeta lifecycle form in its declared order."
+  [client module form]
+  (vec
+   (map (fn [item]
+          (run-lifecycle-form client module item))
+        (lifecycle-forms form))))
+
+(defn remote-present?
+  "Normalizes provider existence responses without retaining local lifecycle state."
+  [value]
+  (cond (nil? value) false
+        (boolean? value) value
+        (vector? value) (if (= 1 (count value))
+                          (remote-present? (first value))
+                          (every? remote-present? value))
+        (map? value) (if (has? value :exists)
+                       (remote-present? (:exists value))
+                       false)
+        (number? value) (not (= 0 value))
+        :else true))
+
+(defn module-source?
+  "Returns true only for a module registered by the script source pipeline."
+  [module]
+  (and (symbol? (:id module))
+       (has? (deref script/+modules+) (:id module))))
+
+(defn compile-module-output
+  "Compiles one registered PostgreSQL module or delegates to an isolated adapter."
+  [client module]
+  (let [compile-module (get-in (:options client) [:adapter :compile-module])]
+    (if compile-module
+      (await (compile-module client module))
+      (let [result (compile/compile-module
+                    {:lang :postgres
+                     :main (:id module)
+                     :layout :module
+                     :lang/eval-literal
+                     (fn [form]
+                       (first (eval-in-ns (:id module) [form])))})]
+        (if (empty? (:diagnostics result))
+          (:output result)
+          (throw (ex :runtime/compile-failed
+                     {:id (:id client)
+                      :module (:id module)
+                      :diagnostics (:diagnostics result)}
+                     :ex/message "PostgreSQL module compilation failed")))))))
+
+(defn run-module-code
+  "Compiles and executes registered module code once its lifecycle setup has run."
+  [client module]
+  (if (module-source? module)
+    (let [output (compile-module-output client module)]
+      (if (empty? (str/trim output)) nil (lifecycle-eval client output)))
+    nil))
+
+(defn pointer-entry
+  "Resolves a pointer's embedded or registered PostgreSQL code entry."
+  [pointer]
+  (or (get pointer :entry)
+      (let [module (or (get pointer :module) (get pointer :namespace))
+            id (get pointer :id)]
+        (if (and module id)
+          (get-in (deref script/+modules+)
+                  [module :code (script/symbol-id id)])))))
+
+(defn lifecycle-pointer
+  "Supplies BookMeta with source entry metadata when a pointer can be resolved."
+  [pointer]
+  (or (pointer-entry pointer) pointer))
+
+(defn pointer-unsupported
+  "Creates the stable error used by PostgreSQL's intentionally unsupported pointer boundary."
+  [client operation pointer]
+  (ex :runtime/unsupported {:id (:id client)
+                            :status :unsupported
+                            :operation operation
+                            :pointer pointer}
+      :ex/message "PostgreSQL client does not support pointer evaluation"))
+
+(extend-type PostgresClient IContextEval
   (evaluate [client request options]
     (evaluate-async client request options))
   (evaluate-raw [client request options]
-    (evaluate-async client request options)))
+    (evaluate-async client request options))
+  (eval-ptr [client pointer arguments options]
+    (promise/run (fn [] (throw (pointer-unsupported client :eval-ptr pointer)))))
+  (eval-await-ptr [client pointer arguments options]
+    (await (IContextEval/eval-ptr client pointer arguments options)))
+  (tags-ptr [client pointer] [])
+  (deref-ptr [client pointer]
+    (throw (pointer-unsupported client :deref-ptr pointer)))
+  (display-ptr [client pointer] (Edn/write pointer))
+  (invoke-ptr [client pointer arguments]
+    (IContextEval/eval-await-ptr client pointer arguments {}))
+  (transform-in-ptr [client pointer arguments] arguments)
+  (transform-out-ptr [client pointer value] value))
 
 (extend-type PostgresClient IContext
   (call [client & arguments]
@@ -161,38 +356,76 @@
 
 (extend-type PostgresClient IContextLifeCycle
   (has-module? [client module]
-    (not (nil? (get (deref (:modules client)) module))))
+    (let [source (lifecycle-module module)
+          module-id (lifecycle-module-id source)
+          form (lifecycle-form :has-module source)]
+      (if form
+        (remote-present? (run-lifecycle-forms client source form))
+        (has? (deref (:modules client)) module-id))))
   (setup-module [client module]
-    (swap! (:modules client) conj module)
-    client)
+    (let [source (lifecycle-module module)
+          module-id (lifecycle-module-id source)]
+      (if (not (has? (deref (:modules client)) module-id))
+        (do
+          (run-lifecycle-forms client source (lifecycle-form :setup-module source))
+          (run-module-code client source)
+          (swap! (:modules client) conj module-id)))
+    client))
   (teardown-module [client module]
-    (swap! (:modules client) disj module)
+    (let [source (lifecycle-module module)
+          module-id (lifecycle-module-id source)]
+      (try
+        (run-lifecycle-forms client source (lifecycle-form :teardown-module source))
+        (finally
+          (swap! (:modules client) disj module-id))))
     client)
-  (has-pointer? [client pointer]
-    (not (nil? (get (deref (:pointers client)) pointer))))
-  (setup-pointer [client pointer]
-    (swap! (:pointers client) conj pointer)
+  (has-setup-ptr? [client pointer]
+    (let [target (lifecycle-pointer pointer)
+          form (lifecycle-form :has-ptr target)]
+      (if form
+        (remote-present? (run-lifecycle-forms client
+                                               (lifecycle-module
+                                                (or (:module target) (:namespace target)))
+                                               form))
+        false)))
+  (setup-ptr [client pointer]
+    (let [target (lifecycle-pointer pointer)
+          module (lifecycle-module (or (:module target) (:namespace target)))
+          form (lifecycle-form :setup-ptr target)]
+      (if (or (has? (deref (:pointers client)) pointer)
+              (IContextLifeCycle/has-setup-ptr? client pointer))
+        client
+        (if (nil? form)
+          (throw (pointer-unsupported client :setup-ptr pointer))
+          (do
+            (run-lifecycle-forms client module form)
+            (swap! (:pointers client) conj pointer)
+            client))))
     client)
-  (teardown-pointer [client pointer]
-    (swap! (:pointers client) disj pointer)
+  (teardown-ptr [client pointer]
+    (let [target (lifecycle-pointer pointer)
+          module (lifecycle-module (or (:module target) (:namespace target)))
+          form (lifecycle-form :teardown-ptr target)]
+      (try
+        (run-lifecycle-forms client module form)
+        (finally
+          (swap! (:pointers client) disj pointer))))
     client))
 
 (def +runtime+
   {:language :postgres
    :runtime :client
-   :aliases [:jdbc :jdbc.client]
    :key :client
+   :capabilities +required-capabilities+
    :config {}
    :create rt-create})
 
 (defn runtime-entry
-  "Builds one selectable context-registry entry for a PostgreSQL client alias."
-  [key]
-  (assoc +runtime+ :key key))
+  "Returns the sole selectable PostgreSQL client runtime entry."
+  []
+  +runtime+)
 
 (defn install
-  "Registers PostgreSQL client, JDBC, and JDBC-client runtime coordinates."
+  "Registers the capability-gated PostgreSQL client runtime coordinate."
   [context-id]
-  (let [installed (context/registry-rt-add context-id (runtime-entry :client))
-        installed (context/registry-rt-add context-id (runtime-entry :jdbc))]
-    (context/registry-rt-add context-id (runtime-entry :jdbc.client))))
+  (context/registry-rt-add context-id (runtime-entry)))

@@ -1,0 +1,42 @@
+(ns hara.command.deploy
+  (:config {:role :internal})
+  (:require [code.deploy :as deploy :lazy true]))
+
+(defn action
+  "Normalises the native Command action argument to one supported deploy keyword."
+  [value]
+  (cond
+    (nil? value) :stage
+    (= value "plan") :plan
+    (= value "stage") :stage
+    (= value "build") :build
+    :else
+    (throw
+     (ex :command/invalid-deploy-action
+         {:action value}
+         :ex/message "hara deploy action must be plan, stage, or build"))))
+
+(defn project-root
+  "Returns the explicitly selected project root, or the host working directory.
+
+   A companion distribution mounts its source package in a virtual root, so a
+   relative dot cannot identify the caller's checkout. OS/cwd preserves the
+   physical command working directory as the useful default."
+  [request]
+  (or (:root (:options request))
+      (OS/cwd)))
+
+(defn ^{:public true} response
+  "Runs a code.deploy operation from a parsed native Command request."
+  [request]
+  (try
+    (let [arguments (:arguments request)
+          root (project-root request)
+          result (deploy/run root (action (:action arguments)))]
+      {:stdout (str result "\n")
+       :stderr ""
+       :exit 0})
+    (catch error
+      {:stdout ""
+       :stderr (str error "\n")
+       :exit 2})))

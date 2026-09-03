@@ -1,0 +1,179 @@
+(ns code.manage.cli-test
+  (:use code.test)
+  (:require [code.manage.cli :as cli]
+            [code.deploy.stage :as stage]))
+
+(def local-project
+  {:project/root (OS/cwd)
+   :project/version "1.2.3"
+   :project/source-paths ["src"]
+   :project/test-paths ["test"]
+   :project/source-files ["src/code/manage/cli.hal"]})
+
+^{:refer code.manage.cli/tail}
+(Test/register
+ {:desc "drops the first argument without changing the remaining order"
+  :test (fn [] (cli/tail ["analyse" "demo"]))
+  :expected ["demo"]})
+
+^{:refer code.manage.cli/required}
+(Test/register
+ {:desc "returns required values and rejects missing option values"
+  :test (fn [] [(cli/required ["value"] "--needle") (try (cli/required [] "--needle") false (catch error true))])
+  :expected ["value" true]})
+
+^{:refer code.manage.cli/validate-parsed}
+(Test/register
+ {:desc "normalizes default format and rejects conflicts"
+  :test (fn [] [(select-keys (cli/validate-parsed {:options {} :namespaces [] :operation :analyse}) [:format :options]) (try (cli/validate-parsed {:options {:format "json"} :namespaces [] :operation :analyse}) false (catch error true)) (try (cli/validate-parsed {:options {:complete? true} :namespaces [] :operation :analyse}) false (catch error true))])
+  :expected [{:format :edn :options {}} true true]})
+
+^{:refer code.manage.cli/parse-arguments}
+(Test/register
+ {:desc "parses operations selectors flags and value options"
+  :test (fn [] [(select-keys (cli/parse-arguments ["grep" "demo.core" "--needle" "answer"]) [:operation :namespaces :format :options]) (select-keys (cli/parse-arguments ["purge" "--write"]) [:operation :write :namespaces]) (select-keys (cli/parse-arguments ["analyse" "--project" "/tmp/demo"]) [:operation :options :namespaces])])
+  :expected [{:format :edn :options {:needle "answer"} :namespaces ["demo.core"] :operation :grep} {:write true :namespaces [] :operation :purge} {:options {:project "/tmp/demo"} :namespaces [] :operation :analyse}]})
+
+^{:refer code.manage.cli/parsed-selector}
+(Test/register
+ {:desc "projects zero one and many selectors"
+  :test (fn [] [(cli/parsed-selector []) (cli/parsed-selector ["demo"]) (cli/parsed-selector ["demo" "code"])])
+  :expected [:all "demo" ["demo" "code"]]})
+
+^{:refer code.manage.cli/path-selector-candidates}
+(Test/register
+ {:desc "generates namespace-like candidates from a path"
+  :test (fn [] (cli/path-selector-candidates "/src/demo/core_test.hal"))
+  :expected ["src.demo.core-test" "demo.core-test" "core-test"]})
+
+^{:refer code.manage.cli/selected?}
+(Test/register
+ {:desc "matches path selections through the shared selector"
+  :test (fn [] [(cli/selected? "src/demo/core.hal" []) (cli/selected? "src/demo/core.hal" ["demo.core"]) (cli/selected? "src/demo/core.hal" ["other"])])
+  :expected [true true false]})
+
+^{:refer code.manage.cli/roots-for}
+(Test/register
+ {:desc "delegates operation root categories to manage context"
+  :test (fn [] (cli/roots-for {:project/source-paths ["src"] :project/test-paths ["test"]} :grep))
+  :expected ["src" "test"]})
+
+^{:refer code.manage.cli/unit}
+(Test/register
+ {:desc "delegates unit loading to manage context"
+  :test (fn [] (:type (cli/unit (File/join (OS/cwd) "src/code/manage/cli.hal") :test)))
+  :expected :test})
+
+^{:refer code.manage.cli/versioned-unit}
+(Test/register
+ {:desc "delegates version metadata projection"
+  :test (fn [] (cli/versioned-unit {:path "demo.hal"} "1.0"))
+  :expected {:version "1.0" :path "demo.hal"}})
+
+^{:refer code.manage.cli/paired-source-unit}
+(Test/register
+ {:desc "delegates source-test pairing"
+  :test (fn [] (cli/paired-source-unit {:path "demo.hal"} "1.0" "demo_test.hal" nil))
+  :expected {:test-source "" :version "1.0" :test-path "demo_test.hal" :path "demo.hal"}})
+
+^{:refer code.manage.cli/project-test-path}
+(Test/register
+ {:desc "delegates project test path mapping"
+  :test (fn [] (cli/project-test-path {:project/root "/project" :project/source-paths ["src"] :project/test-paths ["test"]} "/project/src/demo.hal"))
+  :expected "/project/test/demo_test.hal"})
+
+^{:refer code.manage.cli/paired-unit}
+(Test/register
+ {:desc "delegates paired unit loading"
+  :test (fn [] (let [project {:project/version "0.1" :project/root (OS/cwd) :project/source-paths ["src"] :project/test-paths ["test"]}] (= :source (:type (cli/paired-unit project (File/join (OS/cwd) "src/code/manage/cli.hal") :source)))))
+  :expected true})
+
+^{:refer code.manage.cli/units-for}
+(Test/register
+ {:desc "delegates operation catalog discovery"
+  :test (fn [] (let [project {:project/root (OS/cwd) :project/source-paths ["src"] :project/test-paths ["test"] :project/source-files ["src/code/manage/cli.hal"]}] (count (cli/units-for project {:operation :analyse}))))
+  :expected 1})
+
+^{:refer code.manage.cli/current-input}
+(Test/register
+ {:desc "delegates selected project input construction"
+  :test (fn [] (let [project {:project/root (OS/cwd) :project/source-paths ["src"] :project/test-paths ["test"] :project/source-files ["src/code/manage/cli.hal"]}] (select-keys (cli/current-input :analyse project :all {:needle "x"}) [:selector :options])))
+  :expected {:options {:needle "x"} :selector :all}})
+
+^{:refer code.manage.cli/current-source}
+(Test/register
+ {:desc "reads current source or returns empty text for a missing file"
+  :test (fn [] (cli/current-source "/missing/manage/source.hal"))
+  :expected ""})
+
+^{:refer code.manage.cli/strip-trailing-separator}
+(Test/register
+ {:desc "removes trailing separators but keeps the root separator"
+  :test (fn [] [(cli/strip-trailing-separator "a/b/") (cli/strip-trailing-separator "/")])
+  :expected ["a/b" "/"]})
+
+^{:refer code.manage.cli/normalized-path-text}
+(Test/register
+ {:desc "normalizes separators and trailing slashes"
+  :test (fn [] (cli/normalized-path-text "a\\b/"))
+  :expected "a/b"})
+
+^{:refer code.manage.cli/path-under-root?}
+(Test/register
+ {:desc "accepts a root or descendant and rejects sibling paths"
+  :test (fn [] [(cli/path-under-root? "/root" "/root") (cli/path-under-root? "/root" "/root/a") (cli/path-under-root? "/root" "/rooted/a")])
+  :expected [true true false]})
+
+^{:refer code.manage.cli/resolve-edit-path}
+(Test/register
+ {:desc "resolves safe edit paths and rejects root escapes"
+  :test (fn [] [(cli/resolve-edit-path "/root" "src/demo.hal") (try (cli/resolve-edit-path "/root" "../outside.hal") false (catch error true))])
+  :expected ["/root/src/demo.hal" true]})
+
+^{:refer code.manage.cli/validate-edit}
+(Test/register
+ {:desc "checks edit provenance before accepting a write"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-cli-validate-"})) path (File/join root "demo.hal")] (try (deref (File/write path (String/encode-utf8 "before") {:mode :replace :parents? true})) (str/ends-with? (:resolved-path (cli/validate-edit root {:before "before" :path path :after "after"})) "demo.hal") (finally (stage/delete-tree root)))))
+  :expected true})
+
+^{:refer code.manage.cli/preflight}
+(Test/register
+ {:desc "validates a complete edit batch before any write"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-cli-preflight-"})) path (File/join root "demo.hal")] (try (deref (File/write path (String/encode-utf8 "before") {:mode :replace :parents? true})) (count (cli/preflight root [{:before "before" :path path :after "after"}])) (finally (stage/delete-tree root)))))
+  :expected 1})
+
+^{:refer code.manage.cli/write-edit}
+(Test/register
+ {:desc "writes a validated edit and returns its record"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-cli-write-"})) path (File/join root "demo.hal") edit {:resolved-path path :after "after"}] (try [(= edit (cli/write-edit edit)) (String/decode-utf8 (deref (File/read path)))] (finally (stage/delete-tree root)))))
+  :expected [true "after"]})
+
+^{:refer code.manage.cli/apply-edits}
+(Test/register
+ {:desc "preflights and writes all edits"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-cli-apply-"})) path (File/join root "demo.hal")] (try (deref (File/write path (String/encode-utf8 "before") {:mode :replace :parents? true})) (cli/apply-edits root [{:before "before" :path path :after "after"}]) (String/decode-utf8 (deref (File/read path))) (finally (stage/delete-tree root)))))
+  :expected "after"})
+
+^{:refer code.manage.cli/render-plan}
+(Test/register
+ {:desc "renders EDN and editor-json plan formats"
+  :test (fn [] [(str/includes? (cli/render-plan {:edits [] :summary {} :operation :demo :findings []} {:format :edn}) ":operation") (str/includes? (cli/render-plan {:edits [] :summary {} :operation :demo :findings []} {:format :editor-json}) "\"schema\"")])
+  :expected [true true]})
+
+^{:refer code.manage.cli/execute}
+(Test/register
+ {:desc "returns a plan response for a native project request"
+  :test (fn [] (let [result (cli/execute {:options {:project local-project} :arguments {:argv ["analyse" "code.manage.cli"]}})] [(:kind result) (:exit result) (map? (:value result))]))
+  :expected [:plan 0 true]})
+
+^{:refer code.manage.cli/response}
+(Test/register
+ {:desc "converts successful and parser-failure execution to command envelopes"
+  :test (fn [] [(select-keys (cli/response {:options {:project local-project} :arguments {:argv ["analyse" "code.manage.cli"]}}) [:stderr :exit]) (select-keys (cli/response {:options {:project local-project} :arguments {:argv ["unknown"]}}) [:stdout :exit])])
+  :expected [{:stderr "" :exit 0} {:stdout "" :exit 2}]})
+
+^{:refer code.manage.cli/handler}
+(Test/register
+ {:desc "retains the handler alias for native command integration"
+  :test (fn [] (select-keys (cli/handler {:arguments {:argv ["unknown"]}}) [:stdout :exit]))
+  :expected {:stdout "" :exit 2}})

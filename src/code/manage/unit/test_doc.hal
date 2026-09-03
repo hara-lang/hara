@@ -1,0 +1,536 @@
+(ns code.manage.unit.test-doc
+  (:config {:role :internal})
+  (:require [code.framework.reader :as reader]
+            [code.manage.unit.scaffold :as scaffold]
+            [code.manage.unit.structure :as structure]
+            [std.block.parse :as parse]))
+
+(def ^{:public true} +document-format+
+  "code.manage.test-doc/2")
+
+(defn ^{:public true} mapv-loop
+  [function values]
+  (let [items (vec values)]
+    (loop [index 0 output []]
+      (if (= index (count items))
+        output
+        (recur (inc index)
+               (conj output (function (nth items index))))))))
+
+(defn ^{:public true} skip-reader-layout
+  [source index]
+  (loop [current index]
+    (let [character (parse/source-char source current)]
+      (cond
+        (nil? character) current
+        (parse/whitespace? character) (recur (inc current))
+        (= character \;) (recur (inc (parse/scan-comment-end source current)))
+        :else current))))
+
+(defn ^{:public true} tagged-reader-end
+  [source index]
+  (let [next (parse/source-char source (inc index))]
+    (if (and next (not (parse/boundary? next)))
+      (parse/scan-token-end source (inc index))
+      nil)))
+
+(defn ^{:public true} normalize-reader-macros
+  ([source]
+   (normalize-reader-macros source "<memory>"))
+  ([source path]
+   (loop [index 0
+          segment-start 0
+          mode :code
+          escaped false
+          output []]
+     (let [character (parse/source-char source index)]
+       (if (nil? character)
+         (str/join "" (conj output
+                             (str/slice source segment-start
+                                        (str/length source))))
+         (cond
+           (= mode :comment)
+           (if (or (= character "\n") (= character "\r"))
+             (recur (inc index) segment-start :code false output)
+             (recur (inc index) segment-start :comment false output))
+
+           (= mode :string)
+           (cond
+             escaped (recur (inc index) segment-start :string false output)
+             (= character \\)
+             (recur (inc index) segment-start :string true output)
+             (= character \" )
+             (recur (inc index) segment-start :code false output)
+             :else
+             (recur (inc index) segment-start :string false output))
+
+           (= character \;)
+           (recur (inc index) segment-start :comment false output)
+
+           (= character \" )
+           (recur (inc index) segment-start :string false output)
+
+           (= character \#)
+           (let [tag-end (tagged-reader-end source index)]
+             (if (nil? tag-end)
+               (recur (inc index) segment-start :code false output)
+               (let [tag (str/slice source index tag-end)]
+                 (if (= tag "#ptr")
+                   (let [form-start (skip-reader-layout source tag-end)]
+                     (if (= form-start (str/length source))
+                       (throw (ex :syntax {:path path :offset index}
+                                  :ex/message "#ptr requires a value"))
+                       (let [[_ form-end] (parse/parse-at source form-start)
+                             replacement (str "(pointer "
+                                              (str/slice source form-start form-end)
+                                              ")")]
+                         (recur form-end
+                                form-end
+                                :code
+                                false
+                                (conj output
+                                      (str (str/slice source segment-start index)
+                                           replacement))))))
+                   (throw (ex :syntax {:path path :offset index :reader tag}
+                              :ex/message "tagged reader macros are not allowed in code"))))))
+
+           :else
+           (recur (inc index) segment-start :code false output)))))))
+
+(defn ^{:public true} analyse-test-source
+  [source]
+  (let [analysis (reader/analyse-source source)]
+    {:namespace (:namespace analysis)
+     :form-records (:forms analysis)
+     :source source}))
+
+(defn ^{:public true} form-name
+  [form]
+  (let [value (:form form)]
+    (if (and (list? value) (seq value))
+      (str (first value))
+      nil)))
+
+(defn ^{:public true} form-definition-name
+  [form]
+  (let [head (form-name form)
+        value (:form form)]
+    (if (and (or (= head "def") (= head "defonce" ))
+             (> (count value) 1))
+      (str (second value))
+      nil)))
+
+(defn ^{:public true} results-form?
+  [form]
+  (and (or (= "def" (form-name form))
+           (= "defonce" (form-name form)))
+       (= "results" (form-definition-name form))))
+
+(defn ^{:public true} nested-container-record?
+  [record]
+  (or (vector? (:form record))
+      (map? (:form record))
+      (set? (:form record))))
+
+(defn ^{:public true} form-text
+  [source record]
+  (str/slice source
+             (or (:offset (:start record)) 0)
+             (or (:offset (:end record)) (str/length source))))
+
+(defn ^{:public true} facts-below
+  [source path records]
+  (reduce
+   (fn [output record]
+     (let [fact (structure/fact-record source path record false)
+           nested (facts-below source path (:children record))]
+       (if fact
+         (into (conj output (assoc fact :nested true)) nested)
+         (into output nested))))
+   []
+   records))
+
+(defn ^{:public true} results-facts
+  [source path form]
+  (if (results-form? form)
+    (vec (map (fn [fact] (assoc fact :nested true :results true))
+              (facts-below source path (:children form))))
+    []))
+
+(defn ^{:public true} direct-facts-from-forms
+  [source path forms]
+  (vec (keep (fn [form]
+               (structure/fact-record source path form false))
+             forms)))
+
+(defn ^{:public true} facts-from-analysis
+  [analysis path]
+  (let [source (:source analysis)
+        forms (:form-records analysis)
+        direct (direct-facts-from-forms source path forms)
+        nested (vec (mapcat (fn [form]
+                              (results-facts source path form))
+                            forms))]
+    (vec (sort-by :start (concat direct nested)))))
+
+(defn ^{:public true} require-entry
+  [entry]
+  (if (not (vector? entry))
+    {:namespace entry :alias nil :refers []}
+    (loop [remaining (vec (rest entry)) alias nil refers []]
+      (if (empty? remaining)
+        {:namespace (first entry) :alias alias :refers refers}
+        (let [option (first remaining) value (second remaining)]
+          (cond
+            (= option :as) (recur (vec (drop 2 remaining)) value refers)
+            (and (= option :refer) (vector? value))
+            (recur (vec (drop 2 remaining)) alias value)
+            :else (recur (vec (rest remaining)) alias refers)))))))
+
+(defn ^{:public true} namespace-routes
+  [namespace-form]
+  (if (nil? namespace-form)
+    {:aliases {} :refers {}}
+    (let [value (:form namespace-form)
+          requirements (reduce
+                       (fn [output clause]
+                         (if (and (list? clause) (= :require (first clause)))
+                           (into output (map require-entry (rest clause)))
+                           output))
+                       []
+                       (drop 2 value))]
+      {:aliases (reduce
+                 (fn [output requirement]
+                   (if (:alias requirement)
+                     (assoc output (:alias requirement) (:namespace requirement))
+                     output))
+                 {}
+                 requirements)
+       :refers (reduce
+                (fn [output requirement]
+                  (reduce (fn [current name]
+                            (assoc current name (:namespace requirement)))
+                          output
+                          (:refers requirement)))
+                {}
+                requirements)})))
+
+(defn ^{:public true} symbols-in
+  [value]
+  (cond
+    (symbol? value) [value]
+    (map? value) (reduce (fn [output entry]
+                           (into (into output (symbols-in (first entry)))
+                                 (symbols-in (second entry)))) [] value)
+    (or (vector? value) (list? value) (set? value))
+    (reduce (fn [output child] (into output (symbols-in child))) [] value)
+    :else []))
+
+(defn ^{:public true} qualified-parts
+  [value]
+  (let [text (str value)]
+    (if (str/includes? text "/") (str/split text "/") [])))
+
+(defn ^{:public true} routed-reference
+  [routes value]
+  (let [parts (qualified-parts value)]
+    (if (= 2 (count parts))
+      (let [qualifier (symbol (first parts))
+            member (second parts)
+            namespace (get (:aliases routes) qualifier)]
+        (cond
+          namespace (symbol (str namespace) member)
+          (and (str/includes? (first parts) ".")
+               (not (= "code.test" (first parts)))) value
+          :else nil))
+      (let [namespace (get (:refers routes) value)]
+        (if namespace (symbol (str namespace) (str value)) nil)))))
+
+(defn ^{:public true} reference-candidates
+  [routes fact]
+  (vec (distinct (keep (fn [value] (routed-reference routes value))
+                       (symbols-in (:value fact))))))
+
+(defn ^{:public true} document-fact
+  [routes fact]
+  (let [existing (if (:refer fact) (symbol (str (:refer fact))) nil)
+        candidates (if existing [] (reference-candidates routes fact))
+        inferred (if (= 1 (count candidates)) (first candidates) nil)
+        refer (or existing inferred)]
+    {:order (:start fact)
+     :title (:title fact)
+     :refer refer
+     :refer-source (if existing :metadata (if inferred :qualified-call :unresolved))
+     :refer-candidates candidates
+     :original-refer (not (nil? existing))
+     :meta (:meta fact)
+     :checked (:checked fact)
+     :nested (:nested fact)
+     :results (:results fact)
+     :source (:text fact)}))
+
+(defn ^{:public true} noncanonical-fact?
+  [fact]
+  (or (not (:original-refer fact)) (:results fact)))
+
+(defn ^{:public true} namespace-form
+  [forms]
+  (first (filter (fn [form]
+                   (has? #{"ns" "ns+"} (form-name form)))
+                 forms)))
+
+(defn ^{:public true} run-form?
+  [form]
+  (and (= "pr-str" (form-name form))
+       (str/includes? (:text form) "(run")))
+
+(defn ^{:public true} support-form?
+  [source path form]
+  (let [head (form-name form)
+        direct (structure/fact-record source path form false)]
+    (and (not (has? #{"ns" "ns+"} head))
+         (not (results-form? form))
+         (not (run-form? (assoc form :text (form-text source form))))
+         (nil? direct))))
+
+(defn ^{:public true} support-forms
+  [analysis path]
+  (let [source (:source analysis)]
+    (vec (keep (fn [form]
+                 (if (support-form? source path form)
+                   {:order (:offset (:start form))
+                    :source (form-text source form)}
+                   nil))
+               (:form-records analysis)))))
+
+(defn ^{:public true} document
+  [unit]
+  (let [source (normalize-reader-macros (:source unit) (:path unit))
+        path (:path unit)
+        analysis (analyse-test-source source)
+        forms (:form-records analysis)
+        ns-record (namespace-form forms)
+        routes (namespace-routes ns-record)
+        entries (vec (map (fn [fact] (document-fact routes fact))
+                          (facts-from-analysis analysis path)))
+        noncanonical (vec (filter noncanonical-fact? entries))]
+    (if (empty? noncanonical)
+      nil
+      {:format +document-format+
+       :test-path (:test-path unit)
+       :namespace (:namespace analysis)
+       :namespace-form (if ns-record (form-text source ns-record) nil)
+       :support-forms (support-forms analysis path)
+       :facts entries
+       :noncanonical (count noncanonical)
+       :unresolved (count (filter (fn [fact] (nil? (:refer fact))) entries))})))
+
+(defn ^{:public true} document-result
+  [unit]
+  (try
+    {:status :analysed :document (document unit)}
+    (catch error
+      {:status :error
+       :path (:path unit)
+       :test-path (:test-path unit)
+       :error (str error)
+       :error-data (ex-data error)})))
+
+(defn ^{:public true} normalized-meta
+  [fact]
+  (assoc (dissoc (or (:meta fact) {}) :ref :refer) :refer (:refer fact)))
+
+(defn ^{:public true} render-fact
+  [fact]
+  (if (nil? (:refer fact))
+    (throw (ex :generic {:fact fact}
+               :ex/message "cannot render an unresolved test fact"))
+    (str "^" (pr-str (normalized-meta fact)) "\n" (:source fact))))
+
+(defn ^{:public true} render-entry
+  [entry]
+  (if (= :fact (:kind entry)) (render-fact (:fact entry)) (:source entry)))
+
+(defn ^{:public true} render
+  [document]
+  (let [unresolved (filter (fn [fact] (nil? (:refer fact))) (:facts document))]
+    (if (not (empty? unresolved))
+      (throw (ex :io {:test-path (:test-path document)
+                      :unresolved (count unresolved)}
+                  :ex/message "cannot render a test document with unresolved facts"))
+      (let [support (map (fn [form]
+                           {:kind :support :order (:order form) :source (:source form)})
+                         (:support-forms document))
+            facts (map (fn [fact]
+                         {:kind :fact :order (:order fact) :fact fact})
+                       (:facts document))
+            entries (sort-by :order (concat support facts))]
+        (str (:namespace-form document)
+             (if (empty? entries) "" "\n\n")
+             (str/join "\n\n" (map render-entry entries))
+             "\n\n"
+             (scaffold/runner-form (:namespace document))
+             "\n")))))
+
+(defn ^{:public true} replace-suffix
+  [path suffix replacement]
+  (if (str/ends-with? path suffix)
+    (str (str/slice path 0 (- (str/length path) (str/length suffix))) replacement)
+    path))
+
+(defn ^{:public true} strip-leading-separators
+  [path]
+  (if (or (str/starts-with? path "/") (str/starts-with? path "\\"))
+    (strip-leading-separators (str/slice path 1 (str/length path)))
+    path))
+
+(defn ^{:public true} relative-path
+  [path root]
+  (if (not (str/starts-with? path root))
+    (throw (ex :io {:path path :root root}
+               :ex/message "path is not under the supplied root"))
+    (strip-leading-separators
+     (str/slice path (str/length root) (str/length path)))))
+
+(defn ^{:public true} target-path
+  [path input-root output-root suffix]
+  (File/join output-root
+             (replace-suffix (relative-path path input-root) ".hal" suffix)))
+
+(defn ^{:public true} test-units
+  [test-root]
+  (vec
+   (keep (fn [path]
+           (let [path (str path)
+                 source (if (deref (File/exists? path))
+                          (String/decode-utf8 (deref (File/read path)))
+                          "")]
+             (if (and (str/ends-with? path "_test.hal")
+                      (str/includes? source "code.test"))
+               {:path path
+                :test-path (relative-path path test-root)
+                :source source}
+               nil)))
+         (sort-by str (deref (File/walk test-root))))))
+
+(defn ^{:public true} write-text
+  [path source]
+  (deref (File/write path
+                     (String/encode-utf8 source)
+                     {:mode :replace :parents? true}))
+  path)
+
+(defn ^{:public true} export-one
+  [unit options]
+  (let [result (document-result unit)
+        value (:document result)]
+    (cond
+      (= :error (:status result)) result
+      (nil? value) {:path (:path unit) :status :canonical}
+      :else
+      (let [document-path (target-path (:path unit)
+                                       (:test-root options)
+                                       (:document-root options)
+                                       ".edn")]
+        (write-text document-path (str (pr-str value) "\n"))
+        {:path (:path unit)
+         :test-path (:test-path value)
+         :document-path document-path
+         :unresolved (:unresolved value)
+         :status (if (= 0 (:unresolved value)) :documented :unresolved)}))))
+
+(defn ^{:public true} export
+  [test-root options]
+  (if (nil? (:document-root options))
+    (throw (ex :dependency {}
+               :ex/message "test document export requires :document-root"))
+    (mapv-loop (fn [unit]
+                 (export-one unit (assoc options :test-root test-root)))
+               (test-units test-root))))
+
+(defn ^{:public true} document-files
+  [document-root]
+  (vec (filter (fn [path]
+                 (str/ends-with? (str path) ".edn"))
+               (sort-by str (deref (File/walk document-root))))))
+
+(defn ^{:public true} read-document
+  [path]
+  (let [value (Edn/read (String/decode-utf8 (deref (File/read path))))]
+    (if (= +document-format+ (:format value))
+      value
+      (throw (ex :io {:path path :format (:format value)}
+                 :ex/message "unsupported test document format")))))
+
+(defn ^{:public true} generate-one
+  [document-path options]
+  (let [value (read-document document-path)]
+    (if (not= 0 (:unresolved value))
+      {:document-path document-path
+       :test-path (:test-path value)
+       :unresolved (:unresolved value)
+       :status :unresolved}
+      (let [generated-path (File/join
+                            (:generated-root options)
+                            (replace-suffix
+                             (relative-path document-path (:document-root options))
+                             ".edn"
+                             ".hal"))]
+        (write-text generated-path (render value))
+        {:document-path document-path
+         :generated-path generated-path
+         :test-path (:test-path value)
+         :status :generated}))))
+
+(defn ^{:public true} generate
+  [document-root options]
+  (if (nil? (:generated-root options))
+    (throw (ex :dependency {}
+               :ex/message "test generation requires :generated-root"))
+    (mapv-loop (fn [path]
+                 (generate-one path (assoc options :document-root document-root)))
+               (document-files document-root))))
+
+(defn ^{:public true} validate-generated
+  [generated-root options]
+  (if (fn? (:validate options))
+    ((:validate options) generated-root options)
+    (throw (ex :dependency {:generated-root generated-root}
+               :ex/message "test migration requires a native :validate function"))))
+
+(defn ^{:public true} validation-success?
+  [validation]
+  (or (= true validation)
+      (= :pass (:status validation))
+      (and (map? validation)
+           (= 0 (:exit validation)))))
+
+(defn ^{:public true} delete-verified
+  [generated test-root]
+  (mapv-loop
+   (fn [entry]
+     (let [path (File/join test-root (:test-path entry))]
+       (deref (File/delete path {:missing-ok? true}))
+       path))
+   (filter (fn [entry] (= :generated (:status entry))) generated)))
+
+(defn ^{:public true} migrate
+  [test-root options]
+  (let [required [:document-root :generated-root :project-root :validate]
+        missing (vec (filter (fn [key] (nil? (get options key))) required))]
+    (if (not (empty? missing))
+      (throw (ex :not-found {:missing missing}
+                 :ex/message "test migration requires explicit roots and validator"))
+      (let [exported (export test-root options)
+            generated (generate (:document-root options) options)
+            ready (filter (fn [entry] (= :generated (:status entry))) generated)
+            validation (if (empty? ready)
+                         {:status :pass :exit 0}
+                         (validate-generated (:generated-root options) options))
+            deleted (if (validation-success? validation)
+                      (delete-verified generated test-root)
+                      [])]
+        {:exported (frequencies (map :status exported))
+         :generated (frequencies (map :status generated))
+         :validation validation
+         :deleted deleted}))))

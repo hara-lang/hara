@@ -1,0 +1,135 @@
+(ns postgres.gen.gen-bind-test
+  (:require [postgres.application :as application]
+            [postgres.gen.gen-bind :as gen]))
+
+(def user-route
+  {:id 'user-get
+   :module 'postgres.gen.gen-bind-test
+   :static/input []
+   :static/return [:jsonb]
+   :api/flags [:public]})
+
+(def user-view
+  {:id 'user-all
+   :module 'postgres.gen.gen-bind-test
+   :static/input []
+   :static/return [:jsonb]
+   :api/flags [:public]
+   :static/view {:table 'User :type :select :args [] :query {:id :id}}})
+
+(defn with-module [module code function]
+  (let [snapshot (application/module-snapshot)]
+    (try
+      (application/install-modules! {module {:id module :code code}})
+      (function)
+      (finally
+        (application/restore-modules! snapshot)))))
+
+^{:refer postgres.gen.gen-bind/tmpl-route}
+(Test/check
+ [{:name "creates route templates from compiler-module PostgreSQL entries"
+   :test (fn []
+           (with-module
+            'postgres.gen.gen-bind-test
+            {'user-route user-route}
+            (fn []
+              (let [form
+                    (with-template-meta
+                     {:generated true}
+                     (gen/tmpl-route
+                      ['user-get-route
+                       'postgres.gen.gen-bind-test/user-route
+                       {:root "/api"}]))]
+                [(first form) (second form) (nth form 2) (meta form) (meta (second form))]))))
+   :expected ['def.xt
+              'user-get-route
+              {:id "user_get" :input [] :return "jsonb" :flags {:public true}
+               :url "/api/user-route"}
+              {:root "/api" :generated true}
+              {:api/type :route :api/url "/api/user-route"}]}])
+
+^{:refer postgres.gen.gen-bind/tmpl-view}
+(Test/check
+ [{:name "creates view templates with template-provided options"
+   :test (fn []
+           (with-module
+            'postgres.gen.gen-bind-test
+            {'user-view user-view}
+            (fn []
+              (let [form
+                    (gen/tmpl-view
+                     ['user-all-view
+                      'postgres.gen.gen-bind-test/user-view
+                      {:view {:mode :cached}}])]
+                [(first form) (second form) (nth form 2) (meta form) (meta (second form))]))))
+   :expected ['def.xt
+              'user-all-view
+              {:id "user_all" :input [] :return "jsonb" :flags {:public true}
+               :view {:table "User" :type "select" :tag "all" :query {"id" "id"} :mode :cached}}
+              {:view {:mode :cached}}
+              {:api/type :view}]}])
+
+^{:refer postgres.gen.gen-bind/module-entries}
+(Test/check
+ [{:name "selects module descriptors from the installed application snapshot"
+   :test (fn []
+           (let [module 'postgres.gen.gen-bind-fixture
+                 route {:id 'user-get :module module :api/type :route}]
+             (with-module module {'user-get route}
+               (fn [] (vec (map :id (gen/module-entries module (fn [_] true))))))))
+   :expected ['user-get]}])
+
+^{:refer postgres.gen.gen-bind/entry-list}
+(Test/check
+ [{:name "lists only descriptors matching the requested API type"
+   :test (fn []
+           (let [module 'postgres.gen.gen-bind-fixture
+                 route {:id 'user-get :module module :api/type :route}
+                 view {:id 'user-all :module module :api/type :view}]
+             (with-module module {'user-get route 'user-all view}
+               (fn [] (gen/entry-list module :view)))))
+   :expected ['postgres.gen.gen-bind-fixture/user-all]}])
+
+^{:refer postgres.gen.gen-bind/route-map}
+(Test/check
+ [{:name "maps route names and lists route and view symbols without a script parent"
+   :test (fn []
+           (let [module 'postgres.gen.gen-bind-fixture
+                 route {:id 'user-get :module module :api/type :route}
+                 second-route {:id 'AdminList :module module :api/type :route}
+                 view {:id 'user-all :module module :api/type :view}]
+             (with-module
+              module
+              {'user-get route 'AdminList second-route 'user-all view}
+              (fn [] [(gen/route-map module)
+                      (gen/route-list module)
+                      (gen/view-list module)
+                      (try
+                        (gen/route-map)
+                        false
+                        (catch Throwable _ true))]))))
+   :expected [{"user_get" 'postgres.gen.gen-bind-fixture/user-get
+               "admin_list" 'postgres.gen.gen-bind-fixture/AdminList}
+              ['postgres.gen.gen-bind-fixture/AdminList 'postgres.gen.gen-bind-fixture/user-get]
+              ['postgres.gen.gen-bind-fixture/user-all]
+              true]}])
+
+^{:refer postgres.gen.gen-bind/route-list}
+(Test/check
+ [{:name "requires an explicit module because native functions have no caller namespace"
+   :test (fn []
+           (try
+             (gen/route-list)
+             false
+             (catch Throwable _ true)))
+   :expected true}])
+
+^{:refer postgres.gen.gen-bind/view-list}
+(Test/check
+ [{:name "requires an explicit module because native functions have no caller namespace"
+   :test (fn []
+           (try
+             (gen/view-list)
+             false
+             (catch Throwable _ true)))
+   :expected true}])

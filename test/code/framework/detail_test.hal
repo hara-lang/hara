@@ -1,0 +1,37 @@
+(ns code.framework.detail-test
+  (:require [code.framework.detail :as detail]
+            [code.framework.reader :as reader]))
+
+(def detailed-source
+  "(ns demo.detail) ; comment\n(def answer 42)\n")
+
+^{:refer code.framework.detail/detailed-analysis}
+(Test/check
+ [{:name "preserves comments and exact source rendering through std.block"
+   :test (fn [] (let [analysis (detail/detailed-analysis detailed-source)]
+                  [(:rendered analysis) (:diagnostics analysis)]))
+   :expected [detailed-source []]}
+  {:name "recovers malformed source as diagnostics without changing its text"
+   :test (fn [] (let [analysis (detail/detailed-analysis "(def x 1)\n)\n[:ok")]
+                  [(:rendered analysis)
+                   (vec (map :type (:diagnostics analysis)))]))
+   :expected ["(def x 1)\n)\n[:ok"
+              [:tool.lint/reader-error :tool.lint/reader-error]]}])
+
+^{:refer code.framework.detail/enrich-reader-analysis}
+(Test/check
+ [{:name "adds detailed data without replacing reader semantic facts"
+   :test (fn [] (let [reader-analysis (reader/analyse-source detailed-source)
+                      enriched (detail/enrich-reader-analysis reader-analysis detailed-source)]
+                  [(= (detail/semantic-facts reader-analysis)
+                      (detail/semantic-facts enriched))
+                   (:rendered (:detail enriched))]))
+   :expected [true detailed-source]}])
+
+^{:refer code.framework.detail/semantic-facts}
+(Test/check
+ [{:name "excludes source-preserving block detail from semantic facts"
+   :test (fn [] (keys (detail/semantic-facts
+                       {:namespace 'demo.detail
+                        :detail {:rendered "ignored"}})))
+   :expected [:namespace]}])

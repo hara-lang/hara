@@ -1,0 +1,511 @@
+(ns lang.core.script-test
+  (:require [lang.core.script :as script]))
+
+(defn isolated
+  [function]
+  (let [snapshot (script/script-snapshot)]
+    (try
+      (script/script-reset!)
+      (function)
+      (finally (script/script-restore! snapshot)))))
+
+(def schema-fixture :scalar)
+
+^{:refer lang.core.script/script-snapshot}
+(Test/check [{:name "captures empty script state"
+              :test (fn [] (isolated script/script-snapshot))
+              :expected {:modules {} :scripts {} :loaded-modules {}
+                         :module-contexts {} :compile-cache {}}}])
+
+^{:refer lang.core.script/script-restore!}
+(Test/check [{:name "restores script registries"
+              :test (fn [] (isolated (fn []
+                                       (script/script-restore! {:modules {'demo {:id 'demo}}
+                                                                :scripts {} :loaded-modules {}
+                                                                :module-contexts {} :compile-cache {}}))))
+              :expected {:modules {'demo {:id 'demo}}
+                         :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}}])
+
+^{:refer lang.core.script/script-reset!}
+(Test/check [{:name "clears script state idempotently"
+              :test (fn [] (isolated (fn [] [(script/script-reset!) (script/script-reset!)])))
+              :expected [{:modules {} :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}
+                         {:modules {} :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}]}])
+
+^{:refer lang.core.script/reset-compile-cache!}
+(Test/check [{:name "clears only structural compile cache"
+              :test (fn [] (isolated (fn []
+                                       (swap! script/+compile-cache+ assoc :entry :result)
+                                       (script/reset-compile-cache!)
+                                       (deref script/+compile-cache+))))
+              :expected {}}])
+
+^{:refer lang.core.script/with:cache-none}
+(Test/check [{:name "binds cache bypass for an enclosed form"
+              :test (fn [] (script/with:cache-none script/*cache-none*))
+              :expected true}])
+
+^{:refer lang.core.script/with:cache-force}
+(Test/check [{:name "binds cache refresh for an enclosed form"
+              :test (fn [] (script/with:cache-force script/*cache-force*))
+              :expected true}])
+
+^{:refer lang.core.script/namespace-symbol}
+(Test/check [{:name "returns the current source namespace"
+              :test (fn [] (script/namespace-symbol))
+              :expected 'lang.core.script}])
+
+^{:refer lang.core.script/module-symbol}
+(Test/check [{:name "uses configured module mapping when present"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.script {})
+                                       (script/module-symbol))))
+              :expected 'demo.script}])
+
+^{:refer lang.core.script/current-module-id}
+(Test/check [{:name "publishes the current logical module id"
+              :test (fn [] (script/current-module-id))
+              :expected 'lang.core.script}])
+
+^{:refer lang.core.script/symbol-id}
+(Test/check [{:name "drops a symbol namespace for entry ids"
+              :test (fn [] (script/symbol-id 'demo/value))
+              :expected 'value}])
+
+^{:refer lang.core.script/require-module}
+(Test/check [{:name "extracts module ids from require specs"
+              :test (fn [] [(script/require-module 'demo.a)
+                            (script/require-module ['demo.b :as 'b])])
+              :expected ['demo.a 'demo.b]}])
+
+^{:refer lang.core.script/require-primary?}
+(Test/check [{:name "recognizes only explicit primary require specs"
+              :test (fn [] [(script/require-primary? 'demo.a)
+                            (script/require-primary? ['demo.a :primary true])])
+              :expected [false true]}])
+
+^{:refer lang.core.script/require-link}
+(Test/check [{:name "derives default and aliased require links"
+              :test (fn [] [(script/require-link 'demo.a)
+                            (script/require-link ['demo.b :as 'b])])
+              :expected [['demo.a 'demo.a] ['b 'demo.b]]}])
+
+^{:refer lang.core.script/module-config}
+(Test/check [{:name "creates source-faithful module data"
+              :test (fn [] (select-keys (script/module-config :postgres 'demo.a
+                                                              {:require ['demo.b]
+                                                               :emit {:code {:transforms {:entry ['demo/transform]}}}})
+                                        [:id :lang :require :link :code :fragment :emit]))
+              :expected {:id 'demo.a :lang :postgres :require ['demo.b]
+                         :link {'- 'demo.a 'demo.b 'demo.b} :code {} :fragment {}
+                         :emit {:code {:transforms {:entry ['demo/transform]}}}}}])
+
+^{:refer lang.core.script/configure-module}
+(Test/check [{:name "registers module source against the current namespace"
+              :test (fn [] (isolated (fn []
+                                       (select-keys (script/configure-module :postgres 'demo.a {:static {:mode :test}})
+                                                    [:id :lang :static]))))
+              :expected {:id 'demo.a :lang :postgres :static {:mode :test}}}
+             {:name "preserves source metadata across a second language setup"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a
+                                                                 {:static {:application ["scratch"]}})
+                                       (select-keys (script/configure-module :xtalk 'demo.a {})
+                                                    [:id :lang :static]))))
+              :expected {:id 'demo.a :lang :xtalk
+                         :static {:application ["scratch"]}}}])
+
+^{:refer lang.core.script/portable-schema-form}
+(Test/check [{:name "recursively retains portable schema data"
+              :test (fn [] (script/portable-schema-form {:a [#{'demo/a}]}))
+              :expected {:a [#{'demo/a}]}}])
+
+^{:refer lang.core.script/schema-value-form}
+(Test/check [{:name "ignores ordinary declaration Vars"
+              :test (fn [] (let [value (var schema-fixture)]
+                           (script/schema-value-form value)))
+              :expected nil}])
+
+^{:refer lang.core.script/module-source-symbol}
+(Test/check [{:name "resolves a module owner from source contexts"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (script/module-source-symbol 'demo.a))))
+              :expected 'lang.core.script}])
+
+^{:refer lang.core.script/module-schema-values}
+(Test/check [{:name "collects no scalar schema declarations"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (script/module-schema-values 'demo.a))))
+              :expected {}}])
+
+^{:refer lang.core.script/refresh-module-schemas}
+(Test/check [{:name "merges collected schemas into the module"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (select-keys (script/refresh-module-schemas 'demo.a) [:id :schema]))))
+              :expected {:id 'demo.a :schema {}}}])
+
+^{:refer lang.core.script/register-code}
+(Test/check [{:name "builds registered code symbols"
+              :test (fn [] (symbol (str 'demo.a "/" (name 'exposed))))
+              :expected 'demo.a/exposed}])
+
+^{:refer lang.core.script/code-operation-key}
+(Test/check [{:name "retains every portable declaration operation instead of collapsing it to def"
+              :test (fn [] [(script/code-operation-key '(defn ping [] "pong"))
+                            (script/code-operation-key '(deftype Log []))
+                            (script/code-operation-key '(deftrigger audit []))
+                            (script/code-operation-key '(defenum Status []))
+                            (script/code-operation-key '(defconst version 1))
+                            (script/code-operation-key '(def value 1))])
+              :expected [:defn :deftype :deftrigger :defenum :defconst :def]}])
+
+^{:refer lang.core.script/register-code}
+(Test/check [{:name "registers code in the logical module"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (script/register-code '(defn exposed [] 1))
+                                       (select-keys (get-in (deref script/+modules+) ['demo.a :code 'exposed])
+                                                    [:id :module :lang :section :op]))))
+              :expected {:id 'exposed :module 'demo.a :lang :postgres :section :code :op 'defn}}])
+
+^{:refer lang.core.script/register-code}
+(Test/check [{:name "retains declaration metadata for typed compiler consumers"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (script/register-code
+                                        '(defn ^{:static/public true
+                                                :api/meta {:kind :test}}
+                                           exposed [] 1))
+                                       (select-keys
+                                        (get-in (deref script/+modules+) ['demo.a :code 'exposed])
+                                        [:static/public :api/meta]))))
+              :expected {:static/public true :api/meta {:kind :test}}}])
+
+^{:refer lang.core.script/register-fragment}
+(Test/check [{:name "associates fragment data into an atom"
+              :test (fn [] (let [entries (atom {})]
+                           (swap! entries assoc-in ['demo.a :fragment 'hidden] {:id 'hidden})
+                           (get-in (deref entries) ['demo.a :fragment 'hidden :id])))
+              :expected 'hidden}])
+
+^{:refer lang.core.script/register-fragment}
+(Test/check [{:name "registers fragments in the logical module"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (script/register-fragment '(defmacro hidden [] 1) nil)
+                                       (select-keys (get-in (deref script/+modules+) ['demo.a :fragment 'hidden])
+                                                    [:id :module :lang :section]))))
+              :expected {:id 'hidden :module 'demo.a :lang :postgres :section :fragment}}])
+
+^{:refer lang.core.script/register-fragment}
+(Test/check [{:name "retains fragment declaration metadata"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (script/register-fragment
+                                        '(defmacro ^{:static/return [:text]} hidden [] 1)
+                                        nil)
+                                       (select-keys
+                                        (get-in (deref script/+modules+) ['demo.a :fragment 'hidden])
+                                        [:static/return]))))
+              :expected {:static/return [:text]}}])
+
+^{:refer lang.core.script/register-fragment-pointer}
+(Test/check [{:name "registers portable fragment pointers with retained return metadata"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (let [value (script/register-fragment-pointer
+                                                    :postgres 'helper '(auth.uid)
+                                                    {:- [:uuid]})
+                                             entry (get-in (deref script/+modules+)
+                                                           ['demo.a :fragment 'helper])]
+                                         [(pointer? value)
+                                          (IPointer/ptr-context value)
+                                          (:op entry)
+                                          (:static/return entry)]))))
+              :expected [true :lang/postgres 'def$ [:uuid]]}])
+
+^{:refer lang.core.script/register-macro-fragment}
+(Test/check [{:name "registers source macro fragments with their compiler template"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (script/register-macro-fragment
+                                        :postgres
+                                        '(defmacro auth-uid [] '(auth.uid))
+                                        (fn [] '(auth.uid)))
+                                       (let [entry (get-in (deref script/+modules+)
+                                                           ['demo.a :fragment 'auth-uid])]
+                                         [(select-keys entry [:lang :section :op :op-key])
+                                          (fn? (:template entry))]))))
+              :expected [{:lang :postgres :section :fragment
+                          :op 'defmacro :op-key :defmacro}
+                         true]}])
+
+^{:refer lang.core.script/script-context}
+(Test/check [{:name "creates stable language pointer contexts"
+              :test (fn [] (script/script-context :postgres))
+              :expected :lang/postgres}])
+
+^{:refer lang.core.script/register-code-pointer}
+(Test/check [{:name "registers code and returns the corresponding native pointer"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (let [value (script/register-code-pointer
+                                                    :postgres
+                                                    '(deftype ^{:public true} Log []))]
+                                         [(pointer? value)
+                                         (IPointer/ptr-context value)
+                                         (get-in value [:entry :id])
+                                         (get-in value [:entry :op-key])
+                                         (get-in (deref script/+modules+)
+                                                  ['demo.a :code 'Log :static/public])]))))
+              :expected [true :lang/postgres 'Log :deftype true]}])
+
+^{:refer lang.core.script/script-tags}
+(Test/check [{:name "includes Foundation and canonical PostgreSQL grammar tags"
+              :test (fn [] (script/script-tags :postgres))
+              :expected [:pg :postgres]}])
+
+^{:refer lang.core.script/script-definition-symbols}
+(Test/check [{:name "finds PostgreSQL code declaration operations from the grammar"
+              :test (fn [] (let [symbols (set (script/script-definition-symbols :postgres))]
+                           [(has? symbols 'deftype)
+                            (has? symbols 'defenum)
+                            (has? symbols 'deftrigger)
+                            (has? symbols 'defconst)]))
+              :expected [true true true true]}])
+
+^{:refer lang.core.script/script-highlight-symbols}
+(Test/check [{:name "returns the PostgreSQL grammar's explicit highlight declarations"
+              :test (fn [] (script/script-highlight-symbols :postgres))
+              :expected ['br 'break 'return 'set=]}])
+
+^{:refer lang.core.script/script-quote-macro-expansion}
+(Test/check [{:name "quotes target macro bodies without host evaluation"
+              :test (fn [] (let [form (script/script-quote-macro-expansion
+                                    ['(auth.uid)])]
+                           [(first form) (first (second form))
+                            (first (nth form 2))]))
+              :expected ['list 'quote 'do]}])
+
+^{:refer lang.core.script/script-runtime-macro-body}
+(Test/check [{:name "converts vector macro declarations to quoted target output"
+              :test (fn [] (let [body (script/script-runtime-macro-body
+                                    ['[] '(auth.uid)])]
+                           [(first body) (first (second body))]))
+              :expected [[] 'list]}])
+
+^{:refer lang.core.script/script-defmacro-expansion}
+(Test/check [{:name "builds host macro and fragment registration expansion"
+              :test (fn [] (first (script/script-defmacro-expansion
+                                   :postgres 'auth-uid ['[] '(auth.uid)] 'demo.pg)))
+              :expected 'do}])
+
+^{:refer lang.core.script/script-eval-macro-form}
+(Test/check [{:name "builds caller-local PostgreSQL evaluators"
+              :test (fn [] (let [form (script/script-eval-macro-form :postgres :pg)]
+                           [(first form) (second form)]))
+              :expected ['defmacro '!.pg]}])
+
+^{:refer lang.core.script/script-definition-macro-form}
+(Test/check [{:name "builds a declaration macro that registers a code pointer"
+              :test (fn [] (let [form (script/script-definition-macro-form
+                                    :postgres :pg 'deftype)]
+                           [(first form) (second form)]))
+              :expected ['defmacro 'deftype.pg]}])
+
+^{:refer lang.core.script/script-fragment-macro-form}
+(Test/check [{:name "builds portable PostgreSQL fragment declaration macros"
+              :test (fn [] (let [form (script/script-fragment-macro-form :postgres :pg)]
+                           [(first form) (second form)]))
+              :expected ['defmacro 'def$.pg]}])
+
+^{:refer lang.core.script/script-defmacro-macro-form}
+(Test/check [{:name "builds PostgreSQL source macro declaration macros"
+              :test (fn [] (let [form (script/script-defmacro-macro-form :postgres :pg)]
+                           [(first form) (second form)]))
+              :expected ['defmacro 'defmacro.pg]}])
+
+^{:refer lang.core.script/script-highlight-macro-form}
+(Test/check [{:name "builds inert declarations for explicit grammar highlights"
+              :test (fn [] (let [form (script/script-highlight-macro-form :postgres 'highlighted)]
+                           [(first form) (second form)]))
+              :expected ['defmacro 'highlighted]}])
+
+^{:refer lang.core.script/script-macro-parts}
+(Test/check [{:name "extracts the operation and tag from generated aliases"
+              :test (fn [] (script/script-macro-parts '(deftype.pg ScriptLog)))
+              :expected {:operation "deftype" :tag :pg}}])
+
+^{:refer lang.core.script/script-macro-language}
+(Test/check [{:name "maps short generated tags to canonical language names"
+              :test (fn [] [(script/script-macro-language '(deftype.pg ScriptLog))
+                            (script/script-macro-language '(deftype.xt ScriptLog))])
+              :expected [:postgres :xtalk]}])
+
+^{:refer lang.core.script/script-generated-macro-source}
+(Test/check [{:name "selects the stable macro source for a generated alias"
+              :test (fn [] (script/script-generated-macro-source
+                            (script/script-definition-macro-form :postgres :pg 'deftype)))
+              :expected 'lang.core.script/script-generated-definition}])
+
+^{:refer lang.core.script/script-macro-forms}
+(Test/check [{:name "builds every PostgreSQL declaration tag from the active grammar"
+              :test (fn [] (let [symbols (set (map second (script/script-macro-forms :postgres)))]
+                           [(has? symbols 'deftype.pg)
+                            (has? symbols 'deftype.postgres)
+                            (has? symbols 'defn.pg)
+                            (has? symbols 'def$.pg)
+                            (has? symbols 'defmacro.pg)
+                            (has? symbols '!.pg)]))
+              :expected [true true true true true true]}])
+
+^{:refer lang.core.script/script-install-macro-form}
+(Test/check [{:name "guards generated macros against replacing caller-owned symbols"
+              :test (fn [] (let [form (script/script-install-macro-form
+                                      (script/script-definition-macro-form :postgres :pg 'deftype))]
+                             [(first form) (first (last form))]))
+              :expected ['if 'intern-var]}])
+
+^{:refer lang.core.script/defn.xt}
+(Test/check [{:name "expands into code registration and a native definition"
+              :test (fn [] (first (macroexpand-1 '(script/defn.xt demo [] 1))))
+              :expected 'do}])
+
+^{:refer lang.core.script/defmacro.xt}
+(Test/check [{:name "expands into fragment registration and a native macro"
+              :test (fn [] (first (macroexpand-1 '(script/defmacro.xt demo [] 1))))
+              :expected 'do}])
+
+^{:refer lang.core.script/module-loaded?}
+(Test/check [{:name "recognizes registered module state"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (script/module-loaded? 'demo.a))))
+              :expected true}])
+
+^{:refer lang.core.script/load-module}
+(Test/check [{:name "loads already-registered empty modules without source reload"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :postgres 'demo.a {})
+                                       (script/load-module 'demo.a))))
+              :expected 'demo.a}])
+
+^{:refer lang.core.script/script-options}
+(Test/check [{:name "normalizes script call option shapes"
+              :test (fn [] [(script/script-options [])
+                            (script/script-options [{:runtime :default}])
+                            (script/script-options ['demo.a {:runtime :default}])])
+              :expected [['lang.core.script {}]
+                         ['lang.core.script {:runtime :default}]
+                         ['demo.a {:runtime :default}]]}])
+
+^{:refer lang.core.script/script-ns-import}
+(Test/check [{:name "returns an empty primary set for an empty script"
+              :test (fn [] (isolated (fn [] (script/script-ns-import :postgres {}))))
+              :expected #{}}])
+
+^{:refer lang.core.script/setup}
+(Test/check [{:name "configures and records test scripts"
+              :test (fn [] (isolated (fn []
+                                       (script/setup :postgres 'demo.a {} true)
+                                       (select-keys (get (deref script/+scripts+) ['demo.a :postgres])
+                                                    [:lang :module :runtime]))))
+              :expected {:lang :postgres :module 'demo.a :runtime nil}}])
+
+^{:refer lang.core.script/start-script}
+(Test/check [{:name "starts, replaces, and records one selected script runtime"
+              :test (fn [] (isolated (fn []
+                                       (script/setup :postgres 'demo.a {} true)
+                                       (let [first (script/start-script :postgres 'demo.a {})
+                                             second (script/start-script :postgres 'demo.a {})]
+                                         [(:status (deref (:state first)))
+                                          (:status (deref (:state second)))
+                                          (= second (get-in (deref script/+scripts+)
+                                                            [['demo.a :postgres] :runtime]))]))))
+              :expected [:stopped :started true]}])
+
+^{:refer lang.core.script/script-form}
+(Test/check [{:name "builds ordinary script setup forms"
+              :test (fn [] (first (script/script-form :postgres [])))
+              :expected 'lang.core.script/setup}])
+
+^{:refer lang.core.script/script}
+(Test/check [{:name "expands ordinary script declarations"
+              :test (fn [] (first (macroexpand-1 '(script/script :postgres))))
+              :expected 'do}])
+
+^{:refer lang.core.script/script-test-form}
+(Test/check [{:name "builds test script setup forms"
+              :test (fn [] (last (script/script-test-form :postgres [])))
+              :expected true}])
+
+^{:refer lang.core.script/script-expansion}
+(Test/check [{:name "combines module setup with grammar-derived declaration macros"
+              :test (fn [] (let [form (script/script-expansion 'demo.pg :postgres [] false)]
+                           [(first form) (first (second form)) (first (last form))]))
+              :expected ['do 'lang.core.script/setup 'lang.core.script/start-script]}])
+
+^{:refer lang.core.script/script-}
+(Test/check [{:name "expands test script declarations"
+              :test (fn [] (first (macroexpand-1 '(script/script- :postgres))))
+              :expected 'do}])
+
+^{:refer lang.core.script/selected-book}
+(Test/check [{:name "selects a materialized PostgreSQL book"
+              :test (fn [] (:lang (script/selected-book :postgres)))
+              :expected :postgres}])
+
+^{:refer lang.core.script/compile-cache-key}
+(Test/check [{:name "keys cache entries by language module source and registry snapshot"
+              :test (fn [] (let [key (script/compile-cache-key :postgres 'demo.a '(+ 1 2))]
+                           [(first key) (second key) (nth key 2) (number? (nth key 3))]))
+              :expected [:postgres 'demo.a '(+ 1 2) true]}])
+
+^{:refer lang.core.script/compile-one}
+(Test/check [{:name "returns a staged compiler result and memoises it"
+              :test (fn [] (isolated (fn []
+                                       (let [module (script/module-config :postgres 'demo.a {})
+                                             first-result (script/compile-one :postgres '(+ 1 2) module nil)
+                                             second-result (script/compile-one :postgres '(+ 1 2) module nil)]
+                                         [(string? (:output first-result))
+                                          (= first-result second-result)
+                                          (= 1 (count (deref script/+compile-cache+)))]))))
+              :expected [true true true]}])
+
+^{:refer lang.core.script/compile-form}
+(Test/check [{:name "emits one PostgreSQL expression"
+              :test (fn [] (isolated (fn [] (script/compile-form :postgres 'demo.a '(+ 1 2)))))
+              :expected "1 + 2"}])
+
+^{:refer lang.core.script/restart}
+(Test/check [{:name "starts registered default scripts"
+              :test (fn [] (isolated (fn []
+                                       (script/setup :postgres 'demo.a {} true)
+                                       (script/restart)
+                                       (:status (deref (:state (get-in (deref script/+scripts+)
+                                                                       [['demo.a :postgres] :runtime])))))))
+              :expected :started}])
+
+^{:refer lang.core.script/stop}
+(Test/check [{:name "stops registered scripts and clears runtime references"
+              :test (fn [] (isolated (fn []
+                                       (script/setup :postgres 'demo.a {} true)
+                                       (script/restart)
+                                       (script/stop)
+                                       (:runtime (get (deref script/+scripts+) ['demo.a :postgres])))))
+              :expected nil}])
+
+^{:refer lang.core.script/eval-form}
+(Test/check [{:name "reports an unstarted script as a dependency error"
+              :test (fn [] (try (script/eval-form :postgres '(+ 1 2))
+                                (catch error (:ex/code (ex-data error)))))
+              :expected :hara/dependency}])
+
+^{:refer lang.core.script/eval-forms}
+(Test/check [{:name "delegates every form to the configured evaluator"
+              :test (fn [] (try (script/eval-forms :postgres ['(+ 1 2)])
+                                (catch error (:ex/code (ex-data error)))))
+              :expected :hara/dependency}])

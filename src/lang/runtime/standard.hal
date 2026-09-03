@@ -1,0 +1,166 @@
+(ns lang.runtime.standard)
+
+;; XTalk arrays and objects are Hara native values. This namespace only maps
+;; the portable operation names and the few return conventions that differ.
+
+(defn arr-new
+  [& values]
+  (apply Arr/new values))
+
+(defn arr?
+  [value]
+  (= (type value) :std.native.Array))
+
+(defn arr-get
+  ([array index]
+   (Arr/get array index))
+  ([array index default]
+   (if (and (>= index 0)
+            (< index (count array)))
+     (Arr/get array index)
+     default)))
+
+(defn arr-set
+  [array index value]
+  (Arr/set array index value))
+
+(defn arr-clone
+  [array]
+  (Arr/clone array))
+
+(defn arr-push
+  [array value]
+  (Arr/push-last array value))
+
+(defn arr-pop
+  [array]
+  (Arr/pop-last array))
+
+(defn arr-push-first
+  [array value]
+  (Arr/push-first array value))
+
+(defn arr-pop-first
+  [array]
+  (Arr/pop-first array))
+
+(defn arr-insert
+  [array index value]
+  (Arr/insert array index value))
+
+(defn arr-remove
+  [array index]
+  (Arr/remove array index))
+
+(defn arr-slice
+  ([array start]
+   (Arr/slice array start))
+  ([array start end]
+   (Arr/slice array start end)))
+
+(defn arr-reverse
+  [array]
+  (loop [left 0
+         right (- (count array) 1)]
+    (if (< left right)
+      (let [left-value (Arr/get array left)
+            right-value (Arr/get array right)]
+        (do
+          (Arr/set array left right-value)
+          (Arr/set array right left-value)
+          (recur (+ left 1) (- right 1))))
+      array)))
+
+(defn arr-map
+  [array function]
+  (Arr/map array function))
+
+(defn arr-filter
+  [array predicate]
+  (Arr/filter array predicate))
+
+(defn arr-fold-left
+  [array function initial]
+  (Arr/fold-left array function initial))
+
+(defn arr-fold-right
+  [array function initial]
+  (Arr/fold-right array function initial))
+
+(defn obj-new
+  [& entries]
+  (apply Obj/new entries))
+
+(defn obj?
+  [value]
+  (= (type value) :std.native.Object))
+
+(defn obj-get
+  ([object key]
+   (Obj/get object key))
+  ([object key default]
+   (if (Obj/has? object key)
+     (Obj/get object key)
+     default)))
+
+(defn obj-set
+  [object key value]
+  (Obj/set object key value))
+
+(defn obj-has?
+  [object key]
+  (Obj/has? object key))
+
+(defn obj-delete
+  [object key]
+  (Obj/delete object key))
+
+(defn obj-clone
+  [object]
+  (Obj/clone object))
+
+(defn obj-assign
+  [object source]
+  (Obj/assign object source))
+
+(defn obj-keys
+  [object]
+  (Obj/keys object))
+
+(defn obj-vals
+  [object]
+  (Obj/vals object))
+
+(defn obj-pairs
+  [object]
+  (Obj/pairs object))
+
+(defn entry-get
+  [container key]
+  (if (arr? container)
+    (arr-get container key)
+    (obj-get container key)))
+
+(defn entry-set
+  [container key value]
+  (if (arr? container)
+    (arr-set container key value)
+    (obj-set container key value)))
+
+(defn set-path
+  "Mutates an existing native Obj/Arr path and returns the assigned value."
+  [root path value]
+  (let [path (vec path)]
+    (if (= 0 (count path))
+      (throw
+       (ex :io {:lang/error-code :lang.standard/empty-path} :ex/message "XTalk path assignment requires at least one key"))
+      (let [key (first path)]
+        (if (= 1 (count path))
+          (do
+            (entry-set root key value)
+            value)
+          (do
+            (set-path (entry-get root key)
+                       (vec (drop 1 path))
+                       value)
+            value))))))

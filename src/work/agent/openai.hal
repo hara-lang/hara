@@ -1,0 +1,136 @@
+(ns work.agent.openai
+  (:require [work.agent.result :as result]
+            [work.agent.tool :as tool]
+            [work.agent.openai.internal :as internal]))
+
+(def ^{:public true} default-endpoint
+  "https://api.openai.com/v1/responses")
+
+(defn wire-field
+  "Reads a string-keyed OpenAI wire field while accepting keyword data."
+  [value name]
+  (internal/wire-field value name))
+
+(defn wire-value
+  "Converts portable Hara values into values accepted by strict JSON."
+  [value]
+  (internal/wire-value value))
+
+(defn client
+  "Creates a process-local OpenAI Responses client around an injected HTTP
+   transport. The client and transport live in the bundle target table; the
+   Work plan contains only stable target names."
+  [options]
+  (let [options (or options {})
+        model (:model options)
+        transport (:transport options)]
+    (if (or (not (string? model)) (= model ""))
+      (throw
+       (ex :dependency {:model model}
+           :ex/message "OpenAI client requires a model string")))
+    (if (not (fn? transport))
+      (throw
+       (ex :dependency {}
+           :ex/message "OpenAI client requires a transport function")))
+    {:openai/model model
+     :openai/api-key (:api-key options)
+     :openai/endpoint (or (:endpoint options) default-endpoint)
+     :openai/headers (or (:headers options) {})
+     :openai/request (merge (wire-value {:store false})
+                            (wire-value (or (:request options) {})))
+     :openai/transport transport}))
+
+(defn input-message
+  "Creates one Responses API input message."
+  ([content]
+   (input-message "user" content))
+  ([role content]
+   {:role role
+    :content content}))
+
+(defn request-body
+  "Builds one strict-JSON-safe OpenAI Responses request body."
+  [client request]
+  (let [request (or request {})
+        instructions (:instructions request)
+        tools (tool/openai-specs (:tools request))
+        base (merge
+              (:openai/request client)
+              (wire-value (or (:request request) {})))
+        base (assoc
+              (assoc base "model" (:openai/model client))
+              "input"
+              (wire-value (:input request)))
+        base (if (nil? instructions)
+               base
+               (assoc base "instructions" instructions))]
+    (if (empty? tools)
+      base
+      (assoc base "tools" (wire-value tools)))))
+
+(defn http-request
+  "Builds the transport request for one OpenAI Responses call."
+  [client request]
+  {:method "POST"
+   :url (:openai/endpoint client)
+   :headers (internal/request-headers client)
+   :body (Json/write (request-body client request))})
+
+(defn response-value
+  "Parses a direct OpenAI response or an HTTP transport envelope."
+  [value]
+  (cond
+    (string? value)
+    (Json/read value)
+
+    (map? value)
+    (let [body (wire-field value "body")]
+      (if (nil? body)
+        value
+        (let [status (wire-field value "status")
+              parsed (internal/parsed-body body)]
+          (if (and (number? status) (>= status 400))
+            (throw
+             (ex :syntax {:status status :response parsed}
+                 :ex/message "OpenAI request failed"))
+            parsed))))
+
+    :else
+    (throw
+     (ex :io {:value value}
+         :ex/message "OpenAI transport returned an unsupported value"))))
+
+(defn normalize-response
+  "Normalizes an OpenAI Responses result while retaining raw output items."
+  [response]
+  (let [response (response-value response)
+        text (internal/output-text response)
+        text (if (= text "") (wire-field response "output_text") text)]
+    {:response/id (wire-field response "id")
+     :response/status (wire-field response "status")
+     :response/output (internal/output-items response)
+     :response/text (if (= text "") nil text)
+     :response/tool-calls (internal/function-calls response)
+     :response/usage (wire-field response "usage")
+     :response/raw response}))
+
+(defn complete
+  "Calls the injected OpenAI transport and normalizes its response."
+  [client request]
+  (result/then
+   ((:openai/transport client) (http-request client request))
+   normalize-response))
+
+(defn tool-output-item
+  "Creates one Responses API function_call_output input item."
+  [value]
+  {:type "function_call_output"
+   :call_id (:call/id value)
+   :output (Json/write
+            (wire-value
+             (internal/tool-result-body value wire-value)))})
+
+(defn tool-output-items
+  "Creates Responses API function-call outputs in call order."
+  [values]
+  (vec (map tool-output-item values)))

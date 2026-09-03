@@ -1,0 +1,520 @@
+(ns lang.common.compiler-test
+  (:require [lang.common.compiler :as compiler]
+            [lang.common.grammar-api :as grammar]
+            [lang.common.preprocess-assign :as assign]
+            [lang.common.registry :as registry]
+            [lang.common.grammar-spec :as spec]
+            [lang.model.v1.spec-xtalk :as spec-xtalk]
+            [lang.protocol.compiler :as protocol]))
+
+(defn rewrite-canonical
+  [form context]
+  (if (= form '(+ 1 2)) '(+ 2 2) form))
+
+(defn rewrite-target
+  [form context]
+  (if (= form '(+ 2 2)) '(+ 2 3) form))
+
+(defn rewrite-staging
+  [form context]
+  (if (= form '(+ 2 3)) '(+ 3 3) form))
+
+(defstruct InspectingInferencer [])
+
+(extend-type InspectingInferencer protocol/IInferencer
+  (infer-form [inferencer canonical selected context]
+    {:observed canonical}))
+
+(defstruct WarningLinter [])
+
+(extend-type WarningLinter protocol/ILinter
+  (lint-form [linter canonical inference selected context]
+    [{:level :warning :code :demo/lint :form canonical :inference inference}]))
+
+(def template
+  (grammar/emit-template
+   {:template/id :fixture
+    :template/version 1
+    :template/value {:token {:nil "null"}}}))
+
+(def grammar-source
+  (grammar/definition
+   {:grammar/id :fixture
+    :grammar/version 1
+    :grammar/release "v1"
+    :grammar/emit-template {:template/id :fixture :template/version 1}
+    :operators {:define {:add {:op :add :symbol #{'+} :type :operator
+                               :emit :infix :raw "+"}}}
+    :grammar/rewrite
+    {:canonical {:append ['lang.common.compiler-test/rewrite-canonical]}
+     :target {:append ['lang.common.compiler-test/rewrite-target]}
+     :staging {:append ['lang.common.compiler-test/rewrite-staging]}}}))
+
+(def catalog
+  (registry/install
+   (registry/install (registry/registry) template)
+   grammar-source))
+
+(def selected
+  (assoc spec-xtalk/+selection+
+         :rewrite {:canonical [rewrite-canonical]
+                   :target [rewrite-target]
+                   :staging [rewrite-staging]}))
+
+(defn entry-format
+  [form]
+  [{:formatted true} form])
+
+(defn entry-hydrate
+  [form built context]
+  {:metadata {:static/schema-seed {:tree {:Task {:id [{:type :uuid}]}}}}
+   :form form
+   :contributions [{:kind :postgres/schema :table :Task}]})
+
+(def published (atom []))
+
+(defn entry-publish
+  [entry]
+  (swap! published conj (:id entry))
+  {:accepted (:id entry)})
+
+(def selected-entry
+  (let [formatted (assoc-in selected [:grammar :reserved '+ :format] entry-format)
+        hydrated (assoc-in formatted [:grammar :reserved '+ :hydrate] entry-hydrate)]
+    (assoc-in hydrated [:grammar :reserved '+ :hydrate-hook] entry-publish)))
+
+^{:refer lang.common.compiler/legacy-language-key?}
+(Test/check
+ [{:name "recognizes only the rejected archive metadata namespace"
+   :test (fn [] [(compiler/legacy-language-key? (keyword "tahto/actor"))
+                 (compiler/legacy-language-key? (keyword "tahto.sql/work"))
+                 (compiler/legacy-language-key? :lang/actor)
+                 (compiler/legacy-language-key? :application/actor)])
+   :expected [true true false false]}])
+
+^{:refer lang.common.compiler/assert-canonical-map}
+(Test/check
+ [{:name "retains canonical metadata and rejects dynamically constructed legacy keys"
+   :test (fn [] [(compiler/assert-canonical-map {:lang/actor :build})
+                 (try (compiler/assert-canonical-map
+                       {(keyword "tahto/actor") :legacy})
+                      :no-error
+                      (catch error (:ex/code (ex-data error))))])
+   :expected [{:lang/actor :build} :hara/argument]}])
+
+^{:refer lang.common.compiler/InputNormalizer}
+(Test/check
+ [{:name "normalizes raw forms through the shared input stage"
+   :test (fn [] (protocol/normalize-form (compiler/input-normalizer) '(+ 1 2) {}))
+   :expected '(+ 1 2)}])
+
+^{:refer lang.common.compiler/built-grammar}
+(Test/check
+ [{:name "accepts both selections and concrete grammar maps"
+   :test (fn [] [(get (compiler/built-grammar selected) :tag)
+                 (get (compiler/built-grammar {:tag :direct}) :tag)])
+   :expected [:xtalk :direct]}])
+
+^{:refer lang.common.compiler/entry-form}
+(Test/check
+ [{:name "prefers raw then formatted then emitted entry forms"
+   :test (fn [] [(compiler/entry-form {:form-raw :raw :form-input :input :form :form})
+                 (compiler/entry-form {:form-input :input :form :form})
+                 (compiler/entry-form {:form :form})])
+   :expected [:raw :input :form]}])
+
+^{:refer lang.common.compiler/reserved-entry}
+(Test/check
+ [{:name "looks up operation metadata in a selected grammar"
+   :test (fn [] (select-keys (compiler/reserved-entry {:op '+} selected) [:op :raw]))
+   :expected {:op :add :raw "+"}}])
+
+^{:refer lang.common.compiler/IdentityEntryFormatter}
+(Test/check
+ [{:name "adds a missing form-input without changing present entries"
+   :test (fn [] [(protocol/format-entry (compiler/identity-entry-formatter)
+                                        {:form :source} selected {})
+                 (protocol/format-entry (compiler/identity-entry-formatter)
+                                        {:form :source :form-input :kept} selected {})])
+   :expected [{:form :source :form-input :source}
+              {:form :source :form-input :kept}]}])
+
+^{:refer lang.common.compiler/format-result}
+(Test/check
+ [{:name "merges formatter metadata pairs and accepts direct forms"
+   :test (fn [] [(compiler/format-result {:id 'Task} [{:formatted true} '(+ 1 2)])
+                 (compiler/format-result {:id 'Task} '(+ 1 2))])
+   :expected [{:id 'Task :formatted true :form-input '(+ 1 2)}
+              {:id 'Task :form-input '(+ 1 2)}]}])
+
+^{:refer lang.common.compiler/GrammarEntryFormatter}
+(Test/check
+ [{:name "uses a declared formatter hook for grammar-owned entries"
+   :test (fn [] (protocol/format-entry (compiler/grammar-entry-formatter)
+                                        {:id 'Task :op '+ :form-raw '(+ 1 2)}
+                                        selected-entry {}))
+   :expected {:id 'Task :op '+ :form-raw '(+ 1 2)
+              :formatted true :form-input '(+ 1 2)}}])
+
+^{:refer lang.common.compiler/IdentityEntryHydrator}
+(Test/check
+ [{:name "returns normalized forms with no contributions"
+   :test (fn [] (protocol/hydrate-entry (compiler/identity-entry-hydrator)
+                                        {:id 'Task} '(+ 1 2) selected {}))
+   :expected {:entry {:id 'Task} :form '(+ 1 2) :contributions []}}])
+
+^{:refer lang.common.compiler/hydration-result}
+(Test/check
+ [{:name "normalizes map pair and direct hydration shapes"
+   :test (fn [] [(compiler/hydration-result {:id 'Task} '(+ 1 2)
+                                          {:metadata {:formatted true}
+                                           :form '(+ 2 2)
+                                           :contributions [:schema]})
+                 (compiler/hydration-result {:id 'Task} '(+ 1 2)
+                                          [{:lang/contributions [:schema]} '(+ 2 2)])
+                 (compiler/hydration-result {:id 'Task} '(+ 1 2) nil)])
+   :expected [{:entry {:id 'Task :formatted true}
+               :form '(+ 2 2) :contributions [:schema]}
+              {:entry {:id 'Task :lang/contributions [:schema]}
+               :form '(+ 2 2) :contributions [:schema]}
+              {:entry {:id 'Task} :form '(+ 1 2) :contributions []}]}])
+
+^{:refer lang.common.compiler/GrammarEntryHydrator}
+(Test/check
+ [{:name "uses a grammar hydrator hook and retains its contributions"
+   :test (fn [] (protocol/hydrate-entry (compiler/grammar-entry-hydrator)
+                                        {:id 'Task :op '+ :form-input '(+ 1 2)}
+                                        '(+ 1 2) selected-entry {}))
+   :expected {:entry {:id 'Task :op '+ :form-input '(+ 1 2)
+                      :static/schema-seed {:tree {:Task {:id [{:type :uuid}]}}}}
+              :form '(+ 1 2)
+              :contributions [{:kind :postgres/schema :table :Task}]}}])
+
+^{:refer lang.common.compiler/StructuralStager}
+(Test/check
+ [{:name "keeps structural forms and empty dependency buckets"
+   :test (fn [] (protocol/stage-form (compiler/structural-stager) '(+ 1 2) selected {}))
+   :expected {:form '(+ 1 2) :dependencies {:code #{} :fragment #{} :native {}}}}])
+
+^{:refer lang.common.compiler/GrammarStager}
+(Test/check
+ [{:name "stages forms through module aliases and records dependencies"
+   :test (fn [] (protocol/stage-form
+                 (compiler/grammar-stager)
+                 '(call u/value)
+                 {:grammar {}}
+                 {:modules {'demo {:id 'demo :code {'value {:id 'value :op 'def}}}}
+                  :module {:id 'current :link {'u 'demo}}}))
+   :expected {:form '(call demo/value)
+              :dependencies {:code '#{demo/value} :fragment #{} :native {}}}}])
+
+^{:refer lang.common.compiler/unwrap-protected-form}
+(Test/check
+ [{:name "removes protected heads recursively before emission"
+   :test (fn [] (compiler/unwrap-protected-form
+                 (list (assign/ProtectedHead '+)
+                       [(assign/ProtectedHead 'call) 1])))
+   :expected '(+ [call 1])}])
+
+^{:refer lang.common.compiler/EmptyInferencer}
+(Test/check
+ [{:name "provides an empty default inference result"
+   :test (fn [] (protocol/infer-form (compiler/empty-inferencer) '(+ 1 2) selected {}))
+   :expected {:types {}}}])
+
+^{:refer lang.common.compiler/EmptyLinter}
+(Test/check
+ [{:name "provides no diagnostics by default"
+   :test (fn [] (protocol/lint-form (compiler/empty-linter) '(+ 1 2) {} selected {}))
+   :expected []}])
+
+^{:refer lang.common.compiler/apply-rewrite-phase}
+(Test/check
+ [{:name "runs one declared rewrite phase in order"
+   :test (fn [] [(compiler/apply-rewrite-phase :canonical '(+ 1 2) selected {})
+                 (compiler/apply-rewrite-phase :target '(+ 2 2) selected {})])
+   :expected ['(+ 2 2) '(+ 2 3)]}])
+
+^{:refer lang.common.compiler/lower-form}
+(Test/check
+ [{:name "lowers nested lists vectors maps and sets"
+   :test (fn [] (compiler/lower-form
+                 '(x:get-idx values (x:get-idx indexes 0))
+                 {:reserved {'x:get-idx {:lower (fn [form]
+                                            (spec/as-list ['. (nth form 1) [(nth form 2)]]))}}}
+                 {}))
+   :expected '(. values [(. indexes [0])])}])
+
+^{:refer lang.common.compiler/lower-form}
+(Test/check
+ [{:name "preserves generated branch controls while lowering their bodies"
+   :test (fn [] (compiler/lower-form
+                 '(if check (if nested (return value)))
+                 {:reserved
+                  {'if {:lower (fn [form]
+                                 (spec/as-list
+                                  ['br*
+                                   (spec/as-list ['if
+                                                  (nth form 1)
+                                                  (nth form 2)])]))}
+                   'br* {:block {:control {:if {:main #{:parameter :body}}}}}}}
+                 {}))
+   :expected '(br* (if check (br* (if nested (return value)))))}])
+
+^{:refer lang.common.compiler/GrammarRewriter}
+(Test/check
+ [{:name "applies target lowering after target rewrites"
+   :test (fn [] (protocol/rewrite-form (compiler/grammar-rewriter)
+                                        :target '(+ 2 2) selected {}))
+   :expected '(+ 2 3)}])
+
+^{:refer lang.common.compiler/phase-error-code}
+(Test/check
+ [{:name "maps every public compiler phase to a stable error code"
+   :test (fn [] [(compiler/phase-error-code :format)
+                 (compiler/phase-error-code :publish)
+                 (compiler/phase-error-code :unknown)])
+   :expected [:lang/error-format :lang/error-publish :lang/error-compiler]}])
+
+^{:refer lang.common.compiler/phase-context}
+(Test/check
+ [{:name "attaches phase and grammar provenance"
+   :test (fn [] (select-keys (compiler/phase-context {:lang/module 'demo} selected :lint)
+                             [:compiler/phase :lang/phase :lang/module :lang/grammar-coordinate]))
+   :expected {:compiler/phase :lint :lang/phase :lint :lang/module 'demo
+              :lang/grammar-coordinate (:coordinate selected)}}])
+
+^{:refer lang.common.compiler/run-phase}
+(Test/check
+ [{:name "runs a phase once and wraps thrown phase errors"
+   :test (fn [] (let [calls (atom 0)
+                       result (compiler/run-phase :emit selected {}
+                                                  (fn [context]
+                                                    (swap! calls inc)
+                                                    :done))]
+                   [result (deref calls)]))
+   :expected [:done 1]}])
+
+^{:refer lang.common.compiler/normalize-dependencies}
+(Test/check
+ [{:name "normalizes nil maps and code sets into dependency buckets"
+   :test (fn [] [(compiler/normalize-dependencies nil)
+                 (compiler/normalize-dependencies #{'demo/value})
+                 (compiler/normalize-dependencies {:fragment #{'demo/CONSTANT}})])
+   :expected [{:code #{} :fragment #{} :native {}}
+              {:code #{'demo/value} :fragment #{} :native {}}
+              {:code #{} :fragment #{'demo/CONSTANT} :native {}}]}])
+
+^{:refer lang.common.compiler/stage-result}
+(Test/check
+ [{:name "preserves staged dependency maps and wraps direct forms"
+   :test (fn [] [(compiler/stage-result {:form '(+ 1 2) :dependencies #{'demo/value}})
+                 (compiler/stage-result '(+ 1 2))])
+   :expected [{:form '(+ 1 2)
+               :dependencies {:code #{'demo/value} :fragment #{} :native {}}}
+              {:form '(+ 1 2)
+               :dependencies {:code #{} :fragment #{} :native {}}}]}])
+
+^{:refer lang.common.compiler/worklog-fields}
+(Test/check
+ [{:name "retains only explicit work attribution"
+   :test (fn [] (compiler/worklog-fields {:lang/actor :build :lang/source :input
+                                           :lang/work :output :other :ignored}))
+   :expected {:lang/actor :build :lang/source :input :lang/work :output}}])
+
+^{:refer lang.common.compiler/worklog-event}
+(Test/check
+ [{:name "builds one indexed phase event"
+   :test (fn [] (compiler/worklog-event 2 :emit "1 + 2" {:lang/actor :build}))
+   :expected {:index 2 :phase :emit :value "1 + 2" :lang/actor :build}}])
+
+^{:refer lang.common.compiler/append-event}
+(Test/check
+ [{:name "appends events with a next index"
+   :test (fn [] (compiler/append-event [{:index 0 :phase :normalize}]
+                                        :emit "1 + 2" {}))
+   :expected [{:index 0 :phase :normalize}
+              {:index 1 :phase :emit :value "1 + 2"}]}])
+
+^{:refer lang.common.compiler/Compiler}
+(Test/check
+ [{:name "constructs a complete compiler component record"
+   :test (fn [] (let [value (compiler/compiler)]
+                  [(instance? lang.common.compiler/Compiler value)
+                   (type (:emitter value))]))
+   :expected [true :lang.common.emit.Emitter]}])
+
+^{:refer lang.common.compiler/compile}
+(Test/check
+ [{:name "runs normalized staged rewritten inferred linted and emitted phases"
+   :test (fn [] (let [value (compiler/compile
+                            (compiler/compiler {:inferencer (InspectingInferencer)
+                                                :linter (WarningLinter)})
+                            '(+ 1 2)
+                            selected
+                            {:lang/actor :build :lang/source :input :lang/work :output})]
+                  [(:output value)
+                   (get-in value [:stages :canonical])
+                   (get-in value [:stages :staging])
+                   (:inference value)
+                   (map (fn [event] (:phase event))
+                        (get-in value [:provenance :events]))]))
+   :expected ["3 + 3" '(+ 2 2) '(+ 3 3) {:observed '(+ 2 2)}
+              [:normalize :stage :rewrite/canonical :infer :lint
+               :rewrite/target :rewrite/staging :emit]]}])
+
+^{:refer lang.common.compiler/emit-direct}
+(Test/check
+ [{:name "emits a prepared form without re-entering the compiler pipeline"
+   :test (fn [] (compiler/emit-direct '(+ 1 2) selected {}))
+   :expected "1 + 2"}])
+
+^{:refer lang.common.compiler/compile-entry}
+(Test/check
+ [{:name "hydrates contributions without publishing them"
+   :test (fn [] (do
+                  (reset! published [])
+                  (let [value (compiler/compile-entry
+                               (compiler/compiler)
+                               {:op '+ :id 'Task :module 'demo.schema :form-raw '(+ 1 2)}
+                               selected-entry)]
+                    [(get-in value [:entry :formatted])
+                     (get-in value [:entry :static/schema-seed :tree :Task :id 0 :type])
+                     (:contributions value)
+                     (deref published)])))
+   :expected [true :uuid [{:kind :postgres/schema :table :Task}] []]}])
+
+^{:refer lang.common.compiler/IdentityEntryPublisher}
+(Test/check
+ [{:name "keeps entry publication explicit by default"
+   :test (fn [] (protocol/publish-entry (compiler/identity-entry-publisher)
+                                         {:id 'Task} [:schema] {}))
+   :expected {:published false :entry {:id 'Task} :contributions [:schema]}}])
+
+^{:refer lang.common.compiler/GrammarEntryPublisher}
+(Test/check
+ [{:name "runs a grammar hydrate hook only when publication is requested"
+   :test (fn [] (do
+                  (reset! published [])
+                  (protocol/publish-entry (compiler/grammar-entry-publisher selected-entry)
+                                          {:id 'Task :op '+} [] {})))
+   :expected {:published true :value {:accepted 'Task}
+              :entry {:id 'Task :op '+} :contributions []}}])
+
+^{:refer lang.common.compiler/publish}
+(Test/check
+ [{:name "publishes compiled contributions through an explicit publisher"
+   :test (fn [] (do
+                  (reset! published [])
+                  (let [compiled (compiler/compile-entry
+                                  (compiler/compiler)
+                                  {:op '+ :id 'Task :module 'demo.schema :form-raw '(+ 1 2)}
+                                  selected-entry)
+                        result (compiler/publish
+                                (compiler/grammar-entry-publisher selected-entry)
+                                compiled)]
+                    [(:published result) (get-in result [:value :accepted]) (deref published)])))
+   :expected [true 'Task ['Task]]}])
+
+^{:refer lang.common.compiler/input-normalizer}
+(Test/check
+ [{:name "constructs the input normalizer component"
+   :test (fn [] (instance? lang.common.compiler/InputNormalizer
+                           (compiler/input-normalizer)))
+   :expected true}])
+
+^{:refer lang.common.compiler/identity-entry-formatter}
+(Test/check
+ [{:name "constructs the identity entry formatter component"
+   :test (fn [] (instance? lang.common.compiler/IdentityEntryFormatter
+                           (compiler/identity-entry-formatter)))
+   :expected true}])
+
+^{:refer lang.common.compiler/grammar-entry-formatter}
+(Test/check
+ [{:name "constructs the grammar entry formatter component"
+   :test (fn [] (instance? lang.common.compiler/GrammarEntryFormatter
+                           (compiler/grammar-entry-formatter)))
+   :expected true}])
+
+^{:refer lang.common.compiler/identity-entry-hydrator}
+(Test/check
+ [{:name "constructs the identity entry hydrator component"
+   :test (fn [] (instance? lang.common.compiler/IdentityEntryHydrator
+                           (compiler/identity-entry-hydrator)))
+   :expected true}])
+
+^{:refer lang.common.compiler/grammar-entry-hydrator}
+(Test/check
+ [{:name "constructs the grammar entry hydrator component"
+   :test (fn [] (instance? lang.common.compiler/GrammarEntryHydrator
+                           (compiler/grammar-entry-hydrator)))
+   :expected true}])
+
+^{:refer lang.common.compiler/structural-stager}
+(Test/check
+ [{:name "constructs the structural stager component"
+   :test (fn [] (instance? lang.common.compiler/StructuralStager
+                           (compiler/structural-stager)))
+   :expected true}])
+
+^{:refer lang.common.compiler/grammar-stager}
+(Test/check
+ [{:name "constructs the grammar stager component"
+   :test (fn [] (instance? lang.common.compiler/GrammarStager
+                           (compiler/grammar-stager)))
+   :expected true}])
+
+^{:refer lang.common.compiler/empty-inferencer}
+(Test/check
+ [{:name "constructs the empty inferencer component"
+   :test (fn [] (instance? lang.common.compiler/EmptyInferencer
+                           (compiler/empty-inferencer)))
+   :expected true}])
+
+^{:refer lang.common.compiler/empty-linter}
+(Test/check
+ [{:name "constructs the empty linter component"
+   :test (fn [] (instance? lang.common.compiler/EmptyLinter
+                           (compiler/empty-linter)))
+   :expected true}])
+
+^{:refer lang.common.compiler/grammar-rewriter}
+(Test/check
+ [{:name "constructs the grammar rewriter component"
+   :test (fn [] (instance? lang.common.compiler/GrammarRewriter
+                           (compiler/grammar-rewriter)))
+   :expected true}])
+
+^{:refer lang.common.compiler/compile-staged}
+(Test/check
+ [{:name "runs the post-normalization compiler phases exactly once"
+   :test (fn []
+           (let [result (compiler/compile-staged
+                         (compiler/compiler)
+                         selected
+                         {}
+                         {:raw '(+ 1 2) :normalized '(+ 1 2)}
+                         [(compiler/worklog-event 0 :normalize '(+ 1 2) {})]
+                         '(+ 1 2))]
+             [(:output result)
+              (map (fn [event] (:phase event))
+                   (get-in result [:provenance :events]))]))
+   :expected ["3 + 3"
+              [:normalize :stage :rewrite/canonical :infer :lint
+               :rewrite/target :rewrite/staging :emit]]}])
+
+^{:refer lang.common.compiler/identity-entry-publisher}
+(Test/check
+ [{:name "constructs an explicit no-op publisher"
+   :test (fn [] (instance? lang.common.compiler/IdentityEntryPublisher
+                           (compiler/identity-entry-publisher)))
+   :expected true}])
+
+^{:refer lang.common.compiler/grammar-entry-publisher}
+(Test/check
+ [{:name "constructs a publisher pinned to its selected grammar"
+   :test (fn [] (let [value (compiler/grammar-entry-publisher selected-entry)]
+                  [(instance? lang.common.compiler/GrammarEntryPublisher value)
+                   (= selected-entry (:selected value))]))
+   :expected [true true]}])

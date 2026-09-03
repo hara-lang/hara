@@ -13,13 +13,17 @@
 (defn hydrate-entry
   [entry]
   (reduce (fn [record field]
-            (let [reference (get record field)]
-              (if (and (symbol? reference) (namespace reference))
-                (let [resolved (std.foundation/resolve reference)]
-                  (if resolved
-                    (assoc record field resolved)
-                    (throw (ex :dependency {:field field :reference reference}
-                               :ex/message "Unable to hydrate V1 grammar reference"))))
+            (let [reference (get record field)
+                  resolved (cond
+                             (and (symbol? reference) (namespace reference))
+                             (std.foundation/resolve reference)
+
+                             (= (type reference) :std.native.Var)
+                             reference
+
+                             :else nil)]
+              (if resolved
+                (assoc record field (deref resolved))
                 record)))
           entry
           +reference-fields+))

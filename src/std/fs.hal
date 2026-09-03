@@ -1,0 +1,83 @@
+(ns std.fs
+  (:require [std.fs.path :as path]))
+
+(defn ^{:public true} stat
+  [value]
+  (deref (File/stat (path/normalise value))))
+
+(defn ^{:public true} exists?
+  [value]
+  (deref (File/exists? (path/normalise value))))
+
+(defn ^{:public true} read-bytes
+  [value]
+  (deref (File/read (path/normalise value))))
+
+(defn ^{:public true} write-bytes
+  ([value bytes]
+   (write-bytes value bytes {}))
+  ([value bytes options]
+   (deref (File/write (path/normalise value) bytes options))))
+
+(defn ^{:public true} create-directory
+  ([value]
+   (create-directory value {}))
+  ([value options]
+   (deref (File/mkdir (path/normalise value) options))))
+
+(def ^{:public true} mkdir create-directory)
+
+(defn ^{:public true} temp-file
+  ([parent]
+   (temp-file parent {}))
+  ([parent options]
+   (deref (File/temp-file (path/normalise parent) options))))
+
+(defn ^{:public true} temp-directory
+  ([parent]
+   (temp-directory parent {}))
+  ([parent options]
+   (deref (File/temp-directory (path/normalise parent) options))))
+
+(defn ^{:public true} delete
+  ([value]
+   (delete value {}))
+  ([value options]
+   (let [value (path/normalise value)
+         options (or options {})]
+     (if (:recursive? options)
+       (if (exists? value)
+         (letfn [(delete-node [current]
+                   (let [entry (stat current)]
+                     (if (= :directory (:type entry))
+                       (let [deleted
+                             (reduce
+                              (fn [output child]
+                                (reduce conj output
+                                        (delete-node (:path child))))
+                              []
+                              (deref (File/entries current)))]
+                         (conj deleted
+                               (deref (File/delete current
+                                                  {:missing-ok? false}))))
+                       [(deref (File/delete current
+                                           {:missing-ok? false}))])))]
+           (delete-node value))
+         (if (:missing-ok? options)
+           []
+           [(deref (File/delete value {:missing-ok? false}))]))
+       (deref (File/delete value options))))))
+
+(defn ^{:public true} select
+  "Returns file-walk entries accepted by predicate."
+  ([value predicate]
+   (select value predicate {}))
+  ([value predicate options]
+   (let [entries (vec
+                  (map
+                   (fn [entry]
+                     {:path entry
+                      :name (path/file-name entry)
+                      :type (:type (deref (File/stat entry)))})
+                   (deref (File/walk (path/normalise value)))))]
+     (vec (filter predicate entries)))))

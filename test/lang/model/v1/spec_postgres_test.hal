@@ -71,3 +71,205 @@
                                   (:grammar postgres/+selection+)
                                   {})))
    :expected sales-tax-output}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-ddl-value}
+(Test/check
+ [{:name "quotes singleton-set lifecycle identifiers"
+   :test (fn [] [(native/pg-ddl-value #{"scratch_v0"})
+                 (native/pg-ddl-value 'Log)])
+   :expected ["\"scratch_v0\"" "\"Log\""]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-section}
+(Test/check
+ [{:name "dispatches keyword-headed lifecycle forms through their grammar emitter"
+   :test (fn [] (native/pg-section [:create-schema :if-not-exists #{"scratch_v0"}]
+                                   (:grammar postgres/+selection+) {}))
+   :expected "CREATE SCHEMA IF NOT EXISTS \"scratch_v0\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-ddl-target}
+(Test/check
+ [{:name "composes dotted lifecycle targets"
+   :test (fn [] (native/pg-ddl-target '(. #{"scratch_v0"} #{"Log"})))
+   :expected "\"scratch_v0\".\"Log\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-create-schema}
+(Test/check
+ [{:name "emits portable create-schema lifecycle forms"
+   :test (fn [] (native/pg-create-schema [:create-schema :if-not-exists #{"scratch_v0"}] {} {}))
+   :expected "CREATE SCHEMA IF NOT EXISTS \"scratch_v0\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-drop-schema}
+(Test/check
+ [{:name "emits portable drop-schema lifecycle forms"
+   :test (fn [] (native/pg-drop-schema [:drop-schema :if-exists #{"scratch_v0"} :cascade] {} {}))
+   :expected "DROP SCHEMA IF EXISTS \"scratch_v0\" CASCADE"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-create-extension}
+(Test/check
+ [{:name "emits portable create-extension lifecycle forms"
+   :test (fn [] (native/pg-create-extension [:create-extension :if-not-exists #{"uuid-ossp"}] {} {}))
+   :expected "CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-drop-extension}
+(Test/check
+ [{:name "emits portable drop-extension lifecycle forms"
+   :test (fn [] (native/pg-drop-extension [:drop-extension :if-exists #{"uuid-ossp"} :cascade] {} {}))
+   :expected "DROP EXTENSION IF EXISTS \"uuid-ossp\" CASCADE"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-drop-policy}
+(Test/check
+ [{:name "emits portable drop-policy lifecycle forms"
+   :test (fn [] (native/pg-drop-policy [:drop-policy :if-exists #{'read-log}
+                                        :on (list '. #{"scratch_v0"} #{'Log})] {} {}))
+   :expected "DROP POLICY IF EXISTS \"read-log\" ON \"scratch_v0\".\"Log\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-drop}
+(Test/check
+ [{:name "emits generic portable pointer teardown forms"
+   :test (fn [] (native/pg-drop [:drop :table :if-exists
+                                 '(. #{"scratch_v0"} #{"Log"}) :cascade] {} {}))
+   :expected "DROP TABLE IF EXISTS \"scratch_v0\".\"Log\" CASCADE"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-ddl-roles}
+(Test/check
+ [{:name "emits unquoted PostgreSQL role lists"
+   :test (fn [] (native/pg-ddl-roles ['anon 'authenticated 'service_role] {} {}))
+   :expected "anon,authenticated,service_role"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-ddl-function-target}
+(Test/check
+ [{:name "emits dotted function targets with typed argument signatures"
+   :test (fn [] (native/pg-ddl-function-target
+                 '(. #{"scratch_v0"} (log-append [:text])) {} {}))
+   :expected "\"scratch_v0\".log_append(TEXT)"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-revoke-all-on-function}
+(Test/check
+ [{:name "emits function privilege revocation"
+   :test (fn [] (native/pg-revoke-all-on-function
+                 [:revoke-all-on-function '(. #{"scratch_v0"} (ping)) :from-public] {} {}))
+   :expected "REVOKE ALL ON FUNCTION \"scratch_v0\".ping() FROM PUBLIC"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-grant-execute-on-function}
+(Test/check
+ [{:name "emits function execute grants"
+   :test (fn [] (native/pg-grant-execute-on-function
+                 [:grant-execute-on-function '(. #{"scratch_v0"} (ping))
+                  :to ['anon 'authenticated 'service_role]] {} {}))
+   :expected "GRANT EXECUTE ON FUNCTION \"scratch_v0\".ping() TO anon,authenticated,service_role"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-alter-table}
+(Test/check
+ [{:name "emits row-level security table alteration"
+   :test (fn [] (native/pg-alter-table
+                 [:alter-table '(. #{"scratch_v0"} #{"Log"}) :enable-row-level-security] {} {}))
+   :expected "ALTER TABLE \"scratch_v0\".\"Log\" ENABLE ROW LEVEL SECURITY"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-grant}
+(Test/check
+ [{:name "emits table permission grants"
+   :test (fn [] (native/pg-grant
+                 [:grant :select :on-table '(. #{"scratch_v0"} #{"Log"}) :to 'authenticated] {} {}))
+   :expected "GRANT SELECT ON TABLE \"scratch_v0\".\"Log\" TO authenticated"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-section-position}
+(Test/check [{:name "finds a clause position in a section"
+              :test (fn [] (native/pg-section-position
+                            [:create-table :if-not-exists #{"Log"} :partition-of #{"Base"}]
+                            :partition-of))
+              :expected 3}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-quoted-values}
+(Test/check [{:name "quotes partition values"
+              :test (fn [] (native/pg-quoted-values (list 'quote (list "west" "east"))))
+              :expected "'west','east'"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-create-table}
+(Test/check [{:name "emits partition-aware create table sections"
+              :test (fn [] (native/pg-create-table
+                            [:create-table :if-not-exists #{"child"}
+                             :partition-of #{"parent"}
+                             :for :values :in (list 'quote (list "west"))]
+                            {} {}))
+              :expected "CREATE TABLE IF NOT EXISTS \"child\" PARTITION OF \"parent\" FOR VALUES IN ('west')"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-clause-token}
+(Test/check [{:name "renders portable clause tokens"
+              :test (fn [] [(native/pg-clause-token :if-not-exists)
+                            (native/pg-clause-token \\)
+                            (native/pg-clause-token #{"Log"})])
+              :expected ["IF NOT EXISTS" "" "\"Log\""]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-create-index}
+(Test/check [{:name "emits a portable create index section"
+              :test (fn [] (native/pg-create-index
+                            [:create-index :if-not-exists #{"log_idx"}
+                             :on #{"Log"} (list 'quote (list ["id"]))]
+                            {} {}))
+              :expected "CREATE INDEX IF NOT EXISTS \"log_idx\" ON \"Log\" (\"id\")"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-drop-policy-if-exists}
+(Test/check [{:name "emits policy teardown"
+              :test (fn [] (native/pg-drop-policy-if-exists
+                            [:drop-policy-if-exists #{"read"} :on #{"Log"}] {} {}))
+              :expected "DROP POLICY IF EXISTS \"read\" ON \"Log\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-create-policy}
+(Test/check [{:name "emits policy creation"
+              :test (fn [] (native/pg-create-policy
+                            [:create-policy #{"read"} :on #{"Log"} :as-permissive]
+                            {} {}))
+              :expected "CREATE POLICY \"read\" ON \"Log\" AS PERMISSIVE"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-drop-publication-if-exists}
+(Test/check [{:name "emits publication teardown"
+              :test (fn [] (native/pg-drop-publication-if-exists
+                            [:drop-publication-if-exists 'pub] {} {}))
+              :expected "DROP PUBLICATION IF EXISTS \"pub\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-create-publication}
+(Test/check [{:name "emits publication creation"
+              :test (fn [] (native/pg-create-publication
+                            [:create-publication 'pub :for :all :tables] {} {}))
+              :expected "CREATE PUBLICATION \"pub\" FOR ALL TABLES"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-drop-subscription-if-exists}
+(Test/check [{:name "emits subscription teardown"
+              :test (fn [] (native/pg-drop-subscription-if-exists
+                            [:drop-subscription-if-exists 'sub] {} {}))
+              :expected "DROP SUBSCRIPTION IF EXISTS \"sub\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-create-subscription}
+(Test/check [{:name "emits subscription creation"
+              :test (fn [] (native/pg-create-subscription
+                            [:create-subscription 'sub :connection "conn"
+                             :publication 'pub] {} {}))
+              :expected "CREATE SUBSCRIPTION \"sub\" CONNECTION 'conn' PUBLICATION \"pub\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-drop-trigger-if-exists}
+(Test/check [{:name "emits trigger teardown"
+              :test (fn [] (native/pg-drop-trigger-if-exists
+                            [:drop-trigger-if-exists 'trg :on #{"Log"}] {} {}))
+              :expected "DROP TRIGGER IF EXISTS \"trg\" ON \"Log\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-create-trigger}
+(Test/check [{:name "emits trigger creation"
+              :test (fn [] (native/pg-create-trigger
+                            [:create-trigger 'trg :on #{"Log"}] {} {}))
+              :expected "CREATE TRIGGER \"trg\" ON \"Log\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-create-role}
+(Test/check [{:name "emits role creation"
+              :test (fn [] (native/pg-create-role [:create-role 'reader :inherit] {} {}))
+              :expected "CREATE ROLE \"reader\" INHERIT"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-drop-role}
+(Test/check [{:name "emits role teardown"
+              :test (fn [] (native/pg-drop-role [:drop-role :if-exists 'reader] {} {}))
+              :expected "DROP ROLE IF EXISTS \"reader\""}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-native/pg-grant-usage}
+(Test/check [{:name "emits schema usage grants"
+              :test (fn [] (native/pg-grant-usage
+                            [:grant-usage :on-schema #{"audit"} :to 'reader] {} {}))
+              :expected "GRANT USAGE ON SCHEMA \"audit\" TO \"reader\""}])

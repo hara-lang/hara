@@ -1,0 +1,220 @@
+(ns lang.core.eval
+  (:require [lang.protocol.runtime :as transport]))
+
+(defstruct EvalRequest [input stage])
+(defstruct EvalExchange [transport request response metadata])
+(defstruct EvalTrace [context profile phases exchange status result error])
+
+(def +plugins+ (atom {}))
+
+;; `:tahto/*` coordinates were accepted by the archived compatibility layer.
+;; The native host preserves one canonical vocabulary and rejects those keys.
+(def +rejected-plugin-root+ "tahto")
+
+(defn legacy-plugin-id?
+  "Returns true for an archive plugin keyword that is no longer accepted."
+  [value]
+  (let [plugin-namespace (if (keyword? value) (namespace value) nil)]
+    (and plugin-namespace
+         (or (= plugin-namespace +rejected-plugin-root+)
+             (str/starts-with? plugin-namespace
+                               (str +rejected-plugin-root+ "."))))))
+
+(defn assert-canonical-plugin-id
+  "Returns a canonical plugin id or rejects a legacy Tahto identifier."
+  [id]
+  (if (legacy-plugin-id? id)
+    (throw
+     (ex :argument {:id id}
+         :ex/message "Legacy Tahto plugin identifiers are not supported"))
+    id))
+
+(defn assert-canonical-plugin-coordinate
+  "Returns a plugin coordinate after validating its identifier."
+  [coordinate]
+  (if (and (vector? coordinate) (= 2 (count coordinate)))
+    (do
+      (assert-canonical-plugin-id (first coordinate))
+      coordinate)
+    (throw
+     (ex :argument {:plugin coordinate}
+         :ex/message "Evaluation plugin coordinate must be [id version]"))))
+
+(defn plugin-snapshot
+  "Captures the registered evaluation phases for deterministic restoration."
+  []
+  (deref +plugins+))
+
+(defn plugin-restore!
+  "Restores registered phases, treating nil as the empty baseline."
+  [snapshot]
+  (reset! +plugins+ (or snapshot {}))
+  (deref +plugins+))
+
+(defn plugin-reset!
+  "Clears all registered phases and is idempotent."
+  []
+  (plugin-restore! nil))
+
+(defn register-plugin
+  "Registers a reusable, versioned evaluation phase function."
+  [id version phase transform]
+  (let [id (assert-canonical-plugin-id id)
+        plugin {:id id
+                :version version
+                :phase phase
+                :transform transform}]
+    (swap! +plugins+ assoc [id version] plugin)
+    plugin))
+
+(defn plugin
+  [coordinate]
+  (let [coordinate (assert-canonical-plugin-coordinate coordinate)]
+    (or (get (deref +plugins+) coordinate)
+        (throw
+         (ex :generic {:plugin coordinate
+                       :registered (keys (deref +plugins+))}
+             :ex/message "Evaluation plugin is not registered")))))
+
+(defn request
+  ([input]
+   (request input :source))
+  ([input stage]
+   (if (instance? lang.core.eval/EvalRequest input)
+     input
+     (lang.core.eval/EvalRequest input stage))))
+
+(defn ensure-promise
+  [value]
+  (if (promise? value) value (promise/from value)))
+
+(defn phase-plugin
+  [descriptor]
+  (cond
+    (function? descriptor) descriptor
+    (vector? descriptor) (get (plugin descriptor) :transform)
+    (map? descriptor)
+    (let [transform (get descriptor :transform)]
+      (if (function? transform)
+        transform
+        (throw
+         (ex :argument {:plugin descriptor}
+             :ex/message "Invalid evaluation plugin descriptor"))))
+    true
+    (throw
+     (ex :argument {:plugin descriptor}
+         :ex/message "Invalid evaluation plugin descriptor"))))
+
+(defn run-phase
+  [frame descriptors]
+  (reduce
+   (fn [pending descriptor]
+     (promise/then
+      pending
+      (fn [current]
+        (ensure-promise ((phase-plugin descriptor) current)))))
+   (promise/from frame)
+   (or descriptors [])))
+
+(defn profile
+  [context]
+  (or (get context :profile)
+      {:input [] :source [] :response []}))
+
+(defn initial-frame
+  [context request options]
+  {:context context
+   :request request
+   :options options
+   :input (get request :input)
+   :source (get request :input)})
+
+(defn eval-raw-context
+  "Bypasses semantic plugins and exposes the transport exchange."
+  [context input options]
+  (let [request (request input)
+        eval-transport (get context :transport)]
+    (if eval-transport
+      (ensure-promise
+       (transport/exchange eval-transport
+                           (get request :input)
+                           options))
+      (throw
+       (ex :generic {:context context}
+           :ex/message "Evaluation context has no transport")))))
+
+(defn eval-context
+  "Runs the runtime-owned input/source/response profile and returns a promise."
+  [context input options]
+  (let [request (request input)
+        selected (profile context)
+        start (initial-frame context request options)]
+    (promise/then
+     (run-phase start (get selected :input))
+     (fn [input-frame]
+       (promise/then
+        (run-phase input-frame (get selected :source))
+        (fn [source-frame]
+          (promise/then
+           (eval-raw-context context
+                             (get source-frame :source)
+                             options)
+           (fn [exchange]
+             (promise/then
+              (run-phase (assoc source-frame :exchange exchange
+                                :response (get exchange :response))
+                         (get selected :response))
+              (fn [response-frame]
+                (if (has? response-frame :result)
+                  (get response-frame :result)
+                  (get response-frame :response))))))))))))
+
+(defn eval-trace
+  "Evaluates and resolves a trace for either success or thrown target error."
+  [context input options]
+  (let [selected (profile context)
+        pending (IContextEval/evaluate context input options)]
+    (promise/catch
+     (promise/then
+      pending
+      (fn [result]
+        (lang.core.eval/EvalTrace
+         context selected [:input :source :transport :response]
+         nil :ok result nil)))
+     (fn [error]
+       (lang.core.eval/EvalTrace
+        context selected [:input :source :transport :response]
+        nil :error nil error)))))
+
+(defn await
+  "Blocking compatibility adapter for promise-first evaluation."
+  ([pending]
+   (await pending 2000))
+  ([pending timeout]
+   (let [marker :lang.eval/timeout
+         value (IDerefTimeout/deref-timeout pending timeout marker)]
+     (if (= marker value)
+       (do
+         (promise/cancel pending)
+         (throw
+          (ex :timeout {:timeout timeout}
+              :ex/message "Evaluation timed out")))
+       value))))
+
+(defn eval-await
+  ([context input]
+   (eval-await context input {}))
+  ([context input options]
+   (await (IContextEval/evaluate context input options)
+          (or (get options :timeout)
+              (get context :timeout)
+              2000))))
+
+(defn eval-raw-await
+  ([context input]
+   (eval-raw-await context input {}))
+  ([context input options]
+   (await (IContextEval/evaluate-raw context input options)
+          (or (get options :timeout)
+              (get context :timeout)
+              2000))))

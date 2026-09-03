@@ -1,0 +1,73 @@
+(ns lang.seedgen.common-util-test (:use code.test) (:require [std.foundation.string :as str] [std.fs :as fs] [lang.seedgen.common-util :as subject]))
+
+(Test/check [{:name "reads UTF-8 source text from a path" :expected "alpha\nβ" :test (fn [] (let [path (fs/temp-file "/" {:prefix "seedgen-read-text-"})] (fs/delete path {:missing-ok? true}) (try (fs/write-bytes path (str/encode-utf8 "alpha\nβ")) (subject/read-text path) (finally (fs/delete path {:missing-ok? true})))))}])
+
+(Test/check [{:name "reads all forms while preserving metadata" :expected [(quote (ns sample)) 2 true] :test (fn [] (let [path (fs/temp-file "/" {:prefix "seedgen-read-forms-"})] (fs/delete path {:missing-ok? true}) (try (fs/write-bytes path (str/encode-utf8 "(ns sample)\n^{:seedgen/skip true}\n(def value 1)\n")) (let [forms (subject/read-forms path)] [(first forms) (count forms) (:seedgen/skip (meta (second forms)))]) (finally (fs/delete path {:missing-ok? true})))))}])
+
+(Test/check [{:name "extracts the :as alias from a matching require vector" :expected [(quote l) nil nil nil] :test (fn [] [(subject/require-alias (quote [tahto.core :as l]) (quote tahto.core)) (subject/require-alias (quote [tahto.core]) (quote tahto.core)) (subject/require-alias (quote [std.fs :as fs]) (quote tahto.core)) (subject/require-alias (quote tahto.core) (quote tahto.core))])}])
+
+(Test/check [{:name "discovers the default and aliased script heads" :expected [#{(quote tahto.core/script-) (quote l/script-)} #{(quote tahto.core/script-)}] :test (fn [] [(subject/seedgen-script-heads (quote (ns sample (:require [tahto.core :as l])))) (subject/seedgen-script-heads (quote (ns sample)))])}])
+
+(Test/check [{:name "collects root and non-root script languages from a test file" :expected [[:js] [:lua]] :test (fn [] (let [path (fs/temp-file "/" {:prefix "seedgen-root-langs-"})] (fs/delete path {:missing-ok? true}) (try (fs/write-bytes path (str/encode-utf8 (str "(ns sample\n" "  (:require [tahto.core :as l]))\n\n" "^{:seedgen/root true}\n" "(l/script- :js {:runtime :basic})\n\n" "(l/script- :lua {:runtime :basic})\n"))) [(subject/seedgen-root-langs path true) (subject/seedgen-root-langs path false)] (finally (fs/delete path {:missing-ok? true})))))}])
+
+(Test/check [{:name "recognizes a skip marker on the namespace form and rejects malformed files" :expected [true false false] :test (fn [] (let [skip-path (fs/temp-file "/" {:prefix "seedgen-skip-"}) keep-path (fs/temp-file "/" {:prefix "seedgen-keep-"})] (fs/delete skip-path {:missing-ok? true}) (fs/delete keep-path {:missing-ok? true}) (try (fs/write-bytes skip-path (str/encode-utf8 "^{:seedgen/skip true}\n(ns sample.skip)\n")) (fs/write-bytes keep-path (str/encode-utf8 "(ns sample.keep)\n")) [(subject/seedgen-skip? skip-path) (subject/seedgen-skip? keep-path) (subject/seedgen-skip? "/tmp/seedgen-file-that-does-not-exist")] (finally (fs/delete skip-path {:missing-ok? true}) (fs/delete keep-path {:missing-ok? true})))))}])
+
+(Test/check [{:name "indexes runtime reference forms" :expected [true true false] :test (fn [] [(has? subject/+seedgen-runtime-reference-heads+ (quote l/rt)) (has? subject/+seedgen-runtime-reference-heads+ (quote notify/wait-on)) (has? subject/+seedgen-runtime-reference-heads+ (quote other/runtime))])}])
+
+(Test/check [{:name "reads parent information from both book representations" :expected [:xtalk :js nil] :test (fn [] [(subject/runtime-book-parent {:parent :xtalk}) (subject/runtime-book-parent {:book {:parent :js}}) (subject/runtime-book-parent {})])}])
+
+(Test/check [{:name "reads grammar tags from both book representations" :expected [:py :lua nil] :test (fn [] [(subject/runtime-book-tag {:grammar {:tag :py}}) (subject/runtime-book-tag {:book {:grammar {:tag :lua}}}) (subject/runtime-book-tag {})])}])
+
+(Test/check [{:name "identifies root runtime books" :expected [true true false] :test (fn [] [(subject/runtime-book-root? {}) (subject/runtime-book-root? {:parent :xtalk}) (subject/runtime-book-root? {:parent :js})])}])
+
+(Test/check [{:name "builds dispatch-to-script mappings from runtime metadata" :expected {"R" :r "dt" :dart "rb" :ruby "js" :js "py" :python} :test (fn [] (select-keys (subject/runtime-config-dispatch-map) ["js" "py" "R" "dt" "rb"]))}])
+
+(Test/check [{:name "builds script-to-dispatch-tag mappings from runtime metadata" :expected {:r :R :python :py :ruby :rb :js :js :dart :dt} :test (fn [] (select-keys (subject/runtime-config-dispatch-tag-map) [:js :python :r :dart :ruby]))}])
+
+(Test/check [{:name "discovers dispatch mappings from installed root runtime books" :expected [true :js :python :lua] :test (fn [] (let [value (subject/snapshot-runtime-dispatch-map)] [(map? value) (get value "js") (get value "py") (get value "lua")]))}])
+
+(Test/check [{:name "discovers reverse dispatch tags from installed runtime books" :expected [true :js :py :lua] :test (fn [] (let [value (subject/snapshot-runtime-dispatch-tag-map)] [(map? value) (get value :js) (get value :python) (get value :lua)]))}])
+
+(Test/check [{:name "combines configured and installed dispatch mappings" :expected [:js :python :dart :r] :test (fn [] (let [value (subject/seedgen-dispatch-map)] [(get value "js") (get value "py") (get value "dt") (get value "R")]))}])
+
+(Test/check [{:name "combines configured and installed reverse dispatch mappings" :expected [:js :py :dt :R] :test (fn [] (let [value (subject/seedgen-dispatch-tag-map)] [(get value :js) (get value :python) (get value :dart) (get value :r)]))}])
+
+(Test/check [{:name "normalizes dispatch tags, aliases, strings, and symbols" :expected [:python :r :dart :js :python] :test (fn [] [(subject/seedgen-normalize-runtime-lang :py) (subject/seedgen-normalize-runtime-lang :R) (subject/seedgen-normalize-runtime-lang :dt) (subject/seedgen-normalize-runtime-lang "js") (subject/seedgen-normalize-runtime-lang (quote py))])}])
+
+(Test/check [{:name "returns the target grammar tag for canonical runtimes" :expected [:py :R :dt :unknown] :test (fn [] [(subject/seedgen-dispatch-tag :python) (subject/seedgen-dispatch-tag :r) (subject/seedgen-dispatch-tag :dart) (subject/seedgen-dispatch-tag :unknown)])}])
+
+(Test/check [{:name "returns display languages after canonical normalization" :expected [:python :r :dart :ruby nil] :test (fn [] [(subject/seedgen-display-lang :python) (subject/seedgen-display-lang :r) (subject/seedgen-display-lang :dart) (subject/seedgen-display-lang :ruby) (subject/seedgen-display-lang nil)])}])
+
+(Test/check [{:name "returns the configured execution mode for a script language" :expected [:twostep :basic nil] :test (fn [] [(subject/seedgen-default-runtime :dart) (subject/seedgen-default-runtime :r) (subject/seedgen-default-runtime :unknown)])}])
+
+(Test/check [{:name "parses dispatch symbols into canonical runtime languages" :expected [:r :python :dart nil] :test (fn [] [(subject/seedgen-dispatch-lang (quote (!.R (+ 1 2)))) (subject/seedgen-dispatch-lang (quote (!.py (+ 1 2)))) (subject/seedgen-dispatch-lang (quote (!.dt (+ 1 2)))) (subject/seedgen-dispatch-lang (quote (+ 1 2)))])}])
+
+(Test/check [{:name "extracts runtime languages from reference forms" :expected [:js :python :lua nil] :test (fn [] [(subject/seedgen-runtime-reference-lang (quote (l/rt :js))) (subject/seedgen-runtime-reference-lang (quote (notify/wait-on :python))) (subject/seedgen-runtime-reference-lang (quote (notify/wait-on [:lua 100]))) (subject/seedgen-runtime-reference-lang (quote (+ 1 2)))])}])
+
+(Test/check [{:name "collects and sorts dispatch languages through nested values" :expected [[:js] [:js :python] [:lua :python] []] :test (fn [] [(subject/seedgen-runtime-dispatch-langs (quote (!.js 1))) (subject/seedgen-runtime-dispatch-langs (quote [(!.js 1) (!.py 2)])) (subject/seedgen-runtime-dispatch-langs (quote {:one (!.lua 1) :two #{(l/rt :python)}})) (subject/seedgen-runtime-dispatch-langs (quote (+ 1 2)))])}])
+
+(Test/check [{:name "returns one language only for an unambiguous form" :expected [:js nil nil] :test (fn [] [(subject/seedgen-form-lang (quote (!.js 1))) (subject/seedgen-form-lang (quote [(!.js 1) (!.py 2)])) (subject/seedgen-form-lang (quote (+ 1 2)))])}])
+
+(Test/check [{:name "indexes fact forms by their refer metadata" :expected [#{(quote sample/hello) (quote sample/world)} true true true] :test (fn [] (let [path (fs/temp-file "/" {:prefix "seedgen-fact-forms-"})] (fs/delete path {:missing-ok? true}) (try (fs/write-bytes path (str/encode-utf8 (str "(ns sample)\n\n" "^{:refer sample/hello}\n" "(fact \"hello\" 1 => 1)\n\n" "^{:refer sample/world}\n" "(fact \"world\" 2 => 2)\n"))) (let [forms (subject/seedgen-fact-forms path)] [(set (keys forms)) (map? forms) (= (quote fact) (first (get forms (quote sample/hello)))) (= (quote fact) (first (get forms (quote sample/world))))]) (finally (fs/delete path {:missing-ok? true})))))}])
+
+(Test/check [{:name "normalizes language metadata entry values" :expected [nil {} {:suppress true} {:value 4}] :test (fn [] [(subject/normalize-seedgen-lang-entry nil) (subject/normalize-seedgen-lang-entry true) (subject/normalize-seedgen-lang-entry {:suppress true}) (subject/normalize-seedgen-lang-entry 4)])}])
+
+(Test/check [{:name "normalizes base config aliases and scalar entries" :expected [{:all {}} {:python {:suppress true} :all {}} {:all {:value :js}}] :test (fn [] [(subject/normalize-seedgen-base-config true) (subject/normalize-seedgen-base-config {:all true :py {:suppress true}}) (subject/normalize-seedgen-base-config :js)])}])
+
+(Test/check [{:name "removes root-only :langs metadata before normalizing" :expected [{:python {} :all {:timeout 10}} {:all {}}] :test (fn [] [(subject/normalize-seedgen-root-config {:langs [:js :lua] :all {:timeout 10} :py true}) (subject/normalize-seedgen-root-config true)])}])
+
+(Test/check [{:name "merges nested language entries and returns nil for empty input" :expected [nil {:python {:b 2 :a 1} :lua {:c 3}}] :test (fn [] [(subject/merge-seedgen-configs) (subject/merge-seedgen-configs {:python {:a 1}} {:python {:b 2}} {:lua {:c 3}})])}])
+
+(Test/check [{:name "collects base, language, and check metadata recursively" :expected [{:python {:suppress true} :lua {:expect 6}} {:all {}} nil] :test (fn [] [(subject/seedgen-base-config (with-meta (quote (fact "TODO")) {:seedgen/base {:python {:suppress true} :lua {:expect 6}}})) (subject/seedgen-base-config (with-meta (quote (fact "TODO")) {:seedgen/base true})) (subject/seedgen-base-config (quote (fact "TODO")))])}])
+
+(Test/check [{:name "combines the unified and legacy seedgen metadata keys" :expected [{:python {:suppress true} :lua {:expect 6}} nil] :test (fn [] [(subject/seedgen-lang-config (with-meta (quote (fact "TODO")) {:seedgen/base {:python {:suppress true}} :seedgen/check {:lua {:expect 6}}})) (subject/seedgen-lang-config (quote (fact "TODO")))])}])
+
+(Test/check [{:name "matches canonical languages, display names, and dispatch tags" :expected [:python :python :lua nil] :test (fn [] (let [config {:python {:suppress true} :all {:timeout 10} :lua {:expect 6}}] [(subject/seedgen-config-entry-lang config :python) (subject/seedgen-config-entry-lang config :py) (subject/seedgen-config-entry-lang config :lua) (subject/seedgen-config-entry-lang config :js)]))}])
+
+(Test/check [{:name "merges the all-language and selected-language entries" :expected [{:suppress true :timeout 1000} {:timeout 1000}] :test (fn [] [(subject/seedgen-lang-entry (with-meta (quote (fact "TODO")) {:seedgen/base {:python {:suppress true} :all {:timeout 1000} :lua {:expect 6}}}) :python) (subject/seedgen-lang-entry (with-meta (quote (fact "TODO")) {:seedgen/base {:python {:suppress true} :all {:timeout 1000}}}) :lua)])}])
+
+(Test/check [{:name "merges the root form's all-language and selected-language entries" :expected [{:extra true :timeout 1000} {:timeout 1000}] :test (fn [] (let [form (with-meta (quote (l/script- :js {:runtime :basic})) {:seedgen/root {:python {:extra true} :all {:timeout 1000}}})] [(subject/seedgen-root-entry form :python) (subject/seedgen-root-entry form :js)]))}])
+
+(Test/check [{:name "collects languages explicitly marked for suppression" :expected #{:python :js} :test (fn [] (subject/seedgen-suppressed-langs (with-meta (quote (fact "TODO")) {:seedgen/base {:python {:suppress true} :js {:suppress true} :lua {:suppress false}}})))}])
+
+(Test/check [{:name "collects dispatch languages from facts and lifecycle metadata" :expected [:js :lua :python] :test (fn [] (subject/seedgen-coverage-langs (with-meta (quote (fact "hello" (!.js 1) => 1)) {:setup [(quote (!.lua (setup)))] :teardown [(quote (!.py (teardown)))]})))}])

@@ -1,0 +1,71 @@
+(ns postgres.sample.scratch-v3.realtime
+  (:require [lang.core :as l]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]]
+   :export [MODULE]})
+
+(def.xt EV_DB_SYNC "currency/db-sync")
+(def.xt EV_DB_REMOVE "currency/db-remove")
+
+(def.xt CHANNEL
+  {"topic" "realtime:public:Currency"
+   "schema" "public"
+   "table" "Currency"
+   "event" "*"})
+
+(defn.xt sync-tables
+  "Returns a predicate that matches updates for any table in the set."
+  [tables]
+  (var arr (:? (xt/x:is-array? tables) tables [tables]))
+  (var lookup {})
+  (xt/for:array [table arr]
+    (xt/x:set-key lookup table true))
+  (return (fn [message]
+            (var body (or (. message ["body"]) {}))
+            (xt/for:object [[table _] body]
+              (when (. lookup [table])
+                (return true)))
+            (return false))))
+
+(defn.xt db-sync
+  "Builds the event-sync map used by curated API descriptors."
+  [tables]
+  (return {-/EV_DB_SYNC (-/sync-tables tables)
+           -/EV_DB_REMOVE (-/sync-tables tables)}))
+
+(defn.xt payload-id
+  "Extracts the primary id from a realtime payload."
+  [payload]
+  (return (or (. payload ["id"])
+              (. payload ["old" "id"])
+              (. payload ["new" "id"]))))
+
+(defn.xt postgres-change->sync-request
+  "Converts a Supabase postgres_changes payload into db/sync or db/remove."
+  [payload]
+  (var event-type (xt/x:str-to-upper (or (. payload ["eventType"])
+                                        (. payload ["event_type"])
+                                        "")))
+  (var table (or (. payload ["table"]) "Currency"))
+  (var new-row (or (. payload ["new"]) {}))
+  (var old-row (or (. payload ["old"]) {}))
+  (var row (:? (== event-type "DELETE") old-row new-row))
+  (var row-id (-/payload-id payload))
+  (cond (== event-type "")
+        (return nil)
+        (== event-type "DELETE")
+        (return {"db/remove" {table [row-id]}})
+        :else
+        (do (xt/x:set-key row "__deleted__" false)
+            (return {"db/sync" {table [row]}}))))
+
+(defn.xt postgres-change->update
+  "Wraps a sync request in the database sync update shape."
+  [payload]
+  (var request (-/postgres-change->sync-request payload))
+  (when request
+    (return {"type" "patch"
+             "body" request})))
+
+(def.xt MODULE (!:module))

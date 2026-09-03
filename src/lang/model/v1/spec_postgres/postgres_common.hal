@@ -1,0 +1,463 @@
+(ns lang.model.v1.spec-postgres.postgres-common
+  (:require [lang.common.emit :as emit]
+            [lang.common.emit-template :as template]
+            [lang.common.grammar-spec :as grammar-spec]
+            [lang.common.util :as ut]
+            [lang.model.v1.spec-postgres.postgres-tf :as tf]))
+
+(def +pg-query-alias+
+  {:neq '(:- "!=")
+   :gt '(:- ">")
+   :gte '(:- ">=")
+   :lt '(:- "<")
+   :lte '(:- "<=")
+   :eq '(:- "=")})
+
+(def +pg-type-alias+
+  {:map :jsonb
+   :array :jsonb
+   :long :bigint
+   :enum :text
+   :image :jsonb
+   :time :bigint})
+
+(defn pg-type-alias
+  "Returns the archived PostgreSQL type alias when one is defined."
+  [value]
+  (or (get +pg-type-alias+ value) value))
+
+(defn pg-deftype-ref-name
+  "Constructs a default reference column name."
+  ([column]
+   (str (name column) "_id"))
+  ([column options]
+   (or (:raw options) (str (name column) "_id"))))
+
+(defn pg-sym-meta
+  "Normalizes historical PostgreSQL declaration metadata."
+  [symbol]
+  (let [metadata (or (meta symbol) {})
+        return-type (or (get metadata :-) [:jsonb])
+        language (or (:static/language metadata) (:%% metadata) :default)
+        props (or (:static/props metadata) (:props metadata) [])]
+    (assoc (dissoc metadata :%% :props)
+           :- return-type
+           :static/return return-type
+           :static/language language
+           :static/props props)))
+
+(defn pg-format
+  "Formats a declaration and copies normalized metadata to its symbol."
+  [form]
+  (let [op (first form)
+        symbol (second form)
+        metadata (pg-sym-meta symbol)
+        next-symbol (IObjType/with-meta symbol metadata)]
+    [metadata (apply list op next-symbol (drop 2 form))]))
+
+(defn pg-policy-format
+  "Formats a policy declaration and records its derived policy coordinates."
+  [form]
+  (let [formatted (grammar-spec/format-defn form)
+        definition-metadata (first formatted)
+        normalized (second formatted)
+        op (first normalized)
+        symbol (second normalized)
+        table-binding (nth normalized 2)
+        table (if (vector? table-binding) (first table-binding) table-binding)
+        doc (:doc definition-metadata)
+        policy-name (str symbol " - " doc)
+        parts (if (and (string? table) (str/includes? table "."))
+                (str/split table ".")
+                nil)
+        schema (if parts (first parts) nil)
+        table-name (if parts (second parts) table)
+        metadata (merge definition-metadata
+                        {:static/policy-name policy-name
+                         :static/policy-table table-name
+                         :static/policy-schema schema})
+        next-symbol (IObjType/with-meta symbol metadata)]
+    [metadata (list op next-symbol (:doc definition-metadata)
+                    table-binding (nth normalized 3))]))
+
+(defn pg-hydrate-module-static
+  "Extracts schema and application metadata from a portable module record."
+  [module]
+  (let [static (or (:static module) {})
+        all (:all static)
+        schemas (or (:schema all) [])
+        schema (if (> (count schemas) 0) (first schemas) nil)
+        schema (or schema (:schema module))
+        application (or (:application static) (:application module))]
+    (merge (if schema {:static/schema schema} {})
+           (if application {:static/application application} {}))))
+
+(defn pg-hydrate
+  "Adds module-level static metadata to a formatted declaration."
+  [form grammar context]
+  (let [static (pg-hydrate-module-static (:module context))
+        symbol (second form)
+        next-symbol (IObjType/with-meta symbol
+                                       (merge (or (meta symbol) {}) static))]
+    [static (apply list (first form) next-symbol (drop 2 form))]))
+
+(defn pg-current-module-link?
+  "Returns true when a link points at the active PostgreSQL module."
+  [current-module link]
+  (let [module-id (if (map? current-module) (:id current-module) current-module)]
+    (and module-id
+         (:module link)
+         (= module-id (:module link)))))
+
+(defn pg-link-symbol
+  "Creates the fully-qualified symbol used to resolve a PostgreSQL link."
+  [link]
+  (if (and (:module link) (:id link))
+    (ut/sym-full (:module link) (:id link))
+    nil))
+
+(defn pg-resolve-entry
+  "Resolves a PostgreSQL link against the active module or supplied book.
+
+   Native Hara books carry materialized entries directly in `:modules`; the
+   resolver preserves the Foundation return shape of `[book entry]` while
+   allowing an active module entry to take precedence over its snapshot."
+  [link mopts]
+  (let [lang (or (:lang mopts) (:lang link) :postgres)
+        snapshot (:snapshot mopts)
+        snapshot-value (get snapshot lang)
+        source-book (or (:book mopts)
+                        (get-in snapshot [lang :book])
+                        (if (and (map? snapshot-value)
+                                 (:modules snapshot-value))
+                          snapshot-value
+                          nil))
+        current-module (:module mopts)
+        current-entry (if (and current-module
+                               (pg-current-module-link? current-module link))
+                        (get-in current-module [:code (:id link)])
+                        nil)
+        book-module (if source-book
+                      (get-in source-book [:modules (:module link)])
+                      nil)
+        snapshot-entry (if book-module
+                         (or (get-in book-module [:code (:id link)])
+                             (get-in book-module [:header (:id link)]))
+                         nil)
+        entry (or current-entry snapshot-entry)
+        entry (if (and source-book entry (:form-input entry))
+                (template/materialize-code-entry
+                 source-book
+                 entry
+                 {:lang lang
+                  :module (or current-module book-module)})
+                entry)]
+    [source-book entry]))
+
+(defn pg-string
+  "Constructs a PostgreSQL single-quoted string literal."
+  [value]
+  (let [value (str value)]
+    (str "'" (str/replace value "'" "''") "'")))
+
+(defn pg-uuid
+  "Constructs a UUID SQL literal."
+  [value]
+  (str "'" value "'::uuid"))
+
+(defn pg-set
+  "Emits the archived PostgreSQL set literal form."
+  [values grammar context]
+  (cond
+    (> (count values) 1)
+    (if (every? symbol? values)
+      (emit/*emit-fn* (tf/pg-tf-js [nil values]) grammar context)
+      (throw (ex :syntax {:value values}
+                 :ex/message "PostgreSQL set values must be symbols")))
+
+    :else
+    (let [value (first values)]
+      (cond
+        (string? value) (str "\"" value "\"")
+        (and (symbol? value)
+             (str/includes? (str value) "-"))
+        (emit/*emit-fn* (tf/pg-tf-js [nil values]) grammar context)
+        :else
+        (throw (ex :syntax {:value values}
+                   :ex/message "PostgreSQL set value is not allowed"))))))
+
+(defn pg-array
+  "Emits a PostgreSQL ARRAY expression from an operator form."
+  [form grammar context]
+  (str "ARRAY["
+       (str/join "," (map (fn [value]
+                            (emit/*emit-fn* value grammar context))
+                          (rest form)))
+       "]"))
+
+(defn pg-invoke-typecast
+  "Emits the historical keyword-invocation typecast form."
+  [form grammar context]
+  (let [value (last form)
+        types (str/join
+               " "
+               (map (fn [entry]
+                     (cond
+                       (keyword? entry) (str/upper (name entry))
+                       (or (list? entry) (vector? entry)) (str entry)
+                       :else (emit/*emit-fn* entry grammar context)))
+                    (butlast form)))]
+    (str "(" (emit/*emit-fn* value grammar context) ")::" types)))
+
+(defn pg-typecast
+  "Emits the `++` PostgreSQL typecast operator."
+  [form grammar context]
+  (pg-invoke-typecast (concat (drop 2 form) [(second form)]) grammar context))
+
+(defn pg-map
+  "Emits a PostgreSQL JSONB object through the portable transform."
+  [value grammar context]
+  (emit/*emit-fn* (tf/pg-tf-js [nil value]) grammar context))
+
+(defn pg-do-assert
+  "Expands the archived `do:assert` form through the native JSONB assertion emitter."
+  [form grammar context]
+  (let [check (second form)
+        tag-data (nth form 2)
+        tag (first tag-data)
+        data (second tag-data)
+        detail (if (map? data)
+                  (merge {:status "error" :tag tag} data)
+                  {:status "error" :tag tag :data data})]
+    (str "IF NOT (" (emit/*emit-fn* check grammar context) ") THEN\n"
+         "  RAISE EXCEPTION USING DETAIL = (" (pg-map detail grammar context)
+         ")::TEXT, MESSAGE = " (pg-string (str tag)) ";\n"
+         "END IF")))
+
+(defn pg-base-token
+  "Constructs a schema-qualified portable token."
+  [token schema]
+  (let [token (if (set? token) token #{token})
+        schema (if (string? schema) #{schema} schema)]
+    (if (and schema (not= schema #{"public"}))
+      (list '. schema token)
+      token)))
+
+(defn pg-full-token
+  "Constructs a schema-qualified type or enum token."
+  [token schema]
+  (pg-base-token #{(str/replace (str token) "." "_")} schema))
+
+(defn pg-entry-literal
+  "Returns the schema and id literal for an entry map."
+  [entry]
+  (str (:static/schema entry) "." (:id entry)))
+
+(defn pg-entry-token
+  "Returns a portable token for an entry map."
+  [entry]
+  (let [op (:op entry)
+        id (:id entry)
+        schema (:static/schema entry)
+        token (cond (= op 'defn) (symbol (str id))
+                    (= op 'def) #{(str id)}
+                    :else #{(str id)})]
+    (if (= op 'defconst)
+      (let [tail (last (:form entry))
+            candidate (if (map? tail) (:id tail) tail)]
+        (if (and (list? candidate)
+                 (= 'quote (first candidate)))
+          (second candidate)
+          candidate))
+      (pg-base-token token schema))))
+
+(defn pg-linked-token
+  "Returns a linked token from a resolved entry or symbol."
+  [value options]
+  (cond
+    (map? value) (pg-entry-token value)
+    (symbol? value)
+    (let [[module id] (ut/sym-pair value)
+          link (if module {:module module :id id} nil)
+          resolved (if link (pg-resolve-entry link options) [nil nil])
+          entry (second resolved)]
+      (if entry
+        (if (= :fragment (:section entry))
+          (or (:form-input entry) (:form entry))
+          (pg-entry-token entry))
+        (pg-base-token #{(name value)} (namespace value))))
+    :else value))
+
+(defn pg-linked
+  "Emits a linked token through the active emitter."
+  [symbol grammar context]
+  (emit/*emit-fn* (pg-linked-token symbol context) grammar context))
+
+(defn block-do-block
+  "Builds the archived PL/pgSQL DO block form."
+  [form]
+  [:do :$$ \\ :begin \\ (list \| form) \\ :end \; \\ :$$ :language "plpgsql" \;])
+
+(defn block-do-suppress
+  "Builds a PL/pgSQL DO block that suppresses exceptions."
+  [form]
+  [:do :$$ \\ :begin \\ (list \| form) \\ :exception :when-others-then
+   \\ :end \; \\ :$$ :language "plpgsql" \;])
+
+(defn block-loop-block
+  "Builds a PL/pgSQL loop block form."
+  [& forms]
+  [:loop \\ (list \| (apply list 'do forms)) \\ :end-loop])
+
+(defn block-while-block
+  "Builds a PL/pgSQL while block form."
+  [condition & forms]
+  [:while condition :loop \\ (list \| (apply list 'do forms)) \\ :end-loop \;])
+
+(defn block-case-block
+  "Builds a PL/pgSQL CASE block form."
+  [value & clauses]
+  (let [pairs (partition 2 clauses)
+        body (mapcat
+              (fn [pair]
+                (let [check (first pair)
+                      form (second pair)]
+                  (if (= :else check)
+                    [:else (list :% form) \\]
+                    [:when (list :% check) :then (list :% form) \\])))
+              pairs)]
+    (list '% (vec (concat [:case value \\]
+                          [(apply list \| body)]
+                          [:end])))))
+
+(defn pg-defenum
+  "Expands an archived enum declaration into an idempotent DO block form."
+  [form]
+  (let [symbol (second form)
+        values (nth form 2)
+        metadata (or (meta symbol) {})
+        token (pg-full-token symbol (:static/schema metadata))
+        values-form (if (and (list? values)
+                             (= '!:eval (first values)))
+                      (list '!:eval
+                            (list 'list
+                                  (list 'quote 'quote)
+                                  (list 'map 'str (second values))))
+                      (list 'quote (map str values)))]
+    [:do :$$
+     \\ :begin
+     \\ (list \| (list 'do [:create-type token :as-enum values-form]))
+     \\ :exception :when-others-then
+     \\ :end \;
+     \\ :$$ :language "plpgsql" \;]))
+
+(defn pg-defindex
+  "Expands an archived defindex declaration into a CREATE INDEX section."
+  [form]
+  (let [formatted (grammar-spec/format-defn form)
+        normalized (second formatted)
+        symbol (second normalized)
+        binding (nth normalized 2)
+        table (first binding)
+        columns (rest binding)
+        body (drop 3 normalized)]
+    (vec (concat [:create-index :if-not-exists symbol
+                  :on table (list 'quote (list (vec columns)))]
+                 body
+                 [\;]))))
+
+(defn pg-defpolicy
+  "Expands an archived defpolicy declaration into drop/create sections."
+  [form]
+  (let [formatted (grammar-spec/format-defn form)
+        normalized (second formatted)
+        symbol (second normalized)
+        binding (nth normalized 2)
+        table (first binding)
+        body (nth normalized 3)
+        definition-metadata (first formatted)
+        name (str symbol " - " (:doc definition-metadata))]
+    (list 'do
+          [:drop-policy-if-exists #{name} :on table]
+          (vec (concat [:create-policy #{name} :on table \\] body)))))
+
+(defn pg-publication-format
+  "Formats a publication declaration."
+  [form]
+  (let [formatted (grammar-spec/format-defn form)
+        metadata (first formatted)
+        normalized (second formatted)]
+    [(merge metadata (or (meta (second normalized)) {}))
+     normalized]))
+
+(defn pg-defpublication
+  "Expands an archived publication declaration."
+  [form]
+  (let [formatted (grammar-spec/format-defn form)
+        normalized (second formatted)
+        symbol (second normalized)
+        args (nth normalized 2)
+        body (if (> (count normalized) 3) (nth normalized 3) [])]
+    (list 'do
+          [:drop-publication-if-exists symbol]
+          (vec (concat [:create-publication symbol]
+                       (if (or (= 0 (count args)) (= args [:all]))
+                         [:for :all :tables]
+                         [:for :table (list 'quote args)])
+                       body)))))
+
+(defn pg-subscription-format
+  "Formats a subscription declaration."
+  [form]
+  (let [formatted (grammar-spec/format-defn form)
+        metadata (first formatted)
+        normalized (second formatted)]
+    [(merge metadata (or (meta (second normalized)) {}))
+     normalized]))
+
+(defn pg-defsubscription
+  "Expands an archived subscription declaration."
+  [form]
+  (let [formatted (grammar-spec/format-defn form)
+        normalized (second formatted)
+        symbol (second normalized)
+        args (nth normalized 2)
+        connection (first args)
+        publication (second args)
+        body (nth normalized 3)]
+    (list 'do
+          [:drop-subscription-if-exists symbol]
+          (vec (concat [:create-subscription symbol
+                        :connection connection
+                        :publication publication]
+                       body)))))
+
+(defn pg-deftrigger
+  "Expands an archived trigger declaration."
+  [form]
+  (let [formatted (grammar-spec/format-defn form)
+        normalized (second formatted)
+        symbol (second normalized)
+        binding (nth normalized 2)
+        table (first binding)
+        body (nth normalized 3)
+        return (or (:static/return (meta symbol))
+                   (get (meta symbol) :-)
+                   [])]
+    (list 'do
+          [:drop-trigger-if-exists symbol :on table]
+          (vec (concat [:create-trigger symbol]
+                       return
+                       [:on table \\]
+                       body)))))
+
+(defn pg-defblock
+  "Creates a generic PostgreSQL DDL block from declaration metadata."
+  [form]
+  (let [symbol (second form)
+        metadata (or (meta symbol) {})
+        schema (:static/schema metadata)
+        token (pg-full-token symbol schema)
+        return (or (:static/return metadata) (get metadata :-) [])
+        body (nth form 2)]
+    (list 'do (vec (concat [:create] return [token] body)))))

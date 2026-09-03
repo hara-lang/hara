@@ -1,0 +1,74 @@
+(ns postgres.core.graph
+  (:require [lang.core :as l]
+            [postgres.core.graph-base :as base]
+            [postgres.core.graph-insert :as insert]
+            [postgres.core.graph-query :as query]
+            [postgres.core.graph-view :as view]))
+
+(l/script :postgres postgres.core
+  {:macro-only true})
+
+(defmacro.pg g:where
+  [spec-sym where]
+  (or (not-empty where)
+      (throw (ex :argument {:where where} :ex/message "No WHERE clause")))
+  (base/id-where-fn spec-sym {:where where}))
+
+(defmacro.pg g:id
+  [spec-sym & [params]]
+  (let [params (or params {})]
+    (or (:where params)
+        (throw (ex :argument {:params params} :ex/message "No WHERE clause")))
+    (base/id-fn spec-sym params)))
+
+(defmacro.pg g:count
+  [spec-sym & [params]]
+  (base/count-fn spec-sym (or params {})))
+
+(defmacro.pg g:exists
+  [spec-sym & [params]]
+  (base/exists-fn spec-sym (or params {})))
+
+(defmacro.pg g:select
+  [spec-sym & [params]]
+  (base/select-fn spec-sym (or params {})))
+
+(defmacro.pg g:get
+  [spec-sym & [params]]
+  (let [params (or params {})]
+    (or (:where params)
+        (throw (ex :argument {:params params} :ex/message "No WHERE clause")))
+    (with-meta
+      (base/select-fn spec-sym (merge {:single true} params))
+      {:op/type :get})))
+
+(defmacro.pg g:update
+  [spec-sym & [params]]
+  (base/update-fn spec-sym (or params {})))
+
+(defmacro.pg g:modify
+  [spec-sym & [params]]
+  (base/modify-fn spec-sym (or params {})))
+
+(defmacro.pg g:delete
+  [spec-sym & [params]]
+  (base/delete-fn spec-sym (or params {})))
+
+(defmacro.pg g:insert
+  [spec-sym data & [params]]
+  (insert/insert-fn spec-sym data (or params {})))
+
+(defmacro.pg q
+  [spec-sym & [params]]
+  (query/query-fn spec-sym (or params {})))
+
+(defmacro.pg q:get
+  [spec-sym & [params]]
+  (let [params (or params {})]
+    (with-meta
+      (query/query-fn spec-sym (merge {:single true} params))
+      {:op/type :get})))
+
+(defmacro.pg view
+  [qret qsel & [qopts]]
+  (apply query/query-fn (view/view-fn qret qsel qopts)))

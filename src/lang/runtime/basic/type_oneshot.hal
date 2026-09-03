@@ -1,0 +1,97 @@
+(ns lang.runtime.basic.type-oneshot
+  (:config {:role :internal})
+  (:require [lang.runtime.basic.type-common :as common]
+            [tool.sh :as sh]))
+
+(defstruct RuntimeOneshot [id lang runtime program exec process])
+
+(defn default-id
+  [language runtime]
+  (keyword (str (name language) "." (name runtime))))
+
+(defn rt-oneshot-setup
+  "Prepares Foundation-compatible program, process and exec values."
+  ([language program process exec]
+   (rt-oneshot-setup language program process exec :oneshot))
+  ([language program process exec context]
+   (let [program (common/get-program-default language context program)
+         process-options (common/get-options language context program)
+         process (merge process-options process)
+         exec (or exec
+                  (common/get-program-exec language context program))]
+     [program process exec])))
+
+(defn rt-oneshot:create
+  "Creates a Foundation-shaped oneshot runtime."
+  [options]
+  (let [id (get options :id)
+        lang (get options :lang)
+        runtime (or (get options :runtime) :oneshot)
+        exec (get options :exec)
+        program (get options :program)
+        process (get options :process)
+        [program process exec]
+        (rt-oneshot-setup lang program process exec runtime)]
+    (lang.runtime.basic.type-oneshot/RuntimeOneshot
+     (or id (default-id lang runtime))
+     lang
+     runtime
+     program
+     exec
+     process)))
+
+(defn rt-oneshot
+  [options]
+  (rt-oneshot:create options))
+
+(defn process-options
+  [runtime]
+  (select-keys (or (:process runtime) {}) [:cwd :env :stdin]))
+
+(defn oneshot-result
+  "Builds the structured result returned by a one-shot target process."
+  ([runtime result]
+   (merge
+    {:phase :eval
+     :runtime/id (get runtime :id)
+     :runtime/language (get runtime :lang)
+     :lang (get runtime :lang)
+     :runtime (get runtime :runtime)
+     :program (get runtime :program)}
+    result))
+  ([runtime argv values]
+   (oneshot-result
+    runtime
+    {:command argv
+     :exit (nth values 2)
+     :stdout (str/decode-utf8 (nth values 0))
+     :stderr (str/decode-utf8 (nth values 1))})))
+
+(defn execute-oneshot
+  "Executes emitted target source through the canonical one-shot boundary."
+  [runtime source]
+  (let [argv (vec (concat (get runtime :exec) [source]))]
+    (try
+      (let [result (sh/result-record
+                    (sh/run argv (process-options runtime)))]
+        (oneshot-result runtime result))
+      (catch error
+        (throw
+         (ex :host {:phase :eval
+           :lang (get runtime :lang)
+           :runtime (get runtime :runtime)
+           :program (get runtime :program)
+           :command argv
+           :generated-fragment source
+           :cause-data (ex-data error)} :ex/message "Target runtime process could not complete" :ex/cause error))))))
+
+(defn raw-eval-oneshot
+  "Evaluates emitted target source using the selected local program."
+  [runtime source]
+  (let [result (execute-oneshot runtime source)]
+    (if (= 0 (get result :exit))
+      (if (get-in runtime [:process :raw])
+        result
+        (str/trim-right (get result :stdout)))
+      (throw
+       (ex :host (assoc result :generated-fragment source) :ex/message "Target runtime execution failed")))))

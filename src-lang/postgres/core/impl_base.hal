@@ -117,6 +117,22 @@
 (defn already-cast? [value type]
   (and (list? value) (= type (first value))))
 
+(defn ref-primary-attrs
+  "Resolves the primary type of a referenced table when available."
+  [attrs options]
+  (let [link (get-in attrs [:ref :link])
+        linked-schema (or (get-in options [:schema :tree (keyword (name (:id link)))])
+                          (get-in options [:schema :tree (name (:id link))]))
+        local (schema-attrs linked-schema :id)
+        resolved (if (and (:id link) (map? (:schema options)))
+                   (try (Base/resolve (:id link)) (catch error nil))
+                   nil)
+        entry (if resolved (deref resolved) nil)
+        primary (:static/schema-primary entry)]
+    (or local (if (vector? primary) (first primary) primary)
+        (get-in attrs [:ref :type])
+        {:type :uuid})))
+
 (defn t-val-fn
   [table-schema key value params options]
   (let [attrs (schema-attrs table-schema key)
@@ -127,10 +143,16 @@
                      value
                      (list '++ value (get-in attrs [:enum :ns])))
                    (= :ref type)
-                   (let [target-type (or (get-in attrs [:ref :type]) :uuid)]
-                     (if (already-cast? value target-type)
+                   (let [target-attrs (if (:schema options)
+                                         (ref-primary-attrs attrs options)
+                                         {:type (or (get-in attrs [:ref :type]) :uuid)})
+                         target-type (or (:type target-attrs) :uuid)]
+                     (if (and (= :enum (:type target-attrs))
+                              (not (and (list? value) (= '++ (first value)))))
+                       (list '++ value (:ns (:enum target-attrs)))
+                       (if (already-cast? value target-type)
                        value
-                       (list target-type value)))
+                       (list target-type value))))
                    :else
                    (let [target-type (or (get {:long :bigint :int :integer
                                                :bool :boolean :string :text}
@@ -209,8 +231,9 @@
 
 (defn t-returning-cols
   [table-schema returning key-fn]
-  (vec
-   (reduce (fn [out value]
+  (let [key-fn (or key-fn t-key-attrs-fn)]
+    (vec
+     (reduce (fn [out value]
              (cond (map? value)
                    (conj out (if (:as value)
                                [(:expr value) :as (:as value)]
@@ -218,11 +241,14 @@
                    (keyword? value)
                    (if (schema-key? table-schema value)
                      (conj out #{(key-fn [value [(schema-attrs table-schema value)]])})
-                     out)
+                     (if *skip-checks*
+                       out
+                       (throw (ex :database {:key value :data returning}
+                                  :ex/message "Invalid returning column"))))
                    (symbol? value) (conj out #{(util/sym-default-str value)})
                    :else out))
-           []
-           returning)))
+             []
+             returning))))
 
 (defn t-returning
   ([table-schema returning] (t-returning table-schema returning nil))
@@ -277,10 +303,18 @@
                    (throw (ex :database {:key key :data input} :ex/message "Invalid columns")))
                (let [attrs (schema-attrs table-schema key)
                      type (:type attrs)
+                     link (get-in attrs [:ref :link])
                      pair (cond (nil? value) [:is-null]
                                 (and (= :enum type)
                                      (not (and (list? value) (= '++ (first value)))))
                                 [:eq (list '++ value (get-in attrs [:enum :ns]))]
+                                (and (= :ref type) (or (map? value) (util/hashvec? value)))
+                                [:in [:select #{"id"}
+                                      :from (table-symbol (or link attrs))
+                                      \\
+                                      :where (t-where-transform
+                                              (or (get-in options [:schema :tree (keyword (name (:id link)))]) {})
+                                              value options)]]
                                 (vector? value) value
                                 :else [:eq value])]
                  (assoc out (t-key-fn table-schema key) pair))))

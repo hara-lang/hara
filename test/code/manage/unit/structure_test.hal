@@ -1,0 +1,324 @@
+(ns code.manage.unit.structure-test
+  (:use code.test)
+  (:require [code.manage.unit.structure :as structure]
+            [code.framework.reader :as reader]))
+
+(def source
+  "(ns demo.core)\n\n(defn answer \"doc\" [] true)\n^{:private true}\n(defn hidden [] false)\n^{:added \"0.1\"}\n(def value 1)\n")
+
+(def test-source
+  "(ns demo.core-test)\n\n^{:refer demo.core/answer}\n(fact \"answer\" true => true)\n^{:refer demo.core/other}\n(fact \"TODO\")\n")
+
+(def analysis
+  (structure/analyse-structure source))
+
+(def fact-analysis
+  (structure/facts-from-source test-source "test/demo/core_test.hal"))
+
+(def first-record
+  (first (reader/form-records (read-forms-spanned "(fact \"answer\" true => true)"))))
+
+^{:refer code.manage.unit.structure/fact-head?}
+(Test/register
+ {:desc "recognizes fact symbols and namespaced fact symbols"
+  :test (fn [] [(structure/fact-head? (quote fact)) (structure/fact-head? (quote code.test/fact)) (structure/fact-head? (quote demo/other))])
+  :expected [true true false]})
+
+^{:refer code.manage.unit.structure/offset}
+(Test/register
+ {:desc "reads offsets and defaults absent positions"
+  :test (fn [] [(structure/offset {:offset 7}) (structure/offset nil)])
+  :expected [7 0]})
+
+^{:refer code.manage.unit.structure/span-text}
+(Test/register
+ {:desc "projects an exact source span"
+  :test (fn [] (structure/span-text "abcdef" {:end {:offset 4} :start {:offset 1}}))
+  :expected "bcd"})
+
+^{:refer code.manage.unit.structure/form-head}
+(Test/register
+ {:desc "reads a list form head"
+  :test (fn [] [(structure/form-head {:form (quote (def answer 1))}) (structure/form-head {:form :value})])
+  :expected [(quote def) nil]})
+
+^{:refer code.manage.unit.structure/child-record}
+(Test/register
+ {:desc "finds a child record by parsed value"
+  :test (fn [] (let [record {:children [{:form (quote answer)} {:form 1}]}] (:form (structure/child-record record (quote answer)))))
+  :expected (quote answer)})
+
+^{:refer code.manage.unit.structure/metadata-record}
+(Test/register
+ {:desc "projects metadata nodes into source-editable pairs"
+  :test (fn [] (let [text "^{:added \"1.0\"}\n(def value 1)" record (structure/metadata-record (first (:children (first (read-forms-spanned text))))) pair (first (:pairs record))] [(:key pair) (structure/span-text text (:key-record pair)) (structure/span-text text (:value-record pair))]))
+  :expected [:added ":added" "\"1.0\""]})
+
+^{:refer code.manage.unit.structure/metadata-records}
+(Test/register
+ {:desc "collects metadata records from a definition wrapper"
+  :test (fn [] (let [text "^{:added \"1.0\"}\n(def value 1)" record (first (read-forms-spanned text))] (count (structure/metadata-records record))))
+  :expected 1})
+
+^{:refer code.manage.unit.structure/definition-body-record}
+(Test/register
+ {:desc "unwraps a metadata-owned definition record"
+  :test (fn [] (:start (structure/definition-body-record (first (read-forms-spanned "^{:added \"1.0\"}\n(def value 1)")) 'value)))
+  :expected {:offset 16 :line 2 :column 1}})
+
+^{:refer code.manage.unit.structure/docstring-value}
+(Test/register
+ {:desc "reads a definition docstring from the third form position"
+  :test (fn [] [(structure/docstring-value (quote (defn answer "doc" [] true))) (structure/docstring-value (quote (defn answer [] true)))])
+  :expected ["doc" nil]})
+
+^{:refer code.manage.unit.structure/definition-public?}
+(Test/register
+ {:desc "honors private and explicit public metadata"
+  :test (fn [] [(structure/definition-public? {}) (structure/definition-public? {:private true}) (structure/definition-public? {:public false}) (structure/definition-public? {:public true})])
+  :expected [true false false true]})
+
+^{:refer code.manage.unit.structure/definition-record}
+(Test/register
+ {:desc "enriches reader definitions with spans docstrings and reachability"
+  :test (fn [] (let [definition (first (:definitions analysis))] (select-keys definition [:name :docstring :public :reachable :line :column])))
+  :expected {:name (quote answer) :reachable true :column 1 :docstring "doc" :line 3 :public true}})
+
+^{:refer code.manage.unit.structure/analyse-structure}
+(Test/register
+ {:desc "combines reader analysis with source-preserving definitions"
+  :test (fn [] [(= (quote demo.core) (:namespace analysis)) (vec (map :name (:definitions analysis))) (:docstrings analysis)])
+  :expected [true [(quote answer) (quote hidden) (quote value)] ["doc"]]})
+
+^{:refer code.manage.unit.structure/reachable-definitions}
+(Test/register
+ {:desc "selects reachable definitions"
+  :test (fn [] (vec (map :name (structure/reachable-definitions analysis))))
+  :expected [(quote answer) (quote value)]})
+
+^{:refer code.manage.unit.structure/public-definitions}
+(Test/register
+ {:desc "selects public definitions independently of reachability"
+  :test (fn [] (vec (map :name (structure/public-definitions analysis))))
+  :expected [(quote answer) (quote value)]})
+
+^{:refer code.manage.unit.structure/metadata-value}
+(Test/register
+ {:desc "reads definition metadata"
+  :test (fn [] (structure/metadata-value (first (:definitions analysis)) :private))
+  :expected nil})
+
+^{:refer code.manage.unit.structure/fact-record}
+(Test/register
+ {:desc "records fact metadata span title and checked state"
+  :test (fn [] (select-keys (structure/fact-record "(fact \"answer\" true => true)" "demo_test.hal" first-record) [:kind :path :title :checked :commented]))
+  :expected {:checked true :title "answer" :kind :fact :path "demo_test.hal" :commented false}})
+
+^{:refer code.manage.unit.structure/facts-in-record}
+(Test/register
+ {:desc "walks nested fact records"
+  :test (fn [] (count (structure/facts-in-record "(facts [(fact \"one\") (fact \"two\")])" "demo_test.hal" (first (reader/form-records (read-forms-spanned "(facts [(fact \"one\") (fact \"two\")])"))) false)))
+  :expected 2})
+
+^{:refer code.manage.unit.structure/facts-from-source}
+(Test/register
+ {:desc "extracts source-order fact records"
+  :test (fn [] [(count fact-analysis) (:refer (first fact-analysis)) (:title (second fact-analysis))])
+  :expected [2 (quote demo.core/answer) "TODO"]})
+
+^{:refer code.manage.unit.structure/facts-by-reference}
+(Test/register
+ {:desc "indexes referenced facts by stable string identity"
+  :test (fn [] (keys (structure/facts-by-reference fact-analysis)))
+  :expected ["demo.core/answer" "demo.core/other"]})
+
+^{:refer code.manage.unit.structure/source-reference}
+(Test/register
+ {:desc "builds a fully qualified source reference"
+  :test (fn [] (structure/source-reference (quote demo.core) {:name (quote answer)}))
+  :expected "demo.core/answer"})
+
+^{:refer code.manage.unit.structure/edit}
+(Test/register
+ {:desc "constructs a source edit"
+  :test (fn [] (structure/edit 1 2 "x"))
+  :expected {:text "x" :end 2 :start 1}})
+
+^{:refer code.manage.unit.structure/apply-edits}
+(Test/register
+ {:desc "applies non-overlapping edits through the shared source adapter"
+  :test (fn [] (structure/apply-edits "abcdef" [(structure/edit 1 3 "X") (structure/edit 4 5 "Y")]))
+  :expected "aXdYf"})
+
+^{:refer code.manage.unit.structure/direct-facts}
+(Test/register
+ {:desc "extracts only direct fact records from supplied records"
+  :test (fn [] (count (structure/direct-facts "(fact \"answer\" true => true)" "demo_test.hal" [first-record] false)))
+  :expected 1})
+
+^{:refer code.manage.unit.structure/facts-from-form}
+(Test/register
+ {:desc "extracts a fact form without descending into unrelated containers"
+  :test (fn [] (count (structure/facts-from-form "(fact \"answer\" true => true)" "demo_test.hal" first-record)))
+  :expected 1})
+
+(def pair
+  {:key :added
+   :key-record {:start {:offset 1} :end {:offset 7}}
+   :value-record {:start {:offset 8} :end {:offset 13}}})
+
+(def metadata-record
+  {:record {:start {:offset 0} :end {:offset 14}}
+   :map-record {:start {:offset 0} :end {:offset 14}
+                :form {}}
+   :pairs [pair]})
+
+^{:refer code.manage.unit.structure/pair-index}
+(Test/register
+ {:desc "finds pair positions and reports absent pairs"
+  :test (fn [] [(structure/pair-index [pair] pair) (structure/pair-index [] pair)])
+  :expected [0 nil]})
+
+^{:refer code.manage.unit.structure/pair-for}
+(Test/register
+ {:desc "finds metadata pairs by key"
+  :test (fn [] [(structure/pair-for metadata-record :added) (structure/pair-for metadata-record :missing)])
+  :expected [pair nil]})
+
+^{:refer code.manage.unit.structure/metadata-with-map}
+(Test/register
+ {:desc "selects metadata records containing maps"
+  :test (fn [] (structure/metadata-with-map {:metadata [metadata-record {:pairs [pair]}]}))
+  :expected [metadata-record]})
+
+^{:refer code.manage.unit.structure/metadata-with-key}
+(Test/register
+ {:desc "selects metadata records containing a requested key"
+  :test (fn [] (structure/metadata-with-key {:metadata [metadata-record {:pairs [{:key :other}]}]} :added))
+  :expected [metadata-record]})
+
+^{:refer code.manage.unit.structure/replace-added-edit}
+(Test/register
+ {:desc "replaces an added metadata value at its exact span"
+  :test (fn [] (structure/replace-added-edit metadata-record "new"))
+  :expected {:text "\"new\"" :end 13 :start 8}})
+
+^{:refer code.manage.unit.structure/append-added-edit}
+(Test/register
+ {:desc "appends an added pair before a metadata map close"
+  :test (fn [] (structure/apply-edits "{:x 1}" [(structure/append-added-edit (assoc metadata-record :map-record {:end {:offset 6} :start {:offset 0}}) "1.0")]))
+  :expected "{:x 1 :added \"1.0\"}"})
+
+^{:refer code.manage.unit.structure/insert-added-edit}
+(Test/register
+ {:desc "inserts added metadata before a definition form"
+  :test (fn [] (structure/insert-added-edit {:form-record {:start {:offset 0}} :name-start 0} "1.0"))
+  :expected {:text "^{:added \"1.0\"} " :end 0 :start 0}})
+
+^{:refer code.manage.unit.structure/merge-added-edit}
+(Test/register
+ {:desc "inserts new metadata and replaces an existing direct added marker"
+  :test (fn [] (let [source-text "^{:added \"old\"} (def value 1)" definition {:source/text source-text :meta {:added "old"} :metadata [] :form-record {:start {:offset (str/index-of source-text "(def")}} :name-start 17} replacement (structure/apply-edits source-text [(structure/merge-added-edit definition "new")])] [(structure/merge-added-edit {:metadata [] :form-record {:start {:offset 0}} :name-start 0} "1.0") replacement]))
+  :expected [{:text "^{:added \"1.0\"} " :end 0 :start 0} "^{:added \"new\"} (def value 1)"]})
+
+^{:refer code.manage.unit.structure/remove-pair-edit}
+(Test/register
+ {:desc "removes a metadata record when it contains one pair"
+  :test (fn [] (structure/apply-edits "{:added \"old\"}" [(structure/remove-pair-edit metadata-record pair)]))
+  :expected ""})
+
+^{:refer code.manage.unit.structure/remove-added-edits}
+(Test/register
+ {:desc "returns cleanup edits for each added metadata record"
+  :test (fn [] (count (structure/remove-added-edits {:metadata [metadata-record]})))
+  :expected 1})
+
+^{:refer code.manage.unit.structure/remove-docstring-edit}
+(Test/register
+ {:desc "removes a definition docstring and its separating layout"
+  :test (fn [] (let [definition (first (:definitions analysis)) edit (structure/remove-docstring-edit definition)] (structure/apply-edits source [edit])))
+  :expected "(ns demo.core)\n\n(defn answer [] true)\n^{:private true}\n(defn hidden [] false)\n^{:added \"0.1\"}\n(def value 1)\n"})
+
+^{:refer code.manage.unit.structure/replace-docstring-edit}
+(Test/register
+ {:desc "replaces an existing docstring without changing the definition form"
+  :test (fn [] (let [definition (first (:definitions analysis)) edit (structure/replace-docstring-edit definition "updated")] (structure/apply-edits source [edit])))
+  :expected "(ns demo.core)\n\n(defn answer \"updated\" [] true)\n^{:private true}\n(defn hidden [] false)\n^{:added \"0.1\"}\n(def value 1)\n"})
+
+^{:refer code.manage.unit.structure/added-prefix-edit}
+(Test/register
+ {:desc "finds a simple added metadata prefix"
+  :test (fn [] (let [definition (last (:definitions analysis)) edit (structure/added-prefix-edit source definition)] (structure/apply-edits source [edit])))
+  :expected "(ns demo.core)\n\n(defn answer \"doc\" [] true)\n^{:private true}\n(defn hidden [] false)\n(def value 1)\n"})
+
+^{:refer code.manage.unit.structure/definition-import-edits}
+(Test/register
+ {:desc "imports a fact title into a definition without a docstring"
+  :test (fn [] (let [definition (last (:definitions analysis)) edits (structure/definition-import-edits source definition {:title "value" :added nil}) after (structure/apply-edits source edits)] (str/includes? after "(def value\n  \"value\" 1)")))
+  :expected true})
+
+^{:refer code.manage.unit.structure/definition-import-edits}
+(Test/register
+ {:desc "imports added metadata before the definition form"
+  :test (fn [] (let [definition (last (:definitions analysis)) edits (structure/definition-import-edits source definition {:title "value" :added "1.0"}) after (structure/apply-edits source edits)] (str/includes? after "^{:added \"1.0\"}\n(def value")))
+  :expected true})
+
+^{:refer code.manage.unit.structure/definition-purge-edits}
+(Test/register
+ {:desc "returns all cleanup edits for a definition"
+  :test (fn [] [(count (structure/definition-purge-edits source (first (:definitions analysis)))) (count (structure/definition-purge-edits source (last (:definitions analysis)))) (count (structure/definition-purge-edits (last (:definitions analysis))))])
+  :expected [1 1 1]})
+
+^{:refer code.manage.unit.structure/missing-findings}
+(Test/register
+ {:desc "finds reachable definitions without corresponding facts"
+  :test (fn [] (vec (map :refer (structure/missing-findings {:path "src/demo/core.hal"} analysis fact-analysis))))
+  :expected ["demo.core/value"]})
+
+^{:refer code.manage.unit.structure/todo-findings}
+(Test/register
+ {:desc "classifies TODO facts"
+  :test (fn [] (select-keys (first (structure/todo-findings fact-analysis)) [:classification :kind :refer :message]))
+  :expected {:classification "T" :kind :todo :message "TODO fact for demo.core/other" :refer (quote demo.core/other)}})
+
+^{:refer code.manage.unit.structure/unchecked-findings}
+(Test/register
+ {:desc "classifies facts without an assertion"
+  :test (fn [] (let [facts (structure/facts-from-source "(fact \"unchecked\")" "demo_test.hal")] [(count (structure/unchecked-findings facts)) (get-in (first (structure/unchecked-findings facts)) [:classification])]))
+  :expected [1 "N"]})
+
+^{:refer code.manage.unit.structure/commented-findings}
+(Test/register
+ {:desc "returns no commented findings for ordinary facts"
+  :test (fn [] (structure/commented-findings fact-analysis))
+  :expected []})
+
+^{:refer code.manage.unit.structure/runner-form?}
+(Test/register
+ {:desc "recognizes the legacy runner expression"
+  :test (fn [] (structure/runner-form? {:form (quote (pr-str (run {:namespace "demo-test"})))}))
+  :expected true})
+
+^{:refer code.manage.unit.structure/runner-index}
+(Test/register
+ {:desc "locates the legacy runner or appends at EOF"
+  :test (fn [] [(structure/runner-index "(fact \"x\")\n(pr-str (run {}))") (structure/runner-index "(fact \"x\")")])
+  :expected [11 10]})
+
+^{:refer code.manage.unit.structure/left-separator}
+(Test/register
+ {:desc "selects a stable left insertion separator"
+  :test (fn [] [(structure/left-separator "") (structure/left-separator "x") (structure/left-separator "x\n") (structure/left-separator "x\n\n")])
+  :expected ["" "\n\n" "\n" ""]})
+
+^{:refer code.manage.unit.structure/right-separator}
+(Test/register
+ {:desc "selects a stable right insertion separator"
+  :test (fn [] [(structure/right-separator "") (structure/right-separator "x") (structure/right-separator "x\n") (structure/right-separator "x\n\n")])
+  :expected ["\n" "\n\n" "\n\n" "\n\n"]})
+
+^{:refer code.manage.unit.structure/insert-before-runner}
+(Test/register
+ {:desc "inserts generated facts immediately before the runner"
+  :test (fn [] (structure/insert-before-runner "(ns demo-test)\n\n(pr-str (run {}))" "(fact \"new\")"))
+  :expected "(ns demo-test)\n\n(fact \"new\")\n\n(pr-str (run {}))"})

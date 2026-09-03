@@ -1,0 +1,27 @@
+(ns hara.command.seedgen
+  (:config {:role :internal})
+  (:require [lang.seedgen.cli :as seedgen :lazy true]))
+
+(defn ^{:public true} response
+  "Runs one seedgen CLI operation through the native Hara response envelope."
+  [request]
+  (try
+    (let [argv (vec (or (:argv (:arguments request)) []))
+          command (or (first argv) "list")
+          root (or (:root (:options request))
+                   (:request/cwd request)
+                   (OS/cwd))
+          project (seedgen/normalise-project root)
+          result (seedgen/run-seedgen-command command
+                                              (vec (rest argv))
+                                              project)]
+      {:stdout (str result "\n")
+       :stderr ""
+       :exit (if (and (= "test" command)
+                      (number? (:exit result)))
+               (:exit result)
+               0)})
+    (catch error
+      {:stdout ""
+       :stderr (str error "\n")
+       :exit 2})))

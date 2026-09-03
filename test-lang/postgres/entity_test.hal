@@ -1,0 +1,248 @@
+(ns postgres.entity-test
+  (:require [postgres.entity :as entity]))
+
+^{:refer postgres.entity/parse-class}
+(Test/check [{:name "splits class depth and role"
+              :test (fn [] [(entity/parse-class :1d/base)
+                            (entity/parse-class :2d/entry)
+                            (entity/parse-class :none)])
+              :expected [[1 :base] [2 :entry] [nil :none]]}])
+
+^{:refer postgres.entity/basis-for}
+(Test/check [{:name "maps class tuples to support sets"
+              :test (fn [] [(entity/basis-for [1 :base] :minimal)
+                            (entity/basis-for [1 :entry] :expanded)
+                            (entity/basis-for [0 :entry] :expanded)])
+              :expected [#{:table :id} #{:table :context :link} #{:table :context}]}])
+
+^{:refer postgres.entity/local-support-columns}
+(Test/check [{:name "selects local support columns"
+              :test (fn [] [(entity/local-support-columns [1 :base] :minimal :addon)
+                            (entity/local-support-columns [1 :entry] :expanded :addon)
+                            (entity/local-support-columns [2 :base] :minimal :entity)])
+              :expected [[:class-table] [:class-table :class-link] [:class-table :class-context]]}])
+
+^{:refer postgres.entity/target-support-columns}
+(Test/check [{:name "selects target support columns by depth"
+              :test (fn [] [(entity/target-support-columns [0 :base])
+                            (entity/target-support-columns [1 :base])
+                            (entity/target-support-columns [2 :base])])
+              :expected [[] [:class-table] [:class-table :class-context]]}])
+
+^{:refer postgres.entity/project-support-columns}
+(Test/check [{:name "zips local and remote support columns"
+              :test (fn [] [(entity/project-support-columns :entity [1 :entry] :expanded [1 :base])
+                            (entity/project-support-columns :owner [1 :entry] :minimal [1 :base])])
+              :expected [{:class-table :class-table} {:class-table :class-table}]}])
+
+^{:refer postgres.entity/column->coord}
+(Test/check [{:name "maps generated columns back to coordinates"
+              :test (fn [] [(entity/column->coord :class-table)
+                            (entity/column->coord :class-context)
+                            (entity/column->coord :unknown)])
+              :expected [:table :context nil]}])
+
+^{:refer postgres.entity/required-basis-for-plan}
+(Test/check [{:name "extracts required structural coordinates"
+              :test (fn [] (entity/required-basis-for-plan
+                            {:class-table {:foreign {:rev {}}}
+                             :class-context {:foreign {:rev {}}}
+                             :class-link {:foreign {:social {}}}
+                             :class-ref {:foreign {:social {}}}}))
+              :expected #{:table :context :link :id}}])
+
+^{:refer postgres.entity/allowed-target?}
+(Test/check [{:name "checks relation compatibility"
+              :test (fn [] [(entity/allowed-target? :entity [1 :entry] [1 :base])
+                            (entity/allowed-target? :addons [1 :base] [2 :entry])])
+              :expected [true false]}])
+
+^{:refer postgres.entity/public-input->basis}
+(Test/check [{:name "uses explicit or derived basis"
+              :test (fn [] [(entity/public-input->basis {:basis #{:table :id}})
+                            (entity/public-input->basis {:class :1d/base})])
+              :expected [#{:table :id} #{:table :context :id}]}])
+
+^{:refer postgres.entity/target-info}
+(Test/check [{:name "returns nil for an unresolved reference"
+              :test (fn [] (entity/target-info 'postgres.entity-test/Missing))
+              :expected nil}])
+
+^{:refer postgres.entity/E-owner-pair}
+(Test/check [{:name "normalizes shorthand and explicit owners"
+              :test (fn [] [(entity/E-owner-pair 'Social)
+                            (entity/E-owner-pair ['Social :target])
+                            (try (entity/E-owner-pair [:target 'Social]) false
+                                 (catch Throwable _ true))])
+              :expected [[:social 'Social] [:target 'Social] true]}])
+
+^{:refer postgres.entity/E-check-input}
+(Test/check [{:name "accepts valid and rejects retired or invalid inputs"
+              :test (fn [] [(entity/E-check-input {:class :1d/base})
+                            (try (entity/E-check-input {:class :1d/simple}) false
+                                 (catch Throwable _ true))
+                            (try (entity/E-check-input {:link {:for 'Social}}) false
+                                 (catch Throwable _ true))])
+              :expected [{:class :1d/base} true true]}])
+
+^{:refer postgres.entity/E-known-addon-keys}
+(Test/check [{:name "returns an empty set for an unconfigured application"
+              :test (fn [] (entity/E-known-addon-keys :missing-application))
+              :expected #{}}])
+
+^{:refer postgres.entity/E-addon-bool-shorthand}
+(Test/check [{:name "preserves ordinary values while normalizing addon flags"
+              :test (fn [] (entity/E-addon-bool-shorthand {:application :missing-application
+                                                           :name "x"}))
+              :expected {:application :missing-application :name "x" :addons []}}])
+
+^{:refer postgres.entity/E-addon-columns-single}
+(Test/check [{:name "normalizes explicit addon maps"
+              :test (fn [] (entity/E-addon-columns-single
+                            {:key :detail :field {:type :map} :priority 51}))
+              :expected {:key :detail :field {:type :map} :priority 51}}
+             {:name "normalizes reference vectors"
+              :test (fn [] (entity/E-addon-columns-single
+                            [:flag 'postgres.entity-test/Target 11 {:field {:required false}}]))
+              :expected {:key :flag
+                         :field {:type :ref :required false
+                                 :ref {:ns 'postgres.entity-test/Target}}
+                         :priority 11}}])
+
+^{:refer postgres.entity/basis-kind-for}
+(Test/check [{:name "distinguishes minimal and expanded bases"
+              :test (fn [] [(entity/basis-kind-for {:class :1d/base :basis #{:table :id}})
+                            (entity/basis-kind-for {:class :1d/base :basis #{:table :context :id}})])
+              :expected [:minimal :expanded]}])
+
+^{:refer postgres.entity/plan-addon-relation}
+(Test/check [{:name "rejects unresolved addon targets"
+              :test (fn [] (try (entity/plan-addon-relation
+                                 {:class :1d/entry :basis #{:table}}
+                                 {:key :target :field {:type :ref :ref {:ns 'Missing}}})
+                                false
+                                (catch Throwable _ true)))
+              :expected true}])
+
+^{:refer postgres.entity/plan-entity-relation}
+(Test/check [{:name "requires an entity target"
+              :test (fn [] (try (entity/plan-entity-relation {:class :1d/base :basis #{:table}})
+                                false
+                                (catch Throwable _ true)))
+              :expected true}])
+
+^{:refer postgres.entity/plan-owner-relation}
+(Test/check [{:name "returns no relation when owner is absent"
+              :test (fn [] (entity/plan-owner-relation {:class :1d/base}))
+              :expected {}}])
+
+^{:refer postgres.entity/coordinate-column}
+(Test/check [{:name "maps coordinates to typed structural columns"
+              :test (fn [] [(select-keys (entity/coordinate-column "schema" :table) [:type :scope])
+                            (select-keys (entity/coordinate-column "schema" :id) [:type :required])])
+              :expected [{:type :enum :scope :-/hidden}
+                         {:type :uuid :required true}]}])
+
+^{:refer postgres.entity/E-class-columns}
+(Test/check [{:name "emits structural columns for a base class"
+              :test (fn [] (let [out (entity/E-class-columns
+                                      {:class :1d/base :basis #{:table :id} :ns-str "schema"})]
+                             [(select-keys (:class-table out) [:type :scope :primary])
+                              (select-keys (:class-ref out) [:type :required])]))
+              :expected [{:type :enum :scope :-/hidden :primary "default"}
+                         {:type :uuid :required true}]}])
+
+^{:refer postgres.entity/E-basis-compatible?}
+(Test/check [{:name "accepts a compatible relation basis"
+              :test (fn [] (entity/E-basis-compatible? {:class :1d/base} #{:table :id}))
+              :expected true}])
+
+^{:refer postgres.entity/E-resolve-basis}
+(Test/check [{:name "selects minimal basis where no relation expands it"
+              :test (fn [] (entity/E-resolve-basis {:class :1d/base}))
+              :expected #{:table :id}}])
+
+^{:refer postgres.entity/E-addon-columns}
+(Test/check [{:name "returns empty addon columns for no addons"
+              :test (fn [] (entity/E-addon-columns {:class :1d/base :addons []}))
+              :expected [{} {}]}])
+
+^{:refer postgres.entity/E-class-merge}
+(Test/check [{:name "merges supplied columns and preserves overrides"
+              :test (fn [] (entity/E-class-merge {:class :1d/base :basis #{:table :id}
+                                                  :columns {:name {:type :text}}}
+                                                 {:id {:type :uuid}}
+                                                 {}
+                                                 {:class-table {:type :enum}}
+                                                 {}))
+              :expected {:id {:type :uuid}
+                         :class-table {:type :enum}
+                         :name {:type :text}}}])
+
+^{:refer postgres.entity/E-main-track}
+(Test/check [{:name "uses no tracking for the none class"
+              :test (fn [] (entity/E-main-track {:class :none :ns-str "schema"}))
+              :expected [{} {} {}]}])
+
+^{:refer postgres.entity/E-main}
+(Test/check [{:name "builds the public entity descriptor"
+              :test (fn [] (select-keys (entity/E-main {:class :none
+                                                         :access :none
+                                                         :columns []
+                                                         :addons []})
+                                        [:public :raw :api/input]))
+              :expected {:public false :raw []
+                         :api/input {:class :none :access :none :columns [] :addons []}}}])
+
+^{:refer postgres.entity/E-main-spec}
+(Test/check [{:name "is inert without a grammar symbol binding"
+              :test (fn [] (entity/E-main-spec {}) )
+              :expected nil}])
+
+^{:refer postgres.entity/normalise-class-types}
+(Test/check [{:name "normalizes keyword, symbol, and string class types"
+              :test (fn [] [(entity/normalise-class-types :User)
+                            (entity/normalise-class-types ['demo/Task "Global"])])
+              :expected [#{"User"} #{"demo/Task" "Global"}]}])
+
+^{:refer postgres.entity/E-relation-ref}
+(Test/check [{:name "extracts relation references from shorthand"
+              :test (fn [] [(entity/E-relation-ref {:for 'Social})
+                            (entity/E-relation-ref {:for [:social 'Social]})])
+              :expected ['Social 'Social]}])
+
+^{:refer postgres.entity/E-reference-addons}
+(Test/check [{:name "filters only reference addons"
+              :test (fn [] (map :key (entity/E-reference-addons
+                                       [{:key :detail :field {:type :map}}
+                                        {:key :owner :field {:type :ref :ref {:ns 'Owner}}}])))
+              :expected [:owner]}])
+
+^{:refer postgres.entity/E-auto-class-types}
+(Test/check [{:name "returns no types for an unlinked class"
+              :test (fn [] (entity/E-auto-class-types {:class :1d/base
+                                                        :symname "Task"
+                                                        :basis #{:table :id}
+                                                        :addons []}))
+              :expected #{}}])
+
+^{:refer postgres.entity/E-class-types}
+(Test/check [{:name "uses explicit class types when supplied"
+              :test (fn [] (entity/E-class-types {:class-types [:Task :Global]}))
+              :expected #{"Task" "Global"}}])
+
+^{:refer postgres.entity/normalise-reference}
+(Test/check [{:name "normalizes references while preserving owner tuples"
+              :test (fn [] (entity/normalise-reference ['Social :owner]))
+              :expected ['Social :owner]}])
+
+^{:refer postgres.entity/class-types}
+(Test/check [{:name "returns sorted defaults for an unknown application"
+              :test (fn [] (entity/class-types :missing-application [:Global]))
+              :expected ["Global"]}])
+
+^{:refer postgres.entity/E}
+(Test/check [{:name "constructs a baseline entity descriptor"
+              :test (fn [] (select-keys (entity/E {:class :none :access :none :columns []})
+                                        [:public :raw]))
+              :expected {:public false :raw []}}])

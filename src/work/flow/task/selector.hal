@@ -40,6 +40,54 @@
               :selector (get options selector-key))
        options))))
 
+(defn ^{:public true} within-namespace?
+  "Returns true when IDENTIFIER is the selector root or one of its descendants."
+  [root identifier]
+  (let [root (str root)
+        identifier (str identifier)]
+    (or (= root identifier)
+        (str/starts-with? identifier (str root ".")))))
+
+(defn ^{:public true} base-namespace?
+  "Matches a Foundation :base namespace selector."
+  [root identifier]
+  (let [root (str root)
+        identifier (str identifier)]
+    (or (= root identifier)
+        (str/starts-with? identifier (str root ".base.")))))
+
+(defn ^{:public true} foundation-match?
+  "Matches the tagged Foundation package selector forms used by code.deploy."
+  [selector identifier]
+  (let [root (first selector)
+        mode (second selector)]
+    (cond
+      (not (and (vector? selector)
+                (or (and (= mode :base) (= 2 (count selector)))
+                    (and (= mode :complete) (= 2 (count selector)))
+                    (and (= mode :exclude)
+                         (= 3 (count selector))
+                         (vector? (nth selector 2))))))
+      (throw
+       (ex :argument {:selector selector :identifier identifier}
+           :ex/message "Foundation selector must be [namespace :base|:complete] or [namespace :exclude [roots...]]"))
+
+      (= mode :base)
+      (base-namespace? root identifier)
+
+      (= mode :complete)
+      (within-namespace? root identifier)
+
+      :else
+      (and (within-namespace? root identifier)
+           (not
+            (reduce
+             (fn [excluded? excluded-root]
+               (or excluded?
+                   (within-namespace? excluded-root identifier)))
+             false
+             (nth selector 2)))))))
+
 (defn matches?
   "Matches one task-flow selector against an item identifier. Scalars use
    prefix matching, regular expressions search the identifier, sets use exact
@@ -53,6 +101,10 @@
                   (and matched
                        (work.flow.task.selector/matches? part identifier)))
                 true selector)
+        (and (vector? selector)
+             (> (count selector) 1)
+             (has? #{:base :complete :exclude} (nth selector 1)))
+        (foundation-match? selector identifier)
         (vector? selector)
         (reduce (fn [matched part]
                   (or matched

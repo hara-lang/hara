@@ -1,0 +1,190 @@
+(ns code.manage.context-test
+  (:use code.test)
+  (:require [code.manage.context :as context]))
+
+(def project
+  {:project/root "/project"
+   :project/version "1.2.3"
+   :project/source-paths ["src" "src-lang"]
+   :project/test-paths ["test" "test-lang"]
+   :project/source-files ["/project/src/demo/core.hal"]})
+
+(def local-project
+  {:project/root (OS/cwd)
+   :project/version "1.2.3"
+   :project/source-paths ["src" "src-lang"]
+   :project/test-paths ["test" "test-lang"]
+   :project/source-files ["src/code/manage/context.hal"]})
+
+^{:refer code.manage.context/read-text}
+(Test/register
+ {:desc "returns empty text for a missing file"
+  :test (fn [] (context/read-text "/path/that/does/not/exist.hal"))
+  :expected ""})
+
+^{:refer code.manage.context/path-text}
+(Test/register
+ {:desc "normalizes path separators"
+  :test (fn [] (context/path-text "src\\demo\\core.hal"))
+  :expected "src/demo/core.hal"})
+
+^{:refer code.manage.context/strip-leading}
+(Test/register
+ {:desc "removes leading separators"
+  :test (fn [] [(context/strip-leading "/a/b") (context/strip-leading "a/b")])
+  :expected ["a/b" "a/b"]})
+
+^{:refer code.manage.context/relative-path}
+(Test/register
+ {:desc "computes a normalized path relative to a root"
+  :test (fn [] [(context/relative-path "/project" "/project/src/demo.hal") (context/relative-path "src" "src/demo.hal")])
+  :expected ["src/demo.hal" "demo.hal"]})
+
+^{:refer code.manage.context/absolute-path}
+(Test/register
+ {:desc "resolves relative paths under a project root"
+  :test (fn [] [(context/absolute-path "/project" "src/demo.hal") (context/absolute-path "/project" "/other/demo.hal")])
+  :expected ["/project/src/demo.hal" "/other/demo.hal"]})
+
+^{:refer code.manage.context/project-file}
+(Test/register
+ {:desc "locates project.edn at a project root"
+  :test (fn [] (context/project-file "/project"))
+  :expected "/project/project.edn"})
+
+^{:refer code.manage.context/read-project}
+(Test/register
+ {:desc "rejects a root without project metadata"
+  :test (fn [] (try (context/read-project "/path/that/does/not/exist") false (catch error (= :hara/not-found (:ex/code (ex-data error))))))
+  :expected true})
+
+^{:refer code.manage.context/project-directory}
+(Test/register
+ {:desc "returns the existing directory for a directory start"
+  :test (fn [] (let [root (File/resolve "." "")] (context/project-directory root)))
+  :expected (File/resolve "." "")})
+
+^{:refer code.manage.context/discover}
+(Test/register
+ {:desc "discovers the workspace project from the current directory"
+  :test (fn [] (let [found (context/discover (OS/cwd))] [(map? found) (string? (:project/root found))]))
+  :expected [true true]})
+
+^{:refer code.manage.context/source-roots}
+(Test/register
+ {:desc "uses configured source roots and defaults when absent"
+  :test (fn [] [(context/source-roots project) (context/source-roots {})])
+  :expected [["src" "src-lang"] ["src" "src-lang"]]})
+
+^{:refer code.manage.context/test-roots}
+(Test/register
+ {:desc "uses configured test roots and defaults when absent"
+  :test (fn [] [(context/test-roots project) (context/test-roots {})])
+  :expected [["test" "test-lang"] ["test" "test-lang"]]})
+
+^{:refer code.manage.context/roots-for}
+(Test/register
+ {:desc "selects source test or both roots by operation category"
+  :test (fn [] [(context/roots-for project :analyse) (context/roots-for project :refactor-test) (context/roots-for project :grep)])
+  :expected [["src" "src-lang"] ["test" "test-lang"] ["src" "src-lang" "test" "test-lang"]]})
+
+^{:refer code.manage.context/source-file?}
+(Test/register
+ {:desc "accepts Hara source but excludes lock files"
+  :test (fn [] [(context/source-file? "src/demo.hal") (context/source-file? "src/.#demo.hal") (context/source-file? "src/demo.clj")])
+  :expected [true false false]})
+
+^{:refer code.manage.context/test-file?}
+(Test/register
+ {:desc "recognizes path-matched Hara tests"
+  :test (fn [] [(context/test-file? "test/demo_test.hal") (context/test-file? "src/demo.hal")])
+  :expected [true false]})
+
+^{:refer code.manage.context/files-under}
+(Test/register
+ {:desc "discovers sorted Hara files under an existing root"
+  :test (fn [] (let [files (context/files-under (File/join (OS/cwd) "src/code/manage"))] [(vector? files) (every? context/source-file? files) (= files (vec (sort-by str files)))]))
+  :expected [true true true]})
+
+^{:refer code.manage.context/declared-files}
+(Test/register
+ {:desc "uses explicit source files for ordinary operations"
+  :test (fn [] (context/declared-files project :analyse))
+  :expected ["/project/src/demo/core.hal"]})
+
+^{:refer code.manage.context/unit}
+(Test/register
+ {:desc "creates a source unit with its declared namespace"
+  :test (fn [] (select-keys (context/unit (File/join (OS/cwd) "src/code/manage/context.hal") :source) [:type :namespace]))
+  :expected {:type :source :namespace (quote code.manage.context)}})
+
+^{:refer code.manage.context/versioned-unit}
+(Test/register
+ {:desc "adds the project version to a unit"
+  :test (fn [] (context/versioned-unit {:path "demo.hal"} "1.2.3"))
+  :expected {:version "1.2.3" :path "demo.hal"}})
+
+^{:refer code.manage.context/paired-source-unit}
+(Test/register
+ {:desc "adds test mapping and preserves empty test source"
+  :test (fn [] (context/paired-source-unit {:path "demo.hal"} "1.2.3" "demo_test.hal" nil))
+  :expected {:test-source "" :version "1.2.3" :test-path "demo_test.hal" :path "demo.hal"}})
+
+^{:refer code.manage.context/project-test-path}
+(Test/register
+ {:desc "maps source roots to their corresponding test roots"
+  :test (fn [] [(context/project-test-path project "/project/src/demo/core.hal") (context/project-test-path project "/project/src-lang/demo/core.hal")])
+  :expected ["/project/test/demo/core_test.hal" "/project/test-lang/demo/core_test.hal"]})
+
+^{:refer code.manage.context/paired-unit}
+(Test/register
+ {:desc "pairs a real source file with its test source"
+  :test (fn [] (let [unit (context/paired-unit local-project (File/join (OS/cwd) "src/code/manage/context.hal") :source)] [(= :source (:type unit)) (= (quote code.manage.context) (:namespace unit)) (str/ends-with? (:test-path unit) "context_test.hal")]))
+  :expected [true true true]})
+
+^{:refer code.manage.context/units-for}
+(Test/register
+ {:desc "returns deterministic units for source operations"
+  :test (fn [] (let [units (context/units-for local-project :analyse)
+                     selected (context/units-for local-project :analyse (quote code.manage.context))]
+                 [(vector? units)
+                  (every? (fn [unit] (= :source (:type unit))) units)
+                  (= 1 (count selected))
+                  (= (quote code.manage.context) (:namespace (first selected)))]))
+  :expected [true true true true]})
+
+^{:refer code.manage.context/selector-input?}
+(Test/register
+ {:desc "recognizes shared selector values but not arbitrary maps"
+  :test (fn [] [(context/selector-input? nil) (context/selector-input? "code") (context/selector-input? (quote code)) (context/selector-input? :code) (context/selector-input? ["code"]) (context/selector-input? {:namespace "code"})])
+  :expected [true true true true true false]})
+
+^{:refer code.manage.context/task-input}
+(Test/register
+ {:desc "normalizes selectors and explicit units into task input"
+  :test (fn [] [(select-keys (context/task-input "code") [:units :selector :options])
+               (context/task-input {:source "(ns demo)" :path "demo.hal"})
+               (select-keys (context/task-input {:units nil :selector 'demo}) [:units :selector :options])
+               (context/task-input {:units []})])
+  :expected [{:options {} :units nil :selector "code"}
+             {:options {} :units [{:source "(ns demo)" :path "demo.hal"}] :selector :all}
+             {:options {} :units nil :selector 'demo}
+             {:options {} :units []}]})
+
+^{:refer code.manage.context/selected-unit?}
+(Test/register
+ {:desc "matches namespace and path selectors"
+  :test (fn [] [(context/selected-unit? :all {:namespace (quote demo.core) :path "demo/core.hal"}) (context/selected-unit? (quote demo) {:namespace (quote demo.core) :path "demo/core.hal"}) (context/selected-unit? (quote other) {:namespace (quote demo.core) :path "demo/core.hal"})])
+  :expected [true true false]})
+
+^{:refer code.manage.context/current-input}
+(Test/register
+ {:desc "builds a project input catalog while retaining the selector for Work"
+  :test (fn [] (let [input (context/current-input :analyse local-project (quote code.manage.context))] [(= (quote code.manage.context) (get-in input [:units 0 :namespace])) (:selector input) (:options input)]))
+  :expected [true (quote code.manage.context) {}]})
+
+^{:refer code.manage.context/current-project}
+(Test/register
+ {:desc "aliases project discovery for compatibility callers"
+  :test (fn [] (let [found (context/current-project (OS/cwd))] [(map? found) (= (:project/root found) (context/project-directory (OS/cwd)))]))
+  :expected [true true]})

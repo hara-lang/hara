@@ -1,0 +1,277 @@
+(ns code.manage.unit
+  (:config {:role :internal})
+  (:require [code.framework :as framework]
+            [code.framework.reader :as reader]
+            [code.framework.source :as source]
+            [code.manage.unit.scaffold :as scaffold]
+            [code.manage.unit.structure :as structure]))
+
+(defn ^{:public true} analyse
+  "Returns reader and source-structure facts for one manage unit."
+  [unit]
+  (let [analysis (structure/analyse-structure (:source unit))
+        facts (structure/facts-from-source
+               (if (= :test (:type unit))
+                 (:source unit)
+                 (or (:test-source unit) ""))
+               (if (= :test (:type unit))
+                 (:path unit)
+                 (or (:test-path unit) (:path unit))))]
+    (assoc
+     (merge analysis
+            {:path (:path unit)
+             :test-path (:test-path unit)
+             :test-runs (vec (filter :checked facts))
+             :facts facts})
+     :unit unit)))
+
+(defn ^{:public true} extract
+  [unit]
+  (:definitions (analyse unit)))
+
+(defn ^{:public true} vars
+  [unit]
+  (vec (map :source (extract unit))))
+
+(defn ^{:public true} docstrings
+  [unit]
+  (:docstrings (analyse unit)))
+
+(def transform-function source/transform-function)
+(def transform-code source/transform-code)
+(def grep source/grep-code)
+(def grep-replace source/grep-replace)
+(def replacements source/replacements)
+(def replace-all source/replace-all)
+
+(defn ^{:public true} heal-code
+  [unit]
+  (transform-code
+   unit
+   (fn [text]
+     (str (str/trim-right text) "\n"))))
+
+(defn ^{:public true} unclean
+  [unit]
+  (if (= (:source unit) (:after (heal-code unit)))
+    []
+    [(:path unit)]))
+
+(defn ^{:public true} unclean-findings
+  "Reports trailing whitespace and missing final newlines."
+  [unit]
+  (let [text (:source unit)
+        lines (str/split-lines text)
+        trailing
+        (loop [index 0 output []]
+          (if (= index (count lines))
+            output
+            (let [line (nth lines index)]
+              (recur
+               (inc index)
+               (if (= line (str/trim-right line))
+                 output
+                 (conj output
+                       {:path (:path unit)
+                        :line (inc index)
+                        :column 1
+                        :kind :trailing-whitespace}))))))]
+    (if (str/ends-with? text "\n")
+      trailing
+      (conj trailing
+            {:path (:path unit)
+             :line (max 1 (count lines))
+             :column 1
+             :kind :missing-final-newline}))))
+
+(defn ^{:public true} definition-names
+  [unit]
+  (vec (map :name (extract unit))))
+
+(defn ^{:public true} public-definitions
+  [unit]
+  (structure/public-definitions (analyse unit)))
+
+(defn ^{:public true} reachable-definitions
+  [unit]
+  (structure/reachable-definitions (analyse unit)))
+
+(defn ^{:public true} public-definition-names
+  [unit]
+  (vec (map :name (public-definitions unit))))
+
+(defn ^{:public true} reachable-definition-names
+  [unit]
+  (vec (map :name (reachable-definitions unit))))
+
+(defn fact-source
+  [unit]
+  (if (= :test (:type unit))
+    (:source unit)
+    (or (:test-source unit) "")))
+
+(defn fact-path
+  [unit]
+  (if (= :test (:type unit))
+    (:path unit)
+    (or (:test-path unit) (:path unit))))
+
+(defn ^{:public true} facts
+  [unit]
+  (structure/facts-from-source (fact-source unit) (fact-path unit)))
+
+(defn ^{:public true} missing
+  [unit options]
+  (structure/missing-findings unit (analyse unit) (facts unit)))
+
+(defn ^{:public true} todos
+  [unit]
+  (structure/todo-findings (facts unit)))
+
+(defn ^{:public true} incomplete
+  [unit]
+  (vec (concat (missing unit {}) (todos unit))))
+
+(defn ^{:public true} commented
+  [unit]
+  (structure/commented-findings (facts unit)))
+
+(defn ^{:public true} unchecked
+  [unit]
+  (structure/unchecked-findings (facts unit)))
+
+(defn ^{:public true} pedantic
+  "Returns Foundation's historical M/T/N/C classifications in that order."
+  [unit]
+  (vec (concat (missing unit {})
+               (todos unit)
+               (unchecked unit)
+               (commented unit))))
+
+(defn ^{:public true} in-order?
+  [unit]
+  (let [names (definition-names unit)]
+    (= names (vec (sort-by str names)))))
+
+(defn ^{:public true} orphaned-meta
+  [unit]
+  (let [analysis (structure/analyse-structure (:source unit))]
+    (vec
+     (keep
+      (fn [record]
+        (let [metadata (meta (:form record))
+              definition (reader/definition-record record)
+              fact (structure/fact-record (:source unit) (:path unit) record false)]
+          (if (and (map? metadata)
+                   (not (empty? metadata))
+                   (nil? definition)
+                   (nil? fact))
+            {:path (:path unit)
+             :line (:line (:start record))
+             :column (:column (:start record))
+             :kind :orphaned-metadata}
+            nil)))
+      (:form-records analysis)))))
+
+(defn ^{:public true} orphaned
+  [unit]
+  (orphaned-meta unit))
+
+(defn ^{:public true} purge
+  "Removes source docstrings and simple :added metadata as a dry-run edit."
+  [unit options]
+  (let [before (:source unit)
+        analysis (analyse unit)
+        edits (vec
+               (mapcat
+                (fn [definition]
+                  (structure/definition-purge-edits before definition))
+                (:definitions analysis)))
+        after (structure/apply-edits before edits)]
+    {:path (:path unit)
+     :changed (not= before after)
+     :before before
+     :after after
+     :create false
+     :write false
+     :purged (count edits)
+     :options (or options {})}))
+
+(defn ^{:public true} refactor-code
+  [unit options]
+  (transform-code
+   unit
+   (fn [text]
+     (replace-all text (replacements options)))))
+
+(defn ^{:public true} refactor-test
+  [unit options]
+  (refactor-code unit options))
+
+(defn ^{:public true} refactor-swap
+  [unit pairs]
+  (refactor-code unit {:replacements pairs}))
+
+(defn ^{:public true} arrange
+  [unit]
+  (if (in-order? unit)
+    (transform-code unit identity)
+    (assoc (transform-code unit identity)
+           :finding {:path (:path unit)
+                     :kind :definitions-out-of-order
+                     :definitions (definition-names unit)})))
+
+(defn ^{:public true} scaffold
+  [unit options]
+  (let [analysis (analyse unit)
+        source-namespace (:namespace analysis)
+        test-namespace (scaffold/test-namespace-for unit options source-namespace)
+        alias (or (:alias options) "subject")
+        definitions (structure/reachable-definitions analysis)
+        before (or (:test-source unit) "")
+        test-path (scaffold/test-path-for unit options)
+        missing (scaffold/missing-definitions
+                 source-namespace definitions before test-path)
+        scaffold-options (merge {:version (:version unit)
+                                 :test-source before
+                                 :test-path test-path}
+                                (or options {}))
+        after (if (empty? definitions)
+                before
+                (scaffold/scaffold-source
+                 source-namespace test-namespace alias definitions scaffold-options))]
+    {:path test-path
+     :changed (not= before after)
+     :before before
+     :after after
+     :functions (vec (map :name definitions))
+     :new (vec (map :name missing))
+     :write false
+     :create (and (str/blank? before) (not= before after))
+     :added (scaffold/added-version scaffold-options)}))
+
+(defn ^{:public true} create-tests
+  [unit options]
+  (scaffold unit options))
+
+(defn ^{:public true} locate-code
+  [unit]
+  (if (= :test (:type unit)) nil (:path unit)))
+
+(defn ^{:public true} locate-test
+  [unit]
+  (if (= :test (:type unit)) (:path unit) (:test-path unit)))
+
+(defn ^{:public true} includes-any?
+  [line patterns]
+  (reduce (fn [matched pattern]
+            (or matched (str/includes? line pattern)))
+          false
+          patterns))
+
+(defn ^{:public true} remove-matching-lines
+  [text patterns]
+  (str (str/join "\n"
+                 (filter (fn [line] (not (includes-any? line patterns)))
+                         (str/split-lines text)))
+       "\n"))

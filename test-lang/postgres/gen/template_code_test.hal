@@ -1,0 +1,254 @@
+(ns postgres.gen.template-code-test
+  (:require [postgres.application :as application]
+            [postgres.gen.template-code :as gen]))
+
+(def ping
+  {:id 'ping
+   :module 'postgres.gen.template-code-test
+   :op-key :defn
+   :static/input []
+   :static/return [:text]
+   :static/schema "scratch_v0"
+   :api/flags [:public]})
+
+(def log-append
+  {:id 'log-append
+   :module 'postgres.gen.template-code-test
+   :op-key :defn
+   :static/input [{:symbol 'i_message :modifiers [:text]}]
+   :static/return [:jsonb]
+   :static/schema "scratch_v0"
+   :api/flags [:public]})
+
+(def log-all
+ {:id 'log-all
+   :module 'postgres.gen.template-code-test
+   :static/input [{:symbol 'i_log_id :modifiers [:uuid]}]
+   :static/return [:jsonb]
+   :static/schema "scratch_v0"
+   :static/view {:table 'Log :type :select :args ['i_log_id]
+                 :query {:id 'i_log_id}}})
+
+(def log-default
+ {:id 'log-default
+   :module 'postgres.gen.template-code-test
+   :static/input [{:symbol 'i_log_id :modifiers [:uuid]}]
+   :static/return [:jsonb]
+   :static/schema "scratch_v0"
+   :static/view {:table 'Log :type :return :args ['i_log_id]
+                 :query {:id 'i_log_id}}})
+
+(def +code+
+  {'ping ping
+   'log-append log-append
+   'log-all log-all
+   'log-default log-default})
+
+(defn with-module [function]
+  (let [snapshot (application/module-snapshot)
+        module 'postgres.gen.template-code-test]
+    (try
+      (application/install-modules! {module {:id module :code +code+}})
+      (function)
+      (finally
+        (application/restore-modules! snapshot)))))
+
+^{:refer postgres.gen.template-code/namespace-url-root}
+(Test/check
+ [{:name "creates a default route root from the final namespace segment"
+   :test (fn [] (gen/namespace-url-root 'postgres.sample.scratch-v0))
+   :expected "api/scratch-v0"}])
+
+^{:refer postgres.gen.template-code/namespace-stem}
+(Test/check
+ [{:name "maps namespace punctuation to the Hara source-path convention"
+   :test (fn [] (gen/namespace-stem 'postgres.sample.scratch-v0.route-entries))
+   :expected "postgres/sample/scratch_v0/route_entries"}])
+
+^{:refer postgres.gen.template-code/route-entry-input}
+(Test/check
+ [{:name "binds a portable PostgreSQL function into route template input"
+   :test (fn [] (gen/route-entry-input {:src ping :route-sym 'ping
+                                         :root "api/scratch-v0"}))
+   :expected {'route-sym 'ping
+              'input []
+              'return "text"
+              'schema "scratch_v0"
+              'id "ping"
+              'flags {:public true}
+              'url "api/scratch-v0/ping"}}])
+
+^{:refer postgres.gen.template-code/emit-route-entry}
+(Test/check
+ [{:name "emits an XTalk route entry from a resolved source symbol"
+   :test (fn []
+           (with-module
+            (fn []
+              (gen/emit-route-entry 'postgres.gen.template-code-test/ping))))
+   :expected "(def.xt ping\n  {:input []\n   :return \"text\"\n   :schema \"scratch_v0\"\n   :id \"ping\"\n   :flags {:public true}\n   :url \"api/template-code-test/ping\"})"}])
+
+^{:refer postgres.gen.template-code/emit-route-entries}
+(Test/check
+ [{:name "emits API routes but excludes unflagged views"
+   :test (fn []
+           (with-module
+            (fn []
+              (let [rendered (gen/emit-route-entries 'postgres.gen.template-code-test)]
+                [(str/includes? rendered "(def.xt ping")
+                 (str/includes? rendered ":url \"api/template-code-test/log-append\"")
+                 (not (str/includes? rendered "log-all"))]))))
+   :expected [true true true]}])
+
+^{:refer postgres.gen.template-code/descriptor-id}
+(Test/check
+ [{:name "requires generated descriptors to carry an identifier"
+   :test (fn []
+           [(gen/descriptor-id {:id "one"})
+            (try
+              (gen/descriptor-id {})
+              false
+              (catch Throwable _ true))])
+   :expected ["one" true]}])
+
+^{:refer postgres.gen.template-code/assert-unique-ids}
+(Test/check
+ [{:name "preserves unique entries and rejects duplicate generated identifiers"
+   :test (fn []
+           [(gen/assert-unique-ids :route [['a {:id "a"}] ['b {:id "b"}]])
+            (try
+              (gen/assert-unique-ids :route [['a {:id "same"}] ['b {:id "same"}]])
+              false
+              (catch Throwable _ true))])
+   :expected [[['a {:id "a"}] ['b {:id "b"}]] true]}])
+
+^{:refer postgres.gen.template-code/route-entries}
+(Test/check
+ [{:name "binds API entries in deterministic descriptor identifier order"
+   :test (fn []
+           (with-module
+            (fn []
+              (let [entries (gen/route-entries ['postgres.gen.template-code-test])]
+                [(vec (map first entries))
+                 (vec (map (fn [entry] (:id (second entry))) entries))]))))
+   :expected [['postgres.gen.template-code-test/log-append
+               'postgres.gen.template-code-test/ping]
+              ["log_append" "ping"]]}])
+
+^{:refer postgres.gen.template-code/view-entries}
+(Test/check
+ [{:name "binds select and return views with their distinct descriptor keys"
+   :test (fn []
+           (with-module
+            (fn []
+              (let [entries (gen/view-entries ['postgres.gen.template-code-test])]
+                [(vec (map (fn [entry]
+                             [(first entry)
+                              (:id (second entry))
+                              (if (has? (second entry) :select-entry) :select :return)])
+                           entries))
+                 (get-in (second entries) [1 :return-entry :input])]))))
+   :expected [[['postgres.gen.template-code-test/log-all "log_all" :select]
+               ['postgres.gen.template-code-test/log-default "log_default" :return]]
+              [{:symbol "i_log_id" :type "uuid"}]]}])
+
+^{:refer postgres.gen.template-code/emit-module-entry}
+(Test/check
+ [{:name "emits descriptor data as an unquoted typed def.xt form"
+   :test (fn []
+           (let [rendered (gen/emit-module-entry
+                           :route
+                           ['sample/source {:id "source" :input [] :return "jsonb"}])]
+             [(str/starts-with? rendered "(def.xt ^{:api/type :route} source")
+              (str/includes? rendered "{:id \"source\" :input [] :return \"jsonb\"}")
+              (not (str/includes? rendered "\"{:id"))]))
+   :expected [true true true]}])
+
+^{:refer postgres.gen.template-code/render-module}
+(Test/check
+ [{:name "renders descriptor data into a templated XTalk source namespace"
+   :test (fn []
+           (let [rendered
+                 (gen/render-module
+                  'sample.generated
+                  :view
+                  [['sample/source
+                    {:id "sample_source"
+                     :table "Sample"
+                     :return-entry {:input [] :view {:type "return"}}
+                     :select-args []
+                     :return-args []}]]
+                  {:header ";; generated\n"})]
+             [(str/starts-with? rendered ";; generated\n(ns sample.generated")
+              (str/includes? rendered "(l/script :xtalk)")
+              (str/includes? rendered "(def.xt ^{:api/type :view} source")]))
+   :expected [true true true]}])
+
+^{:refer postgres.gen.template-code/source-path-for}
+(Test/check
+ [{:name "resolves a source namespace through an explicit Hara project map"
+   :test (fn []
+           (str/ends-with? (gen/source-path-for 'postgres.gen.template-code
+                                                {:project/root "."
+                                                 :project/source-paths ["src" "src-lang"]})
+                           "/src-lang/postgres/gen/template_code.hal"))
+   :expected true}])
+
+^{:refer postgres.gen.template-code/target-path}
+(Test/check
+ [{:name "maps generated namespaces below the matching source root"
+   :test (fn []
+           (gen/target-path
+            'postgres.sample.scratch-v0.route-entries
+            'postgres.sample.scratch-v0
+            {:source-path "src-lang/postgres/sample/scratch_v0.hal"
+             :source-paths ["src" "src-lang"]}))
+   :expected "src-lang/postgres/sample/scratch_v0/route_entries.hal"}])
+
+^{:refer postgres.gen.template-code/namespace-body}
+(Test/check
+ [{:name "creates a generated XTalk namespace body with API routes"
+   :test (fn []
+           (with-module
+            (fn []
+              (let [body (gen/namespace-body
+                          'postgres.sample.scratch-v0.route-entries
+                          'postgres.gen.template-code-test)]
+                [(str/starts-with? body "(ns postgres.sample.scratch-v0.route-entries")
+                 (str/includes? body "(l/script :xtalk)")
+                 (str/includes? body "(def.xt ping")]))))
+   :expected [true true true]}])
+
+^{:refer postgres.gen.template-code/generate-ns}
+(Test/check
+ [{:name "writes a replaceable generated namespace beneath an explicit source root"
+   :test (fn []
+           (let [root (deref (File/temp-directory "/" {:prefix "postgres-template-code-"}))
+                 source-path (File/join root "src-lang/postgres/sample/scratch_v0.hal")
+                 options {:source-path source-path :source-paths ["src-lang"]}]
+             (try
+               (with-module
+                (fn []
+                  (let [output (gen/generate-ns
+                                'postgres.sample.scratch-v0.route-entries
+                                'postgres.gen.template-code-test
+                                options)
+                        _ (gen/generate-ns
+                           'postgres.sample.scratch-v0.route-entries
+                           'postgres.gen.template-code-test
+                           options)
+                        source (str/decode-utf8 (deref (File/read output)))]
+                    [(str/ends-with? output "/src-lang/postgres/sample/scratch_v0/route_entries.hal")
+                     (str/includes? source "(def.xt log-append")
+                     (str/includes? source ":url \"api/template-code-test/ping\"")])))
+               (finally
+                 (reduce
+                  (fn [_ value]
+                    (deref (File/delete value {:missing-ok? true})))
+                  nil
+                  [(File/join root "src-lang/postgres/sample/scratch_v0/route_entries.hal")
+                   (File/join root "src-lang/postgres/sample/scratch_v0")
+                   (File/join root "src-lang/postgres/sample")
+                   (File/join root "src-lang/postgres")
+                   (File/join root "src-lang")
+                   root])))))
+   :expected [true true true]}])

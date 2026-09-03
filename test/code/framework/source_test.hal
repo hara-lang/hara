@@ -1,0 +1,131 @@
+(ns code.framework.source-test
+  (:use code.test)
+  (:require [code.framework.source :as source]))
+
+(def unit {:path "src/demo.hal" :source "alpha beta\n"})
+
+^{:refer code.framework.source/source-path}
+(Test/register
+ {:desc "source-path prefers source paths"
+  :test (fn [] (source/source-path {:source/path "source.clj" :path "target.hal"}))
+  :expected "source.clj"})
+
+^{:refer code.framework.source/target-path}
+(Test/register
+ {:desc "target-path prefers explicit target paths"
+  :test (fn [] (source/target-path {:source/path "source.clj" :target/path "target.hal"}))
+  :expected "target.hal"})
+
+^{:refer code.framework.source/source-text}
+(Test/register
+ {:desc "source-text reads source text aliases"
+  :test (fn [] [(source/source-text {:source/text "a"}) (source/source-text {:source "b"})])
+  :expected ["a" "b"]})
+
+^{:refer code.framework.source/target-text}
+(Test/register
+ {:desc "target-text reads target aliases and same-file source"
+  :test (fn [] [(source/target-text {:target/text "a"}) (source/target-text unit)])
+  :expected ["a" "alpha beta\n"]})
+
+^{:refer code.framework.source/transform-function}
+(Test/register
+ {:desc "transform-function normalises functions and options"
+  :test (fn [] [(= identity (source/transform-function nil)) ((source/transform-function {:transform (fn [value] (str value "!"))}) "a")])
+  :expected [true "a!"]})
+
+^{:refer code.framework.source/result-after}
+(Test/register
+ {:desc "result-after projects supported result forms"
+  :test (fn [] [(source/result-after "a") (source/result-after {:after "b"}) (source/result-after {:output "c"}) (source/result-after {:source "d"})])
+  :expected ["a" "b" "c" "d"]})
+
+^{:refer code.framework.source/result-map}
+(Test/register
+ {:desc "result-map only preserves structured result maps"
+  :test (fn [] [(source/result-map {:a 1}) (source/result-map "a")])
+  :expected [{:a 1} {}]})
+
+^{:refer code.framework.source/normalize-edit}
+(Test/register
+ {:desc "normalize-edit creates a dry-run edit with provenance"
+  :test (fn [] (select-keys (source/normalize-edit unit {:rules [:r] :after "changed"} {}) [:path :before :after :changed :create :write :rules]))
+  :expected {:before "alpha beta\n" :changed true :write false :create false :rules [:r] :path "src/demo.hal" :after "changed"}})
+
+^{:refer code.framework.source/transform-code}
+(Test/register
+ {:desc "transform-code accepts a function and structured result"
+  :test (fn [] [(:after (source/transform-code unit (fn [text] (str text "gamma")))) (:after (source/transform-code unit {:transform (fn [_] {:output "out"})}))])
+  :expected ["alpha beta\ngamma" "out"]})
+
+^{:refer code.framework.source/grep-needle}
+(Test/register
+ {:desc "grep-needle projects option maps"
+  :test (fn [] [(source/grep-needle "a") (source/grep-needle {:needle "b"})])
+  :expected ["a" "b"]})
+
+^{:refer code.framework.source/line-matches}
+(Test/register
+ {:desc "line-matches returns one-based repeated match columns"
+  :test (fn [] (source/line-matches "alpha beta" "a"))
+  :expected [1 5 10]})
+
+^{:refer code.framework.source/grep-code}
+(Test/register
+ {:desc "grep-code returns deterministic line findings"
+  :test (fn [] (source/grep-code unit "beta"))
+  :expected [{:text "alpha beta" :column 7 :line 1 :path "src/demo.hal"}]})
+
+^{:refer code.framework.source/replacement}
+(Test/register
+ {:desc "replacement creates a source edit"
+  :test (fn [] (source/replacement 1 2 "x" {:kind :demo}))
+  :expected {:text "x" :kind :demo :end 2 :start 1}})
+
+^{:refer code.framework.source/edit-key}
+(Test/register
+ {:desc "edit-key orders edits by span"
+  :test (fn [] (source/edit-key {:end 3 :start 2}))
+  :expected [2 3]})
+
+^{:refer code.framework.source/valid-edit?}
+(Test/register
+ {:desc "valid-edit checks ranges and replacement text"
+  :test (fn [] [(source/valid-edit? "abc" {:text "x" :end 1 :start 0}) (source/valid-edit? "abc" {:text "x" :end 1 :start 3})])
+  :expected [true false]})
+
+^{:refer code.framework.source/checked-edits}
+(Test/register
+ {:desc "checked-edits rejects overlapping edits"
+  :test (fn [] (try (source/checked-edits "abc" [(source/replacement 0 2 "x") (source/replacement 1 3 "y")]) false (catch error (= :code.framework/edit-conflict (:ex/code (ex-data error))))))
+  :expected true})
+
+^{:refer code.framework.source/apply-edits}
+(Test/register
+ {:desc "apply-edits preserves untouched source"
+  :test (fn [] (source/apply-edits "abcdef" [(source/replacement 1 3 "X") (source/replacement 4 5 "Y")]))
+  :expected "aXdYf"})
+
+^{:refer code.framework.source/replacements}
+(Test/register
+ {:desc "replacements accepts explicit and match pairs"
+  :test (fn [] [(source/replacements {:replacements [[:a :b]]}) (source/replacements {:match "a" :replacement "b"})])
+  :expected [[[:a :b]] [["a" "b"]]]})
+
+^{:refer code.framework.source/replace-all}
+(Test/register
+ {:desc "replace-all applies all literal pairs"
+  :test (fn [] (source/replace-all "a b a" [["a" "x"] ["b" "y"]]))
+  :expected "x y x"})
+
+^{:refer code.framework.source/grep-replace}
+(Test/register
+ {:desc "grep-replace returns a transformed dry-run edit"
+  :test (fn [] (:after (source/grep-replace unit "beta" "delta")))
+  :expected "alpha delta\n"})
+
+^{:refer code.framework.source/apply-edit-record}
+(Test/register
+ {:desc "apply-edit-record injects writes only for changed edits"
+  :test (fn [] (let [calls (atom []) result (source/apply-edit-record (source/transform-code unit (fn [_] "changed")) (fn [path text] (swap! calls conj [path text]) :ok))] [result (deref calls)]))
+  :expected [{:changed true :write true :result :ok :path "src/demo.hal"} [["src/demo.hal" "changed"]]]})

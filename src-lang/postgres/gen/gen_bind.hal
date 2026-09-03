@@ -1,0 +1,67 @@
+(ns postgres.gen.gen-bind
+  (:config {:role :internal})
+  (:require [lang.common.util :as util]
+            [postgres.application :as application]
+            [postgres.gen.bind-macro :as bind]))
+
+(defn ^{:public true} tmpl-route
+  "Creates a Foundation route template."
+  [input]
+  (let [sym (nth input 0)
+        src (nth input 1)
+        tmeta (nth input 2)
+        merged (merge tmeta (template-meta))
+        root (:root merged)
+        url (str root "/" (name src))]
+    (with-meta
+      (list 'def.xt
+            (with-meta sym {:api/type :route :api/url url})
+            (assoc (bind/bind-function src) :url url))
+      merged)))
+
+(defn ^{:public true} tmpl-view
+  "Creates a Foundation view template."
+  [input]
+  (let [sym (nth input 0)
+        src (nth input 1)
+        tmeta (nth input 2)
+        merged (merge tmeta (template-meta))
+        view (:view merged)]
+    (with-meta
+      (list 'def.xt
+            (with-meta sym {:api/type :view})
+            (bind/bind-view src view))
+      merged)))
+
+(defn module-entries [module predicate]
+  (vec
+   (filter predicate
+           (vals (get-in (application/module-snapshot) [module :code])))))
+
+(defn entry-list [module type]
+  (vec
+   (map util/sym-full
+        (sort-by (fn [entry] (str (:id entry)))
+                 (module-entries module (fn [entry] (= type (:api/type entry))))))))
+
+(defn ^{:public true} route-map
+  "Returns route names mapped to their fully qualified symbols."
+  ([] (throw (ex :argument {}
+                 :ex/message "route-map requires an explicit compiler module")))
+  ([module]
+   (into {}
+         (map (fn [entry]
+                [(bind/snake-case (str (:id entry))) (util/sym-full entry)])
+              (module-entries module (fn [entry] (= :route (:api/type entry))))))))
+
+(defn ^{:public true} route-list
+  "Lists the fully qualified route symbols in a module."
+  ([] (throw (ex :argument {}
+                 :ex/message "route-list requires an explicit compiler module")))
+  ([module] (entry-list module :route)))
+
+(defn ^{:public true} view-list
+  "Lists the fully qualified view symbols in a module."
+  ([] (throw (ex :argument {}
+                 :ex/message "view-list requires an explicit compiler module")))
+  ([module] (entry-list module :view)))

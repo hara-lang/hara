@@ -1,0 +1,77 @@
+(ns tool.cli.model-test
+  (:require [tool.cli.model :as model]))
+
+^{:refer tool.cli.model/outcome-exit}
+(Test/check
+ [{:name "maps outcomes to stable process exits"
+   :test (fn [] [(model/outcome-exit :tool.cli.outcome/success)
+                 (model/outcome-exit :tool.cli.outcome/failed)
+                 (model/outcome-exit :tool.cli.outcome/interrupted)
+                 (model/outcome-exit :unknown)])
+   :expected [0 1 130 2]}])
+
+^{:refer tool.cli.model/request}
+(Test/check
+ [{:name "builds a canonical request envelope"
+   :test (fn [] (model/request
+                 :demo/run ["demo"] {:verbose true}
+                 {:runtime/id :runtime/demo
+                  :runtime/cwd "/project"
+                  :runtime/project {:id :demo}
+                  :runtime/capabilities [:read]}))
+   :expected {:request/route :demo/run
+              :request/arguments ["demo"]
+              :request/options {:verbose true}
+              :request/runtime :runtime/demo
+              :request/cwd "/project"
+              :request/project {:id :demo}
+              :request/capabilities [:read]}}])
+
+^{:refer tool.cli.model/result}
+(Test/check
+ [{:name "includes outcome exit data and messages"
+   :test (fn [] (model/result :tool.cli.outcome/failed {:reason :bad}
+                              [(model/message "bad")]))
+   :expected {:result/outcome :tool.cli.outcome/failed
+              :result/exit 1
+              :result/data {:reason :bad}
+              :result/messages [{:message/stream :stdout
+                                 :message/text "bad"}]}}])
+
+^{:refer tool.cli.model/message}
+(Test/check
+ [{:name "defaults messages to stdout and stringifies text"
+   :test (fn [] [(model/message "hello")
+                 (model/message :stderr 42)])
+   :expected [{:message/stream :stdout :message/text "hello"}
+              {:message/stream :stderr :message/text "42"}]}])
+
+^{:refer tool.cli.model/success}
+(Test/check
+ [{:name "creates a successful result"
+   :test (fn [] (model/success {:value 1}))
+   :expected {:result/outcome :tool.cli.outcome/success
+              :result/exit 0
+              :result/data {:value 1}
+              :result/messages []}}])
+
+^{:refer tool.cli.model/failure}
+(Test/check
+ [{:name "creates a typed failure with a stderr message"
+   :test (fn [] (model/failure :tool.cli.outcome/read-error
+                               :file/missing
+                               "missing"))
+   :expected {:result/outcome :tool.cli.outcome/read-error
+              :result/exit 2
+              :result/data {:error/type :file/missing
+                            :error/message "missing"}
+              :result/messages [{:message/stream :stderr
+                                 :message/text "missing"}]}}])
+
+^{:refer tool.cli.model/success?}
+(Test/check
+ [{:name "recognizes only successful result envelopes"
+   :test (fn [] [(model/success? (model/success nil))
+                 (model/success? (model/failure
+                                  :tool.cli.outcome/failed :error "bad"))])
+   :expected [true false]}])

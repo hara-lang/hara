@@ -1,0 +1,37 @@
+(ns postgres.sample.scratch-v3.view-currency
+  (:require [lang.core :as l]
+            [postgres.gen.bind-macro :as bind-pg]
+            [postgres.gen.gen-bind :as bind]
+            [postgres.sample.scratch-v3]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]]
+   :export [MODULE]})
+
+(defn view-list
+  "Collects generated Currency select and return views."
+  []
+  (vec (map (fn [pair] (bind-pg/bind-view (second pair)))
+            (concat (bind-pg/list-view 'postgres.sample.scratch-v3 :select)
+                    (bind-pg/list-view 'postgres.sample.scratch-v3 :return)))))
+
+(def.xt VIEWS
+  (@! (-/view-list)))
+
+(defn.xt make-views
+  "Collects Currency views by table, type, and tag."
+  []
+  (var out {})
+  (xt/for:array [entry -/VIEWS]
+    (var view (. entry ["view"]))
+    (var table (. view ["table"]))
+    (var type (. view ["type"]))
+    (var tag (. view ["tag"]))
+    (var table-views (or (. out [table]) {}))
+    (var type-views (or (. table-views [type]) {}))
+    (xt/x:set-key type-views tag entry)
+    (xt/x:set-key table-views type type-views)
+    (xt/x:set-key out table table-views))
+  (return out))
+
+(def.xt MODULE (!:module))

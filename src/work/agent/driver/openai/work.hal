@@ -1,0 +1,179 @@
+(ns work.agent.driver.openai.work
+  (:config {:role :internal})
+  (:require [work.core :as work]
+            [work.agent.result :as result]
+            [work.agent.openai :as openai]
+            [work.agent.tool.work :as tool-work]))
+
+(defn failed-limit
+  [message data]
+  (throw (ex :limit data :ex/message message)))
+
+(defn target-name
+  [agent-id suffix]
+  (str "work.agent.openai/" agent-id "/" suffix))
+
+(defn target-names
+  [agent-id]
+  {:initial (target-name agent-id "initial")
+   :model (target-name agent-id "model")
+   :response (target-name agent-id "response")
+   :calls (target-name agent-id "calls")
+   :tool-input (target-name agent-id "tool-input")
+   :tool-plan (target-name agent-id "tool-plan")
+   :next-state (target-name agent-id "next-state")
+   :after-tools (target-name agent-id "after-tools")
+   :final (target-name agent-id "final")})
+
+(defn turn-plan
+  [names]
+  (Work/bind
+   (Work/step (:model names))
+   (:response names)))
+
+(defn initial-state
+  [intent context input]
+  {:agent/input [(openai/input-message intent)]
+   :agent/context context
+   :agent/input-value input
+   :agent/turn 0
+   :agent/tool-calls 0})
+
+(defn model-target
+  [configuration]
+  (fn [state]
+    (let [turn (:agent/turn state)]
+      (if (>= turn (:max-turns configuration))
+        (failed-limit
+         "Agent turn limit reached"
+         {:agent/turn turn
+          :agent/max-turns (:max-turns configuration)}))
+      (result/then
+       (openai/complete
+        (:client configuration)
+        {:instructions (:instructions configuration)
+         :tools (:tools configuration)
+         :input (:agent/input state)
+         :request (:request configuration)})
+       (fn [response]
+         {:agent/state state
+          :agent/response response})))))
+
+(defn final-target
+  [value]
+  (:response/text (:agent/response value)))
+
+(defn calls-target
+  [value]
+  (let [state (:agent/state value)
+        response (:agent/response value)]
+    (vec
+     (map
+      (fn [call]
+        {:agent/state state
+         :agent/response response
+         :agent/call call})
+      (:response/tool-calls response)))))
+
+(defn tool-plan
+  [configuration envelope]
+  (let [call (:agent/call envelope)
+        produced (tool-work/call-work
+                  (:tool-index configuration)
+                  call)
+        result-target (str "work.agent.openai/"
+                           (:call/id call)
+                           "/tool-result")]
+    (work/chain
+     [produced
+      (work/bundle
+       (Work/pure result-target)
+       {result-target
+        (fn [value]
+          {:agent/state (:agent/state envelope)
+           :agent/response (:agent/response envelope)
+           :agent/tool-result value})})])))
+
+(defn next-state
+  [values]
+  (let [first-value (first values)
+        state (:agent/state first-value)
+        response (:agent/response first-value)
+        results (vec (map :agent/tool-result values))]
+    {:agent/input
+     (into (:agent/input state)
+           (concat (:response/output response)
+                   (openai/tool-output-items results)))
+     :agent/context (:agent/context state)
+     :agent/input-value (:agent/input-value state)
+     :agent/turn (inc (:agent/turn state))
+     :agent/tool-calls (+ (:agent/tool-calls state) (count results))}))
+
+(defn after-tools-target
+  [names values]
+  (Work/chain
+   [(Work/pure (:next-state names))
+    (turn-plan names)]))
+
+(defn response-plan
+  [names]
+  (Work/bind
+   (Work/chain
+    [(Work/pure (:calls names))
+     (Work/each
+      (Work/bind
+       (Work/step (:tool-input names))
+       (:tool-plan names)))])
+   (:after-tools names)))
+
+(defn response-target
+  [configuration names value]
+  (let [state (:agent/state value)
+        response (:agent/response value)
+        calls (:response/tool-calls response)
+        next-turn (inc (:agent/turn state))
+        next-tool-calls (+ (:agent/tool-calls state) (count calls))]
+    (cond
+      (> next-turn (:max-turns configuration))
+      (failed-limit
+       "Agent turn limit reached"
+       {:agent/turn next-turn
+        :agent/max-turns (:max-turns configuration)})
+
+      (> next-tool-calls (:max-tool-calls configuration))
+      (failed-limit
+       "Agent tool-call limit reached"
+       {:agent/tool-calls next-tool-calls
+        :agent/max-tool-calls (:max-tool-calls configuration)})
+
+      (empty? calls)
+      (Work/pure (:final names))
+
+      :else
+      (response-plan names))))
+
+(defn target-table
+  [configuration names intent context]
+  (merge
+   (:tool-targets configuration)
+   {(:initial names) (fn [input] (initial-state intent context input))
+    (:model names) (model-target configuration)
+    (:response names) (fn [value] (response-target configuration names value))
+    (:calls names) calls-target
+    (:tool-input names) (fn [value] value)
+    (:tool-plan names) (fn [value] (tool-plan configuration value))
+    (:next-state names) next-state
+    (:after-tools names) (fn [values] (after-tools-target names values))
+    (:final names) final-target}))
+
+(defn turn-bundle
+  "Compiles an OpenAI turn graph into one portable Work plan and a local target
+   table. The plan contains no closures; client and tool implementations stay
+   in the bundle's process-local targets."
+  [configuration agent-id intent context]
+  (let [names (target-names agent-id)]
+    (work/bundle
+     (Work/chain
+      [(Work/pure (:initial names))
+       (turn-plan names)])
+     (target-table configuration names intent context))))

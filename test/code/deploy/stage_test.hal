@@ -1,0 +1,329 @@
+(ns code.deploy.stage-test
+  (:require [code.deploy.stage :as stage]))
+
+(def fixture-project
+  {:hara/type :project
+   :hara/version "1.0.0"
+   :project/id 'fixture/root
+   :project/version "1.2.3"
+   :project/native {:version "0.1.17"}
+   :project/source-paths ["src"]
+   :project/source-files ["src/demo/base.hal" "src/demo/app.hal"]
+   :project/test-paths ["test"]
+   :project/extension-paths []
+   :project/capabilities #{:file :kernel}
+   :project/dependencies {}
+   :project/deploy {:catalog "config/packages.edn" :output "target/slices"}})
+
+(def fixture-base
+  {:package/name "fixture/base"
+   :package/coordinate "hara:fixture/base"
+   :package/internal-dependencies []
+   :package/external-dependencies []})
+
+(def fixture-app
+  {:package/name "fixture/app"
+   :package/coordinate "hara:fixture/app"
+   :package/internal-dependencies ["fixture/base"]
+   :package/external-dependencies ["hara:external/http"]})
+
+(defn clean-root
+  [root paths]
+  (stage/delete-tree root))
+
+(defn fixture-root
+  []
+  (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-stage-"}))]
+    (deref (File/write (File/join root "src/demo/base.hal")
+                        (String/encode-utf8 "(ns demo.base)")
+                        {:mode :replace :parents? true}))
+    (deref (File/write (File/join root "src/demo/app.hal")
+                        (String/encode-utf8 "(ns demo.app (:require [demo.base]))")
+                        {:mode :replace :parents? true}))
+    (deref (File/write (File/join root "config/packages.edn")
+                        (String/encode-utf8 "{fixture/base {:include [[demo.base :complete]}} fixture/app {:include [[demo.app :complete]]}}")
+                        {:mode :replace :parents? true}))
+    root))
+
+^{:refer code.deploy.stage/output-relative-path}
+(Test/check
+ [{:name "uses the configured project staging path and default"
+   :test (fn [] [(stage/output-relative-path {})
+                 (stage/output-relative-path fixture-project)])
+   :expected ["target/deploy" "target/slices"]}])
+
+^{:refer code.deploy.stage/output-root}
+(Test/check
+ [{:name "derives an absolute output root below the source project"
+   :test (fn [] (stage/output-root "fixture" fixture-project))
+   :expected "/fixture/target/slices"}])
+
+^{:refer code.deploy.stage/package-stage-path}
+(Test/check
+ [{:name "keeps the semantic package hierarchy in the generated stage"
+   :test (fn [] (stage/package-stage-path "/fixture/target" fixture-app))
+   :expected "/fixture/target/fixture/app"}])
+
+^{:refer code.deploy.stage/project-path}
+(Test/check
+ [{:name "locates the generated child project manifest"
+   :test (fn [] (stage/project-path "/fixture/stage"))
+   :expected "/fixture/stage/project.edn"}])
+
+^{:refer code.deploy.stage/lock-path}
+(Test/check
+ [{:name "locates the generated child lockfile"
+   :test (fn [] (stage/lock-path "/fixture/stage"))
+   :expected "/fixture/stage/project.lock.edn"}])
+
+^{:refer code.deploy.stage/source-lock-path}
+(Test/check
+ [{:name "locates an optional source lockfile below the deploy root"
+   :test (fn [] (stage/source-lock-path "fixture"))
+   :expected "/fixture/project.lock.edn"}])
+
+^{:refer code.deploy.stage/lock-document}
+(Test/check
+ [{:name "uses the empty portable lock baseline for local staging"
+   :test (fn [] (stage/lock-document))
+   :expected {:lock/format "0.0.1" :packages {}}}])
+
+^{:refer code.deploy.stage/internal-dependency-declarations}
+(Test/check
+ [{:name "retains external declarations and pins inferred sibling packages to the release version"
+   :test (fn [] (stage/internal-dependency-declarations fixture-project fixture-app))
+   :expected {"hara:fixture/base" {:version "=1.2.3"}}}])
+
+^{:refer code.deploy.stage/package-project}
+(Test/check
+ [{:name "generates a standard selector project with deploy graph metadata"
+   :test (fn [] (select-keys (stage/package-project fixture-project fixture-app)
+                              [:project/id :project/dependencies :project/test-paths :project/extension-paths
+                               :project/package :project/deploy]))
+   :expected {:project/id "hara:fixture/app"
+              :project/dependencies {"hara:fixture/base" {:version "=1.2.3"}}
+              :project/test-paths []
+              :project/extension-paths []
+              :project/package {:name "fixture/app" :profile "config/packages.edn"}
+              :project/deploy {:source/project 'fixture/root
+                               :package/name "fixture/app"
+                               :package/coordinate "hara:fixture/app"
+                               :package/internal-dependencies ["fixture/base"]
+                               :package/external-dependencies ["hara:external/http"]}}}])
+
+^{:refer code.deploy.stage/write-edn}
+(Test/check
+ [{:name "writes canonical EDN under a newly created parent path"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-write-"}))
+                      path (File/join root "nested/value.edn")]
+                  (try
+                    (stage/write-edn path {:answer 42})
+                    (Edn/read (String/decode-utf8 (deref (File/read path))))
+                    (finally
+                      (clean-root root ["nested/value.edn" "nested"])))))
+   :expected {:answer 42}}])
+
+^{:refer code.deploy.stage/copy-file}
+(Test/check
+ [{:name "copies one declared source file without changing its relative path"
+   :test (fn [] (let [root (fixture-root)
+                      target (File/join root "target/one")]
+                  (try
+                    (stage/copy-file root target "src/demo/base.hal")
+                    (String/decode-utf8 (deref (File/read (File/join target "src/demo/base.hal"))))
+                    (finally
+                      (clean-root root ["target/one/src/demo/base.hal"
+                                        "target/one/src/demo"
+                                        "target/one/src"
+                                        "target/one"
+                                        "target"
+                                        "config/packages.edn"
+                                        "config"
+                                        "src/demo/base.hal"
+                                        "src/demo/app.hal"
+                                        "src/demo"
+                                        "src"])))))
+   :expected "(ns demo.base)"}])
+
+^{:refer code.deploy.stage/copy-source-files}
+(Test/check
+ [{:name "copies the full explicit compiler source graph"
+   :test (fn [] (let [root (fixture-root)
+                      target (File/join root "target/all")]
+                  (try
+                    (mapv (fn [path] (str/ends-with? path ".hal"))
+                          (stage/copy-source-files root target fixture-project))
+                    (finally
+                      (clean-root root ["target/all/src/demo/base.hal"
+                                        "target/all/src/demo/app.hal"
+                                        "target/all/src/demo"
+                                        "target/all/src"
+                                        "target/all"
+                                        "target"
+                                        "config/packages.edn"
+                                        "config"
+                                        "src/demo/base.hal"
+                                        "src/demo/app.hal"
+                                        "src/demo"
+                                        "src"])))))
+   :expected [true true]}])
+
+^{:refer code.deploy.stage/copy-catalog}
+(Test/check
+ [{:name "copies the Foundation package profile into every child project"
+   :test (fn [] (let [root (fixture-root)
+                      target (File/join root "target/catalog")]
+                  (try
+                    (stage/copy-catalog root target fixture-project)
+                    (deref (File/exists? (File/join target "config/packages.edn")))
+                    (finally
+                      (clean-root root ["target/catalog/config/packages.edn"
+                                        "target/catalog/config"
+                                        "target/catalog"
+                                        "target"
+                                        "config/packages.edn"
+                                        "config"
+                                        "src/demo/base.hal"
+                                        "src/demo/app.hal"
+                                        "src/demo"
+                                        "src"])))))
+   :expected true}])
+
+^{:refer code.deploy.stage/copy-lock}
+(Test/check
+ [{:name "copies an existing source lockfile rather than replacing resolved entries"
+   :test (fn [] (let [root (fixture-root)
+                      target (File/join root "target/lock")]
+                  (try
+                    (deref (File/write (stage/source-lock-path root)
+                                        (String/encode-utf8 "{:lock/format \"0.0.1\" :packages {}}")
+                                        {:mode :replace :parents? true}))
+                    (stage/copy-lock root target)
+                    (Edn/read (String/decode-utf8 (deref (File/read (stage/lock-path target)))))
+                    (finally
+                      (clean-root root [])))))
+   :expected {:lock/format "0.0.1" :packages {}}}
+  {:name "writes the portable empty lock baseline when the source project has none"
+   :test (fn [] (let [root (fixture-root)
+                      target (File/join root "target/lock-empty")]
+                  (try
+                    (stage/copy-lock root target)
+                    (Edn/read (String/decode-utf8 (deref (File/read (stage/lock-path target)))))
+                    (finally
+                      (clean-root root [])))))
+   :expected {:lock/format "0.0.1" :packages {}}}])
+
+^{:refer code.deploy.stage/delete-tree}
+(Test/check
+ [{:name "removes nested generated output in post-order and remains idempotent"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-delete-"}))]
+                  (deref (File/write (File/join root "nested/value.edn")
+                                      (String/encode-utf8 "{:generated true}")
+                                      {:mode :replace :parents? true}))
+                  [(string? (stage/delete-tree root))
+                   (string? (stage/delete-tree root))
+                   (deref (File/exists? root))]))
+   :expected [true true false]}])
+
+^{:refer code.deploy.stage/reset-stage}
+(Test/check
+ [{:name "removes old generated output idempotently without touching source files"
+   :test (fn [] (let [root (fixture-root)
+                      output (stage/output-root root fixture-project)]
+                  (try
+                    (deref (File/write (File/join output "stale.edn")
+                                        (String/encode-utf8 "{:stale true}")
+                                        {:mode :replace :parents? true}))
+                    [(str/ends-with? (stage/reset-stage root fixture-project) "/target/slices")
+                     (str/ends-with? (stage/reset-stage root fixture-project) "/target/slices")
+                     (deref (File/exists? (File/join root "src/demo/base.hal")))]
+                    (finally
+                      (clean-root root ["config/packages.edn"
+                                        "config"
+                                        "src/demo/base.hal"
+                                        "src/demo/app.hal"
+                                        "src/demo"
+                                        "src"])))))
+   :expected [true true true]}])
+
+^{:refer code.deploy.stage/stage-package}
+(Test/check
+ [{:name "materialises a self-contained child project and lockfile"
+   :test (fn [] (let [root (fixture-root)
+                      plan {:deploy/root root :deploy/project fixture-project}
+                      output (stage/output-root root fixture-project)]
+                  (try
+                    (let [result (stage/stage-package plan fixture-base)]
+                      [(:package/name result)
+                       (deref (File/exists? (:package/project result)))
+                       (Edn/read (String/decode-utf8 (deref (File/read (:package/lock result)))))])
+                    (finally
+                      (clean-root root ["target/slices/fixture/base/src/demo/base.hal"
+                                        "target/slices/fixture/base/src/demo/app.hal"
+                                        "target/slices/fixture/base/src/demo"
+                                        "target/slices/fixture/base/src"
+                                        "target/slices/fixture/base/config/packages.edn"
+                                        "target/slices/fixture/base/config"
+                                        "target/slices/fixture/base/project.edn"
+                                        "target/slices/fixture/base/project.lock.edn"
+                                        "target/slices/fixture/base"
+                                        "target/slices/fixture"
+                                        "target/slices"
+                                        "target"
+                                        "config/packages.edn"
+                                        "config"
+                                        "src/demo/base.hal"
+                                        "src/demo/app.hal"
+                                        "src/demo"
+                                        "src"])))))
+   :expected ["fixture/base" true {:lock/format "0.0.1" :packages {}}]}])
+
+^{:refer code.deploy.stage/package-by-name}
+(Test/check
+ [{:name "finds a semantic package entry by its publication name"
+   :test (fn [] (:package/coordinate
+                 (stage/package-by-name {:deploy/packages [fixture-base fixture-app]}
+                                        "fixture/app")))
+   :expected "hara:fixture/app"}])
+
+^{:refer code.deploy.stage/stage-plan}
+(Test/check
+ [{:name "stages dependency-first packages after one reversible reset"
+   :test (fn [] (let [root (fixture-root)
+                      plan {:deploy/root root
+                            :deploy/project fixture-project
+                            :deploy/packages [fixture-base fixture-app]
+                            :deploy/order ["fixture/base" "fixture/app"]}]
+                  (try
+                    (let [result (stage/stage-plan plan)]
+                      [(:deploy/order result)
+                       (mapv :package/name (:deploy/packages result))])
+                    (finally
+                      (clean-root root ["target/slices/fixture/base/src/demo/base.hal"
+                                        "target/slices/fixture/base/src/demo/app.hal"
+                                        "target/slices/fixture/base/src/demo"
+                                        "target/slices/fixture/base/src"
+                                        "target/slices/fixture/base/config/packages.edn"
+                                        "target/slices/fixture/base/config"
+                                        "target/slices/fixture/base/project.edn"
+                                        "target/slices/fixture/base/project.lock.edn"
+                                        "target/slices/fixture/base"
+                                        "target/slices/fixture/app/src/demo/base.hal"
+                                        "target/slices/fixture/app/src/demo/app.hal"
+                                        "target/slices/fixture/app/src/demo"
+                                        "target/slices/fixture/app/src"
+                                        "target/slices/fixture/app/config/packages.edn"
+                                        "target/slices/fixture/app/config"
+                                        "target/slices/fixture/app/project.edn"
+                                        "target/slices/fixture/app/project.lock.edn"
+                                        "target/slices/fixture/app"
+                                        "target/slices/fixture"
+                                        "target/slices"
+                                        "target"
+                                        "config/packages.edn"
+                                        "config"
+                                        "src/demo/base.hal"
+                                        "src/demo/app.hal"
+                                        "src/demo"
+                                        "src"])))))
+   :expected [["fixture/base" "fixture/app"] ["fixture/base" "fixture/app"]]}])

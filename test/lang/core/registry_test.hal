@@ -1,0 +1,273 @@
+(ns lang.core.registry-test
+  (:require [lang.common.book :as book]
+            [lang.core.registry :as registry]
+            [lang.model.v1.spec-xtalk :as spec-xtalk]))
+
+(defn isolated
+  [function]
+  (let [before (registry/registry-snapshot)]
+    (try
+      (registry/registry-reset!)
+      (function)
+      (finally (registry/registry-restore! before)))))
+
+^{:refer lang.core.registry-test/isolated}
+(Test/check
+ [{:name "restores registry state after an isolated operation"
+   :test (fn []
+           (let [before (registry/registry-snapshot)]
+             (try
+               (isolated (fn [] (registry/registry-reset!)))
+               (= before (registry/registry-snapshot))
+               (finally (registry/registry-restore! before)))))
+   :expected true}])
+
+^{:refer lang.core.registry/registry-snapshot}
+(Test/check
+ [{:name "captures runtime book and grammar state"
+   :test (fn []
+           (isolated
+            (fn []
+              (let [snapshot (registry/registry-snapshot)]
+                [(set (keys snapshot))
+                 (count (:runtime snapshot))
+                 (set (keys (:books snapshot)))
+                 (count (registry/registry-grammar-list))]))))
+   :expected [#{:runtime :books :grammars}
+              14
+              #{[:xtalk :default] [:postgres :default]
+                [:hara :default] [:js :default]
+                [:python :default] [:lua :default]}
+              16]}])
+
+^{:refer lang.core.registry/registry-restore!}
+(Test/check
+ [{:name "restores supplied state and the nil baseline"
+   :test (fn []
+           (let [before (registry/registry-snapshot)]
+             (try
+               (let [restored (registry/registry-restore!
+                                {:runtime {[:fixture :host] {:namespace 'fixture.host}}
+                                 :books {}
+                                 :grammars (:grammars before)})
+                     baseline (registry/registry-restore! nil)]
+                 [[(count (:runtime restored))
+                   (not (nil? (get (:runtime restored) [:fixture :host])))]
+                  [(count (:runtime baseline))
+                   (set (keys (:books baseline))) ]])
+               (finally (registry/registry-restore! before)))))
+   :expected [[1 true]
+              [14 #{[:xtalk :default] [:postgres :default]
+                    [:hara :default] [:js :default]
+                    [:python :default] [:lua :default]}]]}])
+
+^{:refer lang.core.registry/registry-reset!}
+(Test/check
+ [{:name "is idempotent over all registries"
+   :test (fn []
+           (isolated
+            (fn []
+              (registry/registry-add :fixture :host 'fixture.host)
+              [(count (:runtime (registry/registry-reset!)))
+               (count (:runtime (registry/registry-reset!)))])))
+   :expected [14 14]}])
+
+^{:refer lang.core.registry/registry-namespace-loaded?}
+(Test/check
+ [{:name "distinguishes loaded sources from unknown namespaces"
+   :test (fn [] [(registry/registry-namespace-loaded? 'lang.model.v1.spec-xtalk)
+                 (registry/registry-namespace-loaded? 'fixture.absent)])
+   :expected [true false]}])
+
+^{:refer lang.core.registry/registry-list}
+(Test/check
+ [{:name "lists exact runtime coordinates"
+   :test (fn [] (set (registry/registry-list)))
+   :expected #{[:js :oneshot] [:js :verify] [:js :basic]
+               [:python :oneshot] [:python :verify] [:python :basic]
+               [:lua :oneshot] [:lua :verify] [:lua :basic]
+               [:xtalk :host] [:hara :host]
+               [:xtalk :basic] [:hara :basic]
+               [:postgres :client]}}])
+
+^{:refer lang.core.registry/registry-add}
+(Test/check
+ [{:name "adds a portable runtime coordinate"
+   :test (fn []
+           (isolated
+            (fn []
+              [(registry/registry-add :fixture :host 'fixture.host)
+               (registry/registry-runtime-ns :fixture :host)])))
+   :expected ['fixture.host 'fixture.host]}])
+
+^{:refer lang.core.registry/registry-runtime-ns}
+(Test/check
+ [{:name "looks up a runtime namespace without loading it"
+   :test (fn [] [(registry/registry-runtime-ns :postgres :client)
+                 (registry/registry-runtime-ns :unknown :missing)])
+   :expected ['lang.runtime.postgres.client nil]}])
+
+^{:refer lang.core.registry/registry-runtime}
+(Test/check
+ [{:name "returns a namespace linked by the host"
+   :test (fn []
+           (isolated
+            (fn []
+              (registry/registry-add :fixture :host 'lang.model.v1.spec-xtalk)
+              (registry/registry-runtime :fixture :host))))
+   :expected 'lang.model.v1.spec-xtalk}])
+
+^{:refer lang.core.registry/registry-book-list}
+(Test/check
+ [{:name "lists the available archive-compatible book coordinates"
+   :test (fn [] (set (registry/registry-book-list)))
+   :expected #{[:xtalk :default] [:postgres :default]
+               [:hara :default] [:js :default]
+               [:python :default] [:lua :default]}}])
+
+^{:refer lang.core.registry/registry-grammar-load}
+(Test/check
+ [{:name "loads a grammar source once"
+   :test (fn []
+           (isolated
+            (fn []
+              (registry/registry-grammar-load :xtalk)
+              [(registry/registry-grammar-versions :xtalk)
+               (registry/registry-grammar-versions :xtalk)])))
+   :expected [[1] [1]]}])
+
+^{:refer lang.core.registry/registry-grammar-list}
+(Test/check
+ [{:name "filters the lazily installed PostgreSQL grammar"
+   :test (fn []
+           (isolated
+            (fn []
+              (vec (map (fn [source] (:source/id source))
+                        (registry/registry-grammar-list
+                         {:source/id :postgres :source/kind :grammar}))))))
+   :expected [:postgres]}])
+
+^{:refer lang.core.registry/registry-grammar-versions}
+(Test/check
+ [{:name "returns supported and absent grammar versions"
+   :test (fn []
+           (isolated
+            (fn [] [(registry/registry-grammar-versions :postgres)
+                    (registry/registry-grammar-versions :missing)])))
+   :expected [[1] []]}])
+
+^{:refer lang.core.registry/registry-grammar}
+(Test/check
+ [{:name "resolves an exact PostgreSQL grammar independent of XTalk ancestry"
+   :test (fn []
+           (isolated
+            (fn []
+              (select-keys (:coordinate (registry/registry-grammar :postgres 1))
+                           [:grammar/id :grammar/version :grammar/release :grammar/facets]))))
+   :expected {:grammar/id :postgres
+              :grammar/version 1
+              :grammar/release "alpha"
+              :grammar/facets []}}])
+
+^{:refer lang.core.registry/registry-book-entry}
+(Test/check
+ [{:name "returns the stable version table"
+   :test (fn []
+           (let [entry (registry/registry-book-entry :postgres :default)]
+             [(:default-version entry) (set (keys (:versions entry)))]))
+   :expected [1 #{1}]}])
+
+^{:refer lang.core.registry/registry-book-versions}
+(Test/check
+ [{:name "lists known and unknown book versions"
+   :test (fn [] [(registry/registry-book-versions :xtalk)
+                 (registry/registry-book-versions :missing)])
+   :expected [[1] []]}])
+
+^{:refer lang.core.registry/registry-book-default-version}
+(Test/check
+ [{:name "selects a stable default version"
+   :test (fn [] [(registry/registry-book-default-version :postgres)
+                 (registry/registry-book-default-version :missing)])
+   :expected [1 nil]}])
+
+^{:refer lang.core.registry/registry-book-info}
+(Test/check
+ [{:name "returns exact metadata and reports absent installed versions"
+   :test (fn [] (select-keys (registry/registry-book-info :postgres)
+                             [:language :key :version :default-version :ns]))
+   :expected {:language :postgres :key :default :version 1 :default-version 1
+              :ns 'lang.model.v1.spec-postgres}}])
+
+^{:refer lang.core.registry/registry-book-add}
+(Test/check
+ [{:name "adds a version and rejects a duplicate"
+   :test (fn []
+           (isolated
+            (fn []
+              (let [info {:ns 'lang.model.v1.spec-xtalk
+                          :load (fn [] spec-xtalk/+book+)}]
+                (select-keys (registry/registry-book-add :fixture 1 info)
+                             [:language :key :version :ns])))))
+   :expected {:language :fixture :key :default :version 1
+              :ns 'lang.model.v1.spec-xtalk}}])
+
+^{:refer lang.core.registry/registry-book-set-default}
+(Test/check
+ [{:name "changes only the versionless selection"
+   :test (fn []
+           (isolated
+            (fn []
+              (let [info {:ns 'lang.model.v1.spec-xtalk
+                          :load (fn [] spec-xtalk/+book+)}]
+                (registry/registry-book-add :fixture 1 info)
+                (registry/registry-book-add :fixture 2 info)
+                [(registry/registry-book-set-default :fixture 2)
+                 (registry/registry-book-default-version :fixture)]))))
+   :expected [2 2]}])
+
+^{:refer lang.core.registry/registry-book-remove}
+(Test/check
+ [{:name "removes versions and retargets the default"
+   :test (fn []
+           (isolated
+            (fn []
+              (let [info {:ns 'lang.model.v1.spec-xtalk
+                          :load (fn [] spec-xtalk/+book+)}]
+                (registry/registry-book-add :fixture 1 info)
+                (registry/registry-book-add :fixture 2 info)
+                [(select-keys (registry/registry-book-remove :fixture 1)
+                              [:language :key :version])
+                 (registry/registry-book-default-version :fixture)
+                 (select-keys (registry/registry-book-remove :fixture 2)
+                              [:language :key :version])
+                 (registry/registry-book-info :fixture)]))))
+   :expected [{:language :fixture :key :default :version 1}
+              2
+              {:language :fixture :key :default :version 2}
+              nil]}])
+
+^{:refer lang.core.registry/registry-book-ns}
+(Test/check
+ [{:name "finds a selected book owner namespace"
+   :test (fn [] [(registry/registry-book-ns :xtalk)
+                 (registry/registry-book-ns :missing)])
+   :expected ['lang.model.v1.spec-xtalk nil]}])
+
+^{:refer lang.core.registry/registry-book}
+(Test/check
+ [{:name "materializes independent XTalk and PostgreSQL books"
+   :test (fn []
+           (try
+             (let [xtalk (registry/registry-book :xtalk)
+                   postgres (registry/registry-book :postgres)
+                   value [(book/book? xtalk)
+                          (:lang xtalk)
+                          (book/book? postgres)
+                          (:lang postgres)
+                          (:parent postgres)
+                          (get-in postgres [:grammar-coordinate :grammar/id])]]
+               value)
+             (catch error
+               (throw error))))
+   :expected [true :xtalk true :postgres nil :postgres]}])

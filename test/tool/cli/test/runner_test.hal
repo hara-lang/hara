@@ -1,0 +1,51 @@
+(ns tool.cli.test.runner-test
+  (:require [tool.cli.test.runner :as runner]))
+
+^{:refer tool.cli.test.runner/vector-tail}
+(Test/check
+ [{:name "drops a prefix from a result vector"
+   :test (fn [] (runner/vector-tail [0 1 2 3] 2))
+   :expected [2 3]}])
+
+^{:refer tool.cli.test.runner/result-counts}
+(Test/check
+ [{:name "counts native and code.test summary result shapes"
+   :test (fn [] [(runner/result-counts [])
+                 (runner/result-counts {:passed 3 :failed 1})
+                 (runner/result-counts {:status :passed
+                                        :counts {:passed 3 :failed 0}})
+                 (runner/result-counts {:status :failed
+                                        :counts {:passed 2 :failed 1
+                                                 :error 1 :timeout 1}
+                                        :results [{:status :passed}]})
+                 (runner/result-counts
+                  (pr-str {:status :passed
+                           :counts {:passed 4 :failed 0}}))])
+   :expected [{:passed 0 :failed 0}
+              {:passed 3 :failed 1}
+              {:passed 3 :failed 0}
+              {:passed 2 :failed 3}
+              {:passed 4 :failed 0}]}])
+
+^{:refer tool.cli.test.runner/run-file}
+(Test/check
+ [{:name "turns an unreadable test file into one failed result"
+   :test (fn [] (select-keys (runner/run-file
+                              {:path "/missing/test_file.hal"
+                               :namespace 'missing.test}
+                              0)
+                             [:namespace :passed :failed]))
+   :expected {:namespace 'missing.test :passed 0 :failed 1}}])
+
+^{:refer tool.cli.test.runner/run-files}
+(Test/check
+ [{:name "returns no results for an empty test inventory"
+   :test (fn [] (runner/run-files []))
+   :expected []}])
+
+^{:refer tool.cli.test.runner/summary}
+(Test/check
+ [{:name "sums passed and failed test-file counts"
+   :test (fn [] (runner/summary [{:passed 2 :failed 1}
+                                 {:passed 3 :failed 0}]))
+   :expected {:passed 5 :failed 1}}])

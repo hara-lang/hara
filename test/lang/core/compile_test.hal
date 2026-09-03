@@ -1,0 +1,284 @@
+(ns lang.core.compile-test
+  (:require [lang.core.compile :as compile]
+            [lang.core.script :as script]))
+
+(defn isolated
+  [function]
+  (let [snapshot (script/script-snapshot)]
+    (try
+      (script/script-reset!)
+      (function)
+      (finally (script/script-restore! snapshot)))))
+
+(defn fixture-entry
+  [id output dependencies priority line]
+  {:id id :form-input (list 'def id output)
+   :fixture/output output :fixture/dependencies dependencies
+   :priority priority :line line})
+
+(defn fixture-module
+  [id requires code schema]
+  {:id id :lang :postgres :require requires :link {'- id}
+   :code code :fragment {} :schema schema})
+
+(defn fixture-compiler
+  [options modules module entry]
+  (if (:fixture/error entry)
+    (throw (ex :argument {:entry (:id entry)}))
+    {:output (:fixture/output entry)
+     :dependencies {:code (set (or (:fixture/dependencies entry) []))
+                    :fragment #{} :native #{}}
+     :diagnostics [] :provenance {:fixture (:id entry)}}))
+
+(defn fixture-transform
+  [body environment]
+  (str body "::" (get-in environment [:entry :id])))
+
+(defn compile-fixture
+  [options]
+  (binding [compile/*entry-compiler* fixture-compiler]
+    (compile/compile-module options)))
+
+^{:refer lang.core.compile/diagnostic}
+(Test/check [{:name "creates stable diagnostic data"
+              :test (fn [] (compile/diagnostic :demo/error "failed" {:id 1}))
+              :expected {:code :demo/error :severity :error :message "failed" :data {:id 1}}}])
+
+^{:refer lang.core.compile/stable-values}
+(Test/check [{:name "sorts arbitrary values by their portable spelling"
+              :test (fn [] (compile/stable-values #{'b 'a}))
+              :expected ['a 'b]}])
+
+^{:refer lang.core.compile/require-module-id}
+(Test/check [{:name "extracts dependency ids from require forms"
+              :test (fn [] [(compile/require-module-id 'demo.a)
+                            (compile/require-module-id ['demo.b :as 'b])])
+              :expected ['demo.a 'demo.b]}])
+
+^{:refer lang.core.compile/module-dependency-ids}
+(Test/check [{:name "normalizes and orders module requirements"
+              :test (fn [] (compile/module-dependency-ids {:require ['demo.b ['demo.a :as 'a]]}))
+              :expected ['demo.a 'demo.b]}])
+
+^{:refer lang.core.compile/load-module-graph}
+(Test/check [{:name "loads registered module graphs once"
+              :test (fn [] (isolated (fn []
+                                       (reset! script/+modules+
+                                               {'demo.a (fixture-module 'demo.a ['demo.b] {} {})
+                                                'demo.b (fixture-module 'demo.b [] {} {})})
+                                       (select-keys (compile/load-module-graph 'demo.a)
+                                                    [:modules :diagnostics]))))
+              :expected {:modules {'demo.a (fixture-module 'demo.a ['demo.b] {} {})
+                                   'demo.b (fixture-module 'demo.b [] {} {})}
+                         :diagnostics []}}])
+
+^{:refer lang.core.compile/order-modules}
+(Test/check [{:name "orders dependencies before their users and reports cycles"
+              :test (fn [] [(compile/order-modules
+                             {'demo.a (fixture-module 'demo.a ['demo.b] {} {})
+                              'demo.b (fixture-module 'demo.b [] {} {})})
+                            (compile/order-modules
+                             {'demo.a (fixture-module 'demo.a ['demo.b] {} {})
+                              'demo.b (fixture-module 'demo.b ['demo.a] {} {})})])
+              :expected [{:order ['demo.b 'demo.a] :diagnostics []}
+                         {:order ['demo.a 'demo.b]
+                          :diagnostics [(compile/diagnostic :lang/module-cycle
+                                                            "Module dependency cycle"
+                                                            {:modules ['demo.a 'demo.b]})]}]}])
+
+^{:refer lang.core.compile/schema-diagnostics}
+(Test/check [{:name "reports both sides of a conflicting schema"
+              :test (fn [] (compile/schema-diagnostics
+                            {'demo.a (fixture-module 'demo.a [] {} {:ledger 2})
+                             'demo.b (fixture-module 'demo.b [] {} {:ledger 1})}
+                            ['demo.b 'demo.a]))
+              :expected [(compile/diagnostic :lang/conflicting-schema
+                                             "Schema conflicts with an earlier module"
+                                             {:schema :ledger :module 'demo.a
+                                              :previous-module 'demo.b})]}])
+
+^{:refer lang.core.compile/entry-qualified-symbol}
+(Test/check [{:name "qualifies unqualified module entries"
+              :test (fn [] [(compile/entry-qualified-symbol {:module 'demo.a :id 'entry})
+                            (compile/entry-qualified-symbol {:symbol 'demo.a/entry})])
+              :expected ['demo.a/entry 'demo.a/entry]}])
+
+^{:refer lang.core.compile/entry-priority}
+(Test/check [{:name "uses explicit priority before the zero default"
+              :test (fn [] [(compile/entry-priority {}) (compile/entry-priority {:priority 3})])
+              :expected [0 3]}])
+
+^{:refer lang.core.compile/entry-source}
+(Test/check [{:name "normalizes source position"
+              :test (fn [] (compile/entry-source {:line 4 :column 2}))
+              :expected {:line 4 :column 2}}])
+
+^{:refer lang.core.compile/normalize-dependencies}
+(Test/check [{:name "normalizes missing set and map dependency values"
+              :test (fn [] [(compile/normalize-dependencies nil)
+                            (compile/normalize-dependencies #{'a})
+                            (compile/normalize-dependencies {:native #{:db}})])
+              :expected [{:code #{} :fragment #{} :native #{}}
+                         {:code #{'a} :fragment #{} :native #{}}
+                         {:code #{} :fragment #{} :native #{:db}}]}])
+
+^{:refer lang.core.compile/qualify-dependency}
+(Test/check [{:name "qualifies only local dependency symbols"
+              :test (fn [] [(compile/qualify-dependency 'demo.a 'entry)
+                            (compile/qualify-dependency 'demo.a 'demo.b/entry)])
+              :expected ['demo.a/entry 'demo.b/entry]}])
+
+^{:refer lang.core.compile/qualified-dependencies}
+(Test/check [{:name "qualifies code and fragment dependency groups"
+              :test (fn [] (compile/qualified-dependencies 'demo.a
+                                                        {:code #{'entry}
+                                                         :fragment #{'fragment}
+                                                         :native #{:db}}))
+              :expected {:code #{'demo.a/entry} :fragment #{'demo.a/fragment} :native #{:db}}}])
+
+^{:refer lang.core.compile/default-entry-compiler}
+(Test/check [{:name "compiles an entry through the common compiler"
+              :test (fn [] (let [entry {:id 'entry :module 'demo.a :op 'def
+                                        :form-input '(def entry 1)}]
+                           (string? (:output (compile/default-entry-compiler
+                                              {:lang :postgres}
+                                              {'demo.a (fixture-module 'demo.a [] {'entry entry} {})}
+                                              (fixture-module 'demo.a [] {'entry entry} {})
+                                              entry)))))
+              :expected true}])
+
+^{:refer lang.core.compile/entry-transform-symbol}
+(Test/check [{:name "qualifies local and linked transform symbols"
+              :test (fn [] [(compile/entry-transform-symbol {:id 'demo.a :link {'x 'demo.transforms}}
+                                                            'x/append)
+                            (compile/entry-transform-symbol {:id 'demo.a :link {'x 'demo.transforms}}
+                                                            'append)])
+              :expected ['demo.transforms/append 'demo.a/append]}])
+
+^{:refer lang.core.compile/module-entry-transforms}
+(Test/check [{:name "reads only code-entry transforms from the owning module configuration"
+              :test (fn [] (compile/module-entry-transforms
+                             {:emit {:code {:transforms {:entry ['fixture/append]}}}}))
+              :expected ['fixture/append]}])
+
+^{:refer lang.core.compile/resolve-entry-transform}
+(Test/check [{:name "resolves a linked transform function"
+              :test (fn [] (let [transform (compile/resolve-entry-transform
+                                    {:id 'demo.a :link {'fixture 'lang.core.compile-test}}
+                                    'fixture/fixture-transform)]
+                           (transform "BODY" {:entry {:id 'entry}})))
+              :expected "BODY::entry"}])
+
+^{:refer lang.core.compile/apply-entry-transforms}
+(Test/check [{:name "applies module-local transforms to emitted output with hydrated entry data"
+              :test (fn [] (compile/apply-entry-transforms
+                             "BODY"
+                             {:lang :postgres}
+                             {'demo.a {:id 'demo.a :link {'fixture 'lang.core.compile-test}
+                                       :emit {:code {:transforms {:entry ['fixture/fixture-transform]}}}}}
+                             {:id 'demo.a :link {'fixture 'lang.core.compile-test}
+                              :emit {:code {:transforms {:entry ['fixture/fixture-transform]}}}}
+                             {:id 'entry}
+                             {:entry {:id 'hydrated} :grammar {:grammar {:reserved {}}}}))
+              :expected "BODY::hydrated"}])
+
+^{:refer lang.core.compile/compile-entry-safe}
+(Test/check [{:name "retains failed entries as diagnostics"
+              :test (fn [] (binding [compile/*entry-compiler* fixture-compiler]
+                           (let [entry (assoc (fixture-entry 'bad "BAD" [] 0 1) :module 'demo.a
+                                              :fixture/error true)]
+                             (select-keys (compile/compile-entry-safe {:lang :postgres}
+                                                                      {'demo.a (fixture-module 'demo.a [] {} {})}
+                                                                      entry)
+                                          [:diagnostics]))))
+              :expected {:diagnostics [(compile/diagnostic :lang/unsupported-form
+                                                           "Entry compilation failed"
+                                                           {:entry 'demo.a/bad :module 'demo.a
+                                                            :message ":hara/argument"})]}}])
+
+^{:refer lang.core.compile/module-code-entries}
+(Test/check [{:name "materializes ordered module code entries"
+              :test (fn [] (map :symbol (compile/module-code-entries
+                                         'demo.a {:code {'b {:id 'b} 'a {:id 'a}}})))
+              :expected ['demo.a/a 'demo.a/b]}])
+
+^{:refer lang.core.compile/compile-entries}
+(Test/check [{:name "compiles every entry in module order"
+              :test (fn [] (binding [compile/*entry-compiler* fixture-compiler]
+                           (let [entries (compile/compile-entries
+                                          {:lang :postgres}
+                                          {'demo.a (fixture-module 'demo.a []
+                                                                   {'entry (fixture-entry 'entry "A" [] 0 1)} {})}
+                                          ['demo.a])]
+                             [(map :symbol (:entries entries)) (:diagnostics entries)])))
+              :expected [['demo.a/entry] []]}])
+
+^{:refer lang.core.compile/missing-entry-diagnostics}
+(Test/check [{:name "reports absent code dependencies"
+              :test (fn [] (compile/missing-entry-diagnostics
+                            [{:symbol 'demo.a/entry :dependencies {:code #{'demo.a/missing}}}]))
+              :expected [(compile/diagnostic :lang/missing-entry
+                                             "Code dependency is not registered"
+                                             {:entry 'demo.a/entry :dependency 'demo.a/missing})]}])
+
+^{:refer lang.core.compile/module-index}
+(Test/check [{:name "maps modules to stable positions"
+              :test (fn [] (compile/module-index ['demo.b 'demo.a]))
+              :expected {'demo.b 0 'demo.a 1}}])
+
+^{:refer lang.core.compile/entry-sort-key}
+(Test/check [{:name "sorts by module priority source and symbol"
+              :test (fn [] (compile/entry-sort-key {'demo.a 1}
+                                                    {:module 'demo.a :priority 2
+                                                     :source {:line 3 :column 4}
+                                                     :symbol 'demo.a/entry}))
+              :expected [1 2 3 4 "demo.a/entry"]}])
+
+^{:refer lang.core.compile/entry-ready?}
+(Test/check [{:name "waits for known dependencies only"
+              :test (fn [] [(compile/entry-ready? {'demo.a/a {} 'demo.a/b {}}
+                                                   #{'demo.a/a 'demo.a/b}
+                                                   {:dependencies {:code #{'demo.a/a}}})
+                            (compile/entry-ready? {'demo.a/a {}}
+                                                  #{'demo.a/a}
+                                                  {:dependencies {:code #{'external/missing}}})])
+              :expected [false true]}])
+
+^{:refer lang.core.compile/order-entries}
+(Test/check [{:name "orders dependencies and gives stable cycle diagnostics"
+              :test (fn [] (let [a {:symbol 'demo.a/a :module 'demo.a :priority 1
+                                    :source {:line 2 :column 0} :dependencies {:code #{'demo.a/b}}}
+                                  b {:symbol 'demo.a/b :module 'demo.a :priority 0
+                                     :source {:line 1 :column 0} :dependencies {:code #{}}}]
+                           (map :symbol (:entries (compile/order-entries [a b] ['demo.a])))))
+              :expected ['demo.a/b 'demo.a/a]}])
+
+^{:refer lang.core.compile/label-prefix}
+(Test/check [{:name "uses SQL comments for PostgreSQL labels"
+              :test (fn [] [(compile/label-prefix :postgres) (compile/label-prefix :xtalk)])
+              :expected ["-- " ";; "]}])
+
+^{:refer lang.core.compile/render-output}
+(Test/check [{:name "renders ordered SQL output with optional labels"
+              :test (fn [] (compile/render-output :postgres {:code {:label true}}
+                                                  [{:symbol 'demo.a/a :output "A"}]))
+              :expected "-- demo.a/a\nA"}])
+
+^{:refer lang.core.compile/compile-module}
+(Test/check [{:name "compiles a deterministic graph and retains failures"
+              :test (fn [] (isolated (fn []
+                                       (reset! script/+modules+
+                                               {'demo.a (fixture-module 'demo.a ['demo.b]
+                                                                        {'a (fixture-entry 'a "A" ['demo.b/b] 1 2)} {})
+                                                'demo.b (fixture-module 'demo.b []
+                                                                        {'b (fixture-entry 'b "B" [] 0 1)} {})})
+                                       (binding [compile/*entry-compiler* fixture-compiler]
+                                         (let [result (compile/compile-module
+                                                       {:lang :postgres :main 'demo.a
+                                                        :emit {:code {:label true}}})]
+                                           [(:output result)
+                                            (get-in result [:provenance :entry-order])
+                                            (:diagnostics result)])))))
+              :expected ["-- demo.b/b\nB\n\n-- demo.a/a\nA"
+                         ['demo.b/b 'demo.a/a]
+                         []]}])

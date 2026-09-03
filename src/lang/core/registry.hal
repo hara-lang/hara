@@ -1,0 +1,380 @@
+(ns lang.core.registry
+  (:require [lang.common.registry :as grammar-registry]
+            [lang.model.v1.spec-hara :as spec-hara :lazy true]
+            [lang.model.v1.spec-js :as spec-js :lazy true]
+            [lang.model.v1.spec-lua :as spec-lua :lazy true]
+            [lang.model.v1.spec-python :as spec-python :lazy true]
+            [lang.model.v1.spec-xtalk :as spec-xtalk :lazy true]
+            [lang.model.v1.spec-postgres :as spec-postgres :lazy true]))
+
+;; Runtime coordinates are declarative.  The native package loader owns
+;; namespace loading; this registry only confirms that the declared runtime is
+;; linked before returning it.
+(def +runtime-baseline+
+  {[:js :oneshot]
+   {:namespace 'lang.runtime.basic.impl.process-js}
+   [:js :verify]
+   {:namespace 'lang.runtime.basic.impl.process-js}
+   [:js :basic]
+   {:namespace 'lang.runtime.basic.impl.process-js}
+   [:python :oneshot]
+   {:namespace 'lang.runtime.basic.impl.process-python}
+   [:python :verify]
+   {:namespace 'lang.runtime.basic.impl.process-python}
+   [:python :basic]
+   {:namespace 'lang.runtime.basic.impl.process-python}
+   [:lua :oneshot]
+   {:namespace 'lang.runtime.basic.impl.process-lua}
+   [:lua :verify]
+   {:namespace 'lang.runtime.basic.impl.process-lua}
+   [:lua :basic]
+   {:namespace 'lang.runtime.basic.impl.process-lua}
+   [:xtalk :host]
+   {:namespace 'lang.runtime.basic.impl.process-xtalk}
+   [:hara :host]
+   {:namespace 'lang.runtime.basic.impl.process-xtalk}
+   [:xtalk :basic]
+   {:namespace 'lang.runtime.basic.impl.process-hara}
+   [:hara :basic]
+   {:namespace 'lang.runtime.basic.impl.process-hara}
+   [:postgres :client]
+   {:namespace 'lang.runtime.postgres.client}})
+
+(def +registry+ (atom +runtime-baseline+))
+
+;; A book keeps one immutable materialized grammar selection.  PostgreSQL has
+;; no XTalk parent: it emits its own grammar and may use XTalk data only through
+;; explicit portable generator boundaries.
+(def +book-baseline+
+  {[:xtalk :default]
+   {:default-version 1
+    :versions
+    {1 {:ns 'lang.model.v1.spec-xtalk
+        :load (fn [] spec-xtalk/+book+)}}}
+
+   [:postgres :default]
+   {:default-version 1
+    :versions
+    {1 {:ns 'lang.model.v1.spec-postgres
+        :load (fn [] spec-postgres/+book+)}}}
+
+   [:hara :default]
+   {:default-version 1
+    :versions
+    {1 {:ns 'lang.model.v1.spec-hara
+        :load (fn [] spec-hara/+book+)}}}
+
+   [:js :default]
+   {:default-version 1
+    :versions
+    {1 {:ns 'lang.model.v1.spec-js
+        :load (fn [] spec-js/+book+)}}}
+
+   [:python :default]
+   {:default-version 1
+    :versions
+    {1 {:ns 'lang.model.v1.spec-python
+        :load (fn [] spec-python/+book+)}}}
+
+   [:lua :default]
+   {:default-version 1
+    :versions
+    {1 {:ns 'lang.model.v1.spec-lua
+        :load (fn [] spec-lua/+book+)}}}})
+
+(def +book-registry+ (atom +book-baseline+))
+
+(def +grammar-loaders+
+  {:xtalk (fn [catalog] (spec-xtalk/install catalog))
+   :hara (fn [catalog] (spec-hara/install catalog))
+   :js (fn [catalog] (spec-js/install catalog))
+   :python (fn [catalog] (spec-python/install catalog))
+   :lua (fn [catalog] (spec-lua/install catalog))
+   :postgres (fn [catalog] (spec-postgres/install catalog))})
+
+(def +grammar-registry+ (atom (grammar-registry/registry)))
+
+(defn ^{:public true} registry-snapshot
+  "Returns a value snapshot of the runtime, book, and source-grammar registries."
+  []
+  {:runtime (deref +registry+)
+   :books (deref +book-registry+)
+   :grammars (deref +grammar-registry+)})
+
+(defn ^{:public true} registry-restore!
+  "Restores a registry snapshot; nil restores the deterministic baseline."
+  [snapshot]
+  (let [snapshot (or snapshot {})]
+    (reset! +registry+ (or (:runtime snapshot) +runtime-baseline+))
+    (reset! +book-registry+ (or (:books snapshot) +book-baseline+))
+    (reset! +grammar-registry+
+            (or (:grammars snapshot) (grammar-registry/registry)))
+    (registry-snapshot)))
+
+(defn ^{:public true} registry-reset!
+  "Restores every registry to its baseline; repeated calls are idempotent."
+  []
+  (registry-restore! nil))
+
+(defn registry-namespace-loaded?
+  "Returns true only when a registry-owned namespace has finished loading."
+  [namespace-symbol]
+  (= :loaded (:namespace/state (ns-info namespace-symbol))))
+
+(defn ^{:public true} registry-list
+  "Lists registered [language runtime] coordinates."
+  []
+  (vec (keys (deref +registry+))))
+
+(defn ^{:public true} registry-add
+  "Registers one exact runtime coordinate by portable namespace identity."
+  [language runtime namespace-symbol]
+  (swap! +registry+ assoc [language runtime] {:namespace namespace-symbol})
+  namespace-symbol)
+
+(defn ^{:public true} registry-runtime-ns
+  "Returns the implementation namespace declared for a runtime coordinate."
+  [language runtime]
+  (get-in (deref +registry+) [[language runtime] :namespace]))
+
+(defn ^{:public true} registry-runtime
+  "Returns a registered runtime namespace after the native host has linked it."
+  [language runtime]
+  (let [namespace-symbol (registry-runtime-ns language runtime)]
+    (cond
+      (nil? namespace-symbol) nil
+      (registry-namespace-loaded? namespace-symbol) namespace-symbol
+      :else
+      (throw
+       (ex :dependency
+           {:lang language
+            :runtime runtime
+            :namespace namespace-symbol}
+           :ex/message "Registered runtime is not linked into the native host")))))
+
+(defn ^{:public true} registry-book-list
+  "Lists all registered versioned book coordinates."
+  []
+  (vec (keys (deref +book-registry+))))
+
+(defn ^{:public true} registry-grammar-load
+  "Loads one supported grammar source on first use."
+  [grammar-id]
+  (let [loader (get +grammar-loaders+ grammar-id)
+        current (deref +grammar-registry+)]
+    (if (or (nil? loader)
+            (not (empty? (grammar-registry/versions current grammar-id))))
+      current
+      (swap! +grammar-registry+ loader))))
+
+(defn ^{:public true} registry-grammar-list
+  "Lists installed grammar sources, optionally filtered by source fields."
+  ([]
+   (registry-grammar-list {}))
+  ([query]
+   (let [query (or query {})]
+     (if (nil? (:source/id query))
+       (reduce (fn [_ grammar-id]
+                 (registry-grammar-load grammar-id))
+               nil
+               (keys +grammar-loaders+))
+       (registry-grammar-load (:source/id query)))
+     (grammar-registry/list (deref +grammar-registry+) query))))
+
+(defn ^{:public true} registry-grammar-versions
+  "Lists all installed versions of a grammar identity."
+  [grammar-id]
+  (registry-grammar-load grammar-id)
+  (grammar-registry/versions (deref +grammar-registry+) grammar-id))
+
+(defn ^{:public true} registry-grammar
+  "Resolves one exact grammar id and version without consulting book defaults."
+  ([grammar-id version]
+   (registry-grammar grammar-id version []))
+  ([grammar-id version facets]
+   (registry-grammar-load grammar-id)
+   (grammar-registry/resolve
+    (deref +grammar-registry+)
+    {:grammar/id grammar-id
+     :grammar/version version
+     :grammar/facets (vec facets)})))
+
+(defn registry-book-entry
+  "Returns the registered version table for one language book coordinate."
+  [language key]
+  (get (deref +book-registry+) [language key]))
+
+(defn ^{:public true} registry-book-versions
+  "Lists every installed version for a language book coordinate."
+  ([language]
+   (registry-book-versions language :default))
+  ([language key]
+   (let [entry (registry-book-entry language key)]
+     (if entry
+       (vec (sort (keys (:versions entry))))
+       []))))
+
+(defn ^{:public true} registry-book-default-version
+  "Returns the version selected by a versionless book request."
+  ([language]
+   (registry-book-default-version language :default))
+  ([language key]
+   (:default-version (registry-book-entry language key))))
+
+(defn ^{:public true} registry-book-info
+  "Returns metadata for an exact language book version or its configured default."
+  ([language]
+   (registry-book-info language :default nil))
+  ([language key]
+   (registry-book-info language key nil))
+  ([language key version]
+   (let [entry (registry-book-entry language key)]
+     (if (nil? entry)
+       nil
+       (let [selected-version (or version (:default-version entry))
+             info (get-in entry [:versions selected-version])]
+         (if info
+           (assoc info
+                  :language language
+                  :key key
+                  :version selected-version
+                  :default-version (:default-version entry))
+           (throw
+            (ex :generic
+                {:language language
+                 :key key
+                 :version selected-version
+                 :available (registry-book-versions language key)}
+                :ex/message "Book version is not registered"))))))))
+
+(defn ^{:public true} registry-book-add
+  "Adds one immutable version beneath a stable [language key] coordinate."
+  ([language version info]
+   (registry-book-add language :default version info))
+  ([language key version info]
+   (if (or (nil? version)
+           (not (number? version))
+           (<= version 0)
+           (nil? (:ns info))
+           (not (fn? (:load info))))
+     (throw
+      (ex :argument
+          {:language language :key key :version version :info info}
+          :ex/message "Invalid versioned book registration"))
+     (let [coordinate [language key]]
+       (swap!
+        +book-registry+
+        (fn [all]
+          (let [entry (or (get all coordinate)
+                          {:default-version version :versions {}})]
+            (if (get-in entry [:versions version])
+              (throw
+               (ex :conflict
+                   {:language language :key key :version version}
+                   :ex/message "Book version is already registered"))
+              (assoc all coordinate
+                     (assoc-in entry [:versions version] info))))))
+       (registry-book-info language key version)))))
+
+(defn ^{:public true} registry-book-set-default
+  "Selects an installed version without replacing any registered book."
+  ([language version]
+   (registry-book-set-default language :default version))
+  ([language key version]
+   (let [entry (registry-book-entry language key)]
+     (cond
+       (nil? entry)
+       (throw
+        (ex :generic {:language language :key key}
+            :ex/message "Book coordinate is not registered"))
+
+       (nil? (get-in entry [:versions version]))
+       (throw
+        (ex :generic
+            {:language language
+             :key key
+             :version version
+             :available (registry-book-versions language key)}
+            :ex/message "Cannot select an unregistered book version"))
+
+       :else
+       (do
+         (swap! +book-registry+
+                assoc-in
+                [[language key] :default-version]
+                version)
+         version)))))
+
+(defn ^{:public true} registry-book-remove
+  "Removes one version; removing the default selects the lowest remaining one."
+  ([language version]
+   (registry-book-remove language :default version))
+  ([language key version]
+   (let [coordinate [language key]
+         entry (registry-book-entry language key)
+         removed (get-in entry [:versions version])]
+     (if (nil? removed)
+       (throw
+        (ex :generic
+            {:language language
+             :key key
+             :version version
+             :available (registry-book-versions language key)}
+            :ex/message "Cannot remove an unregistered book version"))
+       (do
+         (swap!
+          +book-registry+
+          (fn [all]
+            (let [current (get all coordinate)
+                  remaining (dissoc (:versions current) version)]
+              (if (empty? remaining)
+                (dissoc all coordinate)
+                (let [next-default
+                      (if (= version (:default-version current))
+                        (first (sort (keys remaining)))
+                        (:default-version current))]
+                  (assoc all coordinate
+                         {:default-version next-default
+                          :versions remaining}))))))
+         (assoc removed
+                :language language
+                :key key
+                :version version))))))
+
+(defn ^{:public true} registry-book-ns
+  "Returns the namespace that owns one selected language book."
+  ([language]
+   (registry-book-ns language :default nil))
+  ([language key]
+   (registry-book-ns language key nil))
+  ([language key version]
+   (:ns (registry-book-info language key version))))
+
+(defn ^{:public true} registry-book
+  "Loads one selected immutable language book from its exact grammar source."
+  ([language]
+   (registry-book language :default nil))
+  ([language key]
+   (registry-book language key nil))
+  ([language key requested-version]
+   (let [{:keys [ns load version] :as info}
+         (registry-book-info language key requested-version)]
+     (if (nil? info)
+       nil
+       (let [value (load)
+             actual-version (:version value)]
+         (if (not (registry-namespace-loaded? ns))
+           (throw
+            (ex :dependency
+                {:language language :key key :version version :namespace ns}
+                :ex/message "Registered book loader did not provide its exact namespace"))
+           (if (and actual-version (not= actual-version version))
+             (throw
+              (ex :io
+                  {:language language
+                   :key key
+                   :requested version
+                   :loaded actual-version
+                   :namespace ns}
+                  :ex/message "Registered book version does not match loaded book"))
+             value)))))))

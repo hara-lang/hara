@@ -1,0 +1,324 @@
+(ns code.manage.context
+  (:config {:role :internal})
+  (:require [code.project :as project]
+            [work.flow.task :as task]))
+
+(def +test-only+
+  #{:refactor-test :isolate :factcheck-remove :factcheck-generate :unchecked})
+
+(def +source-and-test+
+  #{:ns-rename :find-usages :grep :grep-replace})
+
+(defn ^{:public true} read-text
+  "Reads one UTF-8 source file through the native filesystem boundary."
+  [path]
+  (if (deref (File/exists? path))
+    (String/decode-utf8 (deref (File/read path)))
+    ""))
+
+(defn path-text
+  [path]
+  (str/replace (str path) "\\" "/"))
+
+(defn strip-leading
+  [path]
+  (if (str/starts-with? path "/")
+    (strip-leading (str/slice path 1 (str/length path)))
+    path))
+
+(defn relative-path
+  [root path]
+  (let [root (path-text root)
+        path (path-text path)
+        prefix (str root "/")]
+    (cond
+      (= root path) ""
+      (str/starts-with? path prefix)
+      (strip-leading (str/slice path (str/length prefix) (str/length path)))
+      :else path)))
+
+(defn absolute-path
+  [root path]
+  (let [root (path-text root)
+        path (path-text path)
+        root (if (and (> (str/length root) 1)
+                      (str/ends-with? root "/"))
+               (str/slice root 0 (dec (str/length root)))
+               root)]
+    (if (str/starts-with? path "/")
+      path
+      (if (= "/" root)
+        (str "/" path)
+        (str root "/" path)))))
+
+(defn project-file
+  [root]
+  (File/join root "project.edn"))
+
+(defn read-project
+  [root]
+  (let [root (File/resolve root "")
+        path (project-file root)]
+    (if (deref (File/exists? path))
+      (assoc (Edn/read (read-text path))
+             :project/root root)
+      (throw (ex :not-found {:path path}
+                 :ex/message "Cannot find project.edn")))))
+
+(defn project-directory
+  [start]
+  (let [start (File/resolve (or start (OS/cwd)) "")
+        stat (if (deref (File/exists? start))
+               (deref (File/stat start))
+               nil)]
+    (if (and stat (= :directory (:type stat)))
+      start
+      (or (File/parent start) start))))
+
+(defn ^{:public true} discover
+  "Loads the nearest project.edn from START, accepting a project root or file."
+  [start]
+  (loop [current (project-directory start)]
+    (let [candidate (project-file current)]
+      (cond
+        (deref (File/exists? candidate))
+        (read-project current)
+
+        (nil? (File/parent current))
+        (throw (ex :not-found {:start start}
+                   :ex/message "Cannot discover project.edn"))
+
+        :else
+        (recur (File/parent current))))))
+
+(defn source-roots
+  [current-project]
+  (or (:project/source-paths current-project) ["src" "src-lang"]))
+
+(defn test-roots
+  [current-project]
+  (or (:project/test-paths current-project) ["test" "test-lang"]))
+
+(defn roots-for
+  [current-project operation]
+  (cond
+    (has? +test-only+ operation)
+    (test-roots current-project)
+
+    (has? +source-and-test+ operation)
+    (vec (concat (source-roots current-project)
+                 (test-roots current-project)))
+
+    :else
+    (source-roots current-project)))
+
+(defn source-file?
+  [path]
+  (and (str/ends-with? (path-text path) ".hal")
+       (not (str/includes? (path-text path) "/.#"))))
+
+(defn test-file?
+  [path]
+  (and (source-file? path)
+       (str/ends-with? (path-text path) "_test.hal")))
+
+(defn files-under
+  [root]
+  (vec
+   (sort-by str
+            (filter source-file?
+                    (deref (File/walk root))))))
+
+(defn declared-files
+  [current-project operation]
+  (let [root (:project/root current-project)
+        explicit (:project/source-files current-project)
+        paths (if (and (not (empty? explicit))
+                       (not (has? +test-only+ operation))
+                       (not (has? +source-and-test+ operation)))
+                explicit
+                (vec (mapcat
+                      (fn [relative-root]
+                        (files-under (absolute-path root relative-root)))
+                      (roots-for current-project operation))))
+        paths (vec (map (fn [path] (absolute-path root path)) paths))]
+    (if (and (not (empty? explicit))
+             (not (has? +test-only+ operation))
+             (not (has? +source-and-test+ operation)))
+      paths
+      (vec (sort-by str paths)))))
+
+(defn ^{:public true} unit
+  "Reads a source or test file into the stable manage unit shape."
+  [path type]
+  (let [path (path-text path)
+        source (read-text path)
+        namespace (project/namespace-from-source source nil)]
+    {:path path
+     :type type
+     :namespace namespace
+     :source source}))
+
+(defn versioned-unit
+  [base version]
+  (assoc base :version version))
+
+(defn paired-source-unit
+  "Adds the mapped test source and project version to a source unit."
+  [base version test-path test-source]
+  (assoc (assoc (assoc base :version version)
+                :test-path test-path)
+         :test-source (or test-source "")))
+
+(defn project-test-path
+  "Maps a source path to the corresponding configured test root."
+  [current-project path]
+  (let [root (:project/root current-project)
+        source-roots (source-roots current-project)
+        test-roots (test-roots current-project)
+        path (absolute-path root path)
+        selected
+        (loop [remaining source-roots index 0]
+          (if (empty? remaining)
+            nil
+            (let [entry (first remaining)]
+              (if (str/starts-with? (path-text path)
+                                    (str (absolute-path root entry) "/"))
+                {:root entry :index index}
+                (recur (rest remaining) (inc index))))))]
+    (if selected
+      (let [relative (relative-path (absolute-path root (:root selected)) path)
+            test-root (if (< (:index selected) (count test-roots))
+                        (nth test-roots (:index selected))
+                        (if (empty? test-roots) "test" (first test-roots)))]
+        (File/join (absolute-path root test-root)
+                   (str/replace
+                    (str/replace relative "/src-lang/" "/test-lang/")
+                    ".hal"
+                    "_test.hal")))
+      (let [candidate (str/replace (path-text path) "/src/" "/test/")]
+        (str/replace candidate ".hal" "_test.hal")))))
+
+(defn ^{:public true} paired-unit
+  "Reads a unit and attaches its corresponding test source when available."
+  [current-project path type]
+  (let [base (unit path type)]
+    (if (= :test type)
+      base
+      (let [test-path (project-test-path current-project path)]
+        (paired-source-unit
+         base
+         (:project/version current-project)
+         test-path
+         (if (deref (File/exists? test-path))
+           (read-text test-path)
+           ""))))))
+
+(defn ^{:public true} units-for
+  "Discovers deterministic source/test units for an operation."
+  ([current-project operation]
+   (units-for current-project operation :all))
+  ([current-project operation selector]
+   (let [paths (declared-files current-project operation)]
+     (vec
+      (map
+       (fn [path]
+         (paired-unit current-project
+                      path
+                      (if (test-file? path) :test :source)))
+       (filter
+        (fn [path]
+          (let [project-root (path-text (:project/root current-project))
+                project-relative (relative-path project-root (path-text path))
+                roots (roots-for current-project operation)
+                root (loop [remaining roots]
+                       (if (empty? remaining)
+                         nil
+                         (let [candidate (first remaining)]
+                           (if (or (= project-relative candidate)
+                                   (str/starts-with? project-relative
+                                                     (str candidate "/")))
+                             candidate
+                             (recur (rest remaining))))))
+                relative (if root
+                           (relative-path root project-relative)
+                           project-relative)
+                namespace (project/path-namespace relative)]
+            (or (= :all selector)
+                (task/matches? selector namespace)
+                (task/matches? selector relative))))
+        paths))))))
+
+(defn selector-input?
+  [value]
+  (and (not (map? value))
+       (or (nil? value)
+      (= value :all)
+      (string? value)
+      (symbol? value)
+      (keyword? value)
+      (regexp? value)
+      (fn? value)
+      (vector? value)
+      (list? value)
+      (set? value))))
+
+(defn ^{:public true} task-input
+  "Normalises public manage invocation data into task input."
+  [input]
+  (cond
+    (and (map? input) (has? input :units))
+    (assoc input :options (or (:options input) {}))
+
+    (and (map? input)
+         (or (has? input :selector)
+             (has? input :project)
+             (has? input :root)
+             (has? input :options)))
+    {:units nil
+     :selector (or (:selector input) :all)
+     :options (or (:options input) {})
+     :project (:project input)
+     :root (:root input)}
+
+    (map? input)
+    {:units [input] :selector :all :options {}}
+
+    (vector? input)
+    {:units input :selector :all :options {}}
+
+    :else
+    {:units nil :selector input :options {}}))
+
+(defn selected-unit?
+  [selector-value unit]
+  (or (task/matches? selector-value (:namespace unit))
+      (task/matches? selector-value (:path unit))))
+
+(defn ^{:public true} current-input
+  "Discovers the complete operation inventory and retains its selector for Work."
+  ([operation start]
+   (if (and (map? start) (:project/root start))
+     (current-input operation start :all {})
+     (current-input operation (discover (OS/cwd)) start {})))
+  ([operation start selector-value]
+   (if (and (map? start) (:project/root start))
+     (current-input operation start selector-value {})
+     (let [invocation (if (map? selector-value) selector-value {})
+           selected (if (:task/selector? invocation)
+                      (:task/selector invocation)
+                      start)
+           options (or (:task/params invocation) {})]
+       (current-input operation (discover (OS/cwd)) selected options))))
+  ([operation current-project selector-value options]
+   (let [units (units-for current-project operation)]
+     {:units units
+      :selector selector-value
+      :options (or options {})
+      :project current-project})))
+
+(defn ^{:public true} current-project
+  ([]
+   (discover (OS/cwd)))
+  ([start]
+   (discover start)))

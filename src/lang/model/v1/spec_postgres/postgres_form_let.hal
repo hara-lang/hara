@@ -1,0 +1,103 @@
+(ns lang.model.v1.spec-postgres.postgres-form-let
+  (:require [lang.common.emit :as emit]
+            [lang.model.v1.spec-postgres.postgres-common :as common]))
+
+(def ^:dynamic *input-syms* nil)
+
+(defn pg-tf-let-block
+  "Builds a declaration/begin/end block from archived let options."
+  [form]
+  (let [options (second form)
+        body (drop 2 form)
+        name (:name options)
+        declare (:declare options)
+        catch (:catch options)
+        header (if name [(list \\ (list \| "<<" name ">>"))] [])
+        declaration (if (seq declare)
+                      [:declare \\ (list \| (apply list 'do
+                                                        (map (fn [item] (list 'var item)) declare))) \\]
+                      [])
+        begin [:begin \\ (list \| (apply list 'do body))]
+        catcher (if catch [\\ (apply list 'do* catch)] [])]
+    (list 'do (vec (concat header declaration begin catcher [\\ :end])))))
+
+(defn pg-tf-let-assign
+  "Creates one portable PostgreSQL assignment statement."
+  [pair]
+  (let [target (first pair)
+        value (second pair)]
+    (cond (= '_ target) [value]
+          (and (vector? value)
+               (= [target :into] (vec (take 2 (reverse value))))) [value]
+          (vector? value) [(conj (conj value :into) target)]
+          :else [(list := target value)])))
+
+(defn symbol-set
+  [value]
+  (cond (and (symbol? value)
+             (not (has? #{'+ '- '* '/ '= 'return 'do 'let 'if} value))) #{value}
+        (vector? value) (reduce union #{} (map symbol-set value))
+        (list? value) (reduce union #{} (map symbol-set value))
+        :else #{}))
+
+(defn pg-tf-let-check-body
+  "Checks simple unqualified body symbols against the declared scope."
+  [declared body]
+  (let [scope (reduce union (set declared) (map symbol-set declared))
+        used (reduce union #{} (map symbol-set body))
+        unknown (reduce (fn [result symbol]
+                          (if (or (has? scope symbol)
+                                  (= '_ symbol))
+                            result
+                            (conj result symbol)))
+                        #{}
+                        used)]
+    (if (seq unknown)
+      (throw (ex :syntax {:symbols unknown}
+                 :ex/message "Unknown symbols in PostgreSQL let body"))
+      nil)))
+
+(defn pg-let-declaration
+  [binding]
+  (cond (= '_ binding) nil
+        (symbol? binding) (list 'pg:raw (str (str/replace (name binding) "-" "_") " JSONB"))
+        (list? binding) (list 'pg:raw (str (str/replace (name (last binding)) "-" "_")
+                                            " " (str/join " " (map name (butlast binding)))))
+        :else nil))
+
+(defn pg-tf-let
+  "Transforms a portable let into a PostgreSQL declaration block."
+  [form]
+  (let [bindings (second form)
+        body (drop 2 form)
+        pairs (vec (partition 2 bindings))
+        declarations (vec (filter (fn [value] (not (nil? value)))
+                                  (map (fn [pair] (pg-let-declaration (first pair))) pairs)))
+        assignments (mapcat pg-tf-let-assign pairs)]
+    (pg-tf-let-block [nil {:declare declarations}
+                      (apply list 'do (concat assignments body))])))
+
+(defn pg-do-block
+  "Emits a PL/pgSQL block with let support."
+  [form grammar context]
+  (emit/*emit-fn* (common/block-do-block (second form)) grammar context))
+
+(defn pg-do-suppress
+  "Emits a PL/pgSQL block that suppresses errors."
+  [form grammar context]
+  (emit/*emit-fn* (common/block-do-suppress (second form)) grammar context))
+
+(defn pg-loop-block
+  "Emits a PL/pgSQL loop block."
+  [form grammar context]
+  (emit/*emit-fn* (apply common/block-loop-block (drop 1 form)) grammar context))
+
+(defn pg-while-block
+  "Emits a PL/pgSQL while block."
+  [form grammar context]
+  (emit/*emit-fn* (apply common/block-while-block (drop 1 form)) grammar context))
+
+(defn pg-case-block
+  "Emits a PL/pgSQL case block."
+  [form grammar context]
+  (emit/*emit-fn* (apply common/block-case-block (drop 1 form)) grammar context))

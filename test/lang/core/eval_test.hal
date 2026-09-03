@@ -1,0 +1,253 @@
+(ns lang.core.eval-test
+  (:require [lang.core.eval :as evaluation]
+            [lang.protocol.runtime :as runtime]))
+
+(defstruct TestTransport [events])
+(defstruct TestContext [transport profile result raw])
+
+(extend-type TestTransport runtime/IEvalTransport
+  (exchange [transport request options]
+    (do
+      (swap! (:events transport) conj [request options])
+      (promise/from {:response (str request "-response")}))))
+
+(extend-type TestContext IContextEval
+  (evaluate [context request options] (promise/from (:result context)))
+  (evaluate-raw [context request options] (promise/from (:raw context)))
+  (eval-ptr [context pointer arguments options] (promise/from nil))
+  (eval-await-ptr [context pointer arguments options] nil)
+  (tags-ptr [context pointer] [])
+  (deref-ptr [context pointer] nil)
+  (display-ptr [context pointer] "")
+  (invoke-ptr [context pointer arguments] nil)
+  (transform-in-ptr [context pointer arguments] arguments)
+  (transform-out-ptr [context pointer value] value))
+
+(defn isolated
+  [function]
+  (let [snapshot (evaluation/plugin-snapshot)]
+    (try
+      (evaluation/plugin-reset!)
+      (function)
+      (finally (evaluation/plugin-restore! snapshot)))))
+
+(defn failure-code
+  [function]
+  (try
+    (function)
+    :no-error
+    (catch error (:ex/code (ex-data error)))))
+
+(defn fixture-context
+  []
+  (let [events (atom [])
+        transport (TestTransport events)
+        profile {:input [(fn [frame]
+                           (assoc frame :source (str (:source frame) "-input")))]
+                 :source [(fn [frame]
+                            (assoc frame :source (str (:source frame) "-source")))]
+                 :response [(fn [frame]
+                              (assoc frame :result (str (:response frame) "-done")))]}
+        context (TestContext transport profile :evaluated :raw)]
+    [context events]))
+
+^{:refer lang.core.eval/legacy-plugin-id?}
+(Test/check
+ [{:name "recognizes only rejected Tahto plugin keyword namespaces"
+   :test (fn [] [(evaluation/legacy-plugin-id? :tahto/phase)
+                 (evaluation/legacy-plugin-id? :tahto.extra/phase)
+                 (evaluation/legacy-plugin-id? :lang/phase)])
+   :expected [true true false]}])
+
+^{:refer lang.core.eval/assert-canonical-plugin-id}
+(Test/check
+ [{:name "accepts canonical ids and rejects legacy plugin ids"
+   :test (fn [] [(evaluation/assert-canonical-plugin-id :lang/phase)
+                 (failure-code (fn [] (evaluation/assert-canonical-plugin-id :tahto/phase)))])
+   :expected [:lang/phase :hara/argument]}])
+
+^{:refer lang.core.eval/assert-canonical-plugin-coordinate}
+(Test/check
+ [{:name "requires a canonical [id version] plugin coordinate"
+   :test (fn [] [(evaluation/assert-canonical-plugin-coordinate [:lang/phase 1])
+                 (failure-code (fn []
+                                 (evaluation/assert-canonical-plugin-coordinate [:tahto/phase 1])))
+                 (failure-code (fn []
+                                 (evaluation/assert-canonical-plugin-coordinate :lang/phase)))])
+   :expected [[:lang/phase 1] :hara/argument :hara/argument]}])
+
+^{:refer lang.core.eval/plugin-snapshot}
+(Test/check
+ [{:name "captures the registered plugin baseline"
+   :test (fn [] (isolated (fn [] (evaluation/plugin-snapshot))))
+   :expected {}}])
+
+^{:refer lang.core.eval/plugin-restore!}
+(Test/check
+ [{:name "restores supplied plugins and the empty baseline"
+   :test (fn []
+           (isolated
+            (fn []
+              [(keys (evaluation/plugin-restore! {[:fixture 1] {:id :fixture}}))
+               (evaluation/plugin-restore! nil)])))
+   :expected [[[:fixture 1]] {}]}])
+
+^{:refer lang.core.eval/plugin-reset!}
+(Test/check
+ [{:name "clears plugin state idempotently"
+   :test (fn []
+           (isolated
+            (fn []
+              (evaluation/register-plugin :fixture 1 :input identity)
+              [(evaluation/plugin-reset!) (evaluation/plugin-reset!)])))
+   :expected [{} {}]}])
+
+^{:refer lang.core.eval/register-plugin}
+(Test/check
+ [{:name "registers one exact versioned phase"
+   :test (fn []
+           (isolated
+            (fn []
+              (select-keys
+               (evaluation/register-plugin :fixture 1 :input identity)
+               [:id :version :phase]))))
+   :expected {:id :fixture :version 1 :phase :input}}])
+
+^{:refer lang.core.eval/plugin}
+(Test/check
+ [{:name "resolves registered plugins and reports absent coordinates"
+   :test (fn []
+           (isolated
+            (fn []
+              (evaluation/register-plugin :fixture 1 :input identity)
+              [(get (evaluation/plugin [:fixture 1]) :phase)
+               (failure-code (fn [] (evaluation/plugin [:missing 1])))])))
+   :expected [:input :hara/generic]}])
+
+^{:refer lang.core.eval/request}
+(Test/check
+ [{:name "normalizes raw input once while preserving existing requests"
+   :test (fn []
+           (let [request (evaluation/request :form :staged)]
+             [(select-keys request [:input :stage])
+              (= request (evaluation/request request))]))
+   :expected [{:input :form :stage :staged} true]}])
+
+^{:refer lang.core.eval/ensure-promise}
+(Test/check
+ [{:name "turns direct values and promises into awaitable values"
+   :test (fn [] [(deref (evaluation/ensure-promise :value))
+                 (deref (evaluation/ensure-promise (promise/from :pending)))])
+   :expected [:value :pending]}])
+
+^{:refer lang.core.eval/phase-plugin}
+(Test/check
+ [{:name "resolves direct map and registered phase descriptors"
+   :test (fn []
+           (isolated
+            (fn []
+              (evaluation/register-plugin :fixture 1 :input (fn [value] (assoc value :registered true)))
+              [((evaluation/phase-plugin (fn [value] (assoc value :direct true))) {})
+               ((evaluation/phase-plugin {:transform (fn [value] (assoc value :mapped true))}) {})
+               ((evaluation/phase-plugin [:fixture 1]) {})
+               (failure-code (fn [] (evaluation/phase-plugin :invalid)))])))
+   :expected [{:direct true} {:mapped true} {:registered true} :hara/argument]}])
+
+^{:refer lang.core.eval/phase-plugin}
+(Test/check
+ [{:name "recognizes map descriptors before resolving their transform"
+   :test (fn []
+           (let [descriptor {:transform (fn [value] value)}
+                 transform (get descriptor :transform)]
+             [(vector? descriptor)
+              (map? descriptor)
+              (nil? transform)
+              (function? transform)]))
+   :expected [false true false true]}])
+
+^{:refer lang.core.eval/run-phase}
+(Test/check
+ [{:name "runs each phase exactly once in descriptor order"
+   :test (fn []
+           (let [calls (atom 0)
+                 result (evaluation/run-phase
+                         {:value 1}
+                         [(fn [frame]
+                            (swap! calls inc)
+                            (assoc frame :value (+ (:value frame) 1)))
+                          {:transform (fn [frame]
+                                        (swap! calls inc)
+                                        (assoc frame :value (+ (:value frame) 2)))}])]
+             [(deref result) (deref calls)]))
+   :expected [{:value 4} 2]}])
+
+^{:refer lang.core.eval/profile}
+(Test/check
+ [{:name "uses a context profile or the empty evaluation profile"
+   :test (fn [] [(evaluation/profile {})
+                 (evaluation/profile {:profile {:input [:custom]}})])
+   :expected [{:input [] :source [] :response []} {:input [:custom]}]}])
+
+^{:refer lang.core.eval/initial-frame}
+(Test/check
+ [{:name "builds a frame with source equal to the request input"
+   :test (fn []
+           (select-keys
+            (evaluation/initial-frame :context (evaluation/request :source) {:timeout 5})
+            [:context :input :source :options]))
+   :expected {:context :context :input :source :source :source :options {:timeout 5}}}])
+
+^{:refer lang.core.eval/eval-raw-context}
+(Test/check
+ [{:name "sends the raw request to the portable transport"
+   :test (fn []
+           (let [[context events] (fixture-context)]
+             [(deref (evaluation/eval-raw-context context "raw" {:mode :raw}))
+              (deref events)
+              (failure-code (fn [] (evaluation/eval-raw-context {} "raw" {})))]))
+   :expected [{:response "raw-response"} [["raw" {:mode :raw}]] :hara/generic]}])
+
+^{:refer lang.core.eval/eval-context}
+(Test/check
+ [{:name "runs input source transport and response stages in order"
+   :test (fn []
+           (let [[context events] (fixture-context)]
+             [(deref (evaluation/eval-context context "request" {:trace true}))
+              (deref events)]))
+   :expected ["request-input-source-response-done"
+              [["request-input-source" {:trace true}]]]}])
+
+^{:refer lang.core.eval/eval-trace}
+(Test/check
+ [{:name "records successful runtime evaluation in an EvalTrace"
+   :test (fn []
+           (let [[context _] (fixture-context)]
+             (select-keys (deref (evaluation/eval-trace context :input {:mode :trace}))
+                          [:status :result :error :phases])))
+   :expected {:status :ok :result :evaluated :error nil
+              :phases [:input :source :transport :response]}}])
+
+^{:refer lang.core.eval/await}
+(Test/check
+ [{:name "awaits settled promises through both arities"
+   :test (fn [] [(evaluation/await (promise/from :value))
+                 (evaluation/await (promise/from :timed) 5)])
+   :expected [:value :timed]}])
+
+^{:refer lang.core.eval/eval-await}
+(Test/check
+ [{:name "awaits semantic evaluation using explicit or context timeouts"
+   :test (fn []
+           (let [[context _] (fixture-context)]
+             [(evaluation/eval-await context :input)
+              (evaluation/eval-await context :input {:timeout 3})]))
+   :expected [:evaluated :evaluated]}])
+
+^{:refer lang.core.eval/eval-raw-await}
+(Test/check
+ [{:name "awaits raw evaluation using explicit or context timeouts"
+   :test (fn []
+           (let [[context _] (fixture-context)]
+             [(evaluation/eval-raw-await context :input)
+              (evaluation/eval-raw-await context :input {:timeout 3})]))
+   :expected [:raw :raw]}])

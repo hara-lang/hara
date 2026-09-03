@@ -1,0 +1,62 @@
+(ns lang.model.v1.spec-postgres.postgres-form-defrole
+  (:require [lang.model.v1.spec-postgres.postgres-common :as common]))
+
+(defn pg-defrole-access
+  "Creates archived role access grant forms."
+  [config role options]
+  (let [select (or (:select config) [])
+        forms
+        (mapcat
+         (fn [value]
+           (cond
+             (symbol? value) [[:grant :select :on-table value :to role]]
+             (vector? value)
+             (if (= 1 (count value))
+               (pg-defrole-access {:select [(first value)]} role options)
+               (let [table (first value)
+                     policy (second value)
+                     params (nth value 2)
+                     policy-name (str (name role) "_" (name policy) "_"
+                                      (or (:name params) "default"))]
+                 [[:grant :select :on-table table :to role]
+                  [:alter-table table :enable-row-level-security]
+                  [:create-policy #{policy-name} :on table
+                   :as-permissive \\ :for-select :to role
+                   :using (list 'quote (list [(list :where policy)]))]]))
+             :else
+             (throw (ex :syntax {:input value}
+                        :ex/message "Invalid PostgreSQL role access entry"))))
+         select)]
+    (vec forms)))
+
+(defn suppress-block
+  [form]
+  (common/block-do-suppress (apply list 'do form)))
+
+(defn pg-defrole
+  "Expands an archived role declaration into idempotent grants."
+  [form]
+  (let [role (second form)
+        config (if (map? (nth form 2)) (nth form 2) {})
+        grant (or (:grant config) [])
+        inherit (or (:inherit config) [])
+        schema (or (:schema config) [])
+        create-form (suppress-block [[:create-role role
+                                      (if (or (seq inherit) (seq grant))
+                                        :inherit
+                                        :noinherit)]])
+        grant-forms (map (fn [value] [:grant role :to value]) grant)
+        inherit-forms (map (fn [value] [:grant value :to role]) inherit)
+        schema-forms (map (fn [value] [:grant-usage :on-schema #{value} :to role]) schema)
+        access-forms (pg-defrole-access config role {})
+        initial (if (:final (meta role))
+                  []
+                  [(suppress-block [[:drop :owned-by role]
+                                    [:drop-role :if-exists role]])])]
+    (apply list 'do
+           (concat initial
+                   [create-form]
+                   (if (seq inherit) [(suppress-block inherit-forms)] [])
+                   (if (seq grant) [(suppress-block grant-forms)] [])
+                   (if (seq schema) [(suppress-block schema-forms)] [])
+                   (if (seq access-forms) [(suppress-block access-forms)] [])))))

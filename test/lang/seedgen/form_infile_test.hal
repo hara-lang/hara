@@ -1,0 +1,179 @@
+(ns lang.seedgen.form-infile-test (:use code.test) (:require [std.block.base :as block] [std.block.navigate :as nav] [std.foundation.string :as str] [std.fs :as fs] [lang.seedgen.common-util :as common] [lang.seedgen.form-common :as form-common] [lang.seedgen.form-parse :as form-parse] [lang.seedgen.form-infile :as subject]))
+
+(def +script-source+ (str "(ns sample.target-test\n" "  (:require [tahto.core :as l]))\n\n" "^{:seedgen/root {:all true :langs [:js :lua]}}\n" "(l/script- :js {:runtime :basic})\n\n" "(l/script- :lua {:runtime :basic})\n\n" "(defn.js helper [] (return 1))\n\n" "^{:refer demo/example :added \"4.1\"}\n" "(fact \"target\"\n" "  (!.js (+ 1 2))\n" "  => 3)\n"))
+
+(def +root+ (nav/parse-root +script-source+))
+
+(def +top+ (form-common/nav-top-levels +root+))
+
+(def +script-root-item+ (form-common/nav-entry (nth +top+ 1)))
+
+(def +script-derived-item+ (form-common/nav-entry (nth +top+ 2)))
+
+(def +js-item+ (form-common/nav-entry (nav/down (nav/parse-root "(!.js (+ 1 2))"))))
+
+(def +lua-item+ (form-common/nav-entry (nav/down (nav/parse-root "(!.lua (+ 1 2))"))))
+
+(def +expected-item+ (form-common/nav-entry (nav/down (nav/parse-root "3"))))
+
+(def +classification+ {:root [+js-item+] :derived [+lua-item+] :scaffold []})
+
+(def +entry+ {:fact-setup +classification+ :meta {:added "4.1" :refer (quote demo/example)} :ns (quote demo) :id (quote demo/example) :intro "target" :var (quote example) :fact-teardown {:root [] :derived [] :scaffold []} :checks {:root [(assoc +js-item+ :expected +expected-item+)] :derived [(assoc +lua-item+ :expected +expected-item+)] :scaffold []}})
+
+(def +output+ {:entries {(quote demo) {(quote example) +entry+}} :globals {:global-fact-setup {:root [] :derived [] :scaffold []} :global-top {:root [] :derived [] :scaffold []} :global-fact-config {} :lang {:root :js :derived [:lua]} :global-script {:root +script-root-item+ :derived [+script-derived-item+]} :global-fact-teardown {:root [] :derived [] :scaffold []}}})
+
+(Test/check [{:name "normalizes target language inputs" :expected [[:lua] [:js :lua] :all nil] :test (fn [] [(subject/normalize-target-langs :lua) (subject/normalize-target-langs (quote (:js "lua"))) (subject/normalize-target-langs :all) (subject/normalize-target-langs nil)])}])
+
+(Test/check [{:name "builds a stable source coordinate key" :expected [1 2 3 4] :test (fn [] (subject/line-key {:end-col 4 :end-row 3 :row 1 :col 2}))}])
+
+(Test/check [{:name "returns the stored item block" :expected "(!.js (+ 1 2))" :test (fn [] (block/block-string (subject/item-form +js-item+)))}])
+
+(Test/check [{:name "returns the stored item line" :expected (:line +js-item+) :test (fn [] (subject/item-line +js-item+))}])
+
+(Test/check [{:name "renders an item block" :expected "(!.js (+ 1 2))" :test (fn [] (subject/item-string +js-item+))}])
+
+(Test/check [{:name "returns the item value" :expected (quote (!.js (+ 1 2))) :test (fn [] (subject/item-value +js-item+))}])
+
+(Test/check [{:name "returns an item's parsed configuration form" :expected (quote (!.js (+ 1 2))) :test (fn [] (subject/item-config-form +js-item+))}])
+
+(Test/check [{:name "extracts an item's normalized language" :expected :lua :test (fn [] (subject/item-lang +lua-item+))}])
+
+(Test/check [{:name "sorts items by their source lines" :expected [:js :lua] :test (fn [] (mapv subject/item-lang (subject/sort-items [+lua-item+ +js-item+])))}])
+
+(Test/check [{:name "parses the first block in a source string" :expected (quote (+ 1 2)) :test (fn [] (block/block-value (subject/parse-first-block "(+ 1 2)")))}])
+
+(Test/check [{:name "removes a metadata wrapper while retaining the body" :expected "(+ 1 2)" :test (fn [] (subject/unwrap-meta-string "^{:a 1}\n(+ 1 2)"))}])
+
+(Test/check [{:name "removes seedgen control metadata but keeps ordinary metadata" :expected "^{:refer demo/example}\n(+ 1 2)" :test (fn [] (subject/strip-seedgen-control-meta-string "^{:refer demo/example :seedgen/lang {:lua {:suppress true}}}\n(+ 1 2)"))}])
+
+(Test/check [{:name "changes a script language and its default runtime" :expected "(l/script- :lua {:runtime :basic})" :test (fn [] (subject/replace-script-lang-string "(l/script- :js {})" :lua))}])
+
+(Test/check [{:name "normalizes require values to vectors" :expected [[] [(quote a) (quote b)] [(quote a)]] :test (fn [] [(subject/normalize-script-requires nil) (subject/normalize-script-requires (quote (a b))) (subject/normalize-script-requires (quote a))])}])
+
+(Test/check [{:name "removes selected metadata from a form" :expected {:keep 1} :test (fn [] (meta (subject/strip-meta-keys (with-meta (quote a) {:seedgen/extra true :keep 1}) [:seedgen/extra])))}])
+
+(Test/check [{:name "gets the namespace target from a require specification" :expected [(quote a) (quote a)] :test (fn [] [(subject/require-target (quote [a :as x])) (subject/require-target (quote a))])}])
+
+(Test/check [{:name "removes selected script requirements" :expected [(quote a) (quote d)] :test (fn [] (subject/remove-script-requires (quote [a [b :as c] d]) #{(quote b)}))}])
+
+(Test/check [{:name "leaves an untagged require configuration unchanged" :expected "(l/script- :js {:require [a]})" :test (fn [] (subject/consume-script-extra-requires "(l/script- :js {:require [a]})" :lua))}])
+
+(Test/check [{:name "replaces requirements by target and appends new targets" :expected [(quote a) [(quote b) :as (quote new)] (quote c)] :test (fn [] (subject/merge-script-requires (quote [a [b :as old]]) (quote [[b :as new] c])))}])
+
+(Test/check [{:name "reads language-specific root requirements" :expected [] :test (fn [] (subject/root-script-extra-requires +output+ :js))}])
+
+(Test/check [{:name "finds tagged root requirements" :expected [] :test (fn [] (subject/root-script-tagged-extra-requires +output+))}])
+
+(Test/check [{:name "renders script requirements in compact or multiline form" :expected ["[]" "[a]" "[a\nb]"] :test (fn [] [(subject/render-script-require-string []) (subject/render-script-require-string (quote [a])) (subject/render-script-require-string (quote [a b]))])}])
+
+(Test/check [{:name "renders a script configuration map" :expected "{:runtime :basic}" :test (fn [] (subject/render-script-config-string "{:runtime :basic}" {:runtime :basic}))}])
+
+(Test/check [{:name "augments a script with no configured extras without changing it" :expected "(l/script- :js {:runtime :basic})" :test (fn [] (subject/augment-script-string "(l/script- :js {:runtime :basic})" +output+ :js))}])
+
+(Test/check [{:name "replaces a namespace name in source" :expected "(ns sample.lua.test)" :test (fn [] (subject/replace-ns-name-string "(ns sample.test)" (symbol "sample.lua.test")))}])
+
+(Test/check [{:name "rewrites dispatch and runtime tokens in content" :expected "(!.lua (+ 1 2)) :lua" :test (fn [] (subject/replace-runtime-lang-content-string "(!.js (+ 1 2)) :js" (quote (!.js (+ 1 2))) :lua))}])
+
+(Test/check [{:name "rewrites a dispatch form's language tag" :expected "(!.lua (+ 1 2))" :test (fn [] (subject/replace-runtime-lang-string "(!.js (+ 1 2))" :lua))}])
+
+(Test/check [{:name "rewrites a top-level helper suffix" :expected "(defn.lua helper [] 1)" :test (fn [] (subject/replace-top-level-helper-lang-string "(defn.js helper [] 1)" :js :lua))}])
+
+(Test/check [{:name "indents every line" :expected "  a\n  b" :test (fn [] (subject/indent-lines "  " "a\nb"))}])
+
+(Test/check [{:name "indents all non-leading lines" :expected "a\n  b\n" :test (fn [] (subject/indent-rest-lines "  " "a\nb\n"))}])
+
+(Test/check [{:name "counts leading spaces and tabs" :expected 2 :test (fn [] (subject/leading-indent " \tvalue"))}])
+
+(Test/check [{:name "finds the indentation prefix from the first content line" :expected "  " :test (fn [] (subject/multiline-indent-prefix "{\n  :a 1}" "   "))}])
+
+(Test/check [{:name "trims at most the requested indentation" :expected "  value" :test (fn [] (subject/trim-indent "    value" 2))}])
+
+(Test/check [{:name "normalizes nested block indentation" :expected "a\n  b" :test (fn [] (subject/normalise-block-string "a\n    b" 2))}])
+
+(Test/check [{:name "renders an item with source indentation normalized" :expected "(!.js (+ 1 2))" :test (fn [] (subject/render-item-string +js-item+))}])
+
+(Test/check [{:name "renders an expression and expected value clause" :expected "  (+ 1 2)\n  => 3" :test (fn [] (subject/render-clause-snippet "  " "(+ 1 2)" "3"))}])
+
+(Test/check [{:name "renders vector snippets with multiline indentation" :expected [nil "[a]" "[a\n          b]"] :test (fn [] [(subject/render-vector-string :setup []) (subject/render-vector-string :setup ["a"]) (subject/render-vector-string :setup ["a" "b"])])}])
+
+(Test/check [{:name "renders a map entry and indents multiline values" :expected ":setup [a\n        b]" :test (fn [] (subject/render-map-entry 1 :setup "[a\nb]"))}])
+
+(Test/check [{:name "renders preferred metadata keys before extension keys" :expected "^{:refer demo/example :added \"4.1\"}" :test (fn [] (subject/render-meta-string {:added "4.1" :refer (quote demo/example)} {}))}])
+
+(Test/check [{:name "renders nonempty configuration maps" :expected "{:setup [a]\n :teardown [b]}" :test (fn [] (subject/render-map-string {:setup "[a]" :teardown "[b]"}))}])
+
+(Test/check [{:name "ensures an entry has a refer or ref symbol" :expected {:added "4.1" :refer (quote demo/example)} :test (fn [] (subject/entry-meta {:meta {:added "4.1"} :ns (quote demo) :var (quote example)}))}])
+
+(Test/check [{:name "flattens classifications in source order" :expected [:js :lua] :test (fn [] (mapv subject/item-lang (subject/classify-lang-items +classification+)))}])
+
+(Test/check [{:name "indexes runtime items by language" :expected #{:js :lua} :test (fn [] (set (keys (subject/runtime-item-map +classification+))))}])
+
+(Test/check [{:name "reports false when no suppression is configured" :expected false :test (fn [] (subject/item-suppressed? +entry+ +lua-item+ :lua))}])
+
+(Test/check [{:name "returns nil when no language override is configured" :expected nil :test (fn [] (subject/item-base-override +entry+ +lua-item+ :lua :input))}])
+
+(Test/check [{:name "identifies literal and regular expression transforms" :expected [true true false] :test (fn [] [(subject/transform-string-match? "a") (subject/transform-string-match? (regexp "a")) (subject/transform-string-match? (quote a))])}])
+
+(Test/check [{:name "unwraps quoted transform values" :expected [(quote a) (quote a)] :test (fn [] [(subject/transform-literal (quote (quote a))) (subject/transform-literal (quote a))])}])
+
+(Test/check [{:name "rewrites a matching form value" :expected "(+ b 1)" :test (fn [] (subject/apply-item-transform-form "(+ a 1)" (quote a) (quote b)))}])
+
+(Test/check [{:name "applies a configured literal transform" :expected "(+ b 1)" :test (fn [] (subject/apply-item-transform-string "(+ a 1)" {:meta {:seedgen/lang {:lua {:transform {"a" "b"}}}}} +js-item+ :lua))}])
+
+(Test/check [{:name "returns the body of a metadata-wrapped fact" :expected "(fact \"x\")" :test (fn [] (subject/fact-original-body-string "^{:refer demo/example}\n(fact \"x\")"))}])
+
+(Test/check [{:name "returns distinct check languages in source order" :expected [:js :lua] :test (fn [] (subject/entry-check-langs +entry+))}])
+
+(Test/check [{:name "extracts declared target languages from root metadata" :expected [:js :lua] :test (fn [] (subject/root-script-meta-langs +output+))}])
+
+(Test/check [{:name "removes the root language from declared targets" :expected [:lua] :test (fn [] (subject/root-script-target-langs +output+))}])
+
+(Test/check [{:name "combines root, declared, derived and extra languages" :expected [:js :lua :python] :test (fn [] (subject/root-script-declared-langs +output+ [:python]))}])
+
+(Test/check [{:name "keeps scaffold items and the requested language" :expected [:lua] :test (fn [] (mapv subject/item-lang (subject/keep-target-items +classification+ :lua)))}])
+
+(Test/check [{:name "renders a check item with its expected value" :expected "  (!.js (+ 1 2))\n  => 3" :test (fn [] (subject/render-check-clause (assoc +js-item+ :expected +expected-item+)))}])
+
+(Test/check [{:name "generates a target-language check input" :expected "(!.lua (+ 1 2))" :test (fn [] (subject/render-generated-item-string +entry+ +js-item+ :lua))}])
+
+(Test/check [{:name "preserves an expected value when no override exists" :expected "3" :test (fn [] (subject/render-generated-expected-string +entry+ (assoc +js-item+ :expected +expected-item+) :lua))}])
+
+(Test/check [{:name "renders a generated target check" :expected "  (!.lua (+ 1 2))\n  => 3" :test (fn [] (subject/render-generated-check-clause +entry+ (assoc +js-item+ :expected +expected-item+) :lua))}])
+
+(Test/check [{:name "renders runtime setup items for requested languages" :expected ["(!.js (+ 1 2))" "(!.lua (+ 1 2))"] :test (fn [] (subject/render-target-runtime-items +entry+ +classification+ :js [:js :lua]))}])
+
+(Test/check [{:name "renders root and additional check snippets" :expected ["  (!.js (+ 1 2))\n  => 3" "  (!.lua (+ 1 2))\n  => 3"] :test (fn [] (subject/render-check-snippets-add +entry+ [:lua] #{:lua}))}])
+
+(Test/check [{:name "renders a fact with an additional runtime" :expected true :test (fn [] (str/includes? (subject/render-fact-string-add +entry+ :js [:lua] #{:lua} "") "(!.lua (+ 1 2))"))}])
+
+(Test/check [{:name "removes a target runtime while retaining the root check" :expected true :test (fn [] (str/includes? (subject/render-fact-string-remove +entry+ #{:lua} "") "(!.js (+ 1 2))"))}])
+
+(Test/check [{:name "renders an empty global fact configuration" :expected "(fact:global\n {})" :test (fn [] (subject/render-global-fact-remove +output+ #{:lua} ""))}])
+
+(Test/check [{:name "updates root script metadata with known target languages" :expected true :test (fn [] (str/includes? (subject/update-root-script-string +output+ [:lua :python]) ":python"))}])
+
+(Test/check [{:name "maps derived script forms by language" :expected [:lua] :test (fn [] (keys (subject/script-string-map +output+)))}])
+
+(Test/check [{:name "returns the unwrapped root script body" :expected "(l/script- :js {:runtime :basic})" :test (fn [] (subject/root-script-body-string +output+))}])
+
+(Test/check [{:name "adds a target script and target checks to a source file" :expected [true true] :test (fn [] (let [result (subject/render-top-level-add +output+ +script-source+ [:lua])] [(str/includes? result "(l/script- :lua") (str/includes? result "(!.lua (+ 1 2))")]))}])
+
+(Test/check [{:name "removes a derived target from a source file" :expected [true true] :test (fn [] (let [result (subject/render-top-level-remove +output+ +script-source+ [:lua])] [(not (str/includes? result "(l/script- :lua")) (str/includes? result "(l/script- :js")]))}])
+
+(Test/check [{:name "renders checks for a selected target" :expected ["  (!.lua (+ 1 2))\n  => 3"] :test (fn [] (subject/render-check-snippets-target +entry+ :js :lua))}])
+
+(Test/check [{:name "renders a selected runtime item" :expected "(!.lua (+ 1 2))" :test (fn [] (subject/render-target-runtime-item +entry+ +classification+ :js :lua))}])
+
+(Test/check [{:name "renders a fact for a selected target" :expected true :test (fn [] (str/includes? (subject/render-fact-string-target +entry+ :js :lua) "(!.lua (+ 1 2))"))}])
+
+(Test/check [{:name "omits an empty global fact configuration" :expected nil :test (fn [] (subject/render-global-fact-target +output+ :js :lua))}])
+
+(Test/check [{:name "returns global top-level line information" :expected {:all-lines #{} :keep-map {}} :test (fn [] (subject/render-global-top-target +output+ :lua))}])
+
+(Test/check [{:name "renders the existing derived script" :expected "(l/script- :lua {:runtime :basic})" :test (fn [] (subject/render-target-script-string +output+ :lua))}])
+
+(Test/check [{:name "renders a complete file for one target language" :expected [true true true true true] :test (fn [] (let [result (subject/render-top-level-target +output+ +script-source+ :lua (quote sample.lua.target-test))] [(str/includes? result "(ns sample.lua.target-test") (str/includes? result "(l/script- :lua") (str/includes? result "(defn.lua helper") (not (str/includes? result "(defn.js helper")) (str/includes? result "(!.lua (+ 1 2))")]))}])
+
+(Test/check [{:name "adds runtimes through the source transformation boundary" :expected [true true] :test (fn [] (let [path (fs/temp-file "/" {:prefix "seedgen-langadd-"}) content (str "(ns sample-add-test\n" "  (:require [tahto.core :as l]))\n\n" "^{:seedgen/root {:all true :langs [:js :lua]}}\n" "(l/script- :js {:runtime :basic})\n\n" "^{:refer demo/example}\n" "(fact \"demo\"\n  (!.js 1)\n  => 1)\n")] (fs/delete path {:missing-ok? true}) (try (fs/write-bytes path (str/encode-utf8 content)) (let [lookup (fn [value] (when (= value (quote sample-add-test)) path)) result (subject/seedgen-langadd (quote sample-add) {:lang :lua} lookup {:root "/"})] [(map? result) (:changed result)]) (finally (fs/delete path {:missing-ok? true})))))}])
+
+(Test/check [{:name "removes runtimes through the source transformation boundary" :expected [true true] :test (fn [] (let [path (fs/temp-file "/" {:prefix "seedgen-langremove-"}) content (str "(ns sample-remove-test\n" "  (:require [tahto.core :as l]))\n\n" "^{:seedgen/root {:all true :langs [:js :lua]}}\n" "(l/script- :js {:runtime :basic})\n\n" "(l/script- :lua {:runtime :basic})\n")] (fs/delete path {:missing-ok? true}) (try (fs/write-bytes path (str/encode-utf8 content)) (let [lookup (fn [value] (when (= value (quote sample-remove-test)) path)) result (subject/seedgen-langremove (quote sample-remove) {:lang :lua} lookup {:root "/"})] [(map? result) (:changed result)]) (finally (fs/delete path {:missing-ok? true})))))}])

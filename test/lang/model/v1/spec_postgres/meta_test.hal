@@ -1,0 +1,186 @@
+(ns lang.model.v1.spec-postgres.meta-test
+  (:require [lang.common.book-meta :as book-meta]
+            [lang.core.script :as script]
+            [lang.model.v1.spec-postgres.meta :as meta]))
+
+(def pointer-fixture
+  {:id 'Log
+   :op 'deftype
+   :form '(deftype Log [:id {:type :uuid}])
+   :static {:static/schema "scratch_v0" :static/dbtype :table}})
+
+^{:refer lang.model.v1.spec-postgres.meta/identifier-value}
+(Test/check [{:name "normalizes portable PostgreSQL identifier values"
+              :test (fn [] [(meta/identifier-value :log-entry)
+                            (meta/identifier-value 'Log)
+                            (meta/identifier-value "audit")])
+              :expected ["log-entry" "Log" "audit"]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/pointer-entry}
+(Test/check [{:name "accepts entry maps and pointer entry payloads"
+              :test (fn [] [(meta/pointer-entry pointer-fixture)
+                            (:id (meta/pointer-entry {:entry pointer-fixture}))])
+              :expected [pointer-fixture 'Log]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/entry-static}
+(Test/check [{:name "normalizes absent entry static metadata"
+              :test (fn [] [(meta/entry-static pointer-fixture) (meta/entry-static {})])
+              :expected [{:static/schema "scratch_v0" :static/dbtype :table} {}]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/pointer-name}
+(Test/check [{:name "uses the declared pointer entry name"
+              :test (fn [] (meta/pointer-name pointer-fixture))
+              :expected 'Log}])
+
+^{:refer lang.model.v1.spec-postgres.meta/pointer-schema}
+(Test/check [{:name "uses public when a pointer has no declared schema"
+              :test (fn [] [(meta/pointer-schema pointer-fixture) (meta/pointer-schema {:id 'Audit})])
+              :expected ["scratch_v0" "public"]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/pointer-dbtype}
+(Test/check [{:name "uses static PostgreSQL declaration categories"
+              :test (fn [] (meta/pointer-dbtype pointer-fixture))
+              :expected :table}])
+
+^{:refer lang.model.v1.spec-postgres.meta/pointer-existing?}
+(Test/check [{:name "recognizes archived existing declaration metadata"
+              :test (fn [] [(meta/pointer-existing? pointer-fixture)
+                            (meta/pointer-existing? (assoc pointer-fixture :existing true))])
+              :expected [false true]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/classify-ptr}
+(Test/check [{:name "classifies a pointer with Foundation lifecycle geometry"
+              :test (fn [] (meta/classify-ptr pointer-fixture))
+              :expected ["Log" "scratch_v0" :table false 'deftype]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/has-function}
+(Test/check [{:name "builds a function catalog existence query"
+              :test (fn [] (meta/has-function "ping" "scratch_v0"))
+              :expected '[:select (exists [:select * :from pg_catalog.pg_proc
+                                           :where {:proname "ping"
+                                                   :pronamespace [:eq [:select #{oid}
+                                                                       :from pg_catalog.pg_namespace
+                                                                       :where {:nspname "scratch_v0"}]]}])]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/has-table}
+(Test/check [{:name "builds a table catalog existence query"
+              :test (fn [] (meta/has-table "Log" "scratch_v0"))
+              :expected '[:select (exists [:select * :from information_schema.tables
+                                           :where {:table-schema "scratch_v0" :table-name "Log"}])]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/has-enum}
+(Test/check [{:name "builds an enum catalog existence query"
+              :test (fn [] (meta/has-enum "Role" "scratch_v0"))
+              :expected '[:select (exists [:select * :from pg_catalog.pg_type
+                                           :where {:typname "Role"
+                                                   :typnamespace [:eq [:select #{oid}
+                                                                      :from pg_catalog.pg_namespace
+                                                                      :where {:nspname "scratch_v0"}]]}])]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/has-index}
+(Test/check [{:name "builds an index catalog existence query"
+              :test (fn [] (meta/has-index "log_idx" "scratch_v0"))
+              :expected '[:select (exists [:select * :from pg_catalog.pg_class
+                                           :where {:relkind "i" :relname "log_idx"
+                                                   :relnamespace [:eq [:select #{oid}
+                                                                       :from pg_catalog.pg_namespace
+                                                                       :where {:nspname "scratch_v0"}]]}])]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/has-policy}
+(Test/check [{:name "builds a policy catalog check when its target is known"
+              :test (fn [] (meta/has-policy {:id 'read-log
+                                              :static {:static/dbtype :policy
+                                                       :static/schema "scratch_v0"
+                                                       :static/policy-table 'Log}}))
+              :expected '[:select (exists [:select 1 :from pg_policies
+                                           :where {:schemaname "scratch_v0"
+                                                   :tablename "Log"
+                                                   :policyname "read-log"}])]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/module-static}
+(Test/check [{:name "returns only module static metadata"
+              :test (fn [] (meta/module-static {:static {:seed ["audit"]}}))
+              :expected {:seed ["audit"]}}])
+
+^{:refer lang.model.v1.spec-postgres.meta/module-schemas}
+(Test/check [{:name "combines archived seed and all-schema declarations"
+              :test (fn [] (meta/module-schemas {:static {:seed ["audit"] :all {:schema ["audit" "public"]}}}))
+              :expected ["audit" "public"]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/get-schema-seed}
+(Test/check [{:name "retains the archived schema-seed entry point"
+              :test (fn [] (meta/get-schema-seed {:static {:seed ["audit"]}}))
+              :expected ["audit"]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/extension-name}
+(Test/check [{:name "extracts extension names from archive import descriptors"
+              :test (fn [] [(meta/extension-name ["uuid-ossp"])
+                            (meta/extension-name 'pgcrypto)])
+              :expected ["uuid-ossp" "pgcrypto"]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/module-extensions}
+(Test/check [{:name "keeps declared PostgreSQL extension names"
+              :test (fn [] (meta/module-extensions {:import [["uuid-ossp"]]
+                                                     :native {'pgcrypto {}}}))
+              :expected ["uuid-ossp" "pgcrypto"]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/get-extensions}
+(Test/check [{:name "retains the archived extension entry point"
+              :test (fn [] (meta/get-extensions {:import [["uuid-ossp"]]
+                                                  :native {'pgcrypto {}}}))
+              :expected ["uuid-ossp" "pgcrypto"]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/has-schema}
+(Test/check [{:name "builds a schema catalog existence check"
+              :test (fn [] (meta/has-schema "audit"))
+              :expected '[:select (exists [:select * :from pg_catalog.pg_namespace
+                                           :where {:nspname "audit"}])]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/create-schema}
+(Test/check [{:name "builds idempotent schema setup SQL"
+              :test (fn [] (meta/create-schema "audit"))
+              :expected [:create-schema :if-not-exists #{"audit"}]}])
+
+^{:refer lang.core.script/compile-form}
+(Test/check [{:name "compiles lifecycle grammar forms through the PostgreSQL pipeline"
+              :test (fn [] (script/compile-form :postgres 'audit.module
+                                                 (meta/create-schema "audit")))
+              :expected "CREATE SCHEMA IF NOT EXISTS \"audit\""}])
+
+^{:refer lang.model.v1.spec-postgres.meta/drop-schema}
+(Test/check [{:name "builds idempotent schema teardown SQL"
+              :test (fn [] (meta/drop-schema "audit"))
+              :expected [:drop-schema :if-exists #{"audit"} :cascade]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/create-extension}
+(Test/check [{:name "builds idempotent extension setup SQL"
+              :test (fn [] (meta/create-extension "uuid-ossp"))
+              :expected [:create-extension :if-not-exists #{"uuid-ossp"}]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/drop-extension}
+(Test/check [{:name "builds idempotent extension teardown SQL"
+              :test (fn [] (meta/drop-extension "uuid-ossp"))
+              :expected [:drop-extension :if-exists #{"uuid-ossp"} :cascade]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/drop-policy}
+(Test/check [{:name "builds policy teardown SQL when its table is known"
+              :test (fn [] (meta/drop-policy {:id 'read-log
+                                               :static {:static/schema "audit"
+                                                        :static/policy-table 'Log}}))
+              :expected '[:drop-policy :if-exists #{read-log} :on (. #{"audit"} #{Log})]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/pointer-drop-form}
+(Test/check [{:name "does not drop existing declarations and tears down new tables"
+              :test (fn [] [(meta/pointer-drop-form pointer-fixture)
+                            (meta/pointer-drop-form (assoc pointer-fixture :existing true))])
+              :expected ['(do [:drop :table :if-exists (. #{"scratch_v0"} #{"Log"}) :cascade]) nil]}])
+
+^{:refer lang.model.v1.spec-postgres.meta/+fn+}
+(Test/check [{:name "retains the complete archived BookMeta lifecycle surface"
+              :test (fn [] (set (keys meta/+fn+)) )
+              :expected #{:has-module :setup-module :teardown-module :has-ptr :setup-ptr :teardown-ptr}}])
+
+^{:refer lang.model.v1.spec-postgres.meta/+meta+}
+(Test/check [{:name "materializes the PostgreSQL lifecycle functions as BookMeta"
+              :test (fn [] [(book-meta/book-meta? meta/+meta+) (fn? (:has-ptr meta/+meta+))])
+              :expected [true true]}])

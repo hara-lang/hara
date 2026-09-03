@@ -1,0 +1,158 @@
+(ns postgres.core.addon
+  (:require [lang.core :as l]
+            [lang.model.v1.spec-postgres :as spec]
+            [lang.model.v1.spec-postgres.postgres-native :as native]))
+
+(l/script :postgres postgres.core
+  {:macro-only true})
+
+(defn resolved-entry
+  "Resolves a PostgreSQL pointer or symbol to its portable entry metadata."
+  [value]
+  (let [resolved (if (symbol? value) (Base/resolve value) value)]
+    (if resolved
+      (if (pointer? resolved)
+        (IPointer/ptr-context resolved)
+        (if (map? resolved) resolved (deref resolved)))
+      (if (map? value) value nil))))
+
+(defmacro.pg exec
+  [args]
+  args)
+
+(defmacro.pg ARRAY
+  [& args]
+  (apply list 'pg:array args))
+
+(defmacro.pg id
+  [sym & [type]]
+  (list (or type :uuid) (list :->> sym "id")))
+
+(defmacro.pg name
+  [table]
+  (let [entry (resolved-entry table)]
+    (or (:id entry) table)))
+
+(defmacro.pg full
+  [table]
+  (let [entry (resolved-entry table)]
+    (list 'jsonb-build-array (:static/schema entry) (str (:id entry)))))
+
+(defn full-str
+  [table]
+  (str (full table)))
+
+(defmacro.pg coord
+  [table row-id]
+  (let [entry (resolved-entry table)]
+    (list 'jsonb-build-array (:static/schema entry) (str (:id entry)) row-id)))
+
+(defmacro.pg rand-hex
+  [n]
+  (list 'encode (list 'gen-random-bytes (list '/ n 2)) "hex"))
+
+(defmacro.pg sha1
+  [value]
+  (list 'encode (list 'digest (list :bytea value) "sha1") "hex"))
+
+(defmacro.pg client-list
+  []
+  [:select '* :from 'pg_stat_activity])
+
+(defmacro.pg time-ms
+  []
+  [:bigint ['* 1000 ['extract ['epoch :from ['now]]]]])
+
+(defmacro.pg time-us
+  []
+  [:bigint ['* 1000000 ['extract ['epoch :from ['now]]]]])
+
+(defmacro.pg throw
+  [m]
+  (list 'pg:throw m :error))
+
+(defmacro.pg error
+  [m]
+  (list 'pg:throw m :error))
+
+(defmacro.pg assert
+  [check [tag data]]
+  (list 'pg:assert check tag data))
+
+(defmacro.pg case
+  [& args]
+  (let [pairs (partition 2 args)]
+    (vec
+     (concat [:case]
+             (mapcat (fn [pair]
+                       (if (= :else (first pair))
+                         [:else (second pair)]
+                         [:when (first pair) :then (second pair)]))
+                     pairs)
+             [:end]))))
+
+(defmacro.pg get-stack-diagnostics
+  []
+  [:pg-stack-diagnostics])
+
+(defmacro.pg field-id
+  [m field]
+  (list 'coalesce
+        (list :->> m (str field "_id"))
+        (list :->> (list :-> m field) "id")))
+
+(defmacro.pg map:rel
+  [f rel & args]
+  (list '% [[:jsonb-agg (apply list f 'o-ret args)]
+            :from rel :as 'o-ret]))
+
+(defmacro.pg map:js-text
+  [f arr & args]
+  (list '% [[:coalesce
+             [:jsonb-agg (apply list f 'o-ret args)]
+             ['js []]]
+            :from [:jsonb-array-elements-text arr] :as 'o-ret]))
+
+(defmacro.pg map:js
+  [f arr & args]
+  (list '% [[:coalesce
+             [:jsonb-agg (apply list f 'o-ret args)]
+             ['js []]]
+            :from [:jsonb-array-elements arr] :as 'o-ret]))
+
+(defmacro.pg do:reduce
+  [out f type arr]
+  (list 'pg:reduce out f type arr))
+
+(defmacro.pg b:select
+  [& args]
+  (vec (concat [:select] args)))
+
+(defmacro.pg ret
+  [& args]
+  (vec (concat [:select] args)))
+
+(defmacro.pg b:update
+  [& args]
+  (vec (concat [:update] args)))
+
+(defmacro.pg b:insert
+  [& args]
+  (vec (concat [:insert] args)))
+
+(defmacro.pg b:delete
+  [& args]
+  (vec (concat [:delete] args)))
+
+(defmacro.pg perform
+  [& args]
+  (vec (concat [:perform] args)))
+
+(defmacro.pg random-enum
+  [enum]
+  [:select 'p :from ['unnest ['enum-range ['++ nil enum]]] :as 'p
+   :order-by ['random] :limit 1])
+
+(defmacro.pg do:plpgsql
+  [& forms]
+  (vec (concat [:pg-do-plpgsql] forms)))

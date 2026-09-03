@@ -6,9 +6,15 @@
             [lang.common.grammar-api :as grammar]
             [lang.common.grammar-spec :as grammar-spec]
             [lang.common.registry :as registry]
+            [lang.model.v1.spec-postgres.postgres-common :as common]
             [lang.model.v1.spec-postgres.postgres-const :as const]
             [lang.model.v1.spec-postgres.postgres-deftype :as deftype]
             [lang.model.v1.spec-postgres.postgres-enum :as enum]
+            [lang.model.v1.spec-postgres.postgres-form-defrole :as role]
+            [lang.model.v1.spec-postgres.postgres-form-let :as form-let]
+            [lang.model.v1.spec-postgres.postgres-form-vec :as form-vec]
+            [lang.model.v1.spec-postgres.postgres-partition :as partition]
+            [lang.model.v1.spec-postgres.postgres-tf :as tf]
             [lang.model.v1.spec-postgres.postgres-trigger :as trigger]))
 
 (def +language+ :postgres)
@@ -23,6 +29,14 @@
    :js "plv8"
    :python "plpython3u"
    :lua "pllua"})
+
+(def +pg-defnlang-types+
+  {:default {:tag "plpgsql" :lang :postgres}
+   :postgres {:tag "plpgsql" :lang :postgres}
+   :sql {:tag "sql" :lang :postgres}
+   :js {:tag "plv8" :lang :js}
+   :python {:tag "plpython3u"}
+   :lua {:tag "pllua"}})
 
 (defn pg-string
   "Emits a PostgreSQL string literal."
@@ -332,11 +346,15 @@
 (defn pg-section
   "Emits SQL clause vectors while retaining JSON array values for data vectors."
   [value grammar context]
-  (if (and (> (count value) 0)
-           (reduce (fn [found item]
-                     (or found (keyword? item)))
-                   false
-                   value))
+  (let [entry (get-in grammar [:reserved (first value)])
+        emitter (:emit entry)]
+    (if (fn? emitter)
+      (emitter value grammar context)
+      (if (and (> (count value) 0)
+               (reduce (fn [found item]
+                         (or found (keyword? item)))
+                       false
+                       value))
     (let [parts
           (loop [remaining value
                  clause nil
@@ -357,11 +375,11 @@
          " \n " "\n")
         "\n " "\n")
        " \n" "\n"))
-    (str "jsonb_build_array("
-         (str/join "," (map (fn [item]
-                                  (emit/*emit-fn* item grammar context))
-                                value))
-         ")")))
+        (str "jsonb_build_array("
+             (str/join "," (map (fn [item]
+                                      (emit/*emit-fn* item grammar context))
+                                    value))
+             ")")))))
 
 (defn pg-sym-meta
   "Normalizes historical PostgreSQL function metadata."
@@ -400,6 +418,8 @@
     [(merge entry-metadata symbol-metadata)
      (apply list op next-symbol args body)]))
 
+(def pg-defnformat pg-defn-format)
+
 (defn pg-module-static
   "Hydrates declaration metadata from a portable Tahto module record."
   [module]
@@ -437,6 +457,302 @@
   (cond (keyword? value) (name value)
         (symbol? value) (name value)
         :else (str value)))
+
+(defn pg-ddl-value
+  "Emits one portable DDL identifier, including the archived singleton-set form."
+  [value]
+  (let [value (if (set? value) (first value) value)]
+    (str "\""
+         (str/replace (pg-identifier-value value) "\"" "\"\"")
+         "\"")))
+
+(defn pg-ddl-target
+  "Emits a portable DDL target, preserving dotted schema/object composition."
+  [value]
+  (if (and (list? value) (= '. (first value)))
+    (str/join "." (map pg-ddl-value (rest value)))
+    (pg-ddl-value value)))
+
+(defn pg-create-schema
+  "Emits [:create-schema :if-not-exists #{schema}] lifecycle forms."
+  [form grammar context]
+  (let [guarded (= :if-not-exists (nth form 1))
+        schema (if guarded (nth form 2) (nth form 1))]
+    (str "CREATE SCHEMA "
+         (if guarded "IF NOT EXISTS " "")
+         (pg-ddl-value schema))))
+
+(defn pg-drop-schema
+  "Emits [:drop-schema :if-exists #{schema} :cascade] lifecycle forms."
+  [form grammar context]
+  (let [guarded (= :if-exists (nth form 1))
+        schema (if guarded (nth form 2) (nth form 1))
+        cascade (= :cascade (last form))]
+    (str "DROP SCHEMA "
+         (if guarded "IF EXISTS " "")
+         (pg-ddl-value schema)
+         (if cascade " CASCADE" ""))))
+
+(defn pg-create-extension
+  "Emits [:create-extension :if-not-exists #{extension}] lifecycle forms."
+  [form grammar context]
+  (let [guarded (= :if-not-exists (nth form 1))
+        extension (if guarded (nth form 2) (nth form 1))]
+    (str "CREATE EXTENSION "
+         (if guarded "IF NOT EXISTS " "")
+         (pg-ddl-value extension))))
+
+(defn pg-drop-extension
+  "Emits [:drop-extension :if-exists #{extension} :cascade] lifecycle forms."
+  [form grammar context]
+  (let [guarded (= :if-exists (nth form 1))
+        extension (if guarded (nth form 2) (nth form 1))
+        cascade (= :cascade (last form))]
+    (str "DROP EXTENSION "
+         (if guarded "IF EXISTS " "")
+         (pg-ddl-value extension)
+         (if cascade " CASCADE" ""))))
+
+(defn pg-drop-policy
+  "Emits [:drop-policy :if-exists #{policy} :on target] lifecycle forms."
+  [form grammar context]
+  (let [guarded (= :if-exists (nth form 1))
+        policy (if guarded (nth form 2) (nth form 1))
+        index (if guarded 3 2)
+        target (if (= :on (nth form index))
+                 (nth form (+ index 1))
+                 nil)]
+    (if (nil? target)
+      (throw (ex :syntax {:form form}
+                 :ex/message "PostgreSQL DROP POLICY requires an :on target"))
+      (str "DROP POLICY "
+           (if guarded "IF EXISTS " "")
+           (pg-ddl-value policy)
+           " ON " (pg-ddl-target target)))))
+
+(defn pg-drop
+  "Emits [:drop type :if-exists target :cascade] pointer teardown forms."
+  [form grammar context]
+  (let [object-type (nth form 1)
+        guarded (= :if-exists (nth form 2))
+        target (if guarded (nth form 3) (nth form 2))
+        cascade (= :cascade (last form))]
+    (str "DROP " (pg-type-name object-type) " "
+         (if guarded "IF EXISTS " "")
+         (pg-ddl-target target)
+         (if cascade " CASCADE" ""))))
+
+(defn pg-ddl-roles
+  "Emits one or more PostgreSQL role identifiers without quoted SQL literals."
+  [value grammar context]
+  (let [roles (if (and (list? value) (= 'quote (first value)))
+                (second value)
+                value)
+        roles (if (or (vector? roles) (list? roles) (set? roles)) roles [roles])]
+    (str/join "," (map (fn [role] (pg-symbol role grammar context)) roles))))
+
+(defn pg-ddl-function-target
+  "Emits the archived dotted function target used by GRANT and REVOKE forms."
+  [value grammar context]
+  (if (and (list? value) (= '. (first value)))
+    (let [schema (second value)
+          signature (nth value 2)
+          function-name (first signature)
+          argument-types (rest signature)]
+      (str (pg-ddl-value schema)
+           "."
+           (pg-symbol function-name grammar context)
+           "("
+           (str/join "," (map pg-type-output argument-types))
+           ")"))
+    (pg-ddl-target value)))
+
+(defn pg-section-position
+  "Returns the position of a clause keyword in a portable section vector."
+  [form clause]
+  (loop [index 0]
+    (if (= index (count form))
+      nil
+      (if (= clause (nth form index))
+        index
+        (recur (+ index 1))))))
+
+(defn pg-quoted-values
+  [value]
+  (let [value (if (and (list? value) (= 'quote (first value))) (second value) value)
+        value (if (or (vector? value) (list? value) (set? value)) value [value])]
+    (str/join "," (map pg-string value))))
+
+(defn pg-create-table
+  "Emits portable CREATE TABLE sections, including partition clauses."
+  [form grammar context]
+  (let [guarded (= :if-not-exists (nth form 1))
+        target (if guarded (nth form 2) (nth form 1))
+        partition-index (pg-section-position form :partition-of)
+        parent (if partition-index (nth form (+ partition-index 1)) nil)
+        for-index (pg-section-position form :for)
+        values (if for-index (nth form (+ for-index 3)) nil)
+        partition-index-2 (pg-section-position form :partition-by)
+        method (if partition-index-2 (nth form (+ partition-index-2 1)) nil)
+        columns (if partition-index-2 (nth form (+ partition-index-2 2)) nil)
+        default? (not (nil? (pg-section-position form :default)))]
+    (str "CREATE TABLE "
+         (if guarded "IF NOT EXISTS " "")
+         (pg-ddl-target target)
+         (if partition-index
+           (if default?
+             (str " PARTITION OF " (pg-ddl-target parent) " DEFAULT")
+             (str " PARTITION OF " (pg-ddl-target parent)
+                  (if for-index
+                    (str " FOR VALUES IN (" (pg-quoted-values values) ")")
+                    "")))
+           "")
+         (if partition-index-2
+           (str " PARTITION BY " (pg-section-keyword method)
+                " (" (str/join "," (map pg-ddl-target
+                                           (if (and (list? columns)
+                                                    (= 'quote (first columns)))
+                                             (second columns)
+                                             columns))) ")")
+           "")
+         "")))
+
+(defn pg-clause-token
+  [value]
+  (cond (= value \\) ""
+        (keyword? value) (pg-section-keyword value)
+        (set? value) (pg-ddl-target value)
+        (and (list? value) (= 'quote (first value)))
+        (pg-clause-token (second value))
+        (symbol? value) (pg-ddl-target value)
+        :else (str value)))
+
+(defn pg-create-index
+  "Emits a portable CREATE INDEX section."
+  [form grammar context]
+  (let [guarded (= :if-not-exists (nth form 1))
+        symbol (if guarded (nth form 2) (nth form 1))
+        on-index (pg-section-position form :on)
+        table (nth form (+ on-index 1))
+        columns (nth form (+ on-index 2))
+        columns (if (and (list? columns) (= 'quote (first columns))) (second columns) columns)
+        columns (if (and (list? columns) (= 1 (count columns))
+                         (vector? (first columns)))
+                  (first columns)
+                  columns)]
+    (str "CREATE INDEX "
+         (if guarded "IF NOT EXISTS " "")
+         (pg-ddl-target symbol)
+         " ON " (pg-ddl-target table)
+         " (" (str/join "," (map pg-ddl-target columns)) ")")))
+
+(defn pg-drop-policy-if-exists
+  [form grammar context]
+  (str "DROP POLICY IF EXISTS " (pg-ddl-target (nth form 1))
+       " ON " (pg-ddl-target (nth form 3))))
+
+(defn pg-create-policy
+  [form grammar context]
+  (let [on-index (pg-section-position form :on)
+        policy (nth form 1)
+        table (nth form (+ on-index 1))
+        body (drop (+ on-index 2) form)]
+    (str "CREATE POLICY " (pg-ddl-target policy)
+         " ON " (pg-ddl-target table)
+         (if (seq body)
+           (str " " (str/join " " (map pg-clause-token body)))
+           ""))))
+
+(defn pg-drop-publication-if-exists
+  [form grammar context]
+  (str "DROP PUBLICATION IF EXISTS " (pg-ddl-target (nth form 1))))
+
+(defn pg-create-publication
+  [form grammar context]
+  (str "CREATE PUBLICATION " (pg-ddl-target (nth form 1))
+       (if (> (count form) 2)
+         (str " " (str/join " " (map pg-clause-token (drop 2 form))))
+         "")))
+
+(defn pg-drop-subscription-if-exists
+  [form grammar context]
+  (str "DROP SUBSCRIPTION IF EXISTS " (pg-ddl-target (nth form 1))))
+
+(defn pg-create-subscription
+  [form grammar context]
+  (str "CREATE SUBSCRIPTION " (pg-ddl-target (nth form 1))
+       " CONNECTION " (pg-string (nth form 3))
+       " PUBLICATION " (pg-ddl-target (nth form 5))))
+
+(defn pg-drop-trigger-if-exists
+  [form grammar context]
+  (str "DROP TRIGGER IF EXISTS " (pg-ddl-target (nth form 1))
+       " ON " (pg-ddl-target (nth form 3))))
+
+(defn pg-create-trigger
+  [form grammar context]
+  (let [on-index (pg-section-position form :on)
+        name (nth form 1)
+        table (nth form (+ on-index 1))
+        body (drop (+ on-index 2) form)]
+    (str "CREATE TRIGGER " (pg-ddl-target name)
+         " ON " (pg-ddl-target table)
+         (if (seq body)
+           (str " " (str/join " " (map pg-clause-token body)))
+           ""))))
+
+(defn pg-create-role
+  [form grammar context]
+  (str "CREATE ROLE " (pg-ddl-target (nth form 1)) " "
+       (pg-section-keyword (nth form 2))))
+
+(defn pg-drop-role
+  [form grammar context]
+  (str "DROP ROLE IF EXISTS " (pg-ddl-target (nth form 2))))
+
+(defn pg-grant-usage
+  [form grammar context]
+  (str "GRANT USAGE ON SCHEMA " (pg-ddl-target (nth form 2))
+       " TO " (pg-ddl-target (nth form 4))))
+
+(defn pg-revoke-all-on-function
+  "Emits [:revoke-all-on-function target :from-public]."
+  [form grammar context]
+  (str "REVOKE ALL ON FUNCTION "
+       (pg-ddl-function-target (nth form 1) grammar context)
+       " FROM PUBLIC"))
+
+(defn pg-grant-execute-on-function
+  "Emits [:grant-execute-on-function target :to roles]."
+  [form grammar context]
+  (str "GRANT EXECUTE ON FUNCTION "
+       (pg-ddl-function-target (nth form 1) grammar context)
+       " TO "
+       (pg-ddl-roles (nth form 3) grammar context)))
+
+(defn pg-alter-table
+  "Emits the Supabase row-level-security ALTER TABLE form."
+  [form grammar context]
+  (str "ALTER TABLE "
+       (pg-ddl-target (nth form 1))
+       " ENABLE ROW LEVEL SECURITY"))
+
+(defn pg-grant
+  "Emits [:grant operations :on-table target :to roles] permission forms."
+  [form grammar context]
+  (let [operations (nth form 1)
+        operations (if (and (list? operations) (= 'quote (first operations)))
+                     (second operations)
+                     operations)
+        operations (if (or (vector? operations) (list? operations) (set? operations))
+                     operations
+                     [operations])]
+    (str "GRANT "
+         (str/join "," (map pg-type-name operations))
+         " ON TABLE "
+         (pg-ddl-target (nth form 3))
+         " TO "
+         (pg-ddl-roles (nth form 5) grammar context))))
 
 (defn pg-qualified-function
   [symbol schema grammar context]
@@ -638,15 +954,48 @@
     :not {:raw "NOT " :wrap true}
     :or {:raw "OR" :wrap true}
     :and {:raw "AND" :wrap true}
+    :try {:op :try :symbol #{'try} :type :block
+          :block {:main #{:body}
+                  :control [[:catch {:required true :main #{:parameter :body}}]
+                            [:finally {:main #{:body}}]]}}
+    :while {:op :while :symbol #{'while} :type :block
+            :emit form-let/pg-while-block}
+    :case {:op :case :symbol #{'case} :type :block
+           :emit form-let/pg-case-block}
     :seteq {:raw ":=" :value true :emit pg-assignment}
     :ret {:emit pg-return}
     :let-bind {:lower pg-let-transform
                :macro #'pg-let-transform :emit :macro}
-    :defn {:format pg-defn-format
+   :defn {:format pg-defn-format
              :hydrate pg-hydrate
              :emit pg-defn
-             :static/dbtype :function}}
+             :static/dbtype :function}
+    :defrun {:hydrate pg-hydrate
+             :static/return [:block]}
+    :def {:emit :macro
+          :format common/pg-format
+          :hydrate common/pg-hydrate
+          :macro common/pg-defblock}
+    :for {:macro tf/pg-tf-for :emit :macro}}
    :define {
+    :doblk {:op :doblk :symbol #{'do:block} :type :block
+               :emit form-let/pg-do-block}
+    :dosup {:op :dosup :symbol #{'do:suppress} :type :block
+                  :emit form-let/pg-do-suppress}
+    :doast {:op :doast :symbol #{'do:assert} :type :block
+                :emit common/pg-do-assert :style/indent 1}
+    :letblk {:op :letblk :symbol #{'let:block} :type :block
+                :macro form-let/pg-tf-let-block :emit :macro}
+    :let {:op :let :symbol #{'let} :type :block
+          :macro pg-let-transform :emit :macro}
+    :loop {:op :loop :symbol #{'loop} :type :block
+           :emit form-let/pg-loop-block}
+    :forech {:op :forech :symbol #{'for:each} :type :block
+               :macro tf/pg-tf-foreach :emit :macro}
+    :fdata {:op :fdata :symbol #{'>-<} :type :block
+                :macro tf/pg-tf-free-data :emit :macro}
+    :fvec {:op :fvec :symbol #{'---} :type :block
+                  :macro tf/pg-tf-free-vec :emit :macro}
     :deftype {:op :deftype
        :symbol #{'deftype}
        :type :def
@@ -679,7 +1028,77 @@
        :hydrate const/pg-const-hydrate
        :emit const/pg-const
        :static/dbtype :const}
+    :defindex {:op :defindex
+       :symbol #{'defindex 'defindex.pg}
+       :type :def :section :code :emit :macro
+       :format common/pg-format
+       :hydrate common/pg-hydrate
+       :macro common/pg-defindex
+       :static/dbtype :index}
+    :defpolicy {:op :defpolicy
+       :symbol #{'defpolicy 'defpolicy.pg}
+       :type :def :section :code :emit :macro
+       :format common/pg-policy-format
+       :hydrate common/pg-hydrate
+       :macro common/pg-defpolicy
+       :static/dbtype :policy}
+    :defpublication {:op :defpublication
+       :symbol #{'defpublication 'defpublication.pg}
+       :type :def :section :code :emit :macro
+       :format common/pg-publication-format
+       :hydrate common/pg-hydrate
+       :macro common/pg-defpublication
+       :static/dbtype :publication}
+    :defsubscription {:op :defsubscription
+       :symbol #{'defsubscription 'defsubscription.pg}
+       :type :def :section :code :emit :macro
+       :format common/pg-subscription-format
+       :hydrate common/pg-hydrate
+       :macro common/pg-defsubscription
+       :static/dbtype :subscription}
+    :defpartition {:op :defpartition
+       :symbol #{'defpartition 'defpartition.pg}
+       :type :def :section :code :emit :macro
+       :hydrate common/pg-hydrate
+       :macro partition/pg-defpartition
+       :static/dbtype :partition}
+    :defrole {:op :defrole
+       :symbol #{'defrole 'defrole.pg}
+       :type :def :section :code :emit :macro
+       :macro role/pg-defrole
+       :static/dbtype :role}
     :concat {:op :concat :symbol #{'||} :raw "||" :emit :infix :value true}
+    :find {:op :find :symbol #{'find} :raw "?" :emit :infix}
+    :findm {:op :findm :symbol #{'findm} :raw "@>" :emit :infix}
+    :remc {:op :remc :symbol #{'re} :raw "~" :emit :bi}
+    :remi {:op :remi :symbol #{'re:*} :raw "~*" :emit :bi}
+    :array {:op :array :symbol #{'array} :emit pg-array}
+    :js {:op :js :symbol #{'js} :type :block
+         :macro tf/pg-tf-js :emit :macro}
+    :create-table {:op :create-table :symbol #{:create-table} :emit pg-create-table}
+    :create-index {:op :create-index :symbol #{:create-index} :emit pg-create-index}
+    :drop-policy-if-exists {:op :drop-policy-if-exists
+                            :symbol #{:drop-policy-if-exists}
+                            :emit pg-drop-policy-if-exists}
+    :create-policy {:op :create-policy :symbol #{:create-policy} :emit pg-create-policy}
+    :drop-publication-if-exists {:op :drop-publication-if-exists
+                                 :symbol #{:drop-publication-if-exists}
+                                 :emit pg-drop-publication-if-exists}
+    :create-publication {:op :create-publication :symbol #{:create-publication}
+                         :emit pg-create-publication}
+    :drop-subscription-if-exists {:op :drop-subscription-if-exists
+                                  :symbol #{:drop-subscription-if-exists}
+                                  :emit pg-drop-subscription-if-exists}
+    :create-subscription {:op :create-subscription :symbol #{:create-subscription}
+                          :emit pg-create-subscription}
+    :drop-trigger-if-exists {:op :drop-trigger-if-exists
+                             :symbol #{:drop-trigger-if-exists}
+                             :emit pg-drop-trigger-if-exists}
+    :create-trigger {:op :create-trigger :symbol #{:create-trigger}
+                     :emit pg-create-trigger}
+    :create-role {:op :create-role :symbol #{:create-role} :emit pg-create-role}
+    :drop-role {:op :drop-role :symbol #{:drop-role} :emit pg-drop-role}
+    :grant-usage {:op :grant-usage :symbol #{:grant-usage} :emit pg-grant-usage}
     :pg-columns {:op :pg-columns :symbol #{'---} :emit pg-columns}
     :pg-tuple {:op :pg-tuple :symbol #{'>-<} :emit pg-tuple}
     :cast {:op :cast :symbol #{'++} :emit pg-typecast}
@@ -693,6 +1112,20 @@
                              :emit pg-stack-diagnostics}
     :pg-reduce {:op :pg-reduce :symbol #{'pg:reduce} :emit pg-reduce}
     :pg-do-plpgsql {:op :pg-do-plpgsql :symbol #{'pg:do-plpgsql} :emit pg-do-plpgsql}
+    :create-schema {:op :create-schema :symbol #{:create-schema} :emit pg-create-schema}
+    :drop-schema {:op :drop-schema :symbol #{:drop-schema} :emit pg-drop-schema}
+    :create-extension {:op :create-extension :symbol #{:create-extension} :emit pg-create-extension}
+    :drop-extension {:op :drop-extension :symbol #{:drop-extension} :emit pg-drop-extension}
+    :drop-policy {:op :drop-policy :symbol #{:drop-policy} :emit pg-drop-policy}
+    :drop {:op :drop :symbol #{:drop} :emit pg-drop}
+    :revoke-all-on-function {:op :revoke-all-on-function
+                              :symbol #{:revoke-all-on-function}
+                              :emit pg-revoke-all-on-function}
+    :grant-execute-on-function {:op :grant-execute-on-function
+                                :symbol #{:grant-execute-on-function}
+                                :emit pg-grant-execute-on-function}
+    :alter-table {:op :alter-table :symbol #{:alter-table} :emit pg-alter-table}
+    :grant {:op :grant :symbol #{:grant} :emit pg-grant}
     :json-index {:op :json-index :symbol #{:->} :raw "->" :emit :infix :value true}
     :json-index-text {:op :json-index-text :symbol #{:->>} :raw "->>" :emit :infix :value true}
     :json-path-text {:op :json-path-text :symbol #{:#>>} :raw "#>>" :emit :infix :value true}}})
@@ -716,7 +1149,8 @@
                 :replace {"-" "_" "?" "p_"}}}
       :data
       {:vector {:custom pg-section}
-       :map {:custom pg-map}}
+       :map {:custom pg-map}
+       :set {:custom common/pg-set}}
       :block
       {:while {:parameter {:start " " :end " "}
                :body {:start "LOOP" :end "END LOOP;"}}

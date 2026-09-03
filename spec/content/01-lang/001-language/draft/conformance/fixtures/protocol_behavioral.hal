@@ -102,6 +102,19 @@
 (extend-type ProtocolUseCase IContext
   (call [fixture arg] [arg]))
 
+(extend-type ProtocolUseCase IContextEval
+  (evaluate [fixture request options] [:evaluate request options])
+  (evaluate-raw [fixture request options] [:evaluate-raw request options])
+  (eval-ptr [fixture pointer arguments options] [:eval-ptr pointer arguments options])
+  (eval-await-ptr [fixture pointer arguments options] [:eval-await-ptr pointer arguments options])
+  (tags-ptr [fixture pointer] [:fixture])
+  (deref-ptr [fixture pointer] [:deref-ptr pointer])
+  (display-ptr [fixture pointer] "fixture-pointer")
+  (invoke-ptr [fixture pointer arguments]
+    (std.protocol.icontexteval.IContextEval/eval-await-ptr fixture pointer arguments {}))
+  (transform-in-ptr [fixture pointer arguments] arguments)
+  (transform-out-ptr [fixture pointer value] value))
+
 (extend-type ProtocolUseCase ICoroutine
   (status [fixture] (state-get fixture :component-status))
   (resume [fixture arg] [arg]))
@@ -117,11 +130,12 @@
   (teardown-module [fixture module]
     (do (state-put fixture :contexts (dissoc (state-get fixture :contexts) module))
         fixture))
-  (has-pointer? [fixture pointer] (not (nil? (get (state-get fixture :contexts) pointer))))
-  (setup-pointer [fixture pointer]
+  (has-setup-ptr? [fixture pointer]
+    (= :pointer (get (state-get fixture :contexts) pointer)))
+  (setup-ptr [fixture pointer]
     (do (state-put fixture :contexts (assoc (state-get fixture :contexts) pointer :pointer))
         fixture))
-  (teardown-pointer [fixture pointer]
+  (teardown-ptr [fixture pointer]
     (do (state-put fixture :contexts (dissoc (state-get fixture :contexts) pointer))
         fixture)))
 
@@ -197,10 +211,6 @@
 (extend-type ProtocolUseCase IIndexedKV
   (index-of-key [fixture key] (if (= key :a) 0 (if (= key :b) 1 -1)))
   (index-of-val [fixture value] (if (= value 1) 0 (if (= value 2) 1 -1))))
-
-(extend-type ProtocolUseCase IInvokeIn
-  (invoke-in [fixture context arg]
-    (std.protocol.icontext.IContext/call context arg)))
 
 (extend-type ProtocolUseCase IIter
   (iter [fixture] (std.protocol.iiter.IIter/iter (state-get fixture :sequence))))
@@ -925,6 +935,41 @@
    (protocol-case :IContext :call std.protocol.icontext.IContext/call
      (= [1] (std.protocol.icontext.IContext/call (use-case) 1))
      '(std.protocol.icontext.IContext/call unsupported 1))
+   (protocol-case :IContextEval :evaluate std.protocol.icontexteval.IContextEval/evaluate
+     (= [:evaluate :request {:profile :default}]
+        (std.protocol.icontexteval.IContextEval/evaluate (use-case) :request {:profile :default}))
+     '(std.protocol.icontexteval.IContextEval/evaluate unsupported :request {}))
+   (protocol-case :IContextEval :evaluate-raw std.protocol.icontexteval.IContextEval/evaluate-raw
+     (= [:evaluate-raw :request {:profile :raw}]
+        (std.protocol.icontexteval.IContextEval/evaluate-raw (use-case) :request {:profile :raw}))
+     '(std.protocol.icontexteval.IContextEval/evaluate-raw unsupported :request {}))
+   (protocol-case :IContextEval :eval-ptr std.protocol.icontexteval.IContextEval/eval-ptr
+     (= [:eval-ptr :pointer [1] {:async true}]
+        (std.protocol.icontexteval.IContextEval/eval-ptr (use-case) :pointer [1] {:async true}))
+     '(std.protocol.icontexteval.IContextEval/eval-ptr unsupported :pointer [] {}))
+   (protocol-case :IContextEval :eval-await-ptr std.protocol.icontexteval.IContextEval/eval-await-ptr
+     (= [:eval-await-ptr :pointer [1] {:await true}]
+        (std.protocol.icontexteval.IContextEval/eval-await-ptr (use-case) :pointer [1] {:await true}))
+     '(std.protocol.icontexteval.IContextEval/eval-await-ptr unsupported :pointer [] {}))
+   (protocol-case :IContextEval :tags-ptr std.protocol.icontexteval.IContextEval/tags-ptr
+     (= [:fixture] (std.protocol.icontexteval.IContextEval/tags-ptr (use-case) :pointer))
+     '(std.protocol.icontexteval.IContextEval/tags-ptr unsupported :pointer))
+   (protocol-case :IContextEval :deref-ptr std.protocol.icontexteval.IContextEval/deref-ptr
+     (= [:deref-ptr :pointer] (std.protocol.icontexteval.IContextEval/deref-ptr (use-case) :pointer))
+     '(std.protocol.icontexteval.IContextEval/deref-ptr unsupported :pointer))
+   (protocol-case :IContextEval :display-ptr std.protocol.icontexteval.IContextEval/display-ptr
+     (= "fixture-pointer" (std.protocol.icontexteval.IContextEval/display-ptr (use-case) :pointer))
+     '(std.protocol.icontexteval.IContextEval/display-ptr unsupported :pointer))
+   (protocol-case :IContextEval :invoke-ptr std.protocol.icontexteval.IContextEval/invoke-ptr
+     (= [:eval-await-ptr :pointer [1] {}]
+        (std.protocol.icontexteval.IContextEval/invoke-ptr (use-case) :pointer [1]))
+     '(std.protocol.icontexteval.IContextEval/invoke-ptr unsupported :pointer []))
+   (protocol-case :IContextEval :transform-in-ptr std.protocol.icontexteval.IContextEval/transform-in-ptr
+     (= [1] (std.protocol.icontexteval.IContextEval/transform-in-ptr (use-case) :pointer [1]))
+     '(std.protocol.icontexteval.IContextEval/transform-in-ptr unsupported :pointer []))
+   (protocol-case :IContextEval :transform-out-ptr std.protocol.icontexteval.IContextEval/transform-out-ptr
+     (= :result (std.protocol.icontexteval.IContextEval/transform-out-ptr (use-case) :pointer :result))
+     '(std.protocol.icontexteval.IContextEval/transform-out-ptr unsupported :pointer :result))
 
    (protocol-case :ICoroutine :status std.protocol.icoroutine.ICoroutine/status
      (= :stopped (std.protocol.icoroutine.ICoroutine/status (use-case)))
@@ -940,6 +985,9 @@
    (protocol-case :IContextLifeCycle :has-module? std.protocol.icontextlifecycle.IContextLifeCycle/has-module?
      (= false (std.protocol.icontextlifecycle.IContextLifeCycle/has-module? (use-case) :demo))
      '(std.protocol.icontextlifecycle.IContextLifeCycle/has-module? unsupported :demo))
+   (protocol-case :IContextLifeCycle :has-setup-ptr? std.protocol.icontextlifecycle.IContextLifeCycle/has-setup-ptr?
+     (= false (std.protocol.icontextlifecycle.IContextLifeCycle/has-setup-ptr? (use-case) :pointer))
+     '(std.protocol.icontextlifecycle.IContextLifeCycle/has-setup-ptr? unsupported :pointer))
    (protocol-case :IContextLifeCycle :setup-module std.protocol.icontextlifecycle.IContextLifeCycle/setup-module
      (= true
         (let [fixture (use-case)]
@@ -953,22 +1001,19 @@
           (std.protocol.icontextlifecycle.IContextLifeCycle/teardown-module fixture :demo)
           (std.protocol.icontextlifecycle.IContextLifeCycle/has-module? fixture :demo)))
      '(std.protocol.icontextlifecycle.IContextLifeCycle/teardown-module unsupported :demo))
-   (protocol-case :IContextLifeCycle :has-pointer? std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer?
-     (= false (std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer? (use-case) :pointer))
-     '(std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer? unsupported :pointer))
-   (protocol-case :IContextLifeCycle :setup-pointer std.protocol.icontextlifecycle.IContextLifeCycle/setup-pointer
+   (protocol-case :IContextLifeCycle :setup-ptr std.protocol.icontextlifecycle.IContextLifeCycle/setup-ptr
      (= true
         (let [fixture (use-case)]
-          (std.protocol.icontextlifecycle.IContextLifeCycle/setup-pointer fixture :pointer)
-          (std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer? fixture :pointer)))
-     '(std.protocol.icontextlifecycle.IContextLifeCycle/setup-pointer unsupported :pointer))
-   (protocol-case :IContextLifeCycle :teardown-pointer std.protocol.icontextlifecycle.IContextLifeCycle/teardown-pointer
+          (std.protocol.icontextlifecycle.IContextLifeCycle/setup-ptr fixture :pointer)
+          (std.protocol.icontextlifecycle.IContextLifeCycle/has-setup-ptr? fixture :pointer)))
+     '(std.protocol.icontextlifecycle.IContextLifeCycle/setup-ptr unsupported :pointer))
+   (protocol-case :IContextLifeCycle :teardown-ptr std.protocol.icontextlifecycle.IContextLifeCycle/teardown-ptr
      (= false
         (let [fixture (use-case)]
-          (std.protocol.icontextlifecycle.IContextLifeCycle/setup-pointer fixture :pointer)
-          (std.protocol.icontextlifecycle.IContextLifeCycle/teardown-pointer fixture :pointer)
-          (std.protocol.icontextlifecycle.IContextLifeCycle/has-pointer? fixture :pointer)))
-     '(std.protocol.icontextlifecycle.IContextLifeCycle/teardown-pointer unsupported :pointer))
+          (std.protocol.icontextlifecycle.IContextLifeCycle/setup-ptr fixture :pointer)
+          (std.protocol.icontextlifecycle.IContextLifeCycle/teardown-ptr fixture :pointer)
+          (std.protocol.icontextlifecycle.IContextLifeCycle/has-setup-ptr? fixture :pointer)))
+     '(std.protocol.icontextlifecycle.IContextLifeCycle/teardown-ptr unsupported :pointer))
 
    (protocol-case :ICount :count std.protocol.icount.ICount/count
      (= 3 (std.protocol.icount.ICount/count (use-case)))
@@ -1096,10 +1141,6 @@
    (protocol-case :IIndexedKV :index-of-val std.protocol.iindexedkv.IIndexedKV/index-of-val
      (= 0 (std.protocol.iindexedkv.IIndexedKV/index-of-val (use-case) 1))
      '(std.protocol.iindexedkv.IIndexedKV/index-of-val unsupported 1))
-
-   (protocol-case :IInvokeIn :invoke-in std.protocol.iinvokein.IInvokeIn/invoke-in
-     (= [1] (std.protocol.iinvokein.IInvokeIn/invoke-in (use-case) (use-case) 1))
-     '(std.protocol.iinvokein.IInvokeIn/invoke-in unsupported (use-case) 1))
 
    (protocol-case :IIter :iter std.protocol.iiter.IIter/iter
      (= 1

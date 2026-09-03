@@ -1,0 +1,66 @@
+(ns code.deploy.task
+  (:config {:role :internal})
+  (:require [code.deploy.catalog :as catalog]
+            [code.deploy.stage :as stage]
+            [std.package :as package]
+            [work.flow.task :as task]))
+
+(defn package-archive
+  "Returns the deterministic HARP destination inside one staged child project."
+  [staged-package]
+  (File/join (:package/stage staged-package) "target/package.harp"))
+
+(defn ^{:public true} build-package
+  "Builds one staged standard project through the supported std.package boundary."
+  [staged-package]
+  (let [archive (package-archive staged-package)]
+    (assoc staged-package
+           :package/archive
+           (package/project-build (:package/stage staged-package) archive))))
+
+(defn ^{:public true} build-staged
+  "Builds staged packages in the dependency-first order supplied by code.deploy.stage."
+  [staged]
+  {:deploy/output (:deploy/output staged)
+   :deploy/order (:deploy/order staged)
+   :deploy/packages (vec (map build-package (:deploy/packages staged)))})
+
+(defn action
+  "Selects the requested deploy operation without assigning command parsing policy."
+  [input context]
+  (let [root (or (:root input) ".")
+        operation (or (:action input) :stage)]
+    (cond
+      (= operation :plan)
+      (catalog/plan root)
+
+      (= operation :stage)
+      (stage/stage-plan (catalog/plan root))
+
+      (= operation :build)
+      (build-staged (stage/stage-plan (catalog/plan root)))
+
+      :else
+      (throw
+       (ex :code.deploy/unsupported-action
+           {:action operation :root root}
+           :ex/message "code.deploy action must be :plan, :stage, or :build")))))
+
+(defn ^{:public true} deploy-work
+  "Compiles the portable work.flow.task wrapper for one deploy invocation."
+  []
+  (task/compile {:id :code.deploy/run :run action}))
+
+(def ^{:public true} +deploy-work+
+  (deploy-work))
+
+(defn ^{:public true} run
+  "Runs a deploy action through work.flow.task and returns its operation result."
+  ([action]
+   (run "." action))
+  ([root operation]
+   (dissoc
+    (deref
+     (task/invoke +deploy-work+
+                  {:root root :action operation}))
+    :item/input :item/id :item/prepared :item/display)))

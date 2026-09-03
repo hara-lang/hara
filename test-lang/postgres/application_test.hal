@@ -1,0 +1,335 @@
+(ns postgres.application-test
+  (:require [postgres.application :as internal]))
+
+(def +columns+
+  [:id {:type :uuid :primary true}
+   :owner-id {:type :ref :ref {:ns 'owner.core :key 'owner.core/Owner}}
+   :name {:type :text}])
+
+(def +table-entry+
+  {:id 'User
+   :module 'demo.core
+   :section :code
+   :lang :postgres
+   :op 'deftype
+   :static/public true
+   :static/schema-seed {:vec ['User +columns+]}})
+
+(def +module+
+  {:id 'demo.core
+   :application :demo
+   :code {'User +table-entry+}})
+
+(def +book+
+  {:modules {'demo.core +module+}})
+
+^{:refer postgres.application/module-map}
+(Test/check
+ [{:name "accepts compiler books module maps and the installed module snapshot"
+   :test (fn []
+           (try
+             (internal/reset-modules!)
+             (internal/register-module +module+)
+             [(keys (internal/module-map +book+))
+              (keys (internal/module-map {'other.core {:id 'other.core}}))
+              (keys (internal/module-map nil))]
+             (finally (internal/reset-modules!))))
+   :expected [['demo.core] ['other.core] ['demo.core]]}])
+
+^{:refer postgres.application/module-snapshot}
+(Test/check
+ [{:name "returns the currently installed compiler modules"
+   :test (fn []
+           (try
+             (internal/install-modules! +book+)
+             (internal/module-snapshot)
+             (finally (internal/reset-modules!))))
+   :expected {'demo.core +module+}}])
+
+^{:refer postgres.application/restore-modules!}
+(Test/check
+ [{:name "restores module snapshots and treats nil as the empty baseline"
+   :test (fn []
+           (try
+             [(internal/restore-modules! {'demo.core +module+})
+              (internal/restore-modules! nil)]
+             (finally (internal/reset-modules!))))
+   :expected [{'demo.core +module+} {}]}])
+
+^{:refer postgres.application/reset-modules!}
+(Test/check
+ [{:name "is idempotent for the compiler module baseline"
+   :test (fn []
+           (do (internal/install-modules! +book+)
+               [(internal/reset-modules!) (internal/reset-modules!)]))
+   :expected [{} {}]}])
+
+^{:refer postgres.application/install-modules!}
+(Test/check
+ [{:name "installs modules from a compiler book"
+   :test (fn []
+           (try
+             (internal/install-modules! +book+)
+             (keys (internal/module-snapshot))
+             (finally (internal/reset-modules!))))
+   :expected ['demo.core]}])
+
+^{:refer postgres.application/register-module}
+(Test/check
+ [{:name "adds one identified compiler module"
+   :test (fn []
+           (try
+             (internal/register-module +module+)
+             [(internal/register-module {:id 'other.core :application :other :code {}})
+              (keys (internal/module-snapshot))]
+             (finally (internal/reset-modules!))))
+   :expected [{:id 'other.core :application :other :code {}}
+              ['demo.core 'other.core]]}])
+
+^{:refer postgres.application/application-string}
+(Test/check
+ [{:name "renders the canonical Foundation application summary"
+   :test (fn [] (internal/application-string {:tables {'User +columns+ 'Role [:id {:type :uuid}]}}))
+   :expected "#pg.app [2]\nRole User\n"}])
+
+^{:refer postgres.application/app-list-entries}
+(Test/check
+ [{:name "returns nil for an empty application and table keys otherwise"
+   :test (fn [] [(internal/app-list-entries {:tables {}})
+                 (set (internal/app-list-entries {:tables {'User +columns+}}))])
+   :expected [nil #{'User}]}])
+
+^{:refer postgres.application/app-get-entry}
+(Test/check
+ [{:name "looks up one table by its symbol name"
+   :test (fn [] (internal/app-get-entry
+                 (internal/app-create-raw {'User +columns+} {})
+                 'User))
+   :expected {:id [{:type :uuid :primary true} 0]
+              :owner-id [{:type :ref :ref {:ns 'owner.core :key 'owner.core/Owner}} 1]
+              :name [{:type :text} 2]}}])
+
+^{:refer postgres.application/app-get-deps}
+(Test/check
+ [{:name "extracts referenced module names from table columns"
+   :test (fn [] (internal/app-get-deps (internal/app-create-raw {'User +columns+} {}) 'User))
+   :expected #{'owner.core}}])
+
+^{:refer postgres.application/application-member?}
+(Test/check
+ [{:name "matches scalar and collection application declarations"
+   :test (fn [] [(internal/application-member? :demo :demo)
+                 (internal/application-member? [:demo :other] :demo)
+                 (internal/application-member? #{:other} :demo)])
+   :expected [true true false]}])
+
+^{:refer postgres.application/app-modules}
+(Test/check
+ [{:name "selects modules by application from supplied books and installed state"
+   :test (fn []
+           (try
+             (internal/install-modules! +book+)
+             [(map (fn [module] (:id module)) (internal/app-modules :demo +book+))
+              (map (fn [module] (:id module)) (internal/app-modules :demo))]
+             (finally (internal/reset-modules!))))
+   :expected [['demo.core] ['demo.core]]}])
+
+^{:refer postgres.application/link-attributes}
+(Test/check
+ [{:name "hydrates a reference with its portable pointer link"
+   :test (fn [] (get-in
+                 (internal/link-attributes
+                  {:type :ref :ref {:ns 'owner.core :key 'owner.core/Owner}}
+                  {'owner.core {:id 'Owner :module 'owner.core :section :code :lang :postgres :extra :skip}})
+                 [:ref :link]))
+   :expected {:id 'Owner :module 'owner.core :section :code :lang :postgres}}])
+
+^{:refer postgres.application/table-schema}
+(Test/check
+ [{:name "creates indexed table columns and hydrates local reference links"
+   :test (fn [] (internal/table-schema +columns+
+                                         {'owner.core {:id 'Owner :module 'owner.core :section :code :lang :postgres}}))
+   :expected {:id [{:type :uuid :primary true} 0]
+              :owner-id [{:type :ref
+                          :ref {:ns 'owner.core
+                                :key 'owner.core/Owner
+                                :link {:id 'Owner :module 'owner.core :section :code :lang :postgres}}}
+                         1]
+              :name [{:type :text} 2]}}])
+
+^{:refer postgres.application/schema-from-tables}
+(Test/check
+ [{:name "constructs the tree schema expected by PostgreSQL graph helpers"
+   :test (fn [] (get-in (internal/schema-from-tables {'User +columns+} {}) [:tree "User" :id]))
+   :expected [{:type :uuid :primary true} 0]}])
+
+^{:refer postgres.application/app-create-raw}
+(Test/check
+ [{:name "creates stable lookup and optional typed payloads"
+   :test (fn []
+           (let [application (internal/app-create-raw {'User +columns+ 'Role [:id {:type :uuid}]} {} {:tables {}})]
+             [(:lu application) (:typed application)]))
+   :expected [{:Role 0 :User 1} {:tables {}}]}])
+
+^{:refer postgres.application/definition-name}
+(Test/check
+ [{:name "reads an operation name only from symbolic list heads"
+   :test (fn [] [(internal/definition-name '(deftype.pg User []))
+                 (internal/definition-name [:deftype 'User])])
+   :expected ["deftype.pg" nil]}])
+
+^{:refer postgres.application/module-analysis}
+(Test/check
+ [{:name "parses PostgreSQL table enum and function entries from a compiler module"
+   :test (fn []
+           (let [analysis (internal/module-analysis
+                           {:id 'demo.core
+                            :code {'User {:form '(deftype.pg User [:id {:type :uuid :primary true}])}
+                                   'Role {:form '(defenum.pg Role [:admin :member])}
+                                   'find-user {:form '(defn.pg find-user [:uuid user-id])}}})]
+             [(count (:tables analysis)) (count (:enums analysis)) (count (:functions analysis))]))
+   :expected [1 1 1]}])
+
+^{:refer postgres.application/module-typed}
+(Test/check
+ [{:name "merges typed enum and function analysis from modules"
+   :test (fn []
+           (let [typed (internal/module-typed
+                        [{:id 'demo.core
+                          :code {'Role {:form '(defenum.pg Role [:admin :member])}
+                                 'find-user {:form '(defn.pg find-user [:uuid user-id])}}}])]
+             [(count (:tables typed)) (count (:enums typed)) (count (:functions typed))]))
+   :expected [0 1 1]}])
+
+^{:refer postgres.application/app-create-typed}
+(Test/check
+ [{:name "combines raw tables with module-level typed definitions"
+   :test (fn []
+           (let [typed (internal/app-create-typed {'User +columns+} [])]
+             [(count (:tables typed)) (count (:enums typed)) (count (:functions typed))]))
+   :expected [1 0 0]}])
+
+^{:refer postgres.application/entry-table-pairs}
+(Test/check
+ [{:name "supports vector tree map and raw definition schema seeds"
+   :test (fn []
+           (let [vector-pairs (vec (internal/entry-table-pairs {:static/schema-seed {:vec [:id {:type :uuid}]}}))
+                 tree-pairs (internal/entry-table-pairs {:static/schema-seed {:tree {'User [:id {:type :uuid}]}}})
+                 map-pairs (internal/entry-table-pairs {:static/schema-seed {'User [:id {:type :uuid}]}})
+                 raw-pairs (internal/entry-table-pairs {:id 'User :op 'deftype :form '(deftype User [:id {:type :uuid}])})]
+             [(count vector-pairs)
+              (first (first vector-pairs))
+              (first (first tree-pairs))
+              (first (first map-pairs))
+              (first (first raw-pairs))
+              (first (first (internal/entry-table-pairs
+                             {:id 'Doc
+                              :op 'deftype
+                              :form '(deftype Doc "docstring" [:id {:type :uuid}])}))) ]))
+   :expected [1 :id 'User 'User 'User 'Doc]}])
+
+^{:refer postgres.application/app-create}
+(Test/check
+ [{:name "creates a portable application directly from a compiler book"
+   :test (fn []
+           (let [application (internal/app-create :demo nil +book+)]
+             [(keys (:tables application)) (keys (:pointers application))]))
+   :expected [['User] ['User]]}])
+
+^{:refer postgres.application/app-list}
+(Test/check
+ [{:name "lists registered application names"
+   :test (fn []
+           (try
+             (internal/app-reset)
+             (internal/register-app :demo {:tables {}})
+             (vec (internal/app-list))
+             (finally (internal/app-reset))))
+   :expected [:demo]}])
+
+^{:refer postgres.application/app}
+(Test/check
+ [{:name "returns either all applications or one named application"
+   :test (fn []
+           (try
+             (internal/app-reset)
+             (internal/register-app :demo {:tables {'User +columns+}})
+             [(internal/app :demo) (internal/app)]
+             (finally (internal/app-reset))))
+   :expected [{:tables {'User +columns+}} {:demo {:tables {'User +columns+}}}]}])
+
+^{:refer postgres.application/app-clear}
+(Test/check
+ [{:name "removes one application and returns its now-missing value"
+   :test (fn []
+           (try
+             (internal/app-reset)
+             (internal/register-app :demo {:tables {}})
+             [(internal/app-clear :demo) (internal/app)]
+             (finally (internal/app-reset))))
+   :expected [nil {}]}])
+
+^{:refer postgres.application/app-rebuild}
+(Test/check
+ [{:name "rebuilds a registered application with a deterministic typed payload"
+   :test (fn []
+           (try
+             (internal/app-reset)
+             (let [application (internal/app-create :demo nil +book+)]
+               (internal/register-app :demo application)
+               [(count (:tables (internal/app-rebuild :demo +book+)))
+                (count (:tables (internal/app :demo)))])
+             (finally (internal/app-reset))))
+   :expected [1 1]}])
+
+^{:refer postgres.application/app-rebuild-tables}
+(Test/check
+ [{:name "recreates an application from its selected compiler modules"
+   :test (fn []
+           (try
+             (internal/app-reset)
+             [(count (:tables (internal/app-rebuild-tables :demo +book+)))
+              (count (:tables (internal/app :demo)))]
+             (finally (internal/app-reset))))
+   :expected [1 1]}])
+
+^{:refer postgres.application/app-schema}
+(Test/check
+ [{:name "returns the registered application schema"
+   :test (fn []
+           (try
+             (internal/app-reset)
+             (internal/register-app :demo (internal/app-create-raw {'User +columns+} {}))
+             (get-in (internal/app-schema :demo) [:tree "User" :name])
+             (finally (internal/app-reset))))
+   :expected [{:type :text} 2]}])
+
+^{:refer postgres.application/app-typed}
+(Test/check
+ [{:name "lazily stores and returns typed application data"
+   :test (fn []
+           (try
+             (internal/app-reset)
+             (internal/register-app :demo (internal/app-create :demo nil +book+))
+             (let [typed (internal/app-typed :demo +book+)]
+               [(count (:tables typed)) (= typed (internal/app-typed :demo +book+))])
+             (finally (internal/app-reset))))
+   :expected [1 true]}])
+
+^{:refer postgres.application/register-app}
+(Test/check
+ [{:name "registers and returns a portable application payload"
+   :test (fn []
+           (try
+             (internal/app-reset)
+             (internal/register-app :demo {:tables {'User +columns+}})
+             (finally (internal/app-reset))))
+   :expected {:tables {'User +columns+}}}])
+
+^{:refer postgres.application/app-reset}
+(Test/check
+ [{:name "is idempotent and restores the application baseline"
+   :test (fn []
+           (do (internal/register-app :demo {:tables {}})
+               [(internal/app-reset) (internal/app-reset)]))
+   :expected [{} {}]}])

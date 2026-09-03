@@ -1,0 +1,66 @@
+(ns lang.model.v1.spec-postgres.postgres-form-let-test
+  (:require [lang.common.emit :as emit]
+            [lang.model.v1.spec-postgres.postgres-form-let :as form]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-tf-let-block}
+(Test/check [{:name "builds a named declaration block"
+              :test (fn [] (first (form/pg-tf-let-block
+                                   [nil {:name 'hello :declare ['x]} '(return x)])))
+              :expected 'do}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-tf-let-assign}
+(Test/check [{:name "creates assignments and performs ignored values"
+              :test (fn [] [(form/pg-tf-let-assign ['x 1])
+                            (form/pg-tf-let-assign ['_ '(touch)])])
+              :expected [[(list := 'x 1)] ['(touch)] ]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/symbol-set}
+(Test/check [{:name "collects unqualified symbols recursively"
+              :test (fn [] (form/symbol-set '(+ x [y])))
+              :expected #{'x 'y}}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-tf-let-check-body}
+(Test/check [{:name "accepts a body using declared symbols"
+              :test (fn [] (form/pg-tf-let-check-body ['x] ['(+ x 1)]))
+              :expected nil}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-let-declaration}
+(Test/check [{:name "creates JSONB declarations"
+              :test (fn [] (form/pg-let-declaration 'value))
+              :expected '(pg:raw "value JSONB")}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-tf-let}
+(Test/check [{:name "transforms a let binding into a block"
+              :test (fn [] (first (form/pg-tf-let '(let [x 1] (return x)))))
+              :expected 'do}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-do-block}
+(Test/check [{:name "emits a do block through the active emitter"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] value)]
+                             (first (form/pg-do-block '(do:block (return 1)) {} {}))))
+              :expected :do}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-do-suppress}
+(Test/check [{:name "emits an exception suppressing block"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] value)]
+                             (has? (set (form/pg-do-suppress '(do:suppress (touch)) {} {}))
+                                   :exception)))
+              :expected true}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-loop-block}
+(Test/check [{:name "emits a loop block"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] value)]
+                             (first (form/pg-loop-block '(loop (touch)) {} {}))))
+              :expected :loop}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-while-block}
+(Test/check [{:name "emits a while block"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] value)]
+                             (first (form/pg-while-block '(while true (touch)) {} {}))))
+              :expected :while}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-let/pg-case-block}
+(Test/check [{:name "emits a case block"
+              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context] value)]
+                             (first (form/pg-case-block '(case kind :a 1 :else 2) {} {}))))
+              :expected '%}])

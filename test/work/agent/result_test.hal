@@ -1,0 +1,41 @@
+(ns work.agent.result-test
+  (:require [work.agent.result :as result]))
+
+^{:refer work.agent.result/asynchronous?}
+(Test/check
+ [{:name "recognises promises without treating direct values as asynchronous"
+   :test (fn []
+           [(result/asynchronous? 7)
+            (result/asynchronous? (Promise/run (fn [] 7)))])
+   :expected [false true]}])
+
+^{:refer work.agent.result/then}
+(Test/check
+ [{:name "maps both direct and promised values"
+   :test (fn []
+           [(result/then 7 inc)
+            (deref (result/then (Promise/run (fn [] 7)) inc))])
+   :expected [8 8]}])
+
+^{:refer work.agent.result/recover}
+(Test/check
+ [{:name "leaves direct values alone"
+   :test (fn [] (result/recover 7 (fn [error] :recovered)))
+   :expected 7}])
+
+^{:refer work.agent.result/attempt}
+(Test/check
+ [{:name "converts synchronous throws into handler values"
+   :test (fn []
+           (result/attempt
+            (fn [] (throw (ex :host {} :ex/message "failed")))
+            (fn [error] :handled)))
+   :expected :handled}])
+
+^{:refer work.agent.result/all}
+(Test/check
+ [{:name "preserves direct order and resolves promised members"
+   :test (fn []
+           [(result/all [1 2])
+            (vec (deref (result/all [1 (Promise/run (fn [] 2))])))])
+   :expected [[1 2] [1 2]]}])

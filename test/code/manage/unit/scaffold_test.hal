@@ -1,0 +1,108 @@
+(ns code.manage.unit.scaffold-test
+  (:use code.test)
+  (:require [code.manage.unit.scaffold :as scaffold]))
+
+(def definition
+  {:name 'answer :docstring "returns the answer"})
+
+^{:refer code.manage.unit.scaffold/mapped-test-path}
+(Test/register
+ {:desc "maps source roots to test roots"
+  :test (fn [] [(scaffold/mapped-test-path "src/demo/core.hal" {}) (scaffold/mapped-test-path "/work/src-lang/demo/core.hal" {})])
+  :expected ["test/demo/core.hal" "/work/test-lang/demo/core.hal"]})
+
+^{:refer code.manage.unit.scaffold/test-file-path}
+(Test/register
+ {:desc "adds the test suffix to Hara files"
+  :test (fn [] [(scaffold/test-file-path "src/demo/core.hal") (scaffold/test-file-path "demo/core")])
+  :expected ["src/demo/core_test.hal" "demo/core_test.hal"]})
+
+^{:refer code.manage.unit.scaffold/test-path-for}
+(Test/register
+ {:desc "prefers explicit test paths before mapped paths"
+  :test (fn [] [(scaffold/test-path-for {:path "src/demo/core.hal"} {}) (scaffold/test-path-for {:path "src/demo/core.hal"} {:test-path "custom.hal"})])
+  :expected ["test/demo/core_test.hal" "custom.hal"]})
+
+^{:refer code.manage.unit.scaffold/test-namespace-for}
+(Test/register
+ {:desc "derives a test namespace and honors explicit override"
+  :test (fn [] [(scaffold/test-namespace-for {} {} (quote demo.core)) (scaffold/test-namespace-for {} {:test-namespace (quote custom.test)} (quote demo.core))])
+  :expected [(quote demo.core-test) (quote custom.test)]})
+
+^{:refer code.manage.unit.scaffold/major-minor}
+(Test/register
+ {:desc "normalizes versions to major-minor form"
+  :test (fn [] [(scaffold/major-minor "1") (scaffold/major-minor "1.2.3") (scaffold/major-minor nil)])
+  :expected ["1.0" "1.2" "0.1"]})
+
+^{:refer code.manage.unit.scaffold/added-version}
+(Test/register
+ {:desc "uses added or project version metadata"
+  :test (fn [] [(scaffold/added-version {:version "2.4.8"}) (scaffold/added-version {:added "3.1.9"})])
+  :expected ["2.4" "3.1"]})
+
+^{:refer code.manage.unit.scaffold/definition-name}
+(Test/register
+ {:desc "projects definition names from maps or values"
+  :test (fn [] [(scaffold/definition-name definition) (scaffold/definition-name (quote other))])
+  :expected [(quote answer) "other"]})
+
+^{:refer code.manage.unit.scaffold/definition-title}
+(Test/register
+ {:desc "uses documentation and falls back to TODO"
+  :test (fn [] [(scaffold/definition-title definition) (scaffold/definition-title {:name (quote missing)})])
+  :expected ["returns the answer" "TODO"]})
+
+^{:refer code.manage.unit.scaffold/scaffold-metadata}
+(Test/register
+ {:desc "renders refer and added metadata"
+  :test (fn [] (scaffold/scaffold-metadata (quote demo.core) definition {:version "1.2.3"}))
+  :expected "^{:refer demo.core/answer :added \"1.2\"}"})
+
+^{:refer code.manage.unit.scaffold/scaffold-fact}
+(Test/register
+ {:desc "renders archive-compatible empty fact scaffolds"
+  :test (fn [] (scaffold/scaffold-fact (quote demo.core) definition {:version "1.2.3"}))
+  :expected "^{:refer demo.core/answer :added \"1.2\"}\n(fact \"returns the answer\")"})
+
+^{:refer code.manage.unit.scaffold/namespace-form}
+(Test/register
+ {:desc "renders the legacy code.test namespace form"
+  :test (fn [] (scaffold/namespace-form (quote demo.core) (quote demo.core-test) "subject"))
+  :expected "(ns demo.core-test\n  (:use code.test)\n  (:require [demo.core :as subject]))"})
+
+^{:refer code.manage.unit.scaffold/runner-form}
+(Test/register
+ {:desc "renders the legacy runner form"
+  :test (fn [] (scaffold/runner-form (quote demo.core-test)))
+  :expected "(pr-str (run {:namespace \"demo.core-test\"}))"})
+
+^{:refer code.manage.unit.scaffold/facts-text}
+(Test/register
+ {:desc "renders multiple facts in source order"
+  :test (fn [] (scaffold/facts-text (quote demo.core) [definition {:name (quote other)}] {:version "1.0"}))
+  :expected "^{:refer demo.core/answer :added \"1.0\"}\n(fact \"returns the answer\")\n\n^{:refer demo.core/other :added \"1.0\"}\n(fact \"TODO\")"})
+
+^{:refer code.manage.unit.scaffold/new-scaffold}
+(Test/register
+ {:desc "creates a complete archive-compatible test file"
+  :test (fn [] (str/includes? (scaffold/new-scaffold (quote demo.core) (quote demo.core-test) "subject" [definition] {:version "1.0"}) "(fact \"returns the answer\")"))
+  :expected true})
+
+^{:refer code.manage.unit.scaffold/missing-definitions}
+(Test/register
+ {:desc "only scaffolds definitions without matching refer metadata"
+  :test (fn [] (let [test-source "^{:refer demo.core/answer}\n(fact \"answer\")"] (mapv :name (scaffold/missing-definitions (quote demo.core) [definition {:name (quote other)}] test-source "demo/core_test.hal"))))
+  :expected [(quote other)]})
+
+^{:refer code.manage.unit.scaffold/append-scaffold}
+(Test/register
+ {:desc "inserts missing facts before the runner"
+  :test (fn [] (let [text (scaffold/append-scaffold "(ns demo.core-test)\n\n(pr-str (run {}))" (quote demo.core) [definition] {:version "1.0"})] [(str/includes? text "(fact \"returns the answer\")") (< (str/index-of text "(fact") (str/index-of text "(pr-str"))]))
+  :expected [true true]})
+
+^{:refer code.manage.unit.scaffold/scaffold-source}
+(Test/register
+ {:desc "is idempotent once every definition has a fact"
+  :test (fn [] (let [first-source (scaffold/scaffold-source (quote demo.core) (quote demo.core-test) "subject" [definition] {:version "1.0"}) second-source (scaffold/scaffold-source (quote demo.core) (quote demo.core-test) "subject" [definition] {:test-source first-source :version "1.0"})] [(not= first-source second-source) (= first-source second-source)]))
+  :expected [false true]})

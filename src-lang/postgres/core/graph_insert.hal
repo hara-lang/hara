@@ -47,7 +47,7 @@
     (let [_ (reduce (fn [_ item] (collect-graph! lookup item) nil) nil value)]
       (swap! lookup assoc (graph-id value) (vec (map graph-id value))))
     (map? value)
-    (let [_ (reduce-kv (fn [state key item] (collect-graph! lookup item) nil)
+    (let [_ (reduce-kv (fn [_ _ item] (collect-graph! lookup item) nil)
                         nil
                         value)]
       (when (and (graph-id value) (not (graph-data? value)))
@@ -76,7 +76,7 @@
     (reduce (fn [_ item] (collect-data! lookup item) nil) nil value)
     (map? value)
     (let [_ (when (:id value) (swap! lookup assoc (:id value) (graph-id value)))]
-      (reduce-kv (fn [state key item] (collect-data! lookup item) nil) nil value))
+      (reduce-kv (fn [_ _ item] (collect-data! lookup item) nil) nil value))
     :else nil))
 
 (defn dependency-values
@@ -129,23 +129,28 @@
 (defn declaration-data
   [data params options lookup symbols]
   (let [schema (:schema options)
-        flattened (walk/flatten-data data schema)]
-    (reduce-kv
-     (fn [out table rows]
-       (let [table-schema (get-in schema [:tree table])
-             entry (table-entry table options table-schema)]
-         (reduce (fn [bindings row]
-                   (let [gid (get lookup (:id row))
-                         target (get symbols gid)]
-                     (conj (conj bindings target)
-                           (insert/t-insert-raw [entry table-schema options]
-                                                row
-                                                (merge {:returning '* :single true}
-                                                       params))))
-                 out
-                 rows)))
-     []
-     flattened))))
+        flattened (walk/flatten-data data schema)
+        tables (vec (keys flattened))]
+    (loop [index 0
+           out []]
+      (if (= index (count tables))
+        out
+        (let [table (nth tables index)
+              rows (get flattened table)
+              table-schema (get-in schema [:tree table])
+              entry (table-entry table options table-schema)
+              next-out
+              (reduce (fn [bindings row]
+                        (let [gid (get lookup (:id row))
+                              target (get symbols gid)]
+                          (conj (conj bindings target)
+                                (insert/t-insert-raw [entry table-schema options]
+                                                     row
+                                                     (merge {:returning '* :single true}
+                                                            params)))))
+                      out
+                      rows)]
+          (recur (inc index) next-out))))))
 
 (defn reconstruction-data
   [graph ordered symbols]

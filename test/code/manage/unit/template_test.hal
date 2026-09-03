@@ -1,0 +1,217 @@
+(ns code.manage.unit.template-test
+  (:use code.test)
+  (:require [code.manage.unit.template :as template]
+            [work.core]))
+
+(def source-unit
+  {:path "demo/core.hal"
+   :namespace 'demo.core
+   :source "(ns demo.core)\n(defn answer [] 42)\n"})
+
+(def demo-task
+  (template/task
+   {:operation :demo
+    :main {:fn (fn [unit] {:path (:path unit) :changed true})
+           :symbol 'demo/unit
+           :argcount 1}}))
+
+^{:refer code.manage.unit.template/operation-id}
+(Test/register
+ {:desc "derives a stable manage operation keyword"
+  :test (fn [] (template/operation-id :analyse))
+  :expected :code.manage/analyse})
+
+^{:refer code.manage.unit.template/code-unit?}
+(Test/register
+ {:desc "recognizes source units only when path and source are present"
+  :test (fn [] [(template/code-unit? source-unit) (template/code-unit? {:path "demo.hal"}) (template/code-unit? nil)])
+  :expected [true false false]})
+
+^{:refer code.manage.unit.template/unit-namespace}
+(Test/register
+ {:desc "prefers declared namespace then path and name"
+  :test (fn [] [(template/unit-namespace source-unit) (template/unit-namespace {:path "demo.hal"}) (template/unit-namespace {:name (quote demo)})])
+  :expected [(quote demo.core) "demo.hal" (quote demo)]})
+
+^{:refer code.manage.unit.template/task-input-units}
+(Test/register
+ {:desc "normalizes units from maps vectors and nil"
+  :test (fn [] [(template/task-input-units {:units [source-unit]}) (template/task-input-units {:unit source-unit}) (template/task-input-units source-unit) (template/task-input-units nil)])
+  :expected [[source-unit] [source-unit] [source-unit] []]})
+
+^{:refer code.manage.unit.template/task-input-options}
+(Test/register
+ {:desc "merges invocation options over task defaults"
+  :test (fn [] (template/task-input-options {:options {:added "2.0"}} {:alias "subject" :added "1.0"}))
+  :expected {:alias "subject" :added "2.0"}})
+
+^{:refer code.manage.unit.template/task-input-selector}
+(Test/register
+ {:desc "defaults task selection to all"
+  :test (fn [] [(template/task-input-selector {}) (template/task-input-selector {:selector (quote demo.core)})])
+  :expected [:all (quote demo.core)]})
+
+^{:refer code.manage.unit.template/task-item}
+(Test/register
+ {:desc "wraps a unit in the native item value shape"
+  :test (fn [] (let [item (template/task-item source-unit {:version "1.0"})] [(:item/id item) (get-in item [:item/value :code.manage/unit]) (get-in item [:item/value :code.manage/options]) (get-in item [:item/value :code.manage/path])]))
+  :expected [(quote demo.core) source-unit {:version "1.0"} "demo/core.hal"]})
+
+^{:refer code.manage.unit.template/invoke-tasklet}
+(Test/register
+ {:desc "supports one and two argument tasklets and rejects other arities"
+  :test (fn [] [(template/invoke-tasklet (fn [unit] (:path unit)) 1 source-unit {}) (template/invoke-tasklet (fn [unit options] (:added options)) 2 source-unit {:added "1.0"}) (try (template/invoke-tasklet identity 3 source-unit {}) false (catch error true))])
+  :expected ["demo/core.hal" "1.0" true]})
+
+^{:refer code.manage.unit.template/result-record}
+(Test/register
+ {:desc "unwraps native item values while preserving direct records"
+  :test (fn [] [(template/result-record {:item/value {:status :return :data 1}}) (template/result-record {:status :return :data 2})])
+  :expected [{:status :return :data 1} {:status :return :data 2}]})
+
+^{:refer code.manage.unit.template/result-envelope-key?}
+(Test/register
+ {:desc "recognizes result and item envelope keys"
+  :test (fn [] [(template/result-envelope-key? :status) (template/result-envelope-key? :item/id) (template/result-envelope-key? :path)])
+  :expected [true true false]})
+
+^{:refer code.manage.unit.template/flattened-result-data}
+(Test/register
+ {:desc "removes native envelope fields from a map result"
+  :test (fn [] (template/flattened-result-data {:changed true :status :return :path "demo.hal" :item/id :demo}))
+  :expected {:changed true :path "demo.hal"}})
+
+^{:refer code.manage.unit.template/tasklet-subject-unit}
+(Test/register
+ {:desc "extracts the wrapped unit from a task subject"
+  :test (fn [] (template/tasklet-subject-unit {:code.manage/unit source-unit}))
+  :expected source-unit})
+
+^{:refer code.manage.unit.template/tasklet-subject-options}
+(Test/register
+ {:desc "extracts task options from a task subject"
+  :test (fn [] [(template/tasklet-subject-options {:code.manage/options {:added "1.0"}}) (template/tasklet-subject-options {})])
+  :expected [{:added "1.0"} {}]})
+
+^{:refer code.manage.unit.template/item-result}
+(Test/register
+ {:desc "normalizes a tasklet result to a result record"
+  :test (fn [] (select-keys (template/item-result (template/task-item source-unit {}) (fn [unit] (:namespace unit)) 1) [:item/id :status :data]))
+  :expected {:status :return :data (quote demo.core) :item/id (quote demo.core)}})
+
+^{:refer code.manage.unit.template/legacy-record}
+(Test/register
+ {:desc "preserves existing data and restores map-valued data otherwise"
+  :test (fn [] [(template/legacy-record {:status :return :data 4}) (template/legacy-record {:status :return :path "demo.hal"})])
+  :expected [{:status :return :data 4} {:status :return :data {:path "demo.hal"} :path "demo.hal"}]})
+
+^{:refer code.manage.unit.template/legacy-item}
+(Test/register
+ {:desc "projects a record into the archive item envelope"
+  :test (fn [] (template/legacy-item {:status :return :data 4 :item/id :demo}))
+  :expected {:item/value {:status :return :data 4 :item/id :demo} :item/id :demo}})
+
+^{:refer code.manage.unit.template/legacy-input-item}
+(Test/register
+ {:desc "projects the original task input item"
+  :test (fn [] (template/legacy-input-item {:item/input source-unit :item/id :demo}))
+  :expected {:item/value source-unit :item/id :demo}})
+
+^{:refer code.manage.unit.template/batch-records}
+(Test/register
+ {:desc "reads records from native and legacy batch envelopes"
+  :test (fn [] [(template/batch-records {:records [{:item/id 1}]}) (template/batch-records {:results [{:item/value {:status :return :data 2} :item/id 1}]})])
+  :expected [[{:item/id 1}] [{:status :return :data 2}]]})
+
+^{:refer code.manage.unit.template/result-edit}
+(Test/register
+ {:desc "recognizes edit-shaped task values"
+  :test (fn [] [(template/result-edit {:after "x"}) (template/result-edit {:finding {:kind :missing}}) (template/result-edit "x")])
+  :expected [{:after "x"} nil nil]})
+
+^{:refer code.manage.unit.template/result-findings}
+(Test/register
+ {:desc "projects singular and vector findings"
+  :test (fn [] [(template/result-findings {:finding {:kind :missing}}) (template/result-findings [{:kind :todo} {:path "x"}]) (template/result-findings nil)])
+  :expected [[{:kind :missing}] [{:kind :todo}] []]})
+
+^{:refer code.manage.unit.template/batch-summary}
+(Test/register
+ {:desc "summarizes changes findings warnings and errors"
+  :test (fn [] (template/batch-summary :demo [{:status :return} {:status :warn} {:status :error}] [{:changed true}] [{:kind :todo}]))
+  :expected {:changed 1 :warnings 1 :operation :demo :findings 1 :count 3 :errors 1}})
+
+^{:refer code.manage.unit.template/legacy-batch}
+(Test/register
+ {:desc "retains archive batch fields while exposing native result records"
+  :test (fn [] (let [batch (template/legacy-batch :demo [{:item/input source-unit :status :return :data {:changed true :after "updated"} :item/id :demo}])] [(count (:items batch)) (count (:results batch)) (:operation (:summary batch)) (:changed (:summary batch))]))
+  :expected [1 1 :demo 1]})
+
+^{:refer code.manage.unit.template/finalise-summary}
+(Test/register
+ {:desc "restores operation and item count in a legacy summary"
+  :test (fn [] (template/finalise-summary :demo {:items 2} [] []))
+  :expected {:count 2 :operation :demo :items 2}})
+
+^{:refer code.manage.unit.template/selected?}
+(Test/register
+ {:desc "matches all selectors and shared selector values"
+  :test (fn [] [(template/selected? :all source-unit) (template/selected? (quote demo.core) source-unit) (template/selected? (quote other.core) source-unit)])
+  :expected [true true false]})
+
+^{:refer code.manage.unit.template/assert-task}
+(Test/register
+ {:desc "requires an operation tasklet and symbolic tasklet reference"
+  :test (fn [] [(template/assert-task {:main {:symbol (quote demo/id) :fn identity} :operation :demo}) (try (template/assert-task {:operation :demo}) false (catch error true))])
+  :expected [{:main {:symbol (quote demo/id) :fn identity} :operation :demo} true]})
+
+^{:refer code.manage.unit.template/compile-definition}
+(Test/register
+ {:desc "compiles a task definition to a native Work bundle"
+  :test (fn [] (let [bundle (template/compile-definition {:main {:symbol (quote demo/id) :fn identity :argcount 1} :operation :demo})] [(Work/plan? (:work/plan bundle)) (work.core/bundle? bundle) (:code.manage/operation bundle)]))
+  :expected [true true :demo]})
+
+^{:refer code.manage.unit.template/task}
+(Test/register
+ {:desc "composed manage tasks carry the native task schema"
+  :test (fn [] [(template/task? demo-task) (template/task-operation demo-task) (template/tasklet-reference demo-task)])
+  :expected [true :demo (quote demo/unit)]})
+
+^{:refer code.manage.unit.template/task-definition}
+(Test/register
+ {:desc "returns the original task configuration"
+  :test (fn [] (:operation (template/task-definition demo-task)))
+  :expected :demo})
+
+^{:refer code.manage.unit.template/task?}
+(Test/register
+ {:desc "rejects arbitrary maps as manage tasks"
+  :test (fn [] [(template/task? demo-task) (template/task? {})])
+  :expected [true false]})
+
+^{:refer code.manage.unit.template/task-operation}
+(Test/register
+ {:desc "reads the operation from a compiled task"
+  :test (fn [] (template/task-operation demo-task))
+  :expected :demo})
+
+^{:refer code.manage.unit.template/tasklet-reference}
+(Test/register
+ {:desc "reads the symbolic tasklet identity"
+  :test (fn [] (template/tasklet-reference demo-task))
+  :expected (quote demo/unit)})
+
+^{:refer code.manage.unit.template/run-task}
+(Test/register
+ {:desc "runs explicit and project-discovered task units through work.flow.task"
+  :test (fn [] (let [explicit (template/run-task demo-task {:units [source-unit]})
+                     discovered (template/run-task
+                                 demo-task
+                                 {:root (OS/cwd)
+                                  :selector (quote code.manage.context)})]
+                 [(count (:records explicit))
+                  (get-in explicit [:records 0 :data])
+                  (count (:records discovered))
+                  (get-in discovered [:records 0 :data])]))
+  :expected [1 {:changed true :path "demo/core.hal"}
+             1 {:changed true :path (File/join (OS/cwd) "src/code/manage/context.hal")}]} )

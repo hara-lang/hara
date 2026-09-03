@@ -1,0 +1,73 @@
+(ns tool.cli.template)
+
+(def ^{:public true} schema-id "tool.cli.template/0-alpha")
+(def ^{:public true} *template-defaults* (atom {:default {}}))
+
+(defn ^{:public true} template-defaults
+  [template-type]
+  (let [registry (deref *template-defaults*)
+        base (or (get registry :default) {})
+        selected (if (= :default template-type)
+                   {}
+                   (or (get registry template-type) {}))]
+    (merge base selected)))
+
+(defn ^{:public true} install-defaults
+  [template-type options]
+  (if (not (keyword? template-type))
+    (throw (ex :argument {:template template-type}
+               :ex/message "CLI template type must be a keyword")))
+  (swap! *template-defaults*
+         (fn [registry]
+           (assoc registry template-type
+                  (merge (or (get registry template-type) {}) options))))
+  (template-defaults template-type))
+
+(defn ^{:public true} uninstall-defaults
+  [template-type]
+  (if (= :default template-type)
+    (throw (ex :argument {:template template-type}
+               :ex/message "The default CLI template profile cannot be removed")))
+  (swap! *template-defaults* dissoc template-type)
+  (template-defaults :default))
+
+(defn ^{:public true} normalise-definition
+  [raw-definition]
+  (if (not (map? raw-definition))
+    (throw (ex :argument {:definition raw-definition}
+               :ex/message "CLI template definition must be a map")))
+  (let [definition (merge (template-defaults :default) raw-definition)
+        main (:main definition)
+        function (:fn main)
+        argcount (or (:argcount main) 1)]
+    (if (nil? (:id definition))
+      (throw (ex :dependency {} :ex/message "CLI template requires :id")))
+    (if (not (fn? function))
+      (throw (ex :dependency {:id (:id definition)}
+                 :ex/message "CLI template requires :main :fn")))
+    (if (not (or (= 1 argcount) (= 2 argcount)))
+      (throw (ex :argument {:id (:id definition) :argcount argcount}
+                 :ex/message "CLI template :main :argcount must be 1 or 2")))
+    (assoc definition :schema schema-id :version (or (:version definition) 1))))
+
+(defn ^{:public true} invoke-main
+  [definition input context]
+  (let [main (:main definition)
+        function (:fn main)]
+    (if (= 2 (:argcount main))
+      (function input context)
+      (function input))))
+
+(defn ^{:public true} handler
+  [raw-definition]
+  (let [definition (normalise-definition raw-definition)]
+    (with-meta
+      (fn [request]
+        (invoke-main definition request {}))
+      {:tool.cli.template/schema schema-id
+       :tool.cli.template/id (:id definition)
+       :tool.cli.template/version (:version definition)})))
+
+(defn ^{:public true} handler?
+  [value]
+  (= schema-id (:tool.cli.template/schema (meta value))))

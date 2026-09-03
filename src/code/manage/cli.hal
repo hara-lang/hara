@@ -1,0 +1,312 @@
+(ns code.manage.cli
+  (:config {:role :internal})
+  (:require [code.manage :as manage]
+            [code.manage.context :as context]
+            [code.manage.editor :as editor]
+            [work.flow.task :as task]))
+
+(def ^{:public true} +value-options+
+  {"--match" :match
+   "--replacement" :replacement
+   "--from" :from
+   "--to" :to
+   "--needle" :needle
+   "--form" :form
+   "--var" :var
+   "--added" :added
+   "--project" :project
+   "--root" :root
+   "--format" :format})
+
+(def ^{:public true} +formats+
+  #{:edn :editor-json})
+
+(def ^{:public true} +direct-operations+
+  #{:contract-check :issue-contract})
+
+(def ^{:public true} +test-only+
+  context/+test-only+)
+
+(def ^{:public true} +source-and-test+
+  context/+source-and-test+)
+
+(defn ^{:public true} tail
+  [values]
+  (vec (rest values)))
+
+(defn ^{:public true} required
+  [remaining option]
+  (if (empty? remaining)
+    (throw (ex :dependency {:option option}
+               :ex/message (str option " requires a value")))
+    (first remaining)))
+
+(defn ^{:public true} validate-parsed
+  [parsed]
+  (let [operation (:operation parsed)
+        raw-options (:options parsed)
+        format (keyword (or (:format raw-options) "edn"))
+        options (dissoc raw-options :format)]
+    (cond
+      (not (has? +formats+ format))
+      (throw (ex :syntax {:format format}
+                 :ex/message (str "unsupported manage format " format)))
+
+      (and (has? +direct-operations+ operation)
+           (not= 1 (count (:namespaces parsed))))
+      (throw (ex :dependency {:operation operation}
+                 :ex/message (str (name operation) " requires one contract path")))
+
+      (and (:complete? options)
+           (not (has? +direct-operations+ operation)))
+      (throw (ex :syntax {:operation operation :option "--complete"}
+                 :ex/message "--complete is only supported by contract-check"))
+
+      (and (= operation :import) (:form options))
+      (throw (ex :syntax {:operation operation :option "--form"}
+                 :ex/message "import --form is obsolete; import reads matching fact titles"))
+
+      (and (= operation :purge) (:patterns options))
+      (throw (ex :syntax {:operation operation :option "--pattern"}
+                 :ex/message "purge --pattern is obsolete; purge removes docstrings and :added metadata"))
+
+      :else
+      (assoc parsed :format format :options options))))
+
+(defn ^{:public true} parse-arguments
+  [arguments]
+  (let [operation (keyword (or (first arguments) "analyse"))]
+    (if (and (nil? (get manage/parity-inventory operation))
+             (not (has? +direct-operations+ operation)))
+      (throw (ex :syntax {:operation operation}
+                 :ex/message (str "unsupported manage operation " operation)))
+      (loop [remaining (tail arguments)
+             write false
+             namespaces []
+             patterns []
+             options {}]
+        (if (empty? remaining)
+          (validate-parsed
+           {:operation operation
+            :write write
+            :namespaces namespaces
+            :options (if (empty? patterns)
+                       options
+                       (assoc options :patterns patterns))})
+          (let [argument (first remaining)
+                more (tail remaining)
+                option-key (get +value-options+ argument)
+                next-state
+                (cond
+                  (= argument "--write")
+                  {:remaining more :write true :namespaces namespaces
+                   :patterns patterns :options options}
+
+                  (= argument "--complete")
+                  {:remaining more :write write :namespaces namespaces
+                   :patterns patterns :options (assoc options :complete? true)}
+
+                  (= argument "--pattern")
+                  {:remaining (tail more) :write write :namespaces namespaces
+                   :patterns (conj patterns (required more argument))
+                   :options options}
+
+                  option-key
+                  {:remaining (tail more) :write write :namespaces namespaces
+                   :patterns patterns
+                   :options (assoc options option-key (required more argument))}
+
+                  (str/starts-with? argument "-")
+                  (throw (ex :syntax {:option argument}
+                             :ex/message (str "unknown manage option " argument)))
+
+                  :else
+                  {:remaining more :write write
+                   :namespaces (conj namespaces argument)
+                   :patterns patterns :options options})]
+            (recur (:remaining next-state)
+                   (:write next-state)
+                   (:namespaces next-state)
+                   (:patterns next-state)
+                   (:options next-state))))))))
+
+(defn ^{:public true} parsed-selector
+  [namespaces]
+  (cond
+    (empty? namespaces) :all
+    (= 1 (count namespaces)) (first namespaces)
+    :else (vec namespaces)))
+
+(defn ^{:public true} path-selector-candidates
+  [path]
+  (let [path (str/replace (str path) "\\" "/")
+        path (if (str/ends-with? path ".hal")
+               (str/slice path 0 (- (str/length path) 4))
+               path)
+        parts (vec (filter (fn [part] (not (str/blank? part)))
+                           (str/split path "/")))]
+    (loop [remaining parts output []]
+      (if (empty? remaining)
+        output
+        (recur (vec (rest remaining))
+               (conj output
+                     (str/replace (str/join "." remaining) "_" "-")))))))
+
+(defn ^{:public true} selected?
+  [path namespaces]
+  (if (empty? namespaces)
+    true
+    (let [selection (if (= 1 (count namespaces))
+                      (first namespaces)
+                      (vec namespaces))]
+      (reduce
+       (fn [matched candidate]
+         (or matched (task/matches? selection candidate)))
+       false
+       (path-selector-candidates path)))))
+
+(defn ^{:public true} roots-for
+  [project operation]
+  (context/roots-for project operation))
+
+(defn ^{:public true} unit
+  [path type]
+  (context/unit path type))
+
+(defn ^{:public true} versioned-unit
+  [base version]
+  (context/versioned-unit base version))
+
+(defn ^{:public true} paired-source-unit
+  [base version test-path test-source]
+  (context/paired-source-unit base version test-path test-source))
+
+(defn ^{:public true} project-test-path
+  [current-project path]
+  (context/project-test-path current-project path))
+
+(defn ^{:public true} paired-unit
+  [current-project path type]
+  (context/paired-unit current-project path type))
+
+(defn ^{:public true} units-for
+  [project parsed]
+  (context/units-for project (:operation parsed)))
+
+(defn ^{:public true} current-input
+  ([operation current-project]
+   (context/current-input operation current-project :all {}))
+  ([operation current-project selector-value]
+   (context/current-input operation current-project selector-value {}))
+  ([operation current-project selector-value options]
+   (context/current-input operation current-project selector-value options)))
+
+(defn ^{:public true} current-source
+  [path]
+  (context/read-text path))
+
+(defn ^{:public true} strip-trailing-separator
+  [path]
+  (if (and (> (str/length path) 1)
+           (str/ends-with? path "/"))
+    (strip-trailing-separator (str/slice path 0 (dec (str/length path))))
+    path))
+
+(defn ^{:public true} normalized-path-text
+  [path]
+  (strip-trailing-separator
+   (str/replace (str path) "\\" "/")))
+
+(defn ^{:public true} path-under-root?
+  [root path]
+  (let [root (normalized-path-text root)
+        path (normalized-path-text path)]
+    (or (= root path)
+        (str/starts-with? path (str root "/")))))
+
+(defn ^{:public true} resolve-edit-path
+  [root path]
+  (let [resolved-root (File/resolve root "")
+        resolved-path (File/resolve root path)]
+    (if (path-under-root? resolved-root resolved-path)
+      resolved-path
+      (throw (ex :io {:root resolved-root :path path :resolved resolved-path}
+                 :ex/message (str "code.manage edit escapes project root: " path))))))
+
+(defn ^{:public true} validate-edit
+  [root edit]
+  (let [path (resolve-edit-path root (:path edit))
+        current (current-source path)]
+    (if (= (:before edit) current)
+      (assoc edit :resolved-path path)
+      (throw (ex :conflict {:path path}
+                 :ex/message (str "code.manage stale edit: " path))))))
+
+(defn ^{:public true} preflight
+  [root edits]
+  (vec (map (fn [edit] (validate-edit root edit)) edits)))
+
+(defn ^{:public true} write-edit
+  [edit]
+  (let [path (:resolved-path edit)
+        parent (File/parent path)]
+    (if parent (deref (File/mkdir parent)) nil)
+    (deref (File/write path (String/encode-utf8 (:after edit))
+                       {:mode :replace :parents? true}))
+    edit))
+
+(defn ^{:public true} apply-edits
+  [root edits]
+  (let [validated (preflight root edits)]
+    (vec (map write-edit validated))))
+
+(defn ^{:public true} render-plan
+  [plan parsed]
+  (if (= :editor-json (:format parsed))
+    (Json/write (editor/payload plan (:write parsed)))
+    (pr-str plan)))
+
+(defn ^{:public true} execute
+  [request]
+  (let [parsed (parse-arguments (or (:argv (:arguments request)) []))
+        options (merge (or (:options request) {}) (:options parsed))
+        start (or (:project options) (:root options)
+                  (:request/cwd request) (OS/cwd))
+        current-project (if (and (map? start) (:project/root start))
+                          start
+                          (context/discover start))]
+    (if (has? +direct-operations+ (:operation parsed))
+      (let [path (context/absolute-path (:project/root current-project)
+                                        (first (:namespaces parsed)))
+            contract (manage/check-contract
+                      {:source (current-source path)
+                       :complete? (= true (get-in parsed [:options :complete?]))})]
+        {:kind :contract
+         :value contract
+         :output (pr-str contract)
+         :exit (if (:valid? contract) 0 1)})
+      (let [plan (manage/plan
+                  (:operation parsed)
+                  {:units (units-for current-project parsed)
+                   :options (:options parsed)
+                   :selector (parsed-selector (:namespaces parsed))})
+            output (render-plan plan parsed)]
+        (if (:write parsed)
+          (apply-edits (:project/root current-project) (:edits plan))
+          nil)
+        {:kind :plan :value plan :output output :exit 0}))))
+
+(defn ^{:public true} response
+  [request]
+  (try
+    (let [result (execute request)
+          output (str (:output result) "\n")]
+      (if (= 0 (:exit result))
+        {:stdout output :stderr "" :exit 0}
+        {:stdout "" :stderr output :exit (:exit result)}))
+    (catch error
+      {:stdout "" :stderr (str error "\n") :exit 2})))
+
+(defn ^{:public true} handler
+  [request]
+  (response request))

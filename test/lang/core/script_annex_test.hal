@@ -1,0 +1,406 @@
+(ns lang.core.script-annex-test
+  (:require [lang.core.script :as script]
+            [lang.core.script-annex :as annex]
+            [lang.core.runtime :as runtime]))
+
+(defn isolated
+  [function]
+  (let [annex-state (annex/annex-snapshot)
+        script-state (script/script-snapshot)]
+    (try
+      (annex/annex-reset!)
+      (script/script-reset!)
+      (function)
+      (finally
+        (annex/annex-reset!)
+        (script/script-restore! script-state)
+        (annex/annex-restore! annex-state)))))
+
+(defn test-namespace
+  []
+  'lang.core.script-annex-test)
+
+(defn register-default
+  [tag]
+  (annex/register-tag-in (test-namespace) tag :postgres :default {}))
+
+^{:refer lang.core.script-annex/current-namespace-symbol}
+(Test/check [{:name "returns the annex declaration namespace"
+              :test annex/current-namespace-symbol
+              :expected 'lang.core.script-annex}])
+
+^{:refer lang.core.script-annex/coordinate}
+(Test/check [{:name "creates a stable namespace and tag key"
+              :test (fn [] (annex/coordinate 'demo.source :one))
+              :expected ['demo.source :one]}])
+
+^{:refer lang.core.script-annex/annex-snapshot}
+(Test/check [{:name "captures empty tagged-runtime state"
+              :test (fn [] (isolated annex/annex-snapshot))
+              :expected {:registry {} :runtimes {} :active #{}}}])
+
+^{:refer lang.core.script-annex/annex-restore!}
+(Test/check [{:name "restores registered tags without retaining live instances"
+              :test (fn [] (isolated (fn []
+                                       (annex/annex-restore!
+                                        {:registry {['demo.source :one]
+                                                    {:namespace 'demo.source :tag :one
+                                                     :lang :postgres :runtime :default :config {}}}
+                                         :runtimes {}}))))
+              :expected {:registry {['demo.source :one]
+                                    {:namespace 'demo.source :tag :one
+                                     :lang :postgres :runtime :default :config {}}}
+                         :runtimes {} :active #{}}}])
+
+^{:refer lang.core.script-annex/annex-restore!}
+(Test/check [{:name "restores an active tagged runtime to its prior started state"
+              :test (fn [] (isolated (fn []
+                                       (let [instance (runtime/rt-default {:lang :postgres})
+                                             _ (annex/add-runtime-in 'demo.source :one instance)
+                                             snapshot (annex/annex-snapshot)]
+                                         (annex/annex-reset!)
+                                         (annex/annex-restore! snapshot)
+                                         (:status (deref (:state instance)))))))
+              :expected :started}])
+
+^{:refer lang.core.script-annex/annex-reset!}
+(Test/check [{:name "clears tagged state idempotently"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       [(annex/annex-reset!)
+                                        (annex/annex-reset!)])))
+              :expected [{:registry {} :runtimes {} :active #{}}
+                         {:registry {} :runtimes {} :active #{}}]}])
+
+^{:refer lang.core.script-annex/register-tag-in}
+(Test/check [{:name "registers a coordinate and returns the replaced record"
+              :test (fn [] (isolated (fn []
+                                       [(annex/register-tag-in 'demo.source :one :postgres :default {})
+                                        (annex/tag-info-in 'demo.source :one)])))
+              :expected [[nil :postgres]
+                         {:namespace 'demo.source :tag :one :lang :postgres
+                          :runtime :default :config {}}]}])
+
+^{:refer lang.core.script-annex/register-tag}
+(Test/check [{:name "registers a tag in the current namespace"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres nil {:module 'demo.source})
+                                       (annex/tag-info :one))))
+              :expected {:namespace 'lang.core.script-annex :tag :one
+                         :lang :postgres :runtime :default
+                         :config {:module 'demo.source}}}])
+
+^{:refer lang.core.script-annex/deregister-tag-in}
+(Test/check [{:name "removes and returns a registered coordinate"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       [(annex/deregister-tag-in (test-namespace) :one)
+                                        (annex/tag-info-in (test-namespace) :one)])))
+              :expected [{:namespace 'lang.core.script-annex-test :tag :one
+                          :lang :postgres :runtime :default :config {}}
+                         nil]}])
+
+^{:refer lang.core.script-annex/deregister-tag}
+(Test/check [{:name "removes a current-namespace tag"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (annex/deregister-tag :one))))
+              :expected {:namespace 'lang.core.script-annex :tag :one
+                         :lang :postgres :runtime :default :config {}}}])
+
+^{:refer lang.core.script-annex/tag-info-in}
+(Test/check [{:name "finds a registered coordinate"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (:lang (annex/tag-info-in (test-namespace) :one)))))
+              :expected :postgres}])
+
+^{:refer lang.core.script-annex/tag-info}
+(Test/check [{:name "finds a current-namespace coordinate"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (:tag (annex/tag-info :one)))))
+              :expected :one}])
+
+^{:refer lang.core.script-annex/runtime-in}
+(Test/check [{:name "looks up a live runtime by full coordinate"
+              :test (fn [] (isolated (fn []
+                                       (let [instance (runtime/rt-default {:lang :postgres})]
+                                         (annex/add-runtime-in (test-namespace) :one instance)
+                                         (= instance (annex/runtime-in (test-namespace) :one))))))
+              :expected true}])
+
+^{:refer lang.core.script-annex/get-runtime}
+(Test/check [{:name "looks up a current-namespace live runtime"
+              :test (fn [] (isolated (fn []
+                                       (let [instance (runtime/rt-default {:lang :postgres})]
+                                         (annex/add-runtime-in (annex/current-namespace-symbol) :one instance)
+                                         (= instance (annex/get-runtime :one))))))
+              :expected true}])
+
+^{:refer lang.core.script-annex/start-runtime}
+(Test/check [{:name "creates and starts a canonical context"
+              :test (fn [] (let [instance (annex/start-runtime :postgres :default {})]
+                           [(:lang instance) (:runtime instance) (:status (deref (:state instance)))]))
+              :expected [:postgres :default :started]}])
+
+^{:refer lang.core.script-annex/same-runtime?}
+(Test/check [{:name "compares a runtime's construction coordinate"
+              :test (fn [] (let [instance (runtime/rt-default {:lang :postgres})]
+                           [(annex/same-runtime? instance :postgres :default {})
+                            (annex/same-runtime? instance :xtalk :default {})]))
+              :expected [true false]}])
+
+^{:refer lang.core.script-annex/add-runtime-in}
+(Test/check [{:name "replaces a runtime while retaining the prior instance"
+              :test (fn [] (isolated (fn []
+                                       (let [first-runtime (runtime/rt-default {:lang :postgres})
+                                             second-runtime (runtime/rt-default {:lang :postgres})]
+                                         (annex/add-runtime-in (test-namespace) :one first-runtime)
+                                         (let [[previous current]
+                                               (annex/add-runtime-in (test-namespace) :one second-runtime)]
+                                           [(= first-runtime previous)
+                                            (= second-runtime current)
+                                            (:status (deref (:state first-runtime)))])))))
+              :expected [true true :stopped]}])
+
+^{:refer lang.core.script-annex/remove-runtime-in}
+(Test/check [{:name "stops and removes the selected runtime"
+              :test (fn [] (isolated (fn []
+                                       (let [instance (runtime/rt-default {:lang :postgres})]
+                                         (annex/add-runtime-in (test-namespace) :one instance)
+                                         [(= instance (annex/remove-runtime-in (test-namespace) :one))
+                                          (:status (deref (:state instance)))
+                                          (annex/runtime-in (test-namespace) :one)]))))
+              :expected [true :stopped nil]}])
+
+^{:refer lang.core.script-annex/start-tag-in}
+(Test/check [{:name "starts a registered tag and configures its module"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (let [[previous instance] (annex/start-tag-in (test-namespace) :one)]
+                                         [previous (:lang instance)
+                                          (get-in (annex/status-in (test-namespace)) [:active])]))))
+              :expected [nil :postgres #{:one}]}])
+
+^{:refer lang.core.script-annex/start-tag}
+(Test/check [{:name "starts a tag in the current namespace"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (:runtime (second (annex/start-tag :one))))))
+              :expected :default}])
+
+^{:refer lang.core.script-annex/stop-tag-in}
+(Test/check [{:name "stops a tag selected by full coordinate"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/start-tag-in (test-namespace) :one)
+                                       [(:status (deref (:state (annex/stop-tag-in (test-namespace) :one))))
+                                        (:active (annex/status-in (test-namespace)))])))
+              :expected [:stopped #{}]}])
+
+^{:refer lang.core.script-annex/stop-tag}
+(Test/check [{:name "stops a current-namespace tag"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (annex/start-tag :one)
+                                       (:status (deref (:state (annex/stop-tag :one)))))))
+              :expected :stopped}])
+
+^{:refer lang.core.script-annex/restart-tag-in}
+(Test/check [{:name "replaces a stopped tagged runtime"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (let [[_ first-runtime] (annex/start-tag-in (test-namespace) :one)
+                                             [_ second-runtime] (annex/restart-tag-in (test-namespace) :one)]
+                                         [(= first-runtime second-runtime)
+                                          (:status (deref (:state first-runtime)))
+                                          (:status (deref (:state second-runtime)))]))))
+              :expected [false :stopped :started]}])
+
+^{:refer lang.core.script-annex/restart-tag}
+(Test/check [{:name "restarts a current-namespace tag"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (annex/start-tag :one)
+                                       (:runtime (second (annex/restart-tag :one))))))
+              :expected :default}])
+
+^{:refer lang.core.script-annex/namespace-tags}
+(Test/check [{:name "selects only tags owned by one namespace"
+              :test (fn [] (annex/namespace-tags {['demo.a :one] true
+                                                   ['demo.a :two] true
+                                                   ['demo.b :three] true}
+                                                  'demo.a))
+              :expected #{:one :two}}])
+
+^{:refer lang.core.script-annex/status-in}
+(Test/check [{:name "separates registered and active tag sets"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/start-tag-in (test-namespace) :one)
+                                       (annex/status-in (test-namespace)))))
+              :expected {:registered #{:one} :active #{:one}}}])
+
+^{:refer lang.core.script-annex/status}
+(Test/check [{:name "reports current-namespace state"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (annex/status))))
+              :expected {:registered #{:one} :active #{}}}])
+
+^{:refer lang.core.script-annex/start-all-in}
+(Test/check [{:name "starts every registered tag"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (register-default :two)
+                                       [(set (keys (annex/start-all-in (test-namespace))))
+                                        (:active (annex/status-in (test-namespace)))])))
+              :expected [#{:one :two} #{:one :two}]}])
+
+^{:refer lang.core.script-annex/start-all}
+(Test/check [{:name "starts every current-namespace tag"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (set (keys (annex/start-all))))) )
+              :expected #{:one}}])
+
+^{:refer lang.core.script-annex/stop-all-in}
+(Test/check [{:name "stops every active tag"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/start-tag-in (test-namespace) :one)
+                                       [(set (keys (annex/stop-all-in (test-namespace))))
+                                        (:active (annex/status-in (test-namespace)))])))
+              :expected [#{:one} #{}]}])
+
+^{:refer lang.core.script-annex/stop-all}
+(Test/check [{:name "stops every current-namespace active tag"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (annex/start-tag :one)
+                                       (set (keys (annex/stop-all))))))
+              :expected #{:one}}])
+
+^{:refer lang.core.script-annex/restart-all-in}
+(Test/check [{:name "replaces every active runtime"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/start-tag-in (test-namespace) :one)
+                                       [(set (keys (annex/restart-all-in (test-namespace))))
+                                        (:active (annex/status-in (test-namespace)))])))
+              :expected [#{:one} #{:one}]}])
+
+^{:refer lang.core.script-annex/restart-all}
+(Test/check [{:name "restarts every current-namespace tag"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (annex/start-tag :one)
+                                       (set (keys (annex/restart-all))))))
+              :expected #{:one}}])
+
+^{:refer lang.core.script-annex/clear-in}
+(Test/check [{:name "stops and removes a namespace's tags"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/start-tag-in (test-namespace) :one)
+                                       (annex/clear-in (test-namespace)))))
+              :expected {:registered #{} :active #{}}}])
+
+^{:refer lang.core.script-annex/clear}
+(Test/check [{:name "clears current-namespace tags"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (annex/clear))))
+              :expected {:registered #{} :active #{}}}])
+
+^{:refer lang.core.script-annex/eval-tag-in}
+(Test/check [{:name "compiles a form before executing it in the tagged runtime"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/start-tag-in (test-namespace) :one)
+                                       (annex/eval-tag-in (test-namespace) :one '(+ 1 2)))))
+              :expected "1 + 2"}])
+
+^{:refer lang.core.script-annex/eval-tag}
+(Test/check [{:name "evaluates through a current-namespace tagged runtime"
+              :test (fn [] (isolated (fn []
+                                       (annex/register-tag :one :postgres :default {})
+                                       (annex/start-tag :one)
+                                       (annex/eval-tag :one '(+ 1 2)))))
+              :expected "1 + 2"}])
+
+^{:refer lang.core.script-annex/script-ext-form}
+(Test/check [{:name "builds registration and start forms for a tagged script"
+              :test (fn [] (map first (rest (annex/script-ext-form 'demo.source [:one :postgres] {}))))
+              :expected ['lang.core.script-annex/register-tag-in
+                         'lang.core.script-annex/start-tag-in]}])
+
+^{:refer lang.core.script-annex/script-eval-form}
+(Test/check [{:name "builds a tagged evaluation form only for vector tags"
+              :test (fn [] [(first (annex/script-eval-form 'demo.source [:one] '(+ 1 2)))
+                            (annex/script-eval-form 'demo.source :one '(+ 1 2))])
+              :expected ['lang.core.script-annex/eval-tag-in nil]}])
+
+^{:refer lang.core.script-annex/script+}
+(Test/check [{:name "expands to portable tagged script setup"
+              :test (fn [] (first (macroexpand-1 '(annex/script+ [:one :postgres]))))
+              :expected 'do}])
+
+^{:refer lang.core.script-annex/!}
+(Test/check [{:name "expands to portable tagged evaluation"
+              :test (fn [] (first (macroexpand-1 '(annex/! [:one] (+ 1 2)))))
+              :expected 'lang.core.script-annex/eval-tag-in}])
+
+^{:refer lang.core.script-annex/annex:start}
+(Test/check [{:name "starts an explicit namespace coordinate through the archive surface"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (:runtime (second (annex/annex:start :one (test-namespace)))))))
+              :expected :default}])
+
+^{:refer lang.core.script-annex/annex:get}
+(Test/check [{:name "gets an explicit namespace runtime through the archive surface"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/annex:start :one (test-namespace))
+                                       (:lang (annex/annex:get :one (test-namespace))))))
+              :expected :postgres}])
+
+^{:refer lang.core.script-annex/annex:stop}
+(Test/check [{:name "stops an explicit namespace runtime through the archive surface"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/annex:start :one (test-namespace))
+                                       (:status (deref (:state (annex/annex:stop :one (test-namespace))))))))
+              :expected :stopped}])
+
+^{:refer lang.core.script-annex/annex:start-all}
+(Test/check [{:name "starts every explicit namespace tag through the archive surface"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (set (keys (annex/annex:start-all (test-namespace)))))))
+              :expected #{:one}}])
+
+^{:refer lang.core.script-annex/annex:stop-all}
+(Test/check [{:name "stops every explicit namespace tag through the archive surface"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/annex:start-all (test-namespace))
+                                       (set (keys (annex/annex:stop-all (test-namespace)))))))
+              :expected #{:one}}])
+
+^{:refer lang.core.script-annex/annex:restart-all}
+(Test/check [{:name "restarts every explicit namespace tag through the archive surface"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/annex:start-all (test-namespace))
+                                       (set (keys (annex/annex:restart-all (test-namespace)))))))
+              :expected #{:one}}])
+
+^{:refer lang.core.script-annex/annex:list}
+(Test/check [{:name "lists explicit namespace tag state through the archive surface"
+              :test (fn [] (isolated (fn []
+                                       (register-default :one)
+                                       (annex/annex:list (test-namespace)))))
+              :expected {:registered #{:one} :active #{}}}])

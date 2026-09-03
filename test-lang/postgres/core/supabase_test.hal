@@ -1,0 +1,58 @@
+(ns postgres.core.supabase-test
+  (:require [lang.model.v1.spec-postgres :as postgres]
+            [lang.core.script :as script]
+            [postgres.core.supabase :as supabase]))
+
+^{:refer postgres.core.supabase/auth-uid}
+(Test/check [{:name "registers auth-uid as a composable PostgreSQL source macro"
+              :test (fn [] (let [entry (get-in (deref script/+modules+)
+                                                ['postgres.core.supabase :fragment 'auth-uid])]
+                             [(fn? (:template entry))
+                              ((:template entry))]))
+              :expected [true '(auth.uid)]}])
+
+^{:refer postgres.core.supabase/grant-roles}
+(Test/check [{:name "normalizes Supabase grant categories to concrete PostgreSQL roles"
+              :test (fn [] [(supabase/grant-roles :all)
+                            (supabase/grant-roles :auth)
+                            (supabase/grant-roles :admin)])
+              :expected [['anon 'authenticated 'service_role]
+                         ['authenticated 'service_role]
+                         ['service_role]]}])
+
+^{:refer postgres.core.supabase/transform-entry-defn}
+(Test/check [{:name "adds composed revoke and execute grants to a function entry"
+              :test (fn [] (let [output
+                                  (supabase/transform-entry-defn
+                                   "BODY"
+                                   {:selection postgres/+selection+
+                                    :entry {:id 'ping
+                                            :static/schema "scratch_v0"
+                                            :static/input []
+                                            :api/meta {:sb/grant :all}}
+                                    :mopts {:lang :postgres}})]
+                           [(str/starts-with? output "BODY\nREVOKE ALL ON FUNCTION \"scratch_v0\".ping() FROM PUBLIC;")
+                            (str/includes? output "GRANT EXECUTE ON FUNCTION \"scratch_v0\".ping() TO anon,authenticated,service_role;")]))
+              :expected [true true]}])
+
+^{:refer postgres.core.supabase/transform-entry-deftype}
+(Test/check [{:name "adds composed RLS and access statements to a table entry"
+              :test (fn [] (let [output
+                                  (supabase/transform-entry-deftype
+                                   "BODY"
+                                   {:selection postgres/+selection+
+                                    :entry {:id 'Log
+                                            :static/schema "scratch_v0"
+                                            :api/meta {:sb/rls true
+                                                       :sb/access {:auth :select :anon :none}}}
+                                    :mopts {:lang :postgres}})]
+                           [(str/includes? output "ALTER TABLE \"scratch_v0\".\"Log\" ENABLE ROW LEVEL SECURITY")
+                            (str/includes? output "GRANT SELECT ON TABLE \"scratch_v0\".\"Log\" TO authenticated;")
+                            (not (str/includes? output " TO anon"))]))
+              :expected [true true true]}])
+
+^{:refer postgres.core.supabase/transform-entry}
+(Test/check [{:name "dispatches configured transforms by hydrated declaration kind"
+              :test (fn [] [(supabase/transform-entry "BODY" {:entry {:op-key :defn :id 'ping}})
+                            (supabase/transform-entry "BODY" {:entry {:op-key :unknown :id 'ping}})])
+              :expected ["BODY" "BODY"]}])

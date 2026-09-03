@@ -1,0 +1,51 @@
+(ns lang.model.v1.spec-postgres.postgres-common-tracker)
+
+(defn tracker-string
+  "Formats archived PostgreSQL tracker metadata."
+  [tracker]
+  (let [name (:name tracker)
+        values (concat (if (:disable tracker) [[":disable" (:disable tracker)]] [])
+                       (if (:in tracker) [[":in" true]] [])
+                       (if (:out tracker) [[":out" true]] []))
+        body (str/join ", " (map (fn [entry]
+                                    (str (first entry) " " (second entry)))
+                                  values))]
+    (str "#pg.tracker [" name "] {" body "}")))
+
+(defn add-tracker
+  "Attaches tracker metadata while enforcing disabled and required tracking."
+  [params tracker spec operation]
+  (if (get (:disable tracker) operation)
+    (throw (ex :syntax {:op operation :spec spec}
+               :ex/message "Tracker operation is disabled"))
+    (cond (= :ignore (:track params)) params
+          (and (:in tracker)
+               (not (:track params))
+               (not (get (:ignore tracker) operation)))
+          (throw (ex :syntax {:spec spec}
+                     :ex/message "The :track key is required for this spec"))
+          :else (assoc params :static/tracker tracker))))
+
+(defn tracker-map
+  [tracker direction]
+  (or (get-in tracker [:in direction]) {}))
+
+(defn tracker-map-output
+  [tracker direction track]
+  (let [values (tracker-map tracker direction)]
+    (if (seq values)
+      (reduce-kv (fn [result key _]
+                   (assoc result key (list :->> track (str/snake-case (name key)))))
+                 {}
+                 values)
+      nil)))
+
+(defn tracker-map-in
+  "Creates the archived insert tracking map."
+  [params]
+  (tracker-map-output (:static/tracker params) :create (:track params)))
+
+(defn tracker-map-modify
+  "Creates the archived modify tracking map."
+  [params]
+  (tracker-map-output (:static/tracker params) :modify (:track params)))

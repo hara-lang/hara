@@ -1,0 +1,310 @@
+(ns code.manage.unit.test-doc-test
+  (:use code.test)
+  (:require [code.manage.unit.test-doc :as test-doc]
+            [code.framework.reader :as reader]
+            [code.deploy.stage :as stage]))
+
+(def source
+  "(ns demo.core-test (:use code.test) (:require [demo.core :as core]))\n\n(def results [(fact \"nested\" (core/run))])\n\n^{:refer demo.core/run}\n(fact \"runs\" (core/run) => 42)\n\n(pr-str (run {:namespace \"demo.core-test\"}))\n")
+
+(def analysis
+  (test-doc/analyse-test-source source))
+
+(def first-form
+  (first (:form-records analysis)))
+
+(def fact-value
+  {:start 10
+   :title "runs"
+   :refer 'demo.core/run
+   :meta {:refer 'demo.core/run}
+   :checked true
+   :source "(fact \"runs\" (core/run) => 42)"})
+
+^{:refer code.manage.unit.test-doc/mapv-loop}
+(Test/register
+ {:desc "maps values with an explicit indexed loop"
+  :test (fn [] (test-doc/mapv-loop (fn [value] (* value 2)) [1 2 3]))
+  :expected [2 4 6]})
+
+^{:refer code.manage.unit.test-doc/skip-reader-layout}
+(Test/register
+ {:desc "skips whitespace and comment layout before a reader value"
+  :test (fn [] (test-doc/skip-reader-layout " ;comment\nvalue" 0))
+  :expected 10})
+
+^{:refer code.manage.unit.test-doc/tagged-reader-end}
+(Test/register
+ {:desc "finds the end of a tagged reader token"
+  :test (fn [] [(test-doc/tagged-reader-end "#ptr value" 0) (test-doc/tagged-reader-end "#" 0)])
+  :expected [4 nil]})
+
+^{:refer code.manage.unit.test-doc/normalize-reader-macros}
+(Test/register
+ {:desc "canonicalizes #ptr while preserving strings and comments"
+  :test (fn [] (test-doc/normalize-reader-macros "(def a #ptr value)\n; #ptr comment\n(def b \"#ptr string\")"))
+  :expected "(def a (pointer value))\n; #ptr comment\n(def b \"#ptr string\")"})
+
+^{:refer code.manage.unit.test-doc/analyse-test-source}
+(Test/register
+ {:desc "analyses a test source through the native reader"
+  :test (fn [] [(= (quote demo.core-test) (:namespace analysis)) (vector? (:form-records analysis)) (= source (:source analysis))])
+  :expected [true true true]})
+
+^{:refer code.manage.unit.test-doc/form-name}
+(Test/register
+ {:desc "reads the string name of a form"
+  :test (fn [] [(test-doc/form-name first-form) (test-doc/form-name {:form :value})])
+  :expected ["ns" nil]})
+
+^{:refer code.manage.unit.test-doc/form-definition-name}
+(Test/register
+ {:desc "reads def and defonce binding names"
+  :test (fn [] [(test-doc/form-definition-name {:form (quote (def results []))}) (test-doc/form-definition-name {:form (quote (fact "x"))})])
+  :expected ["results" nil]})
+
+^{:refer code.manage.unit.test-doc/results-form?}
+(Test/register
+ {:desc "recognizes the results binding container"
+  :test (fn [] [(test-doc/results-form? {:form (quote (def results []))}) (test-doc/results-form? {:form (quote (def other []))})])
+  :expected [true false]})
+
+^{:refer code.manage.unit.test-doc/nested-container-record?}
+(Test/register
+ {:desc "recognizes nested collection records"
+  :test (fn [] [(test-doc/nested-container-record? {:form []}) (test-doc/nested-container-record? {:form (quote (fact "x"))})])
+  :expected [true false]})
+
+^{:refer code.manage.unit.test-doc/form-text}
+(Test/register
+ {:desc "projects a record span from source"
+  :test (fn [] (test-doc/form-text "abcdef" {:end {:offset 4} :start {:offset 1}}))
+  :expected "bcd"})
+
+^{:refer code.manage.unit.test-doc/facts-below}
+(Test/register
+ {:desc "walks nested records and marks discovered facts"
+  :test (fn [] (let [record (first (reader/form-records (read-forms-spanned "[ (fact \"one\") ]")))] [(count (test-doc/facts-below "[ (fact \"one\") ]" "demo_test.hal" (:children record))) (:nested (first (test-doc/facts-below "[ (fact \"one\") ]" "demo_test.hal" (:children record))))]))
+  :expected [1 true]})
+
+^{:refer code.manage.unit.test-doc/results-facts}
+(Test/register
+ {:desc "extracts facts nested under the results definition"
+  :test (fn [] (let [result-form (second (:form-records analysis)) facts (test-doc/results-facts source "demo_test.hal" result-form)] [(count facts) (:results (first facts))]))
+  :expected [1 true]})
+
+^{:refer code.manage.unit.test-doc/direct-facts-from-forms}
+(Test/register
+ {:desc "extracts direct top-level facts without nested result duplication"
+  :test (fn [] (let [facts (test-doc/direct-facts-from-forms source "demo_test.hal" (:form-records analysis))] [(count facts) (:title (first facts))]))
+  :expected [1 "runs"]})
+
+^{:refer code.manage.unit.test-doc/facts-from-analysis}
+(Test/register
+ {:desc "combines direct and results facts in source order"
+  :test (fn [] (let [facts (test-doc/facts-from-analysis analysis "demo_test.hal")] [(count facts) (:title (first facts)) (:results (first facts)) (:title (second facts))]))
+  :expected [2 "nested" true "runs"]})
+
+^{:refer code.manage.unit.test-doc/require-entry}
+(Test/register
+ {:desc "normalizes namespace aliases and refers"
+  :test (fn [] [(test-doc/require-entry (quote demo.core)) (test-doc/require-entry (quote [demo.core :as core :refer [run]]))])
+  :expected [{:alias nil :namespace (quote demo.core) :refers []} {:alias (quote core) :namespace (quote demo.core) :refers [(quote run)]}]})
+
+^{:refer code.manage.unit.test-doc/namespace-routes}
+(Test/register
+ {:desc "builds alias and referred symbol routes"
+  :test (fn [] (test-doc/namespace-routes first-form))
+  :expected {:refers {} :aliases {(quote core) (quote demo.core)}}})
+
+^{:refer code.manage.unit.test-doc/symbols-in}
+(Test/register
+ {:desc "walks symbols across nested collection values"
+  :test (fn [] (test-doc/symbols-in (quote (demo/run {:call demo/stop}))))
+  :expected [(quote demo/run) (quote demo/stop)]})
+
+^{:refer code.manage.unit.test-doc/qualified-parts}
+(Test/register
+ {:desc "splits qualified symbols and leaves unqualified values empty"
+  :test (fn [] [(test-doc/qualified-parts (quote demo/run)) (test-doc/qualified-parts (quote run))])
+  :expected [["demo" "run"] []]})
+
+^{:refer code.manage.unit.test-doc/routed-reference}
+(Test/register
+ {:desc "resolves aliases and refuses unknown unqualified names"
+  :test (fn [] (let [routes {:refers {} :aliases {(quote core) (quote demo.core)}}] [(test-doc/routed-reference routes (quote core/run)) (test-doc/routed-reference routes (quote run))]))
+  :expected [(quote demo.core/run) nil]})
+
+^{:refer code.manage.unit.test-doc/reference-candidates}
+(Test/register
+ {:desc "collects resolved symbol candidates from a fact form"
+  :test (fn [] (test-doc/reference-candidates {:refers {} :aliases {(quote core) (quote demo.core)}} {:value (quote (fact "x" (core/run)))}))
+  :expected [(quote demo.core/run)]})
+
+^{:refer code.manage.unit.test-doc/document-fact}
+(Test/register
+ {:desc "preserves explicit references and source provenance"
+  :test (fn [] (select-keys (test-doc/document-fact {} fact-value) [:order :title :refer :refer-source :original-refer :checked]))
+  :expected {:checked true :title "runs" :order 10 :refer-source :metadata :original-refer true :refer (quote demo.core/run)}})
+
+^{:refer code.manage.unit.test-doc/noncanonical-fact?}
+(Test/register
+ {:desc "flags inferred and results facts as noncanonical"
+  :test (fn [] [(test-doc/noncanonical-fact? {:results true :original-refer true}) (test-doc/noncanonical-fact? {:results false :original-refer true}) (test-doc/noncanonical-fact? {:results false :original-refer false})])
+  :expected [true false true]})
+
+^{:refer code.manage.unit.test-doc/namespace-form}
+(Test/register
+ {:desc "finds a namespace form in a form sequence"
+  :test (fn [] (= first-form (test-doc/namespace-form (:form-records analysis))))
+  :expected true})
+
+^{:refer code.manage.unit.test-doc/run-form?}
+(Test/register
+ {:desc "recognizes runner forms by their source text"
+  :test (fn [] [(test-doc/run-form? {:text "(pr-str (run {}))" :form (quote (pr-str (run {})))}) (test-doc/run-form? {:text "(pr-str value)" :form (quote (pr-str value))})])
+  :expected [true false]})
+
+^{:refer code.manage.unit.test-doc/support-form?}
+(Test/register
+ {:desc "keeps non-test support forms and excludes namespace facts and runners"
+  :test (fn [] [(test-doc/support-form? source "demo_test.hal" first-form) (test-doc/support-form? source "demo_test.hal" {:end {:offset 12} :start {:offset 0} :form (quote (def helper 1))})])
+  :expected [false true]})
+
+^{:refer code.manage.unit.test-doc/support-forms}
+(Test/register
+ {:desc "returns source-preserving support form records"
+  :test (fn [] (let [support (test-doc/support-forms analysis "demo_test.hal")] [(count support) (if (empty? support) false (str/includes? (:source (first support)) "def results"))]))
+  :expected [0 false]})
+
+^{:refer code.manage.unit.test-doc/document}
+(Test/register
+ {:desc "exports a document for inferred noncanonical facts"
+  :test (fn [] (let [unit {:source "(ns demo-test (:use code.test) (:require [demo :as d]))\n(fact \"runs\" (d/run))\n" :test-path "demo_test.hal" :path "demo_test.hal"}] (select-keys (test-doc/document unit) [:format :namespace :noncanonical :unresolved])))
+  :expected {:format "code.manage.test-doc/2" :noncanonical 1 :namespace (quote demo-test) :unresolved 0}})
+
+^{:refer code.manage.unit.test-doc/document-result}
+(Test/register
+ {:desc "captures document failures as stable error results"
+  :test (fn [] (select-keys (test-doc/document-result {:source "(ns demo)\n#unknown value" :path "demo_test.hal"}) [:status :path]))
+  :expected {:status :error :path "demo_test.hal"}})
+
+^{:refer code.manage.unit.test-doc/normalized-meta}
+(Test/register
+ {:desc "replaces old reference metadata with canonical refer metadata"
+  :test (fn [] (test-doc/normalized-meta {:meta {:added "1.0" :refer (quote old)} :refer (quote demo/run)}))
+  :expected {:added "1.0" :refer (quote demo/run)}})
+
+^{:refer code.manage.unit.test-doc/render-fact}
+(Test/register
+ {:desc "renders an explicitly resolved fact"
+  :test (fn [] (str/includes? (test-doc/render-fact fact-value) "(fact \"runs\""))
+  :expected true})
+
+^{:refer code.manage.unit.test-doc/render-entry}
+(Test/register
+ {:desc "renders fact entries and support entries"
+  :test (fn [] [(str/includes? (test-doc/render-entry {:kind :fact :fact fact-value}) "(fact") (test-doc/render-entry {:kind :support :source "(def helper 1)"})])
+  :expected [true "(def helper 1)"]})
+
+^{:refer code.manage.unit.test-doc/render}
+(Test/register
+ {:desc "renders a canonical document with the legacy runner"
+  :test (fn [] (let [document {:namespace-form "(ns demo-test)" :facts [fact-value] :namespace (quote demo-test) :support-forms []}] [(str/includes? (test-doc/render document) "^{:refer demo.core/run}") (str/includes? (test-doc/render document) "(pr-str (run")]))
+  :expected [true true]})
+
+^{:refer code.manage.unit.test-doc/replace-suffix}
+(Test/register
+ {:desc "replaces only a matching terminal suffix"
+  :test (fn [] [(test-doc/replace-suffix "demo.edn" ".edn" ".hal") (test-doc/replace-suffix "demo.txt" ".edn" ".hal")])
+  :expected ["demo.hal" "demo.txt"]})
+
+^{:refer code.manage.unit.test-doc/strip-leading-separators}
+(Test/register
+ {:desc "removes leading path separators"
+  :test (fn [] [(test-doc/strip-leading-separators "/a/b") (test-doc/strip-leading-separators "\\a\\b")])
+  :expected ["a/b" "a\\b"]})
+
+^{:refer code.manage.unit.test-doc/relative-path}
+(Test/register
+ {:desc "returns a root-relative path and rejects escape paths"
+  :test (fn [] [(test-doc/relative-path "/root/a/demo.hal" "/root") (try (test-doc/relative-path "/other/demo.hal" "/root") false (catch error true))])
+  :expected ["a/demo.hal" true]})
+
+^{:refer code.manage.unit.test-doc/target-path}
+(Test/register
+ {:desc "maps a source path to a document path"
+  :test (fn [] (test-doc/target-path "/root/test/demo_test.hal" "/root/test" "/root/docs" ".edn"))
+  :expected "/root/docs/demo_test.edn"})
+
+^{:refer code.manage.unit.test-doc/test-units}
+(Test/register
+ {:desc "discovers only code.test path-matched test units"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-test-"}))] (try (deref (File/write (File/join root "demo_test.hal") (String/encode-utf8 "(ns demo-test) (:use code.test)"))) (deref (File/write (File/join root "ignore_test.hal") (String/encode-utf8 "(ns ignore)"))) (count (test-doc/test-units root)) (finally (stage/delete-tree root)))))
+  :expected 1})
+
+^{:refer code.manage.unit.test-doc/write-text}
+(Test/register
+ {:desc "writes UTF-8 text and returns the written path"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-write-"})) path (File/join root "nested/value.txt")] (try [(str/ends-with? (test-doc/write-text path "value") "nested/value.txt") (String/decode-utf8 (deref (File/read path)))] (finally (stage/delete-tree root)))))
+  :expected [true "value"]})
+
+^{:refer code.manage.unit.test-doc/export-one}
+(Test/register
+ {:desc "exports one noncanonical test document"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-export-"})) test-path (File/join root "test/demo_test.hal") doc-root (File/join root "docs")] (try (deref (File/write test-path (String/encode-utf8 "(ns demo-test (:use code.test) (:require [demo :as demo])) (fact \"runs\" (demo/run))") {:mode :replace :parents? true})) (:status (test-doc/export-one {:source "(ns demo-test (:use code.test) (:require [demo :as demo])) (fact \"runs\" (demo/run))" :test-path "demo_test.hal" :path test-path} {:document-root doc-root :test-root (File/join root "test")})) (finally (stage/delete-tree root)))))
+  :expected :documented})
+
+^{:refer code.manage.unit.test-doc/export}
+(Test/register
+ {:desc "exports all eligible test units"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-export-all-"})) test-root (File/join root "test")] (try (deref (File/write (File/join test-root "demo_test.hal") (String/encode-utf8 "(ns demo-test (:use code.test) (:require [demo :as demo])) (fact \"runs\" (demo/run))") {:mode :replace :parents? true})) (count (test-doc/export test-root {:document-root (File/join root "docs")})) (finally (stage/delete-tree root)))))
+  :expected 1})
+
+^{:refer code.manage.unit.test-doc/document-files}
+(Test/register
+ {:desc "lists EDN document files recursively"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-files-"}))] (try (deref (File/write (File/join root "one.edn") (String/encode-utf8 "{}") {:mode :replace :parents? true})) (deref (File/write (File/join root "two.txt") (String/encode-utf8 "{}") {:mode :replace :parents? true})) (mapv (fn [path] (str/ends-with? (str path) ".edn")) (test-doc/document-files root)) (finally (stage/delete-tree root)))))
+  :expected [true]})
+
+^{:refer code.manage.unit.test-doc/read-document}
+(Test/register
+ {:desc "reads only the supported document format"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-read-"})) path (File/join root "one.edn") value {:format "code.manage.test-doc/2" :unresolved 0}] (try (deref (File/write path (String/encode-utf8 (pr-str value)))) (test-doc/read-document path) (finally (stage/delete-tree root)))))
+  :expected {:format "code.manage.test-doc/2" :unresolved 0}})
+
+^{:refer code.manage.unit.test-doc/generate-one}
+(Test/register
+ {:desc "generates a Hara test from a resolved document"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-generate-"})) doc-root (File/join root "docs") path (File/join doc-root "demo_test.edn") value {:namespace-form "(ns demo-test)" :format "code.manage.test-doc/2" :facts [fact-value] :namespace (quote demo-test) :support-forms [] :test-path "demo_test.hal" :unresolved 0}] (try (deref (File/write path (String/encode-utf8 (pr-str value)) {:mode :replace :parents? true})) (:status (test-doc/generate-one path {:document-root doc-root :generated-root (File/join root "generated")})) (finally (stage/delete-tree root)))))
+  :expected :generated})
+
+^{:refer code.manage.unit.test-doc/generate}
+(Test/register
+ {:desc "generates every supported document"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-generate-all-"})) doc-root (File/join root "docs") value {:namespace-form "(ns demo-test)" :format "code.manage.test-doc/2" :facts [fact-value] :namespace (quote demo-test) :support-forms [] :test-path "demo_test.hal" :unresolved 0}] (try (deref (File/write (File/join doc-root "demo_test.edn") (String/encode-utf8 (pr-str value)) {:mode :replace :parents? true})) (count (test-doc/generate doc-root {:generated-root (File/join root "generated")})) (finally (stage/delete-tree root)))))
+  :expected 1})
+
+^{:refer code.manage.unit.test-doc/validate-generated}
+(Test/register
+ {:desc "delegates generated validation to the injected native validator"
+  :test (fn [] (test-doc/validate-generated "/generated" {:mode :focused :validate (fn [path options] [path (:mode options)])}))
+  :expected ["/generated" :focused]})
+
+^{:refer code.manage.unit.test-doc/validation-success?}
+(Test/register
+ {:desc "accepts boolean pass status and zero-exit results"
+  :test (fn [] [(test-doc/validation-success? true) (test-doc/validation-success? {:status :pass}) (test-doc/validation-success? {:exit 0}) (test-doc/validation-success? {:exit 1})])
+  :expected [true true true false]})
+
+^{:refer code.manage.unit.test-doc/delete-verified}
+(Test/register
+ {:desc "deletes only generated test paths"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-delete-"})) path (File/join root "demo_test.hal")] (try (deref (File/write path (String/encode-utf8 "source"))) (let [deleted (test-doc/delete-verified [{:status :generated :test-path "demo_test.hal"}] root)] [(count deleted) (deref (File/exists? path))]) (finally (stage/delete-tree root)))))
+  :expected [1 false]})
+
+^{:refer code.manage.unit.test-doc/migrate}
+(Test/register
+ {:desc "deletes source tests only after generated validation passes"
+  :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "manage-doc-migrate-"})) test-root (File/join root "test") test-path (File/join test-root "demo_test.hal")] (try (deref (File/write test-path (String/encode-utf8 "(ns demo-test (:use code.test) (:require [demo :as demo])) (fact \"runs\" (demo/run))") {:mode :replace :parents? true})) (let [result (test-doc/migrate test-root {:document-root (File/join root "docs") :project-root root :validate (fn [path options] {:exit 0}) :generated-root (File/join root "generated")})] [(get-in result [:validation :exit]) (deref (File/exists? test-path)) (count (:deleted result))]) (finally (stage/delete-tree root)))))
+  :expected [0 false 1]})

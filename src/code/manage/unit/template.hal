@@ -1,0 +1,296 @@
+(ns code.manage.unit.template
+  (:config {:role :internal})
+  (:require [code.manage.context :as context]
+            [work.flow.task :as task]
+            [work.flow.task.result :as result]))
+
+(def ^{:public true} schema-id "code.manage.task/0-alpha")
+
+(defn ^{:public true} operation-id
+  [operation]
+  (keyword (str "code.manage/" (name operation))))
+
+(defn ^{:public true} code-unit?
+  [value]
+  (and (map? value)
+       (has? value :path)
+       (has? value :source)))
+
+(defn ^{:public true} unit-namespace
+  [unit]
+  (or (:namespace unit)
+      (:path unit)
+      (:name unit)))
+
+(defn ^{:public true} task-input-units
+  [input]
+  (cond
+    (and (map? input) (has? input :units))
+    (vec (or (:units input) []))
+    (and (map? input) (has? input :unit))
+    [(:unit input)]
+    (code-unit? input)
+    [input]
+    (vector? input)
+    input
+    (nil? input)
+    []
+    :else
+    [input]))
+
+(defn ^{:public true} task-input-options
+  [input defaults]
+  (merge (or defaults {})
+         (if (and (map? input) (has? input :options))
+           (or (:options input) {})
+           {})))
+
+(defn task-input-selector
+  [input]
+  (if (and (map? input) (has? input :selector))
+    (:selector input)
+    :all))
+
+(defn ^{:public true} task-item
+  [unit options]
+  (let [namespace (unit-namespace unit)]
+    {:item/id namespace
+     :item/value {:code.manage/unit
+                  (if (and namespace (nil? (:namespace unit)))
+                    (assoc unit :namespace namespace)
+                    unit)
+                  :code.manage/options options
+                  :code.manage/namespace namespace
+                  :code.manage/path (:path unit)}}))
+
+(defn tasklet-subject-unit
+  [subject]
+  (:code.manage/unit subject))
+
+(defn tasklet-subject-options
+  [subject]
+  (or (:code.manage/options subject) {}))
+
+(defn ^{:public true} invoke-tasklet
+  [tasklet argcount unit options]
+  (case argcount
+    1 (tasklet unit)
+    2 (tasklet unit options)
+    (throw (ex :argument {:argcount argcount}
+               :ex/message "code.manage tasklets support one or two arguments"))))
+
+(defn ^{:public true} result-record
+  [item]
+  (if (and (map? item) (has? item :item/value))
+    (:item/value item)
+    item))
+
+(defn ^{:public true} result-envelope-key?
+  [key]
+  (or (= key :status)
+      (and (or (keyword? key) (symbol? key))
+           (= "item" (namespace key)))))
+
+(defn ^{:public true} flattened-result-data
+  [record]
+  (reduce
+   (fn [output entry]
+     (let [key (first entry)]
+       (if (result-envelope-key? key)
+         output
+         (assoc output key (second entry)))))
+   {}
+   record))
+
+(defn item-result
+  [item tasklet argcount]
+  (let [unit (tasklet-subject-unit (:item/value item))
+        options (tasklet-subject-options (:item/value item))
+        item-id (:item/id item)]
+    (try
+      (result/normalise
+       item-id
+       (invoke-tasklet tasklet argcount unit options))
+      (catch error
+        (result/error-record item-id error)))))
+
+(defn legacy-record
+  "Restores the historical :data boundary for map-valued tasklet results."
+  [record]
+  (if (has? record :data)
+    record
+    (assoc record :data (flattened-result-data record))))
+
+(defn legacy-item
+  [record]
+  {:item/id (:item/id record)
+   :item/value (legacy-record record)})
+
+(defn legacy-input-item
+  [record]
+  {:item/id (:item/id record)
+   :item/value (:item/input record)})
+
+(defn ^{:public true} batch-records
+  [batch]
+  (cond
+    (and (map? batch) (:data batch))
+    (batch-records (:data batch))
+    (and (map? batch) (:records batch))
+    (vec (:records batch))
+    (and (map? batch) (:results batch))
+    (vec (map (fn [entry]
+                (if (:item/value entry)
+                  (:item/value entry)
+                  entry))
+              (:results batch)))
+    (vector? batch)
+    batch
+    :else
+    []))
+
+(defn result-edit
+  [value]
+  (if (and (map? value) (has? value :after)) value nil))
+
+(defn result-findings
+  [value]
+  (cond
+    (and (map? value) (:finding value))
+    [(:finding value)]
+    (vector? value)
+    (vec (filter (fn [entry]
+                   (and (map? entry) (:kind entry)))
+                 value))
+    :else
+    []))
+
+(defn batch-summary
+  [operation records edits findings]
+  {:operation operation
+   :count (count records)
+   :changed (count (filter :changed edits))
+   :findings (count findings)
+   :warnings (count (filter (fn [record] (= :warn (:status record)))
+                            records))
+   :errors (count (filter (fn [record]
+                           (or (= :error (:status record))
+                               (= :critical (:status record))))
+                         records))})
+
+(defn ^{:public true} legacy-batch
+  [operation records]
+  (let [records (vec (map legacy-record records))
+        values (vec (map :data records))
+        edits (vec (filter identity (map result-edit values)))
+        findings (vec (mapcat result-findings values))
+        summary (assoc (batch-summary operation records edits findings)
+                       :items (count records)
+                       :results (count records))]
+    {:items (vec (map legacy-input-item records))
+     :results (vec (map legacy-item records))
+     :records records
+     :edits edits
+     :findings findings
+     :warnings (vec (filter (fn [record] (= :warn (:status record)))
+                            records))
+     :errors (vec (filter (fn [record]
+                            (or (= :error (:status record))
+                                (= :critical (:status record))))
+                          records))
+     :summary summary}))
+
+(defn ^{:public true} finalise-summary
+  [operation summary records results]
+  (assoc summary
+         :operation operation
+         :count (:items summary)))
+
+(defn selected?
+  [selector-value unit]
+  (or (task/matches? selector-value (:namespace unit))
+      (task/matches? selector-value (:path unit))))
+
+(defn ^{:public true} assert-task
+  [config]
+  (if (not (map? config))
+    (throw (ex :argument {:config config}
+               :ex/message "code.manage task configuration must be a map")))
+  (if (nil? (:operation config))
+    (throw (ex :dependency {}
+               :ex/message "code.manage task requires :operation")))
+  (if (nil? (get-in config [:main :fn]))
+    (throw (ex :dependency {:operation (:operation config)}
+               :ex/message "code.manage task requires :main :fn")))
+  (if (nil? (get-in config [:main :symbol]))
+    (throw (ex :dependency {:operation (:operation config)}
+               :ex/message "code.manage task requires :main :symbol")))
+  config)
+
+(defn compile-definition
+  [config]
+  (let [operation (:operation config)
+        id (or (:id config) (operation-id operation))
+        version (or (:version config) 1)
+        tasklet (get-in config [:main :fn])
+        argcount (or (get-in config [:main :argcount]) 2)
+        defaults (or (:params config) {})
+        runner
+        (fn [input _context]
+          (let [options (task-input-options input defaults)
+                selector-value (task-input-selector input)
+                units (filter (fn [unit]
+                                (selected? selector-value unit))
+                              (task-input-units input))
+                items (vec (map (fn [unit] (task-item unit options)) units))
+                records (vec (map (fn [item]
+                                    (assoc (item-result item tasklet argcount)
+                                           :item/input
+                                           (get-in item [:item/value :code.manage/unit])))
+                                  items))]
+            (legacy-batch operation records)))]
+    (assoc (task/compile {:id id
+                          :version version
+                          :on-error :record
+                          :run runner})
+           :code.manage/schema schema-id
+           :code.manage/operation operation
+           :code.manage/tasklet (get-in config [:main :symbol])
+           :code.manage/options config)))
+
+(defn ^{:public true} task
+  "Composes a code.manage operation as a native work.flow.task bundle."
+  [raw-config]
+  (compile-definition (assert-task raw-config)))
+
+(defn ^{:public true} task-definition
+  [bundle]
+  (:code.manage/options bundle))
+
+(defn ^{:public true} task?
+  [bundle]
+  (and (map? bundle)
+       (= schema-id (:code.manage/schema bundle))))
+
+(defn ^{:public true} task-operation
+  [bundle]
+  (:code.manage/operation bundle))
+
+(defn ^{:public true} tasklet-reference
+  [bundle]
+  (:code.manage/tasklet bundle))
+
+(defn ^{:public true} run-task
+  [task-value input]
+  (let [input (context/task-input input)
+        input (if (nil? (:units input))
+                (let [project (or (:project input)
+                                  (context/discover (or (:root input) (OS/cwd))))
+                      operation (task-operation task-value)]
+                  (assoc input
+                         :units (context/units-for project
+                                                    operation
+                                                    (:selector input))
+                         :project project))
+                input)]
+    (deref (task/invoke task-value input))))

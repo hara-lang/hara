@@ -1,0 +1,79 @@
+(ns lang.seedgen.common-xtalk-test (:use code.test) (:require [std.foundation.string :as str] [lang.seedgen.common-xtalk :as subject]))
+
+(def +canonical-case+ {:expect {:xtalk (quote (. obj ["a"]))} :id :basic :input (quote (x:get-key obj "a"))})
+
+(Test/check [{:name "recognizes grammar categories in the xtalk family" :expected [true false] :test (fn [] [(subject/xtalk-category? :xtalk-common) (subject/xtalk-category? :functional-core)])}])
+
+(Test/check [{:name "converts native var display names into symbols" :expected [(quote lang.common.grammar-xtalk/tf-get-key) (quote x:get-key) nil] :test (fn [] [(subject/coerce-symbol "#'lang.common.grammar-xtalk/tf-get-key") (subject/coerce-symbol (quote x:get-key)) (subject/coerce-symbol nil)])}])
+
+(Test/check [{:name "removes nil values without changing present entries" :expected {:false false :keep 1} :test (fn [] (subject/compact-map {:false false :drop nil :keep 1}))}])
+
+(Test/check [{:name "returns nil when no native var metadata is available" :expected nil :test (fn [] (subject/symbol-doc nil))}])
+
+(Test/check [{:name "returns grammar xtalk entries enriched with operation identity" :expected [true :xtalk-common :x-get-key] :test (fn [] (let [entries (subject/grammar-entries) entry (some (fn [value] (when (= :x-get-key (:op value)) value)) entries)] [(vector? entries) (:category entry) (:op entry)]))}])
+
+(Test/check [{:name "returns no files for a missing scan root" :expected [] :test (fn [] (subject/list-xtalk-files "/definitely-missing-seedgen-root"))}])
+
+(Test/check [{:name "extracts form kind and language from model filenames" :expected [{:kind :fn :lang :js} {:kind :com :lang :python} nil] :test (fn [] [(subject/parse-lang-file "fn_js.clj") (subject/parse-lang-file "com_PYTHON_test.clj") (subject/parse-lang-file "README.md")])}])
+
+(Test/check [{:name "returns an empty inventory for missing roots" :expected {} :test (fn [] (subject/collect-lang-files "/definitely-missing-seedgen-root" ["models"] :files :forms))}])
+
+(Test/check [{:name "returns xtalk categories in grammar order" :expected [true :xtalk-common true] :test (fn [] (let [value (subject/categories)] [(vector? value) (first value) (every? subject/xtalk-category? value)]))}])
+
+(Test/check [{:name "indexes grammar entries by operation keyword" :expected [:x-get-key :xtalk-common] :test (fn [] (let [value (subject/op-map)] [(:op (get value :x-get-key)) (:category (get value :x-get-key))]))}])
+
+(Test/check [{:name "returns sorted x-prefixed grammar symbols" :expected [true true true] :test (fn [] (let [value (subject/symbols)] [(vector? value) (has? (set value) (quote x:get-key)) (every? (fn [item] (str/starts-with? (name item) "x:")) value)]))}])
+
+(Test/check [{:name "lists registered default language books" :expected [true true true] :test (fn [] (let [value (subject/installed-languages)] [(vector? value) (has? (set value) :js) (has? (set value) :python)]))}])
+
+(Test/check [{:name "selects installed books inheriting from xtalk" :expected [true true true] :test (fn [] (let [value (subject/parent-languages)] [(vector? value) (has? (set value) :js) (has? (set value) :lua)]))}])
+
+(Test/check [{:name "filters an explicit audit selection to installed languages" :expected [:js] :test (fn [] (subject/languages [:js :missing-language]))}])
+
+(Test/check [{:name "reports special, implemented, and missing feature states" :expected [:implemented :implemented :missing] :test (fn [] [(subject/feature-status :js (quote x:return-run)) (subject/feature-status :js (quote x:get-key)) (subject/feature-status :js (quote x:not-a-real-feature))])}])
+
+(Test/check [{:name "builds a language by feature support matrix" :expected [#{:languages :features :status :summary} [:js] nil 2] :test (fn [] (let [value (subject/support {:langs [:dart :js] :features [(quote x:return-run) (quote x:get-key)]})] [(set (keys value)) (:languages value) (get-in value [:status :dart (quote x:return-run)]) (get-in value [:summary :js :implemented])]))}])
+
+(Test/check [{:name "accepts both project-shaped and direct root options" :expected ["/project" "/direct"] :test (fn [] [(subject/project-root {:project {:root "/project"}}) (subject/project-root {:root "/direct"})])}])
+
+(Test/check [{:name "returns model coverage grouped by language" :expected {} :test (fn [] (subject/model-inventory {:root "/definitely-missing-seedgen-root" :roots ["models"]}))}])
+
+(Test/check [{:name "returns test coverage grouped by language" :expected {} :test (fn [] (subject/test-inventory {:root "/definitely-missing-seedgen-root" :roots ["tests"]}))}])
+
+(Test/check [{:name "exposes runtime strategy and executable status" :expected [{:runtime? true :runtime-check-mode :batched :runtime-type :twostep :runtime-executable? false} {:runtime? true :runtime-check-mode :batched :runtime-type :twostep :runtime-executable? false}] :test (fn [] [(select-keys (get (subject/runtime-inventory {:langs [:dart :js]}) :dart) [:runtime? :runtime-executable? :runtime-type :runtime-check-mode]) {:runtime? true :runtime-check-mode :batched :runtime-type :twostep :runtime-executable? false}])}])
+
+(Test/check [{:name "returns spec support summary grouped by selected language" :expected [[:js] :js 1 1] :test (fn [] (let [value (subject/spec-inventory {:langs [:js] :features [(quote x:get-key)]})] [(vec (keys value)) (:lang (get value :js)) (:spec-feature-count (get value :js)) (:spec-implemented (get value :js))]))}])
+
+(Test/check [{:name "merges runtime, specification, model, and test status" :expected {:spec-feature-count 1 :ready? false :runtime-installed? true :test-count 0 :spec-implemented 1 :model-count 0 :spec-missing 0 :lang :js} :test (fn [] (let [value (get (subject/language-status {:langs [:js] :features [(quote x:get-key)]}) :js)] (select-keys value [:lang :runtime-installed? :model-count :test-count :spec-feature-count :spec-implemented :spec-missing :ready?])))}])
+
+(Test/check [{:name "summarizes selected language status counts" :expected {:tests-total 0 :runtime-installed 1 :languages 1 :spec-missing-total 0 :runtime-executable 1 :models-total 0 :ready 0} :test (fn [] (let [value (subject/coverage-summary {:langs [:js] :features [(quote x:get-key)]})] (select-keys value [:languages :runtime-installed :runtime-executable :ready :spec-missing-total :models-total :tests-total])))}])
+
+(Test/check [{:name "groups non-implemented features by language" :expected [true :missing false] :test (fn [] (let [value (subject/missing-by-language {:langs [:js] :features [(quote x:get-key) (quote x:not-real)]})] [(map? value) (get-in value [:js (quote x:not-real)]) (has? (get value :js) (quote x:get-key))]))}])
+
+(Test/check [{:name "groups non-implemented languages by feature" :expected [true {} :missing] :test (fn [] (let [value (subject/missing-by-feature {:langs [:js] :features [(quote x:get-key) (quote x:not-real)]})] [(map? value) (get value (quote x:get-key)) (get-in value [(quote x:not-real) :js])]))}])
+
+(Test/check [{:name "builds the inventory path from project root and relative path" :expected "/target/xtalk.edn" :test (fn [] (subject/inventory-path {:path "target/xtalk.edn" :project {:root "."}}))}])
+
+(Test/check [{:name "returns nil for a missing inventory file" :expected nil :test (fn [] (subject/read-inventory "/definitely-missing-seedgen-root/ops.edn"))}])
+
+(Test/check [{:name "prefers an x-prefixed symbol as the canonical symbol" :expected (quote x:item) :test (fn [] (subject/canonical-symbol-from-entry {:symbol #{(quote z:item) (quote x:item) (quote a:item)}}))}])
+
+(Test/check [{:name "normalizes one grammar entry while retaining authored fields" :expected {:macro (quote lang.common.grammar-xtalk/tf-get-key) :category :xtalk-common :canonical-symbol (quote x:get-key) :status :review :cases [+canonical-case+] :emit :macro :op :x-get-key} :test (fn [] (select-keys (subject/inventory-entry {:symbol #{(quote x:get-key)} :macro "#'lang.common.grammar-xtalk/tf-get-key" :category :xtalk-common :emit :macro :op :x-get-key} {:status :review :cases [+canonical-case+]}) [:op :category :canonical-symbol :macro :emit :status :cases]))}])
+
+(Test/check [{:name "preserves authored canonical cases when regenerating inventory" :expected {:cases [+canonical-case+] :doc "get-key transform"} :test (fn [] (let [entry (some (fn [value] (when (= :x-get-key (:op value)) value)) (subject/inventory-entries {:existing [{:cases [+canonical-case+] :doc "get-key transform" :op :x-get-key}]}))] (select-keys entry [:doc :cases])))}])
+
+(Test/check [{:name "renders inventory entries as newline-terminated EDN" :expected "[{:op :x}]\n" :test (fn [] (subject/render-inventory [{:op :x}]))}])
+
+(Test/check [{:name "generates an inventory without writing when requested" :expected [true "/definitely-missing-seedgen-root/config/xtalk/xtalk_ops.edn" true true] :test (fn [] (let [value (subject/generate-inventory {:root "/definitely-missing-seedgen-root" :write false})] [(map? value) (:path value) (pos? (:count value)) (string? (:path value))]))}])
+
+(Test/check [{:name "pads short display cells to a fixed width" :expected ["x  " "long"] :test (fn [] [(subject/pad-right "x" 3) (subject/pad-right "long" 3)])}])
+
+(Test/check [{:name "renders support states using the matrix marks" :expected ["Y" "A" "." "?"] :test (fn [] [(subject/render-status :implemented) (subject/render-status :abstract) (subject/render-status :missing) (subject/render-status :unknown)])}])
+
+(Test/check [{:name "computes the maximum display width for each column" :expected [4 4] :test (fn [] (subject/column-widths [["a" "long"] ["abcd" "x"]]))}])
+
+(Test/check [{:name "renders a padded support summary table" :expected [true true true true] :test (fn [] (let [value (subject/render-summary* {:languages [:js] :summary {:js {:implemented 2 :abstract 1 :missing 0}}})] [(string? value) (str/includes? value "language") (str/includes? value "implemented") (str/includes? value "js")]))}])
+
+(Test/check [{:name "renders a feature matrix with status legend" :expected [true true true] :test (fn [] (let [value (subject/render-matrix* {:languages [:js] :status {:js {(quote x:get-key) :implemented}} :features [(quote x:get-key)]})] [(str/includes? value "Y=implemented") (str/includes? value "x:get-key") (str/includes? value "Y")]))}])
+
+(Test/check [{:name "renders summary and matrix views and rejects unknown views" :expected [true true true] :test (fn [] [(string? (subject/render-support {:langs [:js] :features [(quote x:get-key)]})) (string? (subject/render-support {:langs [:js] :features [(quote x:get-key)] :view :matrix})) (try (subject/render-support {:view :unknown}) false (catch Throwable _ true))])}])

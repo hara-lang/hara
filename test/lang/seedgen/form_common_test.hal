@@ -1,0 +1,41 @@
+(ns lang.seedgen.form-common-test (:use code.test) (:require [std.block.base :as block] [std.block.navigate :as nav] [lang.seedgen.form-common :as subject]))
+
+(def +sample-source+ (str "^{:refer demo/example\n" "  :setup [(!.js (+ 1 2))\n" "          (!.lua (+ 1 2))]}\n" "(fact \"demo\"\n" "  (!.js (+ 1 2))\n" "  => 3)\n\n" "(def +k+ 1)\n"))
+
+(def sample-root (nav/parse-root +sample-source+))
+
+(def sample-top-navs (subject/nav-top-levels sample-root))
+
+(Test/check [{:name "normalizes requested runtimes while preserving sentinel cases" :expected [[:js] [:js :lua] [:js :lua] [:js :lua] :all] :test (fn [] [(subject/target-normalize-langs :js) (subject/target-normalize-langs (quote ("js" :lua))) (subject/target-normalize-langs :all [:js :lua]) (subject/target-normalize-langs nil [:js :lua]) (subject/target-normalize-langs :all)])}])
+
+(Test/check [{:name "detects metadata-wrapped top-level forms" :expected [true false] :test (fn [] (let [[fact-nav def-nav] sample-top-navs] [(subject/nav-meta-block? fact-nav) (subject/nav-meta-block? def-nav)]))}])
+
+(Test/check [{:name "returns the metadata map location when present" :expected {:setup (quote [(!.js (+ 1 2)) (!.lua (+ 1 2))]) :refer (quote demo/example)} :test (fn [] (let [[fact-nav] sample-top-navs] (some-> fact-nav subject/nav-meta nav/block block/block-value)))}])
+
+(Test/check [{:name "unwraps metadata forms to the underlying body form" :expected [(quote fact) (quote def)] :test (fn [] (let [[fact-nav def-nav] sample-top-navs] [(-> fact-nav subject/nav-body nav/value first) (-> def-nav subject/nav-body nav/value first)]))}])
+
+(Test/check [{:name "collects each top-level form from the parsed root" :expected ["^{:refer demo/example\n  :setup [(!.js (+ 1 2))\n          (!.lua (+ 1 2))]}\n(fact \"demo\"\n  (!.js (+ 1 2))\n  => 3)" "(def +k+ 1)"] :test (fn [] (mapv (fn [__reader_fn_0_1] (-> __reader_fn_0_1 nav/block block/block-string)) sample-top-navs))}])
+
+(Test/check [{:name "captures the original block and line metadata" :expected ["^{:refer demo/example\n  :setup [(!.js (+ 1 2))\n          (!.lua (+ 1 2))]}\n(fact \"demo\"\n  (!.js (+ 1 2))\n  => 3)" {:row 1 :col 1}] :test (fn [] (let [[fact-nav] sample-top-navs entry (subject/nav-entry fact-nav)] [(-> entry :form block/block-string) (select-keys (:line entry) [:row :col])]))}])
+
+(Test/check [{:name "finds the value location for a key inside a map" :expected (quote [(!.js (+ 1 2)) (!.lua (+ 1 2))]) :test (fn [] (let [[fact-nav] sample-top-navs] (some-> fact-nav subject/nav-meta (subject/nav-map-value :setup) nav/block block/block-value)))}])
+
+(Test/check [{:name "iterates vector items from left to right" :expected (quote [(!.js (+ 1 2)) (!.lua (+ 1 2))]) :test (fn [] (let [[fact-nav] sample-top-navs] (-> fact-nav subject/nav-meta (subject/nav-map-value :setup) subject/nav-vector-items ((fn [items] (mapv (fn [__reader_fn_1_1] (-> __reader_fn_1_1 nav/block block/block-value)) items))))))}])
+
+(Test/check [{:name "reduces line maps to a sortable coordinate tuple" :expected [3 4 5 6] :test (fn [] (subject/item-line-key {:end-col 6 :end-row 5 :row 3 :col 4}))}])
+
+(Test/check [{:name "returns the stored block for an item entry" :expected "^{:refer demo/example\n  :setup [(!.js (+ 1 2))\n          (!.lua (+ 1 2))]}\n(fact \"demo\"\n  (!.js (+ 1 2))\n  => 3)" :test (fn [] (let [[fact-nav] sample-top-navs] (-> fact-nav subject/nav-entry subject/item-form block/block-string)))}])
+
+(Test/check [{:name "returns the original line map for an item entry" :expected {:row 1 :col 1} :test (fn [] (let [[fact-nav] sample-top-navs] (-> fact-nav subject/nav-entry subject/item-line (select-keys [:row :col]))))}])
+
+(Test/check [{:name "renders an item block back to source text" :expected "^{:refer demo/example\n  :setup [(!.js (+ 1 2))\n          (!.lua (+ 1 2))]}\n(fact \"demo\"\n  (!.js (+ 1 2))\n  => 3)" :test (fn [] (let [[fact-nav] sample-top-navs] (-> fact-nav subject/nav-entry subject/item-string)))}])
+
+(Test/check [{:name "returns the EDN value represented by an item block" :expected (quote fact) :test (fn [] (let [[fact-nav] sample-top-navs] (-> fact-nav subject/nav-entry subject/item-value first)))}])
+
+(Test/check [{:name "infers the runtime from a dispatch form" :expected :lua :test (fn [] (let [[fact-nav] sample-top-navs setup-item (-> fact-nav subject/nav-meta (subject/nav-map-value :setup) subject/nav-vector-items second subject/nav-entry)] (subject/item-lang setup-item)))}])
+
+(Test/check [{:name "sorts item entries by source position" :expected [:js :lua] :test (fn [] (let [[fact-nav] sample-top-navs items (-> fact-nav subject/nav-meta (subject/nav-map-value :setup) subject/nav-vector-items) [js-item lua-item] (map subject/nav-entry items)] (->> [lua-item js-item] subject/item-sort (mapv subject/item-lang))))}])
+
+(Test/check [{:name "flattens a classification map into source order" :expected [:js :lua] :test (fn [] (let [[fact-nav] sample-top-navs items (-> fact-nav subject/nav-meta (subject/nav-map-value :setup) subject/nav-vector-items) [js-item lua-item] (map subject/nav-entry items)] (->> {:root [js-item] :derived [lua-item] :scaffold []} subject/item-classify-langs (mapv subject/item-lang))))}])
+
+(Test/check [{:name "indexes classified runtime items by normalized runtime keyword" :expected {:js "(!.js (+ 1 2))" :lua "(!.lua (+ 1 2))"} :test (fn [] (let [[fact-nav] sample-top-navs items (-> fact-nav subject/nav-meta (subject/nav-map-value :setup) subject/nav-vector-items) [js-item lua-item] (map subject/nav-entry items)] (->> {:root [js-item] :derived [lua-item] :scaffold []} subject/item-runtime-map (reduce-kv (fn [out k v] (assoc out k (subject/item-string v))) {}))))}])

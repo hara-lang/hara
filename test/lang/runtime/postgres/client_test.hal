@@ -1,16 +1,19 @@
 (ns lang.runtime.postgres.client-test
   (:require [db.protocol :as protocol]
-            [lang.protocol.runtime :as runtime]
+            [lang.core.script :as script]
             [lang.runtime.postgres.client :as client]
             [std.lib.component :as component]
             [std.lib.context.registry :as context]))
 
-(defstruct FakeDatabase [events])
+(defstruct FakeDatabase [events capabilities])
 
 (extend-type FakeDatabase protocol/IDatabase
   (db-engine [_] :postgresql)
   (db-provider [_] :fake)
-  (db-info [_] {:engine :postgresql :provider :fake})
+  (db-info [value]
+    {:engine :postgresql
+     :provider :fake
+     :capabilities (:capabilities value)})
   (db-exec [value sql parameters]
     (do
       (swap! (:events value) conj [:exec sql parameters])
@@ -28,7 +31,9 @@
   ([] (fixture {}))
   ([adapter-overrides]
    (let [events (atom [])
-         database (lang.runtime.postgres.client-test/FakeDatabase events)
+         database (lang.runtime.postgres.client-test/FakeDatabase
+                   events
+                   ["sql" "notifications"])
          adapter
          (merge
           {:open (fn [options]
@@ -74,6 +79,42 @@
                   (client/connection-options value)))
    :expected {:host "database"}}])
 
+^{:refer lang.runtime.postgres.client/provider-capabilities}
+(Test/check
+ [{:name "reads capability metadata from the selected provider contract"
+   :test (fn [] (let [[_ _ database] (fixture)]
+                  (client/provider-capabilities database)))
+   :expected ["sql" "notifications"]}])
+
+^{:refer lang.runtime.postgres.client/missing-capabilities}
+(Test/check
+ [{:name "reports only provider capabilities that the operation requires"
+   :test (fn [] (let [[_ _ database] (fixture)]
+                  [(client/missing-capabilities database ["sql"])
+                   (client/missing-capabilities database ["sql" "transactions"])]))
+   :expected [[] ["transactions"]]}])
+
+^{:refer lang.runtime.postgres.client/require-capabilities}
+(Test/check
+ [{:name "returns compatible providers and rejects missing declared capabilities"
+   :test (fn []
+           (let [[value _ database] (fixture)
+                 rejected
+                 (try
+                   (client/require-capabilities value database ["transactions"])
+                   (catch error
+                     (select-keys (ex-data error)
+                                  [:ex/code :id :provider :required :available :missing])))]
+             [(= database (client/require-capabilities value database ["sql"]))
+              rejected]))
+   :expected [true
+              {:ex/code :database/unsupported-capability
+               :id :fixture
+               :provider :fake
+               :required ["transactions"]
+               :available ["sql" "notifications"]
+               :missing ["transactions"]}]}])
+
 ^{:refer lang.runtime.postgres.client/rt-create}
 (Test/check
  [{:name "creates the Foundation-style PostgreSQL client coordinate"
@@ -93,6 +134,28 @@
                    (= database (deref (:connection value)))
                    (deref events)]))
    :expected [{:status :started} true [[:open {:host "database"}]]]}])
+
+^{:refer lang.runtime.postgres.client/start-runtime}
+(Test/check
+ [{:name "restores created state when the selected provider lacks SQL capability"
+   :test (fn []
+           (let [events (atom [])
+                 database (lang.runtime.postgres.client-test/FakeDatabase events [])
+                 value (client/rt-create
+                        {:id :incompatible
+                         :adapter {:open (fn [options] (promise/from database))}})
+                 error (try (client/start-runtime value)
+                            (catch error
+                              (select-keys (ex-data error)
+                                           [:ex/code :id :required :available :missing])))]
+             [error (deref (:state value)) (deref (:connection value))]))
+   :expected [{:ex/code :database/unsupported-capability
+               :id :incompatible
+               :required ["sql"]
+               :available []
+               :missing ["sql"]}
+              {:status :created}
+              nil]}])
 
 ^{:refer lang.runtime.postgres.client/stop-runtime}
 (Test/check
@@ -121,6 +184,27 @@
               {:id 1 :channel "audit"}
               {:audit {:id 1 :channel "audit"}}
               [[:open {:host "database"}] [:listen "audit"]]]}])
+
+^{:refer lang.runtime.postgres.client/add-notify}
+(Test/check
+ [{:name "rejects notification setup when the selected provider does not advertise it"
+   :test (fn []
+           (let [events (atom [])
+                 database (lang.runtime.postgres.client-test/FakeDatabase events ["sql"])
+                 value (client/rt-create
+                        {:id :sql-only
+                         :adapter {:open (fn [options] (promise/from database))}})
+                 _ (client/start-runtime value)]
+             (try
+               (client/add-notify value :audit {:channel "audit"})
+               (catch error
+                 (select-keys (ex-data error)
+                              [:ex/code :id :required :available :missing])))))
+   :expected {:ex/code :database/unsupported-capability
+              :id :sql-only
+              :required ["notifications"]
+              :available ["sql"]
+              :missing ["notifications"]}}])
 
 ^{:refer lang.runtime.postgres.client/remove-notify}
 (Test/check
@@ -167,46 +251,226 @@
  [{:name "implements asynchronous evaluation for both context evaluation forms"
    :test (fn [] (let [[value _ _] (fixture)]
                   (component/start value)
-                  [(deref (runtime/evaluate value "select id from audit" {}))
-                   (deref (runtime/evaluate-raw value "select id from audit" {}))]))
+                  [(deref (IContextEval/evaluate value "select id from audit" {}))
+                   (deref (IContextEval/evaluate-raw value "select id from audit" {}))]))
    :expected [7 7]}])
+
+^{:refer lang.runtime.postgres.client/postgres-book}
+(Test/check
+ [{:name "selects the standalone PostgreSQL book that owns lifecycle metadata"
+   :test (fn [] (:lang (client/postgres-book)))
+   :expected :postgres}])
+
+^{:refer lang.runtime.postgres.client/lifecycle-hook}
+(Test/check
+ [{:name "finds BookMeta functions by their lifecycle role"
+   :test (fn [] [(fn? (client/lifecycle-hook :has-ptr))
+                 (client/lifecycle-hook :missing)])
+   :expected [true nil]}])
+
+^{:refer lang.runtime.postgres.client/lifecycle-module}
+(Test/check
+ [{:name "preserves caller modules and supplies a portable fallback for unregistered ids"
+   :test (fn [] [(client/lifecycle-module {:id 'demo.pg :static {:seed ["demo"]}})
+                 (select-keys (client/lifecycle-module :demo) [:id :lang :code :fragment])])
+   :expected [{:id 'demo.pg :static {:seed ["demo"]}}
+              {:id :demo :lang :postgres :code {} :fragment {}}]}])
+
+^{:refer lang.runtime.postgres.client/lifecycle-module-id}
+(Test/check
+ [{:name "uses source ids as stable lifecycle identities"
+   :test (fn [] [(client/lifecycle-module-id {:id 'demo.pg})
+                 (client/lifecycle-module-id :demo)])
+   :expected ['demo.pg :demo]}])
+
+^{:refer lang.runtime.postgres.client/lifecycle-form}
+(Test/check
+ [{:name "builds composable BookMeta setup forms from a portable module"
+   :test (fn [] (first (client/lifecycle-form :setup-module
+                                               {:id 'demo.pg
+                                                :static {:seed ["demo"]}})))
+   :expected 'do}])
+
+^{:refer lang.runtime.postgres.client/lifecycle-forms}
+(Test/check
+ [{:name "keeps composed lifecycle forms as ordered executable units"
+   :test (fn [] [(client/lifecycle-forms nil)
+                 (client/lifecycle-forms '(do [:first] [:second]))
+                 (client/lifecycle-forms [:one])])
+   :expected [[] [[:first] [:second]] [[:one]]]}])
+
+^{:refer lang.runtime.postgres.client/compile-lifecycle-form}
+(Test/check
+ [{:name "compiles BookMeta forms through the lifecycle compiler adapter"
+   :test (fn [] (let [value (client/rt-create
+                             {:adapter {:compile-lifecycle
+                                        (fn [client module form]
+                                          [:compiled (:id module) form])}})]
+                 (client/compile-lifecycle-form value {:id 'demo.pg}
+                                                [:create-schema :if-not-exists #{"demo"}])))
+   :expected [:compiled 'demo.pg [:create-schema :if-not-exists #{"demo"}]]}])
+
+^{:refer lang.runtime.postgres.client/lifecycle-eval}
+(Test/check
+ [{:name "uses the lifecycle evaluator adapter before the provider connection"
+   :test (fn [] (let [value (client/rt-create
+                             {:adapter {:lifecycle-eval
+                                        (fn [client source] [:ran source])}})]
+                 (client/lifecycle-eval value "SELECT 1")))
+   :expected [:ran "SELECT 1"]}])
+
+^{:refer lang.runtime.postgres.client/run-lifecycle-form}
+(Test/check
+ [{:name "compiles then evaluates one lifecycle form"
+   :test (fn [] (let [value (client/rt-create
+                             {:adapter {:compile-lifecycle (fn [client module form] [:compiled form])
+                                        :lifecycle-eval (fn [client source] [:ran source])}})]
+                 (client/run-lifecycle-form value {:id 'demo.pg} [:create-schema #{"demo"}])))
+   :expected [:ran [:compiled [:create-schema #{"demo"}]]]}])
+
+^{:refer lang.runtime.postgres.client/run-lifecycle-forms}
+(Test/check
+ [{:name "runs composed lifecycle forms in their source order"
+   :test (fn [] (let [value (client/rt-create
+                             {:adapter {:compile-lifecycle (fn [client module form] form)
+                                        :lifecycle-eval (fn [client source] [:ran source])}})]
+                 (client/run-lifecycle-forms value {:id 'demo.pg}
+                                             '(do [:first] [:second]))))
+   :expected [[:ran [:first]] [:ran [:second]]]}])
+
+^{:refer lang.runtime.postgres.client/remote-present?}
+(Test/check
+ [{:name "normalizes remote existence results without consulting local pointer state"
+   :test (fn [] [(client/remote-present? true)
+                 (client/remote-present? [true true])
+                 (client/remote-present? {:exists 0})
+                 (client/remote-present? 1)
+                 (client/remote-present? nil)])
+   :expected [true true false true false]}])
+
+^{:refer lang.runtime.postgres.client/module-source?}
+(Test/check
+ [{:name "recognizes only source-pipeline modules as compilable"
+   :test (fn [] (let [snapshot (script/script-snapshot)]
+                  (try
+                    (reset! script/+modules+ {'demo.pg {:id 'demo.pg}})
+                    [(client/module-source? {:id 'demo.pg})
+                     (client/module-source? {:id :demo})]
+                    (finally (script/script-restore! snapshot)))))
+   :expected [true false]}])
+
+^{:refer lang.runtime.postgres.client/compile-module-output}
+(Test/check
+ [{:name "uses the module compiler adapter for registered PostgreSQL source"
+   :test (fn [] (let [value (client/rt-create
+                             {:adapter {:compile-module (fn [client module] "SELECT 1")}})]
+                 (client/compile-module-output value {:id 'demo.pg})))
+   :expected "SELECT 1"}])
+
+^{:refer lang.runtime.postgres.client/run-module-code}
+(Test/check
+ [{:name "executes compiled source-module output after lifecycle setup"
+   :test (fn [] (let [snapshot (script/script-snapshot)
+                      value (client/rt-create
+                             {:adapter {:compile-module (fn [client module] "SELECT 1")
+                                        :lifecycle-eval (fn [client source] [:ran source])}})]
+                  (try
+                    (reset! script/+modules+ {'demo.pg {:id 'demo.pg}})
+                    (client/run-module-code value {:id 'demo.pg})
+                    (finally (script/script-restore! snapshot)))))
+   :expected [:ran "SELECT 1"]}])
+
+^{:refer lang.runtime.postgres.client/pointer-entry}
+(Test/check
+ [{:name "resolves a pointer entry from the registered source module"
+   :test (fn [] (let [snapshot (script/script-snapshot)
+                      entry {:id 'Log :static {:static/dbtype :table}}]
+                  (try
+                    (reset! script/+modules+ {'demo.pg {:id 'demo.pg :code {'Log entry}}})
+                    (client/pointer-entry {:module 'demo.pg :id 'Log})
+                    (finally (script/script-restore! snapshot)))))
+   :expected {:id 'Log :static {:static/dbtype :table}}}])
+
+^{:refer lang.runtime.postgres.client/lifecycle-pointer}
+(Test/check
+ [{:name "prefers embedded entry metadata for BookMeta pointer lifecycle forms"
+   :test (fn [] (let [entry {:id 'Log :static {:static/dbtype :table}}]
+                 (client/lifecycle-pointer {:entry entry :id 'ignored})))
+   :expected {:id 'Log :static {:static/dbtype :table}}}])
 
 ^{:refer lang.runtime.postgres.client/PostgresClient}
 (Test/check
- [{:name "tracks module and pointer lifecycles without retaining removed values"
-   :test (fn [] (let [[value _ _] (fixture)]
+ [{:name "uses BookMeta remote pointer checks while retaining reversible local lifecycle state"
+   :test (fn [] (let [present (atom false)
+                     pointer {:id 'Log
+                              :op 'deftype
+                              :form '(deftype Log [:id {:type :uuid}])
+                              :static {:static/schema "scratch_v0"
+                                       :static/dbtype :table}}
+                     [value _ _]
+                     (fixture {:compile-lifecycle (fn [client module form] form)
+                               :lifecycle-eval (fn [client source] (deref present))})]
                   [(IContextLifeCycle/has-module? value :demo)
                    (do (IContextLifeCycle/setup-module value :demo)
                        (IContextLifeCycle/has-module? value :demo))
                    (do (IContextLifeCycle/teardown-module value :demo)
                        (IContextLifeCycle/has-module? value :demo))
-                   (do (IContextLifeCycle/setup-pointer value :pointer)
-                       (IContextLifeCycle/has-pointer? value :pointer))
-                   (do (IContextLifeCycle/teardown-pointer value :pointer)
+                   (do (IContextLifeCycle/setup-ptr value pointer)
+                       (reset! present true)
+                       (IContextLifeCycle/has-setup-ptr? value pointer))
+                   (do (IContextLifeCycle/teardown-ptr value pointer)
                        [(deref (:modules value)) (deref (:pointers value))])]))
    :expected [false true false true [#{} #{}]]}])
 
+^{:refer lang.runtime.postgres.client/pointer-unsupported}
+(Test/check
+ [{:name "uses structured unsupported errors for PostgreSQL pointer work"
+   :test (fn [] (let [[value _ _] (fixture)
+                     data (ex-data (client/pointer-unsupported value :eval-ptr :pointer))]
+                 (select-keys data [:ex/code :id :status :operation :pointer])))
+   :expected {:ex/code :runtime/unsupported :id :fixture :status :unsupported
+              :operation :eval-ptr :pointer :pointer}}])
+
+^{:refer std.protocol.icontexteval/IContextEval}
+(Test/check
+ [{:name "keeps PostgreSQL pointer transforms and display pure while evaluation is unsupported"
+   :test (fn [] (let [[value _ _] (fixture)
+                     pointer (pointer {:context :postgres :id :demo})]
+                 [(IContextEval/tags-ptr value pointer)
+                  (IContextEval/display-ptr value pointer)
+                  (IContextEval/transform-in-ptr value pointer [1])
+                  (IContextEval/transform-out-ptr value pointer :result)
+                  (try (IContextEval/deref-ptr value pointer)
+                       (catch error [(:ex/code (ex-data error))
+                                     (:operation (ex-data error))]))
+                  (try (IContextEval/invoke-ptr value pointer [1])
+                       (catch error [(:ex/code (ex-data error))
+                                     (:operation (ex-data error))]))]))
+   :expected [[] "#ptr {:context :postgres :id :demo}" [1] :result
+              [:runtime/unsupported :deref-ptr] [:runtime/unsupported :eval-ptr]]}])
+
 ^{:refer lang.runtime.postgres.client/+runtime+}
 (Test/check
- [{:name "publishes client with the Foundation JDBC compatibility coordinates"
-   :test (fn [] (select-keys client/+runtime+ [:language :runtime :aliases :key :config]))
-   :expected {:language :postgres :runtime :client :aliases [:jdbc :jdbc.client]
-              :key :client :config {}} }])
+ [{:name "publishes only the capability-gated PostgreSQL client coordinate"
+   :test (fn [] (select-keys client/+runtime+
+                             [:language :runtime :key :capabilities :config]))
+   :expected {:language :postgres :runtime :client :key :client
+              :capabilities ["sql"] :config {}} }])
 
 ^{:refer lang.runtime.postgres.client/runtime-entry}
 (Test/check
- [{:name "builds selectable entries without changing the canonical client runtime"
-   :test (fn [] (select-keys (client/runtime-entry :jdbc.client) [:key :runtime :create]))
-   :expected {:key :jdbc.client :runtime :client :create client/rt-create}}])
+ [{:name "returns the canonical client entry without compatibility aliases"
+   :test (fn [] (select-keys (client/runtime-entry) [:key :runtime :create]))
+   :expected {:key :client :runtime :client :create client/rt-create}}])
 
 ^{:refer lang.runtime.postgres.client/install}
 (Test/check
- [{:name "registers each Foundation PostgreSQL client coordinate explicitly"
+ [{:name "registers only the canonical PostgreSQL client coordinate"
    :test (fn [] (binding [context/*registry* (atom {})]
                   (context/registry-install :postgres)
                   (client/install :postgres)
                   (set (context/registry-rt-list :postgres))))
-   :expected #{:default :client :jdbc :jdbc.client}}])
+   :expected #{:default :client}}])
 
 ^{:refer lang.runtime.postgres.client/stop-runtime}
 (Test/check

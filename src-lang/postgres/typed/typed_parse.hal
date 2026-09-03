@@ -2,6 +2,31 @@
   (:require [postgres.typed.typed-infer :as typed-infer]
             [postgres.typed.typed-common :as types]))
 
+(defn canonical-postgres-ns
+  [ns-sym]
+  (if (and (symbol? ns-sym)
+           (str/starts-with? (str ns-sym) "rt.postgres."))
+    (symbol (str/replace (str ns-sym) "rt.postgres." "lang.runtime.postgres."))
+    ns-sym))
+
+(defn existing-file-path
+  [paths]
+  (first (filter (fn [path]
+                  (and path (deref (File/exists? (str path)))))
+                paths)))
+
+(defn file-path-candidates
+  [file-path]
+  (vec (distinct [file-path
+                  (str/replace (str file-path)
+                               "src/rt/postgres/"
+                               "src-lang/postgres/")])))
+
+(defn resolve-file-path
+  [file-path]
+  (or (existing-file-path (file-path-candidates file-path))
+      (str file-path)))
+
 (defn read-forms [path]
   (std.foundation/read-forms path))
 
@@ -280,6 +305,8 @@
           (concat (:enums analysis) (:tables analysis) (:functions analysis)))
   analysis)
 
+(def register-types! register-types)
+
 (defn analyze-namespace [ns-sym]
   (let [relative (str (str/replace
                        (str/replace (str ns-sym) "." "/")
@@ -288,4 +315,4 @@
         src-lang-path (str "src-lang/" relative)
         src-path (str "src/" relative)]
     (try (analyze-file src-lang-path)
-         (catch Throwable error (analyze-file src-path)))))
+         (catch error (analyze-file src-path)))))

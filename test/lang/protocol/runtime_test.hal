@@ -1,13 +1,37 @@
 (ns lang.protocol.runtime-test
-  (:require [lang.protocol.runtime :as runtime]))
+  (:require [lang.protocol.runtime :as runtime]
+            [std.lib.context.registry :as registry]
+            [std.lib.context.space :as space]))
 
 (defstruct RuntimeFixture [tag])
 
 (extend-type RuntimeFixture runtime/IEvalTransport
   (exchange [fixture request options] [(:tag fixture) :exchange request options]))
-(extend-type RuntimeFixture runtime/IContextEval
+(extend-type RuntimeFixture IContext
+  (call [fixture & arguments] [(:tag fixture) :call arguments]))
+
+(extend-type RuntimeFixture IContextEval
   (evaluate [fixture request options] [(:tag fixture) :evaluate request options])
-  (evaluate-raw [fixture request options] [(:tag fixture) :evaluate-raw request options]))
+  (evaluate-raw [fixture request options] [(:tag fixture) :evaluate-raw request options])
+  (eval-ptr [fixture pointer arguments options]
+    [(:tag fixture) :eval-ptr pointer arguments options])
+  (eval-await-ptr [fixture pointer arguments options]
+    [(:tag fixture) :eval-await-ptr pointer arguments options])
+  (tags-ptr [fixture pointer] [(:tag fixture) :tag])
+  (deref-ptr [fixture pointer] [(:tag fixture) :deref-ptr pointer])
+  (display-ptr [fixture pointer] (Edn/write pointer))
+  (invoke-ptr [fixture pointer arguments]
+    (IContextEval/eval-await-ptr fixture pointer arguments {}))
+  (transform-in-ptr [fixture pointer arguments] [(:tag fixture) :in arguments])
+  (transform-out-ptr [fixture pointer value] [(:tag fixture) :out value]))
+
+(extend-type RuntimeFixture IContextLifeCycle
+  (has-module? [fixture module] false)
+  (setup-module [fixture module] fixture)
+  (teardown-module [fixture module] fixture)
+  (has-setup-ptr? [fixture pointer] (= pointer :fixture/pointer))
+  (setup-ptr [fixture pointer] fixture)
+  (teardown-ptr [fixture pointer] fixture))
 
 (def fixture (RuntimeFixture :fixture))
 
@@ -16,9 +40,59 @@
               :test (fn [] (runtime/exchange fixture {:op :eval} {:timeout 50}))
               :expected [:fixture :exchange {:op :eval} {:timeout 50}]}])
 
-^{:refer lang.protocol.runtime/evaluate}
-(Test/check [{:name "keeps evaluated and raw context requests distinct"
-              :test (fn [] [(runtime/evaluate fixture {:code "1 + 1"} {:profile :default})
-                            (runtime/evaluate-raw fixture "1 + 1" {:profile :raw})])
+^{:refer std.protocol.icontext/IContext}
+(Test/check [{:name "keeps generic calls as the direct context contract"
+              :test (fn [] (IContext/call fixture :a :b))
+              :expected [:fixture :call [:a :b]]}])
+
+^{:refer std.protocol.icontextlifecycle/IContextLifeCycle}
+(Test/check [{:name "keeps local pointer setup presence in the lifecycle contract"
+              :test (fn [] [(IContextLifeCycle/has-setup-ptr? fixture :fixture/pointer)
+                            (IContextLifeCycle/has-setup-ptr? fixture :other)])
+              :expected [true false]}])
+
+^{:refer std.protocol.icontexteval/IContextEval}
+(Test/check [{:name "dispatches the complete pointer evaluation contract"
+              :test (fn []
+                      [(IContextEval/evaluate fixture {:code "1 + 1"} {:profile :default})
+                       (IContextEval/evaluate-raw fixture "1 + 1" {:profile :raw})
+                       (IContextEval/eval-ptr fixture :fixture/pointer [1] {:async true})
+                       (IContextEval/eval-await-ptr fixture :fixture/pointer [1] {:await true})
+                       (IContextEval/tags-ptr fixture :fixture/pointer)
+                       (IContextEval/deref-ptr fixture :fixture/pointer)
+                       (IContextEval/display-ptr fixture :fixture/pointer)
+                       (IContextEval/invoke-ptr fixture :fixture/pointer [1])
+                       (IContextEval/transform-in-ptr fixture :fixture/pointer [1])
+                       (IContextEval/transform-out-ptr fixture :fixture/pointer :result)])
               :expected [[:fixture :evaluate {:code "1 + 1"} {:profile :default}]
-                         [:fixture :evaluate-raw "1 + 1" {:profile :raw}]]}])
+                         [:fixture :evaluate-raw "1 + 1" {:profile :raw}]
+                         [:fixture :eval-ptr :fixture/pointer [1] {:async true}]
+                         [:fixture :eval-await-ptr :fixture/pointer [1] {:await true}]
+                         [:fixture :tag]
+                         [:fixture :deref-ptr :fixture/pointer]
+                         ":fixture/pointer"
+                         [:fixture :eval-await-ptr :fixture/pointer [1] {}]
+                         [:fixture :in [1]]
+                         [:fixture :out :result]]}])
+
+^{:refer std.protocol.iapplicable/IApplicable}
+(Test/check [{:name "routes native pointer invocation, dereference, and display through IContextEval"
+              :test (fn []
+                      (binding [registry/*registry* (atom {})
+                                space/*spaces* (atom {})]
+                        (registry/registry-install :fixture {:scratch fixture})
+                        (let [pointer (pointer {:context :fixture :id :demo})]
+                          [(IApplicable/apply-in pointer fixture [1])
+                           (IApplicable/transform-in pointer fixture [1])
+                           (IApplicable/transform-out pointer fixture [1] :result)
+                           (deref pointer)
+                           (pointer 1)
+                           (IDisplay/display pointer)])))
+              :expected (let [pointer (pointer {:context :fixture :id :demo})]
+                          [[:fixture :eval-await-ptr pointer [1] {}]
+                           [:fixture :in [1]]
+                           [:fixture :out :result]
+                           [:fixture :deref-ptr pointer]
+                           [:fixture :out
+                            [:fixture :eval-await-ptr pointer [:fixture :in [1]] {}]]
+                           "![:fixture :fixture :tag]\n#ptr {:context :fixture :id :demo}"])}])

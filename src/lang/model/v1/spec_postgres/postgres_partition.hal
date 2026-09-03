@@ -1,0 +1,107 @@
+(ns lang.model.v1.spec-postgres.postgres-partition
+  (:require [lang.common.grammar-spec :as grammar-spec]))
+
+(defn pg-partition-name
+  "Constructs the archived deterministic nested partition name."
+  [base value stack]
+  (str/join "__"
+            (map (fn [item] (str item))
+                 (concat [base] (reverse stack) [value]))))
+
+(defn partition-value
+  [value]
+  (if (or (vector? value) (list? value) (set? value))
+    value
+    [value]))
+
+(defn partition-parent
+  [parent]
+  (cond
+    (and (list? parent) (= '. (first parent))) parent
+    (symbol? parent)
+    (let [schema (namespace parent)
+          table (name parent)]
+      (if schema
+        (list '. #{schema} #{table})
+        #{table}))
+    :else
+    (let [value (if (set? parent) (first parent) parent)]
+      #{(str value)})))
+
+(defn partition-schema
+  [parent]
+  (if (and (symbol? parent) (namespace parent))
+    (namespace parent)
+    nil))
+
+(defn partition-table
+  [parent]
+  (if (symbol? parent) (name parent) (str parent)))
+
+(defn pg-partition-def
+  "Recursively expands one partition specification into CREATE TABLE forms."
+  [parent-sym base-name current-spec remaining-specs stack]
+  (let [use-value (or (:use current-spec) (:on current-spec))
+        in-value (or (:in current-spec) (:for current-spec))
+        default? (:default current-spec)
+        next-spec (first remaining-specs)
+        next-col-value (or (:use next-spec) (:on next-spec))
+        next-col (if next-col-value
+                   (str/replace (name next-col-value) "-" "_")
+                   nil)
+        parent-token (partition-parent parent-sym)
+        schema (or (:schema current-spec)
+                   (partition-schema parent-sym))]
+    (if default?
+      (let [new-name (pg-partition-name base-name "$DEFAULT" stack)
+            new-token (if schema
+                        (list '. #{schema} #{new-name})
+                        #{new-name})]
+        [(vec (concat [:create-table :if-not-exists new-token
+                       :partition-of parent-token :default]
+                      (if next-col
+                        [:partition-by :list (list 'quote (list (symbol next-col)))]
+                        [])))])
+      (vec
+       (mapcat
+        (fn [value]
+          (let [new-name (pg-partition-name base-name value stack)
+                new-token (if schema
+                            (list '. #{schema} #{new-name})
+                            #{new-name})
+                statement (vec (concat [:create-table :if-not-exists new-token
+                                        :partition-of parent-token
+                                        :for :values :in (list 'quote (list value))]
+                                       (if next-col
+                                         [:partition-by :list (list 'quote (list (symbol next-col)))]
+                                         [])))
+                nested (if (seq remaining-specs)
+                         (pg-partition-def new-name base-name next-spec
+                                           (rest remaining-specs)
+                                           (conj stack value))
+                         [])]
+            (concat [statement] nested)))
+        (partition-value in-value))))))
+
+(defn pg-defpartition
+  "Expands an archived defpartition declaration into portable DDL sections."
+  [form]
+  (let [formatted (grammar-spec/format-defn form)
+        normalized (second formatted)
+        parents-value (nth normalized 2)
+        specs (nth normalized 3)
+        parents (if (vector? parents-value) parents-value [parents-value])
+        first-spec (first specs)
+        remaining-specs (rest specs)
+        statements
+        (mapcat
+         (fn [parent]
+           (let [parent (if (vector? parent) (first parent) parent)
+                 parent-sym (if (symbol? parent) parent (symbol (str parent)))]
+             (pg-partition-def parent-sym
+                               (partition-table parent-sym)
+                               first-spec
+                               remaining-specs
+                               [])))
+         parents)]
+    (apply list 'do statements)))

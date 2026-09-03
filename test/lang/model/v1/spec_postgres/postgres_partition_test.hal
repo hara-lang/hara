@@ -1,0 +1,59 @@
+(ns lang.model.v1.spec-postgres.postgres-partition-test
+  (:require [lang.model.v1.spec-postgres.postgres-partition :as partition]))
+
+
+^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-partition-name}
+(Test/check
+ [{:name "constructs deterministic nested partition names"
+   :test (fn [] (partition/pg-partition-name "table" "val" ["stack"]))
+   :expected "table__stack__val"}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-partition/partition-value}
+(Test/check
+ [{:name "normalizes scalar partition values without changing collections"
+   :test (fn [] [(partition/partition-value "a")
+                 (partition/partition-value ["a" "b"])
+                 (partition/partition-value #{"a"})])
+   :expected [["a"] ["a" "b"] #{"a"}]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-partition/partition-parent}
+(Test/check
+ [{:name "constructs portable parent tokens"
+   :test (fn [] [(partition/partition-parent 'parent)
+                 (partition/partition-parent 'scratch/parent)
+                 (partition/partition-parent (list '. #{"scratch"} #{"parent"}))])
+   :expected [#{"parent"} (list '. #{"scratch"} #{"parent"})
+              (list '. #{"scratch"} #{"parent"})]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-partition/partition-schema}
+(Test/check
+ [{:name "extracts an explicit parent schema"
+   :test (fn [] [(partition/partition-schema 'scratch/parent)
+                 (partition/partition-schema 'parent)])
+   :expected ["scratch" nil]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-partition/partition-table}
+(Test/check
+ [{:name "extracts the base table name"
+   :test (fn [] [(partition/partition-table 'scratch/parent)
+                 (partition/partition-table "parent")])
+   :expected ["parent" "parent"]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-partition-def}
+(Test/check
+ [{:name "expands one list partition"
+   :test (fn [] (partition/pg-partition-def
+                 'parent "base" {:use :col :in ["a"]} [] []))
+   :expected [[:create-table :if-not-exists #{"base__a"}
+               :partition-of #{"parent"}
+               :for :values :in (list 'quote (list "a"))]]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-defpartition}
+(Test/check
+ [{:name "expands archived partition declarations"
+   :test (fn [] (partition/pg-defpartition
+                 '(defpartition part [parent]
+                    [{:use :col :in ["a"]}])) )
+   :expected '(do [:create-table :if-not-exists #{"parent__a"}
+                   :partition-of #{"parent"}
+                   :for :values :in (quote ("a"))])}])

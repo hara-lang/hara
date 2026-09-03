@@ -1,0 +1,103 @@
+(ns lang.seedgen-test (:use code.test) (:require [code.manage.unit.template :as template] [lang.seedgen :as subject]))
+
+(def sample-unit {:source "(ns xt.example-test)\n^{:seedgen/root true}\n" :namespace (quote xt.example) :seedgen/lookup {} :path "/missing.hal"})
+
+(def sample-project {:project/root "." :project/source-paths [] :project/test-paths []})
+
+(Test/check [{:name "uses shared runtime metadata" :expected [10 :batched] :test (fn [] [(count subject/runtime-languages) (get-in subject/runtime-languages [:dart :check-mode])])}])
+
+(Test/check [{:name "retains runtime aliases" :expected {:ruby :rb} :test (fn [] subject/runtime-language-aliases)}])
+
+(Test/check [{:name "normalizes language values" :expected [:rb :lua :python] :test (fn [] [(subject/normalize-runtime-language :ruby) (subject/normalize-runtime-language "lua") (subject/normalize-runtime-language (quote python))])}])
+
+(Test/check [{:name "returns a runtime configuration" :expected {:runtime :basic :script :ruby :check-mode :realtime :dispatch (quote !.rb)} :test (fn [] (select-keys (subject/runtime-language-config :rb) [:script :dispatch :runtime :check-mode]))}])
+
+(Test/check [{:name "returns configured checking modes" :expected [:realtime :batched nil] :test (fn [] [(subject/runtime-check-mode :js) (subject/runtime-check-mode :dart) (subject/runtime-check-mode :missing)])}])
+
+(Test/check [{:name "recognizes root metadata" :expected [true false] :test (fn [] [(subject/seedgen-root? ":seedgen/root") (subject/seedgen-root? ":seedgen/skip")])}])
+
+(Test/check [{:name "recognizes skipped metadata" :expected [true false] :test (fn [] [(subject/seedgen-skip? ":seedgen/skip") (subject/seedgen-skip? "ordinary")])}])
+
+(Test/check [{:name "recognizes base metadata" :expected [true false] :test (fn [] [(subject/seedgen-base? ":seedgen/base") (subject/seedgen-base? "ordinary")])}])
+
+(Test/check [{:name "scans only active root units" :expected [true []] :test (fn [] [(vector? (subject/incomplete {:source ":seedgen/root :refer"})) (subject/incomplete {:source ":seedgen/skip :refer"})])}])
+
+(Test/check [{:name "builds benchmark namespaces" :expected (quote xtbench.lua.xt.example-test) :test (fn [] (subject/bench-namespace :lua (quote xt.example-test)))}])
+
+(Test/check [{:name "builds benchmark paths" :expected "test/xtbench/python/xt/example_test_test.hal" :test (fn [] (subject/bench-path "test" :python (quote xt.example-test)))}])
+
+(Test/check [{:name "normalizes benchmark plan languages" :expected {:write false :language :rb :namespace (quote xtbench.rb.xt.example)} :test (fn [] (select-keys (subject/bench-plan sample-unit :ruby "test") [:namespace :language :write]))}])
+
+(Test/check [{:name "normalizes project key variants" :expected {:test-paths [] :project/root "/repo" :root "/repo" :source-paths [] :project/source-paths [] :project/test-paths []} :test (fn [] (select-keys (subject/seedgen-project {:project {:test-paths [] :root "/repo" :source-paths []}}) [:project/root :project/source-paths :project/test-paths :root :source-paths :test-paths]))}])
+
+(Test/check [{:name "returns an empty lookup for an empty project catalog" :expected {} :test (fn [] (subject/seedgen-lookup sample-project))}])
+
+(Test/check [{:name "prefers injected project records over filesystem discovery" :expected [{:namespace (quote xt.demo)}] :test (fn [] (subject/seedgen-records {:seedgen/records [{:namespace (quote xt.demo)}]}))}])
+
+(Test/check [{:name "returns no units for an empty project catalog" :expected [] :test (fn [] (subject/seedgen-test-units sample-project))}])
+
+(Test/check [{:name "normalizes test namespace suffixes" :expected [(quote xt.example) (quote xt.example)] :test (fn [] [(subject/seedgen-unit-source-namespace {:namespace (quote xt.example-test)} sample-project) (subject/seedgen-unit-source-namespace {:namespace (quote xt.example)} sample-project)])}])
+
+(Test/check [{:name "builds a normalized delegation context" :expected [(quote xt.example) "." "/test.hal"] :test (fn [] (let [unit (assoc sample-unit :seedgen/project sample-project :seedgen/lookup {(quote xt.example-test) "/test.hal"}) result (subject/seedgen-unit-context unit {})] [(:namespace result) (get-in result [:project :project/root]) (get-in result [:lookup (quote xt.example-test)])]))}])
+
+(Test/check [{:name "passes normalized context to tasklets" :expected [(quote xt.example) :lua nil "."] :test (fn [] (let [unit (assoc sample-unit :seedgen/project sample-project)] (subject/seedgen-call (fn [namespace options lookup project] [namespace (:lang options) (get lookup (quote xt.example-test)) (:project/root project)]) unit {:lang :lua})))}])
+
+(Test/check [{:name "identifies ignored result shapes" :expected [true true false false] :test (fn [] [(subject/scalar-result-ignore? nil) (subject/scalar-result-ignore? {}) (subject/scalar-result-ignore? [1]) (subject/scalar-result-ignore? 1)])}])
+
+(Test/check [{:name "counts result collections and scalar values" :expected [0 2 1] :test (fn [] [(subject/scalar-result-count nil) (subject/scalar-result-count {:b 2 :a 1}) (subject/scalar-result-count :ok)])}])
+
+(Test/check [{:name "identifies tasklet errors" :expected [true false false] :test (fn [] [(subject/seedgen-error? {:status :error}) (subject/seedgen-error? {:status :return}) (subject/seedgen-error? nil)])}])
+
+(Test/check [{:name "preserves missing test errors" :expected {:status :error :data :no-test-file} :test (fn [] (subject/seedgen-incomplete-summary sample-unit {}))}])
+
+(Test/check [{:name "extracts sorted parsed function keys" :expected [:a :z] :test (fn [] (subject/seedgen-readforms-vars {:entries {:b {:z 1} :a {:a 2}}}))}])
+
+(Test/check [{:name "selects output targets by predicate" :expected [(quote xtbench.js.a)] :test (fn [] (subject/bench-output-targets [{:ns (quote xtbench.js.a) :updated true} {:ns (quote xtbench.lua.b) :updated false}] (fn [entry] (:updated entry))))}])
+
+(Test/check [{:name "returns matching test namespace keys" :expected [] :test (fn [] (subject/seedgen-test-namespaces {} sample-project))}])
+
+(Test/check [{:name "delegates missing root files as errors" :expected {:status :error :data :no-test-file} :test (fn [] (subject/seedgen-root-item sample-unit {}))}])
+
+(Test/check [{:name "delegates missing list files as errors" :expected {:status :error :data :no-test-file} :test (fn [] (subject/seedgen-list-item sample-unit {}))}])
+
+(Test/check [{:name "delegates missing readforms files as errors" :expected {:status :error :data :no-test-file} :test (fn [] (subject/seedgen-readforms-item sample-unit {}))}])
+
+(Test/check [{:name "delegates missing benchlist files as errors" :expected {:status :error :data :no-test-file} :test (fn [] (subject/seedgen-benchlist-item sample-unit {}))}])
+
+(Test/check [{:name "delegates missing language removal files as errors" :expected {:status :error :data :no-test-file} :test (fn [] (subject/seedgen-langremove-item sample-unit {:lang [:lua]}))}])
+
+(Test/check [{:name "delegates missing language addition files as errors" :expected {:status :error :data :no-test-file} :test (fn [] (subject/seedgen-langadd-item sample-unit {:lang [:lua]}))}])
+
+(Test/check [{:name "delegates missing benchmark addition files as errors" :expected {:status :error :data :no-test-file} :test (fn [] (subject/seedgen-benchadd-item sample-unit {:lang [:lua]}))}])
+
+(Test/check [{:name "delegates missing benchmark removal files as errors" :expected {:status :error :data :no-test-file} :test (fn [] (subject/seedgen-benchremove-item sample-unit {:lang [:lua]}))}])
+
+(Test/check [{:name "constructs an empty project-backed task catalog" :expected [true [] (quote xt.example)] :test (fn [] (let [result (subject/seedgen-task-input {:task/params {:project sample-project} :task/selector (quote xt.example)})] [(vector? (:units result)) (:units result) (:selector result)]))}])
+
+(Test/check [{:name "composes through the code.manage task template" :expected true :test (fn [] (template/task? (subject/seedgen-task :demo (fn [unit options] unit) (quote lang.seedgen-test/demo))))}])
+
+(Test/check [{:name "publishes a template-backed root task" :expected true :test (fn [] (template/task? subject/seedgen-root))}])
+
+(Test/check [{:name "publishes a template-backed list task" :expected true :test (fn [] (template/task? subject/seedgen-list))}])
+
+(Test/check [{:name "publishes a template-backed readforms task" :expected true :test (fn [] (template/task? subject/seedgen-readforms))}])
+
+(Test/check [{:name "publishes a template-backed benchlist task" :expected true :test (fn [] (template/task? subject/seedgen-benchlist))}])
+
+(Test/check [{:name "publishes a template-backed incomplete task" :expected true :test (fn [] (template/task? subject/seedgen-incomplete))}])
+
+(Test/check [{:name "publishes a template-backed language removal task" :expected true :test (fn [] (template/task? subject/seedgen-langremove))}])
+
+(Test/check [{:name "publishes a template-backed language addition task" :expected true :test (fn [] (template/task? subject/seedgen-langadd))}])
+
+(Test/check [{:name "publishes a template-backed benchmark addition task" :expected true :test (fn [] (template/task? subject/seedgen-benchadd))}])
+
+(Test/check [{:name "publishes a template-backed benchmark removal task" :expected true :test (fn [] (template/task? subject/seedgen-benchremove))}])
+
+(Test/check [{:name "indexes every public seedgen task" :expected [:benchadd :benchlist :benchremove :incomplete :langadd :langremove :list :readforms :root] :test (fn [] (sort (keys subject/+tasks+)))}])
+
+(Test/check [{:name "normalizes legacy inline run options" :expected {:options {:language :lua :test-root "test"} :units [1] :selector :all} :test (fn [] (subject/seedgen-run-input {:units [1] :language :lua :test-root "test"}))}])
+
+(Test/check [{:name "retains the selector for the shared Work task runner" :expected {:options {:lang :js} :units [{:namespace (quote xt.demo)}] :selector [(quote xt.demo) (quote xt.other)]} :test (fn [] (subject/seedgen-run-input {:options {:lang :js} :units [{:namespace (quote xt.demo)}] :selector [(quote xt.demo) (quote xt.other)]}))}])
+
+(Test/check [{:name "runs a task through work.flow.task" :expected [:list 0 0] :test (fn [] (let [result (subject/run :list {:units []})] [(get-in result [:summary :operation]) (get-in result [:summary :count]) (get-in result [:summary :errors])]))}])

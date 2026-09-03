@@ -1,0 +1,37 @@
+(ns postgres.sample.scratch-v0.view-log
+  (:require [lang.core :as l]
+            [postgres.gen.bind-macro :as bind-pg]
+            [postgres.gen.gen-bind :as bind]
+            [postgres.sample.scratch-v0]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]]
+   :export [MODULE]})
+
+(defn view-list
+  "Collects generated scratch-v0 log views."
+  []
+  (vec (map (fn [pair] (bind/bind-view (second pair)))
+            (concat (bind-pg/list-view 'postgres.sample.scratch-v0 :select)
+                    (bind-pg/list-view 'postgres.sample.scratch-v0 :return)))))
+
+(def.xt VIEWS
+  (@! (-/view-list)))
+
+(defn.xt make-views
+  "Collects the generated scratch-v0 log views by table and tag."
+  []
+  (var out {})
+  (xt/for:array [entry -/VIEWS]
+    (var view (. entry ["view"]))
+    (var table (. view ["table"]))
+    (var type (. view ["type"]))
+    (var tag (. view ["tag"]))
+    (var table-views (or (. out [table]) {}))
+    (var type-views (or (. table-views [type]) {}))
+    (xt/x:set-key type-views tag entry)
+    (xt/x:set-key table-views type type-views)
+    (xt/x:set-key out table table-views))
+  (return out))
+
+(def.xt MODULE (!:module))

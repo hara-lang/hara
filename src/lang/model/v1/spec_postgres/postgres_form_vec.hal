@@ -1,0 +1,112 @@
+(ns lang.model.v1.spec-postgres.postgres-form-vec
+  (:require [lang.common.emit :as emit]
+            [lang.model.v1.spec-postgres.postgres-common :as common]))
+
+(defn query-symbol
+  [value]
+  (cond (keyword? value) #{(str/snake-case (name value))}
+        (string? value) #{value}
+        :else value))
+
+(defn pg-section-query-pair
+  "Converts a query pair into a portable operator form."
+  [[symbol expression]]
+  (let [symbol (query-symbol symbol)]
+    (if (vector? expression)
+      (let [operator (first expression)
+            alias (get common/+pg-query-alias+ operator operator)]
+        (vec (concat [symbol alias] (rest expression))))
+      [symbol := (list '% expression)])))
+
+(defn emit-query-value
+  [value grammar context]
+  (let [value (if (and (list? value) (= '% (first value)))
+                (second value)
+                value)]
+    (if emit/*emit-fn*
+      (emit/*emit-fn* value grammar context)
+      (str value))))
+
+(defn query-pair-string
+  [pair grammar context quote-key?]
+  (let [symbol (first pair)
+        operation (second pair)
+        expression (if (= := operation) (nth pair 2) operation)
+        key (if (set? symbol) (first symbol) symbol)
+        key (if quote-key?
+              (str "\"" (str/replace (str key) "-" "_") "\"")
+              (str key))]
+    (if (or (and (vector? operation) (keyword? (first operation)))
+            (and (list? operation) (= :- (first operation))))
+      (let [operator-key (if (list? operation) (second operation) (first operation))
+            operator (get {:eq "=" :neq "<>" :not-eq "<>"
+                           :gt ">" :gte ">=" :lt "<" :lte "<="
+                           :in "IN" :not-in "NOT IN" :like "LIKE"
+                           :ilike "ILIKE" :is "IS" :is-not "IS NOT"
+                           :is-null "IS NULL" :is-not-null "IS NOT NULL"}
+                          operator-key
+                          (if (string? operator-key) operator-key "="))
+            operand (if (and (vector? operation) (not= := operation))
+                      (second operation)
+                      (if (= := operation) (nth pair 2) (nth pair 2)))]
+        (str key " " operator
+             (if (has? #{:is-null :is-not-null} operator-key)
+               ""
+               (str " " (emit-query-value operand grammar context)))))
+      (str key " = " (emit-query-value expression grammar context)))))
+
+(defn query-groups
+  [queries separator]
+  (let [values (vec queries)]
+    (loop [remaining values
+           group []
+           groups []]
+      (if (= 0 (count remaining))
+        (if (seq group) (conj groups group) groups)
+        (let [value (first remaining)
+              value-name (if (keyword? value) (name value) (str value))]
+          (if (= separator (str/upper value-name))
+            (recur (vec (rest remaining)) [] (conj groups group))
+            (recur (vec (rest remaining)) (conj group value) groups)))))))
+
+(defn pg-section-query-set-and
+  "Renders an AND-only query group."
+  [queries grammar context]
+  (let [pairs (map pg-section-query-pair (partition 2 queries))]
+    (str "(" (str/join " AND " (map (fn [pair]
+                                        (query-pair-string pair grammar context false))
+                                      pairs)) ")")))
+
+(defn pg-section-query-set
+  "Renders OR-separated query groups."
+  [queries grammar context]
+  (let [groups (query-groups queries "OR")]
+    (str/join " OR "
+              (map (fn [group]
+                     (pg-section-query-set-and group grammar context))
+                   groups))))
+
+(defn pg-section-query-map
+  "Renders a map query as quoted SQL column predicates."
+  [queries grammar context]
+  (str/join " AND "
+            (map (fn [entry]
+                   (query-pair-string (pg-section-query-pair entry)
+                                      grammar context true))
+                 (sort-by (fn [entry] (str (first entry))) (seq queries)))))
+
+(defn pg-section-fn
+  "Renders one item in a PostgreSQL section vector."
+  [value grammar context]
+  (cond (keyword? value) (str/upper (str/replace (name value) "-" " "))
+        (map? value) (pg-section-query-map value grammar context)
+        (and (set? value) (vector? (first value)))
+        (pg-section-query-set (first value) grammar context)
+        (and (vector? value) (keyword? (first value)))
+        (str "(" (emit-query-value value grammar context) ")")
+        :else (emit-query-value value grammar context)))
+
+(defn pg-section
+  "Renders a complete PostgreSQL section vector."
+  [values grammar context]
+  (str/join " " (map (fn [value] (pg-section-fn value grammar context)) values)))

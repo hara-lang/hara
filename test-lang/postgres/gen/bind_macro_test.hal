@@ -1,0 +1,154 @@
+(ns postgres.gen.bind-macro-test
+  (:require [postgres.application :as application]
+            [postgres.gen.bind-macro :as bind]))
+
+^{:refer postgres.gen.bind-macro/to-lookup}
+(Test/check
+ [{:name "creates lookup maps and identifies unqualified symbols"
+   :test (fn []
+           [(bind/to-lookup [:a :b])
+            (bind/plain-symbol? 'value)
+            (bind/plain-symbol? 'demo/value)])
+   :expected [{:a true :b true} true false]}])
+
+^{:refer postgres.gen.bind-macro/module-entry}
+(Test/check
+ [{:name "looks up a qualified descriptor from the installed compiler-module snapshot"
+   :test (fn []
+           (let [module 'postgres.gen.bind-fixture
+                 entry {:id 'account-all :module module :op-key :defn}
+                 snapshot (application/module-snapshot)]
+             (try
+               (application/install-modules! {module {:id module :code {'account-all entry}}})
+               (:id (bind/module-entry 'postgres.gen.bind-fixture/account-all))
+               (finally (application/restore-modules! snapshot)))))
+   :expected 'account-all}])
+
+^{:refer postgres.gen.bind-macro/bind-entry}
+(Test/check
+ [{:name "uses the compiler-module descriptor when a qualified Var is not resolvable"
+   :test (fn []
+           (let [module 'postgres.gen.bind-fixture
+                 entry {:id 'account-all :module module :op-key :defn}
+                 snapshot (application/module-snapshot)]
+             (try
+               (application/install-modules! {module {:id module :code {'account-all entry}}})
+               (:id (bind/bind-entry 'postgres.gen.bind-fixture/account-all))
+               (finally (application/restore-modules! snapshot)))))
+   :expected 'account-all}])
+
+^{:refer postgres.gen.bind-macro/transform-query-or}
+(Test/check
+ [{:name "splits the Foundation set-vector OR representation"
+   :test (fn [] (bind/transform-query-or
+                 #{[:name "hello" :id "one" [:or] :name "world" :id "two"]}))
+   :expected [{:name "hello" :id "one"} {:name "world" :id "two"}]}])
+
+^{:refer postgres.gen.bind-macro/transform-query-classify}
+(Test/check
+ [{:name "classifies quote function and select forms"
+   :test (fn []
+           [(bind/transform-query-classify ''("hello" "world"))
+            (bind/transform-query-classify '(jsonb-array-elements-text input))
+            (bind/transform-query-classify '[:select * :from demo/Task])])
+   :expected [[["hello" "world"]]
+              '{"::" "sql/fn" :name "jsonb_array_elements_text" :args [input]}
+              '{"::" "sql/select" :args [* :from demo/Task]}]}])
+
+^{:refer postgres.gen.bind-macro/transform-query}
+(Test/check
+ [{:name "converts scalar query identifiers into portable wire spellings"
+   :test (fn [] (bind/transform-query [:id :first-name]))
+   :expected ["id" "first_name"]}])
+
+^{:refer postgres.gen.bind-macro/transform-schema}
+(Test/check
+ [{:name "normalizes portable schema keys and filters selected columns"
+   :test (fn [] (bind/bind-schema
+                 {:tree {:User {:first-name [{:type :text
+                                               "sql" {"default" "unknown" "unique" true}} 0]
+                                :secret [{:type :text} 1]}}}
+                 #{:secret}))
+   :expected {"User" {"first_name" {"type" "text" "sql" {"default" "unknown"}}}}}])
+
+^{:refer postgres.gen.bind-macro/bind-function}
+(Test/check
+ [{:name "binds portable PostgreSQL function signatures"
+   :test (fn []
+           (bind/bind-function
+            {:id 'account-view
+             :static/schema "app"
+             :static/input [{:symbol 'i-account-id :modifiers [:uuid]}]
+             :static/return [:jsonb]
+             :api/flags [:public]
+             :api/mq.event true
+             :api/meta {:notify {:event-type :account-created}}}))
+   :expected {:id "account_view"
+              :schema "app"
+              :input [{:symbol "i_account_id" :type "uuid"}]
+              :return "jsonb"
+              :flags {:public true :mq.event true}
+              :notify {"event_type" "account_created"}}}])
+
+^{:refer postgres.gen.bind-macro/bind-view}
+(Test/check
+ [{:name "binds PostgreSQL views with argument interpolation"
+   :test (fn []
+           (bind/bind-view
+            {:id 'user-account-all
+             :static/schema "app"
+             :static/input [{:symbol 'input :modifiers [:uuid]}]
+             :static/return [:jsonb]
+             :api/flags [:public]
+             :static/view {:table 'UserAccount :type :select
+                           :args ['input] :query {:account 'input}}}
+            {:mode :cached}))
+   :expected {:id "user_account_all"
+              :schema "app"
+              :input [{:symbol "input" :type "uuid"}]
+              :return "jsonb"
+              :flags {:public true}
+              :view {:table "UserAccount" :type "select" :tag "all"
+                     :query {"account" "{{input}}"} :mode :cached}}}])
+
+^{:refer postgres.gen.bind-macro/bind-app}
+(Test/check
+ [{:name "binds deterministic table descriptions and positions"
+   :test (fn []
+           (bind/bind-app
+            {:pointers
+             {:user {:id 'User :module 'demo :line 1
+                     :static/schema "app"
+                     :static/schema-primary {:type :uuid :id :id}
+                     :static/public true}
+              :task {:id 'Task :module 'demo :line 2
+                     :static/schema "app"
+                     :static/schema-primary {:type :uuid :id :id}
+                     :static/public false}}}))
+   :expected {"User" {:schema "app" :schema-primary {"type" "uuid" "id" "id"}
+                      :public true :schema-update false :position 0}
+              "Task" {:schema "app" :schema-primary {"type" "uuid" "id" "id"}
+                      :public false :schema-update false :position 1}}}])
+
+^{:refer postgres.gen.bind-macro/module-entries}
+(Test/check
+ [{:name "lists view API debug and all entries from the application module snapshot"
+   :test (fn []
+           (let [module 'postgres.gen.bind-fixture
+                 view {:id 'account-all :module module :op-key :defn
+                       :api/flags [:public] :static/view {:type :select}}
+                 debug {:id 'account-debug :module module :op-key :defn}
+                 snapshot (application/module-snapshot)]
+             (try
+               (application/install-modules!
+                {module {:id module :code {'account-all view 'account-debug debug}}})
+               [(bind/list-view module :select)
+                (bind/list-api module)
+                (bind/list-debug module)
+                (sort-by first (bind/list-all module))]
+               (finally (application/restore-modules! snapshot)))))
+   :expected [[['account-all 'postgres.gen.bind-fixture/account-all]]
+              [['account-all 'postgres.gen.bind-fixture/account-all]]
+              [['account-debug 'postgres.gen.bind-fixture/account-debug]]
+              [['account-all 'postgres.gen.bind-fixture/account-all]
+               ['account-debug 'postgres.gen.bind-fixture/account-debug]]]}])

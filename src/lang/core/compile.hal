@@ -1,0 +1,373 @@
+;; ============================================================================
+;; lang.core.compile — deterministic module graph compilation.
+;; ============================================================================
+(ns lang.core.compile
+  (:require [lang.common.compiler :as compiler]
+            [lang.core.registry :as registry]
+            [lang.core.script :as script]))
+
+(def +empty-dependencies+ {:code #{} :fragment #{} :native #{}})
+
+(defn diagnostic
+  [code message data]
+  {:code code :severity :error :message message :data data})
+
+(defn stable-values
+  [values]
+  (vec (sort-by str (or values []))))
+
+(defn require-module-id
+  [spec]
+  (cond (symbol? spec) spec
+        (vector? spec) (first spec)
+        (list? spec) (first spec)
+        :else nil))
+
+(defn module-dependency-ids
+  [module]
+  (stable-values (filter symbol? (map require-module-id (or (:require module) [])))))
+
+(defn load-module-graph
+  "Loads a root module and all declared script dependencies exactly once."
+  [main]
+  (loop [pending [main] seen #{} modules {} diagnostics []]
+    (if (empty? pending)
+      {:modules modules :diagnostics diagnostics}
+      (let [module-id (first pending)
+            remaining (vec (rest pending))]
+        (if (has? seen module-id)
+          (recur remaining seen modules diagnostics)
+          (try
+            (script/load-module module-id)
+            (let [module (get (deref script/+modules+) module-id)]
+              (if module
+                (recur (into remaining (module-dependency-ids module))
+                       (conj seen module-id)
+                       (assoc modules module-id module)
+                       diagnostics)
+                (recur remaining (conj seen module-id) modules
+                       (conj diagnostics
+                             (diagnostic :lang/missing-module
+                                         "Loaded namespace did not register a script module"
+                                         {:module module-id})))))
+            (catch error
+              (recur remaining (conj seen module-id) modules
+                     (conj diagnostics
+                           (diagnostic :lang/module-load-failed
+                                       "Script module could not be loaded"
+                                       {:module module-id
+                                        :message (ex-message error)}))))))))))
+
+(defn module-ready?
+  [modules remaining module-id]
+  (every? (fn [dependency]
+            (or (not (has? modules dependency))
+                (not (has? remaining dependency))))
+          (module-dependency-ids (get modules module-id))))
+
+(defn order-modules
+  "Topologically orders modules and deterministically reports cycles."
+  [modules]
+  (loop [remaining (set (keys modules)) ordered [] diagnostics []]
+    (if (empty? remaining)
+      {:order ordered :diagnostics diagnostics}
+      (let [ready (stable-values (filter (fn [module-id]
+                                           (module-ready? modules remaining module-id))
+                                         remaining))]
+        (if (empty? ready)
+          (let [cycle (stable-values remaining)]
+            {:order (into ordered cycle)
+             :diagnostics (conj diagnostics
+                                (diagnostic :lang/module-cycle
+                                            "Module dependency cycle"
+                                            {:modules cycle}))})
+          (recur (reduce disj remaining ready)
+                 (into ordered ready)
+                 diagnostics))))))
+
+(defn schema-diagnostics
+  "Reports incompatible schemas across an ordered module graph."
+  [modules module-order]
+  (:diagnostics
+   (reduce (fn [state module-id]
+             (reduce-kv
+              (fn [inner schema-id definition]
+                (let [previous (get (:seen inner) schema-id)]
+                  (cond (nil? previous)
+                        (assoc-in inner [:seen schema-id]
+                                  {:module module-id :definition definition})
+                        (= definition (:definition previous)) inner
+                        :else
+                        (update inner :diagnostics conj
+                                (diagnostic :lang/conflicting-schema
+                                            "Schema conflicts with an earlier module"
+                                            {:schema schema-id :module module-id
+                                             :previous-module (:module previous)})))))
+              state
+              (or (:schema (get modules module-id)) {})))
+           {:seen {} :diagnostics []}
+           module-order)))
+
+(defn entry-qualified-symbol
+  [entry]
+  (let [module (:module entry)
+        supplied (:symbol entry)
+        id (or (:id entry) supplied)]
+    (cond (and (symbol? supplied) (namespace supplied)) supplied
+          (and module id) (symbol (str module "/" (name id)))
+          (symbol? supplied) supplied
+          :else nil)))
+
+(defn entry-priority
+  [entry]
+  (or (:priority entry) (:static/priority entry) 0))
+
+(defn entry-source
+  [entry]
+  {:line (or (:line entry) (:source/line entry) 0)
+   :column (or (:column entry) (:source/column entry) 0)})
+
+(defn normalize-dependencies
+  [dependencies]
+  (cond (nil? dependencies) +empty-dependencies+
+        (set? dependencies) (assoc +empty-dependencies+ :code dependencies)
+        (map? dependencies) (merge +empty-dependencies+ dependencies)
+        :else +empty-dependencies+))
+
+(defn qualify-dependency
+  [module dependency]
+  (if (and (symbol? dependency) (nil? (namespace dependency)))
+    (symbol (str module "/" (name dependency)))
+    dependency))
+
+(defn qualified-dependencies
+  [module dependencies]
+  (let [dependencies (normalize-dependencies dependencies)]
+    {:code (set (map (fn [dependency] (qualify-dependency module dependency))
+                     (filter symbol? (:code dependencies))))
+     :fragment (set (map (fn [dependency] (qualify-dependency module dependency))
+                         (filter symbol? (:fragment dependencies))))
+     :native (set (or (:native dependencies) #{}))}))
+
+(defn default-entry-compiler
+  "Uses the common compiler for one registered module entry."
+  [options modules module entry]
+  (let [lang (:lang options)
+        book (or (:book options) (registry/registry-book lang :default nil))]
+    (if (nil? book)
+      (throw (ex :not-found {:lang lang} :ex/message "Language book is not registered"))
+      (compiler/compile-entry
+       (or (:compiler options) (compiler/compiler))
+       entry
+       (:selection book)
+       {:book (assoc book :modules modules)
+        :modules modules :module module :entry entry :lang lang
+        :layout (or (:layout options) :module) :emit (or (:emit options) {})
+        :lang/eval-literal (or (:lang/eval-literal options)
+                               (:eval-literal options))}))))
+
+(def ^{:dynamic true} *entry-compiler* default-entry-compiler)
+
+(defn entry-transform-symbol
+  "Qualifies a module-local transform symbol through the module link map."
+  [module transform]
+  (if (symbol? transform)
+    (let [target (if (namespace transform)
+                   (or (get (:link module) (symbol (namespace transform)))
+                       (symbol (namespace transform)))
+                   (:id module))]
+      (if target
+        (symbol (str target) (name transform))
+        transform))
+    transform))
+
+(defn module-entry-transforms
+  "Returns the source-configured code entry transforms for one module."
+  [module]
+  (vec (or (get-in module [:emit :code :transforms :entry]) [])))
+
+(defn resolve-entry-transform
+  "Resolves a configured entry transform or rejects an invalid transform value."
+  [module transform]
+  (let [resolved (cond (fn? transform) transform
+                        (symbol? transform)
+                        (let [pointer (Base/resolve (entry-transform-symbol module transform))]
+                          (if pointer (deref pointer) nil))
+                        :else nil)]
+    (if (fn? resolved)
+      resolved
+      (throw (ex :dependency {:module (:id module) :transform transform}
+                 :ex/message "Entry transform is not resolvable as a function")))))
+
+(defn apply-entry-transforms
+  "Applies one module's configured transforms after normal entry emission."
+  [body options modules module entry result]
+  (let [grammar (or (get-in result [:grammar :grammar]) (:grammar result))
+        environment {:grammar grammar
+                     :selection (:grammar result)
+                     :entry (or (:entry result) entry)
+                     :mopts {:lang (:lang options)
+                             :book (or (:book options) {})
+                             :modules modules
+                             :module module
+                             :layout (or (:layout options) :module)
+                             :emit (or (:emit module) (:emit options) {})}}]
+    (reduce (fn [output transform]
+              ((resolve-entry-transform module transform) output environment))
+            body
+            (module-entry-transforms module))))
+
+(defn failed-entry
+  [entry qualified problem]
+  {:symbol qualified :module (:module entry) :id (:id entry) :entry entry
+   :priority (entry-priority entry) :source (entry-source entry) :output nil
+   :dependencies +empty-dependencies+ :diagnostics [problem] :provenance {}})
+
+(defn compile-entry-safe
+  [options modules entry]
+  (let [qualified (entry-qualified-symbol entry)
+        module (get modules (:module entry))]
+    (try
+      (let [result (*entry-compiler* options modules module entry)
+            output (apply-entry-transforms (:output result) options modules module entry result)
+            diagnostics (vec (or (:diagnostics result) []))]
+        (if (string? output)
+          {:item {:symbol qualified :module (:module entry) :id (:id entry)
+                  :entry entry :priority (entry-priority entry)
+                  :source (entry-source entry) :output output
+                  :dependencies (qualified-dependencies (:module entry) (:dependencies result))
+                  :diagnostics diagnostics :provenance (or (:provenance result) {})}
+           :diagnostics diagnostics}
+          (let [problem (diagnostic :lang/unsupported-form
+                                    "Entry compiler did not return string output"
+                                    {:entry qualified :module (:module entry)})]
+            {:item (failed-entry entry qualified problem)
+             :diagnostics (conj diagnostics problem)})))
+      (catch error
+        (let [problem (diagnostic :lang/unsupported-form "Entry compilation failed"
+                                  {:entry qualified :module (:module entry)
+                                   :message (ex-message error)})]
+          {:item (failed-entry entry qualified problem) :diagnostics [problem]})))))
+
+(defn module-code-entries
+  [module-id module]
+  (vec
+   (sort-by (fn [entry] (str (:id entry)))
+            (reduce-kv
+             (fn [out id value]
+               (let [entry (merge {:id id :module module-id} (or value {}))]
+                 (conj out (assoc entry :symbol (entry-qualified-symbol entry)))))
+             []
+             (or (:code module) {})))))
+
+(defn compile-entries
+  [options modules module-order]
+  (reduce (fn [state entry]
+            (let [compiled (compile-entry-safe options modules entry)]
+              {:entries (conj (:entries state) (:item compiled))
+               :diagnostics (into (:diagnostics state) (:diagnostics compiled))}))
+          {:entries [] :diagnostics []}
+          (mapcat (fn [module-id] (module-code-entries module-id (get modules module-id)))
+                  module-order)))
+
+(defn missing-entry-diagnostics
+  [entries]
+  (let [known (set (map :symbol entries))]
+    (vec (mapcat (fn [entry]
+                   (map (fn [dependency]
+                          (diagnostic :lang/missing-entry
+                                      "Code dependency is not registered"
+                                      {:entry (:symbol entry) :dependency dependency}))
+                        (filter (fn [dependency] (not (has? known dependency)))
+                                (stable-values (get-in entry [:dependencies :code])))))
+                 entries))))
+
+(defn module-index
+  [module-order]
+  (loop [index 0 remaining module-order out {}]
+    (if (empty? remaining)
+      out
+      (recur (+ index 1) (vec (rest remaining))
+             (assoc out (first remaining) index)))))
+
+(defn entry-sort-key
+  [module-indices entry]
+  [(or (get module-indices (:module entry)) 0)
+   (:priority entry) (get-in entry [:source :line])
+   (get-in entry [:source :column]) (str (:symbol entry))])
+
+(defn entry-ready?
+  [entry-map remaining entry]
+  (every? (fn [dependency]
+            (or (not (has? entry-map dependency))
+                (not (has? remaining dependency))))
+          (get-in entry [:dependencies :code])))
+
+(defn order-entries
+  "Orders compiled entries by module, code dependency, priority, and source."
+  [entries module-order]
+  (let [entry-map (reduce (fn [out entry] (assoc out (:symbol entry) entry)) {} entries)
+        module-indices (module-index module-order)]
+    (loop [remaining (set (keys entry-map)) ordered [] diagnostics []]
+      (if (empty? remaining)
+        {:entries ordered :diagnostics diagnostics}
+        (let [ready (vec (sort-by (fn [entry] (entry-sort-key module-indices entry))
+                                  (map (fn [symbol] (get entry-map symbol))
+                                       (filter (fn [symbol]
+                                                 (entry-ready? entry-map remaining
+                                                               (get entry-map symbol)))
+                                               remaining))))]
+          (if (empty? ready)
+            (let [cycle (vec (sort-by (fn [entry] (entry-sort-key module-indices entry))
+                                      (map (fn [symbol] (get entry-map symbol)) remaining)))]
+              {:entries (into ordered cycle)
+               :diagnostics (conj diagnostics
+                                  (diagnostic :lang/entry-cycle "Entry dependency cycle"
+                                              {:entries (vec (map :symbol cycle))}))})
+            (recur (reduce disj remaining (map :symbol ready))
+                   (into ordered ready) diagnostics)))))))
+
+(defn label-prefix
+  [lang]
+  (if (has? #{:postgres :sql} lang) "-- " ";; "))
+
+(defn render-output
+  [lang emit entries]
+  (let [labels? (true? (get-in emit [:code :label]))
+        prefix (label-prefix lang)]
+    (str/join "\n\n"
+              (map (fn [entry]
+                     (if labels? (str prefix (:symbol entry) "\n" (:output entry))
+                         (:output entry)))
+                   (filter (fn [entry] (string? (:output entry))) entries)))))
+
+(defn compile-module
+  "Compiles a full registered module graph without writing artifacts."
+  [options]
+  (let [options (or options {})
+        lang (:lang options)
+        main (:main options)]
+    (if (or (nil? lang) (not (symbol? main)))
+      {:output "" :modules [] :entries []
+       :diagnostics [(diagnostic :lang/invalid-options
+                                 "compile-module requires :lang and symbolic :main"
+                                 {:lang lang :main main})]
+       :provenance {:lang lang :main main :module-order [] :entry-order []}}
+      (let [graph (load-module-graph main)
+            modules (:modules graph)
+            module-result (order-modules modules)
+            module-order (:order module-result)
+            compiled (compile-entries options modules module-order)
+            missing (missing-entry-diagnostics (:entries compiled))
+            entry-result (order-entries (:entries compiled) module-order)
+            ordered (:entries entry-result)
+            diagnostics (vec (concat (:diagnostics graph) (:diagnostics module-result)
+                                     (schema-diagnostics modules module-order)
+                                     (:diagnostics compiled) missing
+                                     (:diagnostics entry-result)))]
+        {:output (render-output lang (or (:emit options) {}) ordered)
+         :modules (vec (map (fn [module-id] (get modules module-id)) module-order))
+         :entries ordered :diagnostics diagnostics
+         :provenance {:lang lang :main main :layout (or (:layout options) :module)
+                      :module-order module-order
+                      :entry-order (vec (map :symbol ordered))}}))))

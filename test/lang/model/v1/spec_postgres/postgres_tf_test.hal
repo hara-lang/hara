@@ -1,0 +1,60 @@
+(ns lang.model.v1.spec-postgres.postgres-tf-test
+  (:require [lang.model.v1.spec-postgres.postgres-tf :as tf]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-js-idx}
+(Test/check [{:name "normalizes PostgreSQL JSON keys"
+              :test (fn [] [(tf/pg-js-idx 'x-user-id)
+                            (tf/pg-js-idx 'user-id)])
+              :expected ["user_id" "user_id"]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-tf-js}
+(Test/check [{:name "builds deterministic JSONB object and array forms"
+              :test (fn [] [(tf/pg-tf-js [nil {:a 1 :b [2 3]}])
+                            (tf/pg-tf-js [nil #{'x-name}])])
+              :expected ['(jsonb-build-object "a" 1 "b" (jsonb-build-array 2 3))
+                         '(jsonb-build-object "name" x-name)]}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-json-value}
+(Test/check [{:name "recursively converts JSONB values"
+              :test (fn [] (tf/pg-json-value [1 :active]))
+              :expected '(jsonb-build-array 1 "active")}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-tf-free-data}
+(Test/check [{:name "quotes free data"
+              :test (fn [] (first (tf/pg-tf-free-data [nil [1 2]])))
+              :expected 'quote}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-tf-free-vec}
+(Test/check [{:name "quotes free vectors"
+              :test (fn [] (first (tf/pg-tf-free-vec [nil [1 2]])))
+              :expected 'quote}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-tf-for}
+(Test/check [{:name "builds a FOR loop section"
+              :test (fn [] (first (tf/pg-tf-for '(for [i 0 1] (return i)))))
+              :expected :FOR}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-tf-foreach}
+(Test/check [{:name "builds a FOREACH loop section"
+              :test (fn [] (first (tf/pg-tf-foreach '(for:each [i :in arr] (return i)))))
+              :expected :FOREACH}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-tf-loop}
+(Test/check [{:name "builds a LOOP section"
+              :test (fn [] (first (tf/pg-tf-loop '(loop (return 1)))))
+              :expected :LOOP}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-tf-throw}
+(Test/check [{:name "builds a JSONB-backed raise form"
+              :test (fn [] (first (tf/pg-tf-throw '(throw {:id 1} :tag))))
+              :expected :raise-exception}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-tf-error}
+(Test/check [{:name "adds the standard error status"
+              :test (fn [] (first (tf/pg-tf-error '(error {:id 1} :tag))))
+              :expected :raise-exception}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-tf/pg-tf-assert}
+(Test/check [{:name "builds a negated assertion with error payload"
+              :test (fn [] (first (tf/pg-tf-assert '(assert (= 1 1) [:tag {:id 1}]))))
+              :expected 'if}])
