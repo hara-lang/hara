@@ -1,0 +1,92 @@
+(ns lang.runtime.basic.impl.process-js-test
+  (:require [lang.core.registry :as registry]
+            [lang.core.runtime :as runtime]
+            [lang.runtime.basic.impl.process-js :as subject]
+            [lang.runtime.basic.type-common :as common]))
+
+^{:refer lang.runtime.basic.impl.process-js/+program-init+}
+(Test/check
+ [{:name "declares the Node.js executable and context flags"
+   :test (fn [] [(get-in subject/+program-init+ [:default :oneshot])
+                 (get-in subject/+program-init+ [:default :verify])
+                 (get-in subject/+program-init+ [:default :basic])
+                 (get-in subject/+program-init+ [:env :nodejs :exec])
+                 (get-in subject/+program-init+ [:env :nodejs :extension])
+                 (get-in subject/+program-init+ [:env :nodejs :flags :oneshot])
+                 (get-in subject/+program-init+ [:env :nodejs :flags :verify])
+                 (get-in (common/get-program-options :js) [:default :basic])])
+   :expected [:nodejs :nodejs :nodejs "node" "js" ["-e"]
+              ["--input-type=module" "--check" "-"] :nodejs]}])
+
+^{:refer lang.runtime.basic.impl.process-js/+js-oneshot-config+}
+(Test/check
+ [{:name "configures JavaScript one-shot evaluation for full JSON output"
+   :test (fn [] (select-keys subject/+js-oneshot-config+
+                              [:main :emit :json]))
+   :expected {:main {} :emit {} :json :full}}])
+
+^{:refer lang.runtime.basic.impl.process-js/+js-verify-config+}
+(Test/check
+ [{:name "configures JavaScript verification over stdin"
+   :test (fn [] (select-keys subject/+js-verify-config+
+                              [:main :emit :json :transport]))
+   :expected {:main {} :emit {} :json false
+              :transport :process-stdin}}])
+
+^{:refer lang.runtime.basic.impl.process-js/+js-basic-config+}
+(Test/check
+ [{:name "configures persistent JavaScript evaluation over a socket"
+   :test (fn [] (let [config subject/+js-basic-config+]
+                  [(select-keys config [:main :emit :json :timeout :transport])
+                   (:profile config)
+                   (boolean (:bootstrap config))]))
+   :expected [{:main {} :emit {} :json :full
+               :timeout 2000 :transport :process-socket}
+              {:input [] :source []
+               :response [[:lang/node-response 1]]}
+              true]}])
+
+^{:refer lang.runtime.basic.impl.process-js/+js-oneshot+}
+(Test/check
+ [{:name "installs the JavaScript one-shot runtime type"
+   :test (fn [] [(select-keys subject/+js-oneshot+
+                              [:lang :runtime :type])
+                 (set (keys (:instance subject/+js-oneshot+)))
+                 (registry/registry-runtime-ns :js :oneshot)])
+   :expected [{:lang :js :runtime :oneshot :type :lang/rt.oneshot}
+              #{:create :raw-eval}
+              'lang.runtime.basic.impl.process-js]}])
+
+^{:refer lang.runtime.basic.impl.process-js/+js-verify+}
+(Test/check
+ [{:name "installs the JavaScript verification runtime type"
+   :test (fn [] [(select-keys subject/+js-verify+
+                              [:lang :runtime :type])
+                 (set (keys (:instance subject/+js-verify+)))
+                 (:type (runtime/runtime-spec :js :verify))])
+   :expected [{:lang :js :runtime :verify :type :lang/rt.verify}
+              #{:create :raw-eval}
+              :lang/rt.verify]}])
+
+^{:refer lang.runtime.basic.impl.process-js/+js-basic+}
+(Test/check
+ [{:name "installs the JavaScript persistent basic runtime type"
+   :test (fn [] [(select-keys subject/+js-basic+
+                              [:lang :runtime :type])
+                 (get-in subject/+js-basic+ [:config :layout])
+                 (set (keys (:instance subject/+js-basic+)))
+                 (:type (runtime/runtime-spec :js :basic))])
+   :expected [{:lang :js :runtime :basic :type :lang/rt.basic}
+              :full
+              #{:create :start :stop :raw-eval}
+              :lang/rt.basic]}])
+
+^{:refer lang.runtime.basic.impl.process-js/+init+}
+(Test/check
+ [{:name "publishes all JavaScript runtime coordinates"
+   :test (fn [] [(get subject/+init+ :lang)
+                 (set (keys (dissoc subject/+init+ :lang)))
+                 (boolean (:oneshot subject/+init+))
+                 (boolean (:verify subject/+init+))
+                 (boolean (:basic subject/+init+))])
+   :expected [:js #{:program :oneshot :verify :basic} true true true]}])
