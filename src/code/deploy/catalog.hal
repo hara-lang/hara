@@ -1,8 +1,7 @@
 (ns code.deploy.catalog
   (:config {:role :internal})
   (:require [code.framework :as framework]
-            [code.framework.cache :as cache]
-            [work.flow.task :as task]))
+            [code.framework.cache :as cache]))
 
 (def +default-catalog-path+
   "config/packages.edn")
@@ -89,40 +88,60 @@
 (defn within-namespace?
   "Returns true when a namespace is the selector root or one of its descendants."
   [root namespace]
-  (task/within-namespace? root namespace))
+  (let [root (namespace-text root)
+        namespace (namespace-text namespace)]
+    (or (= root namespace)
+        (str/starts-with? namespace (str root ".")))))
 
 (defn base-namespace?
   "Matches Foundation's :base selector root and .base implementation subtree."
   [root namespace]
-  (task/base-namespace? root namespace))
+  (let [root (namespace-text root)
+        namespace (namespace-text namespace)]
+    (or (= root namespace)
+        (str/starts-with? namespace (str root ".base.")))))
 
 (defn selector-matches?
   "Applies one Foundation selector `[namespace :base|:complete|:exclude]`."
   [selector namespace]
-  (cond
-    (not (vector? selector))
-    (throw
-     (ex :code.deploy/invalid-selector
-         {:selector selector}
-         :ex/message "package selector must be a vector"))
+  (let [root (first selector)
+        mode (second selector)]
+    (cond
+      (not (vector? selector))
+      (throw
+       (ex :code.deploy/invalid-selector
+           {:selector selector}
+           :ex/message "package selector must be a vector"))
 
-    (not
-     (or (and (= :base (second selector)) (= 2 (count selector)))
-         (and (= :complete (second selector)) (= 2 (count selector)))
-         (and (= :exclude (second selector)) (= 3 (count selector)))))
-    (throw
-     (ex :code.deploy/invalid-selector
-         {:selector selector}
-         :ex/message "package selector has an unsupported Foundation shape"))
+      (not
+       (or (and (= mode :base) (= 2 (count selector)))
+           (and (= mode :complete) (= 2 (count selector)))
+           (and (= mode :exclude) (= 3 (count selector)))))
+      (throw
+       (ex :code.deploy/invalid-selector
+           {:selector selector}
+           :ex/message "package selector has an unsupported Foundation shape"))
 
-    :else
-    (try
-      (task/matches? selector namespace)
-      (catch error
-        (throw
-         (ex :code.deploy/invalid-selector
-             {:selector selector}
-             :ex/message "package selector has an unsupported Foundation shape"))))))
+      (= mode :base)
+      (base-namespace? root namespace)
+
+      (= mode :complete)
+      (within-namespace? root namespace)
+
+      (= mode :exclude)
+      (and (within-namespace? root namespace)
+           (not
+            (reduce
+             (fn [excluded? excluded-root]
+               (or excluded? (within-namespace? excluded-root namespace)))
+             false
+             (nth selector 2))))
+
+      :else
+      (throw
+       (ex :code.deploy/invalid-selector
+           {:selector selector}
+           :ex/message "package selector has an unsupported Foundation shape")))))
 
 (defn package-definition
   "Normalises one catalogue entry while retaining its original publication name."
