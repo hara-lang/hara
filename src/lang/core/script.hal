@@ -9,10 +9,7 @@
             [lang.core.registry :as registry]
             [lang.core.runtime :as runtime]))
 
-(def +modules+ (atom {}))
 (def +scripts+ (atom {}))
-(def +loaded-modules+ (atom {}))
-(def +module-contexts+ (atom {}))
 (def +compile-cache+ (atom {}))
 
 (def ^{:dynamic true} *cache-none* false)
@@ -33,36 +30,21 @@
    :specialize :includes :export :file :display :emit :module/primary])
 
 (defn script-snapshot
-  "Captures all source-registration and structural compilation state."
+  "Captures Library source state plus owned runtime records and structural cache."
   []
   {:library (library/library-raw-snapshot (library/default-library))
-   :modules (deref +modules+)
    :scripts (deref +scripts+)
-   :loaded-modules (deref +loaded-modules+)
-   :module-contexts (deref +module-contexts+)
    :compile-cache (deref +compile-cache+)})
 
 (defn script-restore!
-  "Restores a script snapshot; nil returns every script registry to baseline."
+  "Restores a Library-owned script snapshot; nil returns every owned state to baseline."
   [snapshot]
   (let [snapshot (or snapshot {})]
-    (if (has? snapshot :library)
-      (library/library-restore! (library/default-library) (:library snapshot))
-      (do
-        (library/library-reset! (library/default-library))
-        (reduce-kv
-         (fn [_ _ module-value]
-           (if (:lang module-value)
-             (library/library-add-module! (library/default-library)
-                                          (:lang module-value) module-value))
-           nil)
-         nil
-         (or (:modules snapshot) {}))))
-    (reset! +modules+ (or (:modules snapshot)
-                          (sync-module-index!)))
+    (if (has? snapshot :modules)
+      (throw (ex :argument {:snapshot snapshot}
+                 :ex/message "Script snapshots must contain :library, not legacy :modules")))
+    (library/library-restore! (library/default-library) (:library snapshot))
     (reset! +scripts+ (or (:scripts snapshot) {}))
-    (reset! +loaded-modules+ (or (:loaded-modules snapshot) {}))
-    (reset! +module-contexts+ (or (:module-contexts snapshot) {}))
     (reset! +compile-cache+ (or (:compile-cache snapshot) {}))
     (script-snapshot)))
 
@@ -77,37 +59,19 @@
   (reset! +compile-cache+ {})
   nil)
 
-(defn sync-module-index!
-  "Rebuilds the legacy flat module index from the active Library snapshot."
-  []
-  (let [value (library/library-snapshot (library/runtime-library))
-        modules
-        (reduce-kv
-         (fn [output _ coordinate]
-           (merge output
-                  (or (get-in value [:books coordinate :modules]) {})))
-         {}
-         (:selected value))]
-    (reset! +modules+ modules)
-    modules))
-
 (defn register-library-module!
-  "Writes a source module through the active Library and updates its compatibility index."
+  "Writes a source module through the active Library."
   [language module-value]
   (let [stored (library/library-add-module! (library/runtime-library)
                                             language module-value)]
-    (swap! +modules+ assoc (:id stored) stored)
     (reset-compile-cache!)
     stored))
 
 (defn register-library-entry!
-  "Writes a source entry through the active Library and updates its compatibility index."
+  "Writes a source entry through the active Library."
   [language entry-value]
   (let [stored (library/library-set-entry! (library/runtime-library)
                                            language entry-value)]
-    (swap! +modules+
-           (fn [modules]
-             (assoc-in modules [(:module stored) (:section stored) (:id stored)] stored)))
     (reset-compile-cache!)
     stored))
 
@@ -125,7 +89,9 @@
 
 (defn module-symbol
   []
-  (or (get (deref +module-contexts+) (namespace-symbol))
+  (or (:id (second (library/library-find-module-by-source
+                    (library/runtime-library)
+                    (namespace-symbol))))
       (namespace-symbol)))
 
 (defn current-module-id
@@ -196,12 +162,12 @@
                       module)
          configured (merge current (module-config lang module config))
          configured (assoc configured
+                           :source source
                            :code (or (:code current) {})
                            :fragment (or (:fragment current) {}))
          configured (if (:native current)
                       (assoc configured :native (:native current))
                       configured)]
-     (swap! +module-contexts+ assoc source module)
      (register-library-module! lang configured))))
 
 (defn portable-schema-form
@@ -233,24 +199,27 @@
 
 (defn module-source-symbol
   ([module-id]
-   (module-source-symbol (or (:lang (get (deref +modules+) module-id)) :xtalk)
+   (module-source-symbol (or (first (library/library-find-module
+                                     (library/runtime-library)
+                                     module-id))
+                             :xtalk)
                          module-id))
   ([language module-id]
    (let [current-library (library/runtime-library)
          module (or (get (library/library-book-modules current-library language)
                          module-id)
-                    (library/library-get-source-module current-library language module-id))
-         source (:source module)]
+                    (library/library-get-source-module current-library language module-id)
+                    (second (library/library-find-module current-library module-id)))]
+     (let [source (:source module)]
      (or (when (symbol? source) source)
-         (reduce-kv (fn [found source-symbol target]
-                      (if (or found (not= target module-id)) found source-symbol))
-                    nil
-                    (deref +module-contexts+))
-         module-id))))
+         module-id)))))
 
 (defn module-schema-values
   ([module-id]
-   (module-schema-values (or (:lang (get (deref +modules+) module-id)) :xtalk)
+   (module-schema-values (or (first (library/library-find-module
+                                     (library/runtime-library)
+                                     module-id))
+                             :xtalk)
                          module-id))
   ([language module-id]
    (let [source (module-source-symbol language module-id)]
@@ -264,7 +233,10 @@
 
 (defn refresh-module-schemas
   ([module-id]
-   (refresh-module-schemas (or (:lang (get (deref +modules+) module-id)) :xtalk)
+   (refresh-module-schemas (or (first (library/library-find-module
+                                       (library/runtime-library)
+                                       module-id))
+                               :xtalk)
                            module-id))
   ([language module-id]
    (let [current-library (library/runtime-library)
@@ -298,7 +270,10 @@
          entry-symbol (with-meta entry-symbol metadata)
          form (apply list (first form) entry-symbol (drop 2 form))
          id (symbol-id entry-symbol)
-         current (or (get (deref +modules+) module)
+         current-library (library/runtime-library)
+         current (or (library/library-get-source-module
+                      current-library (or explicit-language :xtalk) module)
+                     (second (library/library-find-module current-library module))
                      (module-config (or explicit-language :xtalk) module {}))
          language (or explicit-language (:lang current) :xtalk)
          entry (merge metadata
@@ -329,7 +304,10 @@
          entry-symbol (with-meta entry-symbol metadata)
          form (apply list (first form) entry-symbol (drop 2 form))
          id (symbol-id entry-symbol)
-         current (or (get (deref +modules+) module)
+         current-library (library/runtime-library)
+         current (or (library/library-get-source-module
+                      current-library (or explicit-language :xtalk) module)
+                     (second (library/library-find-module current-library module))
                      (module-config (or explicit-language :xtalk) module {}))
          language (or explicit-language (:lang current) :xtalk)
          entry (merge metadata
@@ -346,7 +324,10 @@
   [explicit-language declaration-symbol value metadata]
   (let [module (module-symbol)
         id (symbol-id declaration-symbol)
-        current (or (get (deref +modules+) module)
+        current-library (library/runtime-library)
+        current (or (library/library-get-source-module
+                     current-library (or explicit-language :xtalk) module)
+                    (second (library/library-find-module current-library module))
                     (module-config :xtalk module {}))
         language (or explicit-language (:lang current) :xtalk)
         return-value (or (:static/return metadata) (get metadata :-))
@@ -765,36 +746,42 @@
 
 (defn module-loaded?
   ([module]
-   (or (has? (deref +loaded-modules+) module)
-       (has? (deref +modules+) module)))
+   (not (nil? (library/library-find-module (library/runtime-library) module))))
   ([language module]
-   (or (has? (deref +loaded-modules+) [language module])
-       (not (nil? (get (library/library-book-modules (library/runtime-library)
-                                               language)
-                       module))))))
+   (not (nil? (library/library-get-source-module (library/runtime-library)
+                                                  language
+                                                  module)))))
 
 (defn load-module
   ([spec]
    (let [source (require-module spec)
-         module (or (get (deref +module-contexts+) source) source)
-         language (or (:lang (get (deref +modules+) module)) :xtalk)]
+         current-library (library/runtime-library)
+         [language module-value] (or (library/library-find-module-by-source
+                                      current-library source)
+                                     (library/library-find-module current-library source)
+                                     [nil nil])
+         language (or language :xtalk)]
      (load-module language spec)))
   ([language spec]
    (let [source (require-module spec)
-         module (or (get (deref +module-contexts+) source) source)]
+         current-library (library/runtime-library)
+         [_ current] (or (library/library-find-module-by-source
+                          current-library source)
+                         [nil nil])
+         module (or (:id current) source)]
      (if (not (module-loaded? language module))
        (eval (list 'require (list 'quote source))))
-     (let [module (or (get (deref +module-contexts+) source) source)
-           current-library (library/runtime-library)
-           value (or (get (library/library-book-modules current-library language)
-                          module)
-                     (library/library-get-source-module current-library language module))]
+     (let [[_ current] (or (library/library-find-module-by-source
+                            current-library source)
+                           [nil nil])
+           module (or (:id current) module)
+           value (or (library/library-get-source-module current-library language module)
+                     current)]
        (if (nil? value)
          (throw (ex :dependency {:language language :module module :source source}
                     :ex/message "Required namespace did not provide a script module"))
          (do
            (refresh-module-schemas (:lang value) module)
-           (swap! +loaded-modules+ assoc [language module] true)
            module))))))
 
 (defn script-options
@@ -822,8 +809,6 @@
   ([lang module config test?]
    (let [source (namespace-symbol)
          config (or config {})
-         _ (if (= :basic (:runtime config))
-             (library/library-get-book-selection (library/runtime-library) lang))
          primary (script-ns-import lang config)
          configured (configure-module lang module
                                       (assoc config :module/primary primary)
@@ -840,10 +825,10 @@
   (let [current-library (library/runtime-library)]
     (*module-compiler*
       {:lang lang
-      :main module
-      :layout :flat
-      :emit (or (:emit config) {})
-      :book (library/library-get-book-selection current-library lang)})))
+       :main module
+       :layout :flat
+       :emit (or (:emit config) {})
+      :book (library/library-get-book current-library lang)})))
 
 (defn script-module-source?
   "Returns whether a selected script module owns emitted source declarations."
@@ -857,8 +842,7 @@
 (defn initialize-script!
   "Compiles and injects a selected basic-runtime module after transport startup."
   [instance lang module config]
-  (let [_ (library/library-get-book-selection (library/runtime-library) lang)
-        compiled (if (script-module-source? lang module)
+  (let [compiled (if (script-module-source? lang module)
                    (compile-script-module lang module config)
                    {:output "" :diagnostics []})
         diagnostics (or (:diagnostics compiled) [])
@@ -877,6 +861,31 @@
                                            2000)}))
         instance))))
 
+(defn start-runtime
+  "Creates and starts one runtime through the shared script lifecycle."
+  [lang runtime-id config]
+  (let [config (or config {})
+        module (:module config)
+        instance (runtime/rt-start
+                  (runtime/rt-create lang (or runtime-id :default) config))
+        instance (if (and (= runtime-id :basic) module)
+                   (try
+                     (initialize-script! instance lang module config)
+                     (catch error
+                       (do
+                         (runtime/rt-stop instance)
+                         (throw error))))
+                   instance)]
+    (if (= lang :postgres)
+      (reduce
+       (fn [current spec]
+         (if (require-primary? spec)
+           (IContextLifeCycle/setup-module current (first spec))
+           current))
+       instance
+       (or (:require config) []))
+      instance)))
+
 (defn start-script
   "Creates, starts, and records the selected runtime for one script coordinate."
   [lang module config]
@@ -885,26 +894,7 @@
         previous (get-in (deref +scripts+) [coordinate :runtime])
         _ (if previous (runtime/rt-stop previous))
         runtime-id (or (:runtime config) :default)
-        instance (runtime/rt-start
-                  (runtime/rt-create lang runtime-id (assoc config :module module)))
-        instance (if (= runtime-id :basic)
-                   (try
-                     (initialize-script! instance lang module config)
-                     (catch error
-                       (do
-                         (runtime/rt-stop instance)
-                         (throw error))))
-                   instance)
-        instance
-        (if (= lang :postgres)
-          (reduce
-           (fn [current spec]
-             (if (require-primary? spec)
-               (IContextLifeCycle/setup-module current (first spec))
-               current))
-           instance
-           (or (:require config) []))
-          instance)
+        instance (start-runtime lang runtime-id (assoc config :module module))
         record {:lang lang
                 :module module
                 :source (namespace-symbol)
@@ -971,7 +961,7 @@
 
 (defn selected-book
   [lang]
-  (library/library-get-book-selection (library/runtime-library) lang))
+  (library/library-get-book (library/runtime-library) lang))
 
 (defn compile-cache-key
   [lang module form]

@@ -11,9 +11,9 @@
             [lang.core.script :as script]
             [std.lib.component :as component]))
 
-(def +registry+ (atom {}))
-(def +runtimes+ (atom {}))
-(def +libraries+ (atom {}))
+(defstruct RuntimeAnnex [id library state])
+
+(def +annexes+ (atom {}))
 
 (defn current-namespace-symbol
   []
@@ -23,21 +23,43 @@
   [namespace tag]
   [namespace tag])
 
+(defn annex?
+  "Returns true when value owns one child Library and tagged runtime state."
+  [value]
+  (instance? lang.core.script-annex/RuntimeAnnex value))
+
+(defn annex-create
+  "Creates one namespace-owned RuntimeAnnex inheriting the default Library."
+  [namespace]
+  (lang.core.script-annex/RuntimeAnnex
+   namespace
+   (library/library-create {:id [:annex namespace]
+                            :parent (library/default-library)})
+   (atom {:registry {} :runtimes {}})))
+
+(defn annex-existing
+  "Returns one existing namespace-owned RuntimeAnnex without creating state."
+  [namespace]
+  (get (deref +annexes+) namespace))
+
+(defn annex-in
+  "Returns one namespace-owned RuntimeAnnex, creating it exactly once."
+  [namespace]
+  (let [current (annex-existing namespace)]
+    (if current
+      current
+      (let [created (annex-create namespace)]
+        (swap! +annexes+
+               (fn [annexes]
+                 (if (get annexes namespace)
+                   annexes
+                   (assoc annexes namespace created))))
+        (annex-existing namespace)))))
+
 (defn annex-library-in
   "Returns the namespace-owned child Library, inheriting the default Library."
   [namespace]
-  (let [current (get (deref +libraries+) namespace)]
-    (if current
-      current
-      (let [created (library/library-create
-                     {:id [:annex namespace]
-                      :parent (library/default-library)})]
-        (swap! +libraries+
-               (fn [libraries]
-                 (if (get libraries namespace)
-                   libraries
-                   (assoc libraries namespace created))))
-        (get (deref +libraries+) namespace)))))
+  (:library (annex-in namespace)))
 
 (defn annex-library
   "Returns the child Library owned by the current source namespace."
@@ -47,52 +69,92 @@
 (defn annex-snapshot
   "Captures tagged runtime registration and live-runtime state."
   []
-  {:registry (deref +registry+)
-   :runtimes (deref +runtimes+)
-   :libraries (reduce-kv (fn [output namespace current]
-                           (assoc output namespace
-                                  (library/library-raw-snapshot current)))
-                         {}
-                         (deref +libraries+))
-   :active
-   (reduce-kv (fn [out key instance]
-                (if (component/started? instance) (conj out key) out))
-              #{}
-              (deref +runtimes+))})
+  (let [annexes (deref +annexes+)]
+    {:registry
+     (reduce-kv
+      (fn [output namespace current]
+        (reduce-kv (fn [output tag record]
+                     (assoc output (coordinate namespace tag) record))
+                   output
+                   (:registry (deref (:state current)))))
+      {}
+      annexes)
+     :runtimes
+     (reduce-kv
+      (fn [output namespace current]
+        (reduce-kv (fn [output tag instance]
+                     (assoc output (coordinate namespace tag) instance))
+                   output
+                   (:runtimes (deref (:state current)))))
+      {}
+      annexes)
+     :libraries
+     (reduce-kv (fn [output namespace current]
+                  (assoc output namespace
+                         (library/library-raw-snapshot (:library current))))
+                {}
+                annexes)
+     :active
+     (reduce-kv
+      (fn [output namespace current]
+        (reduce-kv (fn [output tag instance]
+                     (if (component/started? instance)
+                       (conj output (coordinate namespace tag))
+                       output))
+                   output
+                   (:runtimes (deref (:state current)))))
+      #{}
+      annexes)}))
 
 (defn annex-restore!
   "Restores a tagged runtime snapshot, stopping superseded live runtimes."
   [snapshot]
   (let [snapshot (or snapshot {})
-        desired (or (:runtimes snapshot) {})
+        desired-runtimes (or (:runtimes snapshot) {})
+        desired-registry (or (:registry snapshot) {})
         active (or (:active snapshot) #{})
         library-snapshots (or (:libraries snapshot) {})
-        libraries (deref +libraries+)]
-    (reduce-kv (fn [_ key instance]
-                 (if (= instance (get desired key))
-                   nil
-                   (runtime/rt-stop instance)))
-               nil
-               (deref +runtimes+))
-    (reduce-kv (fn [_ _ current]
-                 (library/library-reset! current))
-               nil
-               libraries)
-    (reset! +libraries+
-            (reduce-kv
-             (fn [output namespace raw-snapshot]
-               (let [current (or (get libraries namespace)
-                                 (library/library-create
-                                  {:id [:annex namespace]
-                                   :parent (library/default-library)}))]
-                 (library/library-restore! current raw-snapshot)
+        existing (deref +annexes+)
+        namespaces (set (concat (keys library-snapshots)
+                                (map first (keys desired-registry))
+                                (map first (keys desired-runtimes))))]
+    (reduce-kv
+     (fn [_ _ current]
+       (reduce-kv (fn [_ _ instance]
+                    (runtime/rt-stop instance))
+                  nil
+                  (:runtimes (deref (:state current))))
+       (library/library-reset! (:library current)))
+     nil
+     existing)
+    (reset! +annexes+
+            (reduce
+             (fn [output namespace]
+               (let [current (or (get existing namespace)
+                                 (annex-create namespace))
+                     registry
+                     (reduce-kv (fn [output coordinate-value record]
+                                  (if (= namespace (first coordinate-value))
+                                    (assoc output (second coordinate-value) record)
+                                    output))
+                                {}
+                                desired-registry)
+                     runtimes
+                     (reduce-kv (fn [output coordinate-value instance]
+                                  (if (= namespace (first coordinate-value))
+                                    (assoc output (second coordinate-value) instance)
+                                    output))
+                                {}
+                                desired-runtimes)]
+                 (library/library-restore! (:library current)
+                                            (get library-snapshots namespace))
+                 (reset! (:state current) {:registry registry :runtimes runtimes})
                  (assoc output namespace current)))
              {}
-             library-snapshots))
-    (reset! +registry+ (or (:registry snapshot) {}))
-    (reset! +runtimes+ desired)
-    (reduce (fn [_ key]
-              (let [instance (get desired key)]
+             (sort-by str namespaces)))
+    (reduce (fn [_ coordinate-value]
+              (let [instance (runtime-in (first coordinate-value)
+                                         (second coordinate-value))]
                 (if instance (runtime/rt-start instance))))
             nil
             active)
@@ -105,14 +167,14 @@
 
 (defn register-tag-in
   [namespace tag lang runtime-id config]
-  (let [key (coordinate namespace tag)
-        previous (get (deref +registry+) key)
+  (let [current (annex-in namespace)
+        previous (get-in (deref (:state current)) [:registry tag])
         record {:namespace namespace
                 :tag tag
                 :lang lang
                 :runtime (or runtime-id :default)
                 :config (or config {})}]
-    (swap! +registry+ assoc key record)
+    (swap! (:state current) assoc-in [:registry tag] record)
     [previous lang]))
 
 (defn register-tag
@@ -121,9 +183,11 @@
 
 (defn deregister-tag-in
   [namespace tag]
-  (let [key (coordinate namespace tag)
-        previous (get (deref +registry+) key)]
-    (swap! +registry+ dissoc key)
+  (let [current (annex-existing namespace)
+        previous (if current
+                   (get-in (deref (:state current)) [:registry tag]))]
+    (if current
+      (swap! (:state current) update :registry dissoc tag))
     previous))
 
 (defn deregister-tag
@@ -132,7 +196,8 @@
 
 (defn tag-info-in
   [namespace tag]
-  (get (deref +registry+) (coordinate namespace tag)))
+  (let [current (annex-existing namespace)]
+    (if current (get-in (deref (:state current)) [:registry tag]))))
 
 (defn tag-info
   [tag]
@@ -140,7 +205,8 @@
 
 (defn runtime-in
   [namespace tag]
-  (get (deref +runtimes+) (coordinate namespace tag)))
+  (let [current (annex-existing namespace)]
+    (if current (get-in (deref (:state current)) [:runtimes tag]))))
 
 (defn get-runtime
   [tag]
@@ -148,8 +214,7 @@
 
 (defn start-runtime
   [lang runtime-id config]
-  (runtime/rt-start
-   (runtime/rt-create lang (or runtime-id :default) (or config {}))))
+  (script/start-runtime lang runtime-id config))
 
 (defn same-runtime?
   [instance lang runtime-id config]
@@ -160,18 +225,19 @@
 
 (defn add-runtime-in
   [namespace tag instance]
-  (let [key (coordinate namespace tag)
-        previous (runtime-in namespace tag)]
+  (let [current (annex-in namespace)
+        previous (get-in (deref (:state current)) [:runtimes tag])]
     (if previous (runtime/rt-stop previous))
-    (swap! +runtimes+ assoc key instance)
+    (swap! (:state current) assoc-in [:runtimes tag] instance)
     [previous instance]))
 
 (defn remove-runtime-in
   [namespace tag]
-  (let [key (coordinate namespace tag)
-        previous (runtime-in namespace tag)]
+  (let [current (annex-existing namespace)
+        previous (if current (get-in (deref (:state current)) [:runtimes tag]))]
     (if previous (runtime/rt-stop previous))
-    (swap! +runtimes+ dissoc key)
+    (if current
+      (swap! (:state current) update :runtimes dissoc tag))
     previous))
 
 (defn start-tag-in
@@ -192,10 +258,10 @@
           (let [_ (if previous (runtime/rt-stop previous))
                 current (annex-library-in namespace)
                 started (library/with:library [current]
-                          (script/configure-module lang module config)
-                          (start-runtime lang runtime-id
-                                         (assoc config :module module)))]
-            (swap! +runtimes+ assoc (coordinate namespace tag) started)
+                          (script/configure-module lang module config namespace)
+                          (script/start-runtime lang runtime-id
+                                                (assoc config :module module)))]
+            (swap! (:state (annex-in namespace)) assoc-in [:runtimes tag] started)
             [previous started]))))))
 
 (defn start-tag
@@ -232,8 +298,10 @@
 
 (defn status-in
   [namespace]
-  {:registered (namespace-tags (deref +registry+) namespace)
-   :active (namespace-tags (deref +runtimes+) namespace)})
+  (let [current (annex-existing namespace)
+        state (if current (deref (:state current)) {:registry {} :runtimes {}})]
+    {:registered (set (keys (:registry state)))
+     :active (set (keys (:runtimes state)))}))
 
 (defn status
   []
@@ -275,18 +343,10 @@
   [namespace]
   (do
     (stop-all-in namespace)
-    (swap! +registry+
-           (fn [entries]
-             (reduce-kv
-              (fn [out key value]
-                (if (= namespace (first key))
-                  out
-                  (assoc out key value)))
-              {}
-              entries)))
-    (let [current (get (deref +libraries+) namespace)]
-      (if current (library/library-reset! current)))
-    (swap! +libraries+ dissoc namespace)
+    (let [current (annex-existing namespace)]
+      (if current
+        (library/library-reset! (:library current))))
+    (swap! +annexes+ dissoc namespace)
     (status-in namespace)))
 
 (defn clear

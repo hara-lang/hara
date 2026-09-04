@@ -160,17 +160,6 @@
                                                    'demo.module))))
               :expected 'demo.module}])
 
-^{:refer lang.core.library/library-get-book-selection}
-(Test/check [{:name "keeps target grammar selection independent of unused Book parents"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))
-                                 selected (library/library-get-book-selection value :js)]
-                             [(:lang selected)
-                              (:parent selected)
-                              (book/get-module selected 'demo.module)]))
-              :expected [:js :xtalk nil]}])
-
 ^{:refer lang.core.library/library-get-book}
 (Test/check [{:name "merges the target Book with its XTalk parent overlay"
               :test (fn [] (let [value (temporary-library)
@@ -178,7 +167,19 @@
                                                                 (module-value :xtalk 'demo.module))]
                              (:id (book/get-module (library/library-get-book value :js)
                                                    'demo.module))))
-              :expected 'demo.module}])
+              :expected 'demo.module}
+             {:name "flattens empty parent ancestry without materializing its Book"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-book!
+                                    value
+                                    (book/book {:lang :js
+                                                :parent :xtalk
+                                                :grammar {:tag :js}}))
+                                 resolved (library/library-get-book value :js)]
+                             [(:parent resolved)
+                              (:merged resolved)
+                              (library/library-raw-book-record value :xtalk)]))
+              :expected [nil #{:js :xtalk} nil]}])
 
 ^{:refer lang.core.library/library-get-module}
 (Test/check [{:name "resolves a module through the effective Book chain"
@@ -201,6 +202,30 @@
                               (get-in (library/library-raw-snapshot value)
                                       [:books [:xtalk :default 1] :book])]))
               :expected [{:id 'demo.module :lang :xtalk} nil nil]}])
+
+^{:refer lang.core.library/library-find-module}
+(Test/check [{:name "finds one source module in the selected Library snapshot"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module!
+                                    value :postgres
+                                    (assoc (module-value :postgres 'demo.module)
+                                           :source 'demo.source))
+                                 [language module-value]
+                                 (library/library-find-module value 'demo.module)]
+                             [language (select-keys module-value [:id :lang :source])]))
+              :expected [:postgres {:id 'demo.module :lang :postgres :source 'demo.source}]}])
+
+^{:refer lang.core.library/library-find-module-by-source}
+(Test/check [{:name "finds one source module from its declaring namespace"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module!
+                                    value :postgres
+                                    (assoc (module-value :postgres 'demo.module)
+                                           :source 'demo.source))
+                                 [language module-value]
+                                 (library/library-find-module-by-source value 'demo.source)]
+                             [language (select-keys module-value [:id :lang :source])]))
+              :expected [:postgres {:id 'demo.module :lang :postgres :source 'demo.source}]}])
 
 ^{:refer lang.core.library/library-get-entry}
 (Test/check [{:name "resolves an entry through the effective Book chain"

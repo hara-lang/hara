@@ -1,5 +1,6 @@
 (ns lang.runtime.postgres.client-test
   (:require [db.protocol :as protocol]
+            [lang.core.library :as library]
             [lang.core.script :as script]
             [lang.runtime.postgres.client :as client]
             [std.lib.component :as component]
@@ -257,9 +258,14 @@
 
 ^{:refer lang.runtime.postgres.client/postgres-book}
 (Test/check
- [{:name "selects the standalone PostgreSQL book that owns lifecycle metadata"
-   :test (fn [] (:lang (client/postgres-book)))
-   :expected :postgres}])
+ [{:name "selects the active Library PostgreSQL book that owns lifecycle metadata"
+   :test (fn [] (let [current (library/library-create {:id :postgres-client})
+                      _ (library/library-add-book!
+                         current
+                         {:lang :postgres :version 1 :route :library})]
+                  (library/with:library [current]
+                    (select-keys (client/postgres-book) [:lang :version :route]))))
+   :expected {:lang :postgres :version 1 :route :library}}])
 
 ^{:refer lang.runtime.postgres.client/lifecycle-hook}
 (Test/check
@@ -355,7 +361,6 @@
                   (try
                     (script/register-library-module!
                      :postgres {:id 'demo.pg :lang :postgres :code {} :fragment {}})
-                    (reset! script/+modules+ {})
                     [(client/module-source? {:id 'demo.pg})
                      (client/module-source? {:id :demo})]
                     (finally (script/script-restore! snapshot)))))
@@ -391,7 +396,6 @@
                   (try
                     (script/register-library-module!
                      :postgres {:id 'demo.pg :lang :postgres :code {'Log entry} :fragment {}})
-                    (reset! script/+modules+ {})
                     (client/pointer-entry {:module 'demo.pg :id 'Log})
                     (finally (script/script-restore! snapshot)))))
    :expected {:id 'Log :static {:static/dbtype :table}}}])

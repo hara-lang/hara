@@ -1,5 +1,6 @@
 (ns lang.core-test
-  (:require [lang.core :as l]))
+  (:require [lang.core :as l]
+            [lang.core.library :as library]))
 
 (l/script- :js
   {:runtime :basic})
@@ -9,10 +10,24 @@
               :test (fn [] (map? (l/bootstrap)))
               :expected true}])
 
-^{:refer lang.core/registry-book}
-(Test/check [{:name "publishes versioned PostgreSQL books from the core facade"
-              :test (fn [] (:lang (l/registry-book :postgres)))
-              :expected :postgres}])
+^{:refer lang.core/default-library}
+(Test/check [{:name "publishes the Foundation-style default Library surface"
+              :test (fn [] [(library/library? (l/default-library))
+                             (= (l/default-library) (l/runtime-library))])
+              :expected [true true]}])
+
+^{:refer lang.core/with:library}
+(Test/check [{:name "binds Library-owned operations through the core facade"
+              :test (fn [] (let [current (library/library-create {:id :facade})]
+                             (l/with:library [current]
+                               (= current (l/runtime-library)))))
+              :expected true}])
+
+^{:refer lang.core/get-book}
+(Test/check [{:name "publishes PostgreSQL Books only through the default Library"
+              :test (fn [] [(:lang (l/get-book (l/default-library) :postgres))
+                             (nil? (Base/resolve 'lang.core/registry-book))])
+              :expected [:postgres true]}])
 
 ^{:refer lang.core/compile-module}
 (Test/check [{:name "publishes deterministic module compilation"

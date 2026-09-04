@@ -1,14 +1,18 @@
 (ns lang.core.runtime-test
-  (:require [lang.core.registry :as registry]
+  (:require [lang.core.library :as library]
+            [lang.core.registry :as registry]
             [lang.core.runtime :as runtime]))
 
 (defn isolated
   [function]
-  (let [snapshot (runtime/runtime-snapshot)]
+  (let [snapshot (runtime/runtime-snapshot)
+        library-snapshot (library/library-raw-snapshot (library/default-library))]
     (try
       (runtime/runtime-reset!)
       (function)
-      (finally (runtime/runtime-restore! snapshot)))))
+      (finally
+        (runtime/runtime-restore! snapshot)
+        (library/library-restore! (library/default-library) library-snapshot)))))
 
 ^{:refer lang.core.runtime/atom-value}
 (Test/check [{:name "dereferences runtime state atoms"
@@ -18,22 +22,20 @@
 ^{:refer lang.core.runtime/runtime-snapshot}
 (Test/check [{:name "captures both runtime registries"
               :test (fn [] (isolated runtime/runtime-snapshot))
-              :expected {:languages {} :types {}}}])
+              :expected {:types {}}}])
 
 ^{:refer lang.core.runtime/runtime-restore!}
 (Test/check [{:name "restores exact runtime state"
               :test (fn [] (isolated (fn []
                                        (runtime/runtime-restore!
-                                        {:languages {:demo {:version 1}}
-                                         :types {[:demo :test] {:create identity}}}))))
-              :expected {:languages {:demo {:version 1}}
-                         :types {[:demo :test] {:create identity}}}}])
+                                        {:types {[:demo :test] {:create identity}}}))))
+              :expected {:types {[:demo :test] {:create identity}}}}])
 
 ^{:refer lang.core.runtime/runtime-reset!}
 (Test/check [{:name "clears runtime state idempotently"
               :test (fn [] (isolated (fn [] [(runtime/runtime-reset!)
                                               (runtime/runtime-reset!)])))
-              :expected [{:languages {} :types {}} {:languages {} :types {}}]}])
+              :expected [{:types {}} {:types {}}]}])
 
 ^{:refer lang.core.runtime/rt-default:create}
 (Test/check [{:name "creates an unstarted default context"
@@ -90,10 +92,15 @@
 ^{:refer lang.core.runtime/install-lang}
 (Test/check [{:name "installs explicit immutable books"
               :test (fn [] (isolated (fn []
-                                       (runtime/install-lang :demo
-                                                             {:book {:lang :demo :version 3}}))))
-              :expected {:lang :demo :book-key :default :version 3
-                         :book {:lang :demo :version 3}}}])
+                                       (let [entry (runtime/install-lang
+                                                    :demo
+                                                    {:book {:lang :demo :version 3}})]
+                                         [entry
+                                          (:book (library/library-raw-book-record
+                                                  (library/default-library) :demo))]))))
+              :expected [{:lang :demo :book-key :default :version 3
+                          :book {:lang :demo :version 3}}
+                         {:lang :demo :version 3}]}])
 
 ^{:refer lang.core.runtime/select-lang-version}
 (Test/check [{:name "selects a real registered book version"
@@ -204,11 +211,11 @@
 ^{:refer lang.core.runtime/bootstrap}
 (Test/check [{:name "selects configured books without loading providers"
               :test (fn [] (isolated (fn []
-                                       (select-keys
-                                        (runtime/bootstrap {:languages [:postgres]
-                                                            :runtimes [:default]})
-                                        [:versions :languages :runtimes]))))
-              :expected {:versions {:postgres 1}
-                         :languages {:postgres {:lang :postgres :book-key :default :version 1
-                                                :book (registry/registry-book :postgres)}}
-                         :runtimes {}}}])
+                                       (let [result (runtime/bootstrap
+                                                     {:languages [:postgres]
+                                                      :runtimes [:default]})]
+                                         [(:versions result)
+                                          (get-in result [:books :postgres :lang])
+                                          (get-in result [:library :selected :postgres])
+                                          (:runtimes result)]))))
+              :expected [{:postgres 1} :postgres [:postgres :default 1] {}]}])

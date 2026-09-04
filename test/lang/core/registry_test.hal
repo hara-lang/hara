@@ -5,22 +5,30 @@
 
 (defn isolated
   [function]
-  (let [before (registry/registry-snapshot)]
+  (let [before (registry/registry-snapshot)
+        image-before (deref registry/+book-image-registry+)]
     (try
       (registry/registry-reset!)
+      (reset! registry/+book-image-registry+ {})
       (function)
-      (finally (registry/registry-restore! before)))))
+      (finally
+        (registry/registry-restore! before)
+        (reset! registry/+book-image-registry+ image-before)))))
 
 ^{:refer lang.core.registry-test/isolated}
 (Test/check
  [{:name "restores registry state after an isolated operation"
    :test (fn []
-           (let [before (registry/registry-snapshot)]
+           (let [before (registry/registry-snapshot)
+                 image-before (deref registry/+book-image-registry+)]
              (try
                (isolated (fn [] (registry/registry-reset!)))
-               (= before (registry/registry-snapshot))
-               (finally (registry/registry-restore! before)))))
-   :expected true}])
+               [(= before (registry/registry-snapshot))
+                (= image-before (deref registry/+book-image-registry+))]
+               (finally
+                 (registry/registry-restore! before)
+                 (reset! registry/+book-image-registry+ image-before)))))
+   :expected [true true]}])
 
 ^{:refer lang.core.registry/registry-snapshot}
 (Test/check
@@ -33,7 +41,7 @@
                  (count (:runtime snapshot))
                  (set (keys (:books snapshot)))
                  (count (registry/registry-grammar-list))]))))
-   :expected [#{:runtime :books :book-macros :book-images :grammars}
+   :expected [#{:runtime :books :book-macros :grammars}
               22
               #{[:xtalk :default] [:postgres :default]
                 [:hara :default] [:js :default]
@@ -281,22 +289,26 @@
 
 ^{:refer lang.core.registry/registry-book}
 (Test/check
- [{:name "returns a hydrated image book without invoking its source loader"
+ [{:name "uses a target Book image before invoking its registered provider"
    :test (fn []
            (isolated
             (fn []
-              (registry/registry-book-add
-               :fixture 1
-               {:ns 'lang.model.v1.spec-xtalk
-                :load (fn [] (throw (ex :state {} :ex/message "source loader invoked")))})
-              (reset! registry/+book-image-registry+
-                      {[:fixture :default 1] {:lang :fixture :version 1}})
-              (registry/registry-book :fixture))))
-   :expected {:lang :fixture :version 1}}])
+              (let [loaded (atom false)]
+                (registry/registry-book-add
+                 :fixture 1
+                 {:ns 'lang.core.registry
+                  :load (fn []
+                          (reset! loaded true)
+                          {:lang :fixture :version 1 :route :source})})
+                (reset! registry/+book-image-registry+
+                        {[:fixture :default 1] {:lang :fixture :version 1 :route :image}})
+                [(registry/registry-book :fixture)
+                 (deref loaded)]))))
+   :expected [{:lang :fixture :version 1 :route :image} false]}])
 
 ^{:refer lang.core.registry/registry-book-macro-info}
 (Test/check
- [{:name "provides Basic declaration macros without selecting a Book loader"
+ [{:name "provides static declaration macros without selecting a Book loader"
    :test (fn []
            (isolated
             (fn []
@@ -310,7 +322,8 @@
                                                    :ex/message "Book loader invoked")))}}}})
               [(registry/registry-book-macro-info :js)
                (registry/registry-book-macro-info :python)
-               (registry/registry-book-macro-info :lua)])))
+               (registry/registry-book-macro-info :lua)
+               (registry/registry-book-macro-info :postgres)])))
    :expected [{:tag :js
                :definitions '[def defabstract defclass defgen defglobal defn defn- defrun deftemp]
                :highlights ['br 'break 'return 'set=]
@@ -322,6 +335,11 @@
                                 'return {} 'tup {} 'with {} 'yield {}}}
               {:tag :lua
                :definitions '[def defabstract defclass defgen defglobal defn defn- defrun deftemp]
+               :highlights ['br 'break 'return 'set=]
+               :highlight-meta {'br {} 'break {} 'return {} 'set= {}}}
+              {:tag :postgres
+               :definitions '[def defabstract defclass defconst defenum defgen defglobal defn defn-
+                              defrun deftemp deftrigger deftype]
                :highlights ['br 'break 'return 'set=]
                :highlight-meta {'br {} 'break {} 'return {} 'set= {}}}]}
   {:name "uses a precompiled macro index without invoking a Book loader"
@@ -338,4 +356,21 @@
    :expected {:tag :fixture
               :definitions ['defn]
               :highlights ['return]
-              :highlight-meta {'return {:style/indent 2}}}}])
+              :highlight-meta {'return {:style/indent 2}}}}
+  {:name "rejects missing macro metadata without materializing a Book"
+   :test (fn []
+           (isolated
+            (fn []
+              (let [loaded (atom false)]
+                (registry/registry-book-add
+                 :fixture 1
+                 {:ns 'lang.core.registry
+                  :load (fn []
+                          (reset! loaded true)
+                          {:lang :fixture :version 1})})
+                [(try
+                   (registry/registry-book-macro-info :fixture)
+                   false
+                   (catch error true))
+                 (deref loaded)]))))
+   :expected [true false]}])

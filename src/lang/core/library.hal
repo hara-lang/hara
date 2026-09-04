@@ -144,6 +144,29 @@
                          (registry/registry-book-info current))]
             (recur (:parent info) (conj seen current))))))))
 
+(defn library-find-module
+  "Finds one effective source module by id without materializing a Book."
+  [library module-id]
+  (let [snapshot (library-snapshot library)]
+    (some (fn [language]
+            (let [module-value (get (library-book-modules library language) module-id)]
+              (if module-value [(:lang module-value) module-value])))
+          (sort-by str (keys (:selected snapshot))))))
+
+(defn library-find-module-by-source
+  "Finds one effective source module from its declaring namespace without materializing a Book."
+  [library source]
+  (let [snapshot (library-snapshot library)]
+    (some (fn [language]
+            (some (fn [module-id]
+                    (let [module-value (get (library-book-modules library language)
+                                            module-id)]
+                      (if (= source (:source module-value))
+                        [(:lang module-value) module-value])))
+                  (sort-by str
+                           (keys (library-book-modules library language)))))
+          (sort-by str (keys (:selected snapshot))))))
+
 (defn library-apply-modules
   "Overlays persistent source BookModules onto an immutable resolved Book."
   [resolved modules]
@@ -159,20 +182,35 @@
   (library-apply-modules (library-base-book library language)
                          (library-raw-book-modules library language)))
 
-(defn library-get-book-selection
-  "Returns one target Book and its visible source overlay without eagerly merging Book parents."
-  [library language]
-  (library-apply-modules (library-base-book library language)
-                         (library-book-modules library language)))
-
 (defn library-get-book
-  "Returns the effective selected Book including source overlays and Book parents."
+  "Returns the Foundation-compatible effective Book with inherited source overlays."
   [library language]
   (let [current (library-apply-modules (library-base-book library language)
                                        (library-book-modules library language))
         parent (:parent current)]
     (if parent
-      (book/book-merge current (library-get-book library parent))
+      (let [ancestry
+            (loop [current-language parent seen #{} languages []]
+              (if (or (nil? current-language)
+                      (has? seen current-language))
+                languages
+                (let [info (or (library-book-info library current-language)
+                               (registry/registry-book-info current-language))]
+                  (recur (:parent info)
+                         (conj seen current-language)
+                         (conj languages current-language)))))
+            inherited-source?
+            (some (fn [ancestor]
+                    (not (empty? (library-book-modules library ancestor))))
+                  ancestry)]
+        (if inherited-source?
+          (book/book-merge current (library-get-book library parent))
+          ;; Target Books already carry their inherited grammar selection.
+          ;; With no source overlays, flattening this ancestry avoids loading a
+          ;; second language Book merely to merge empty module maps.
+          (assoc current
+                 :parent nil
+                 :merged (into (:merged current) ancestry))))
       current)))
 
 (defn library-get-module

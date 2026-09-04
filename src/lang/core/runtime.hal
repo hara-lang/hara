@@ -8,10 +8,10 @@
 ;; ============================================================================
 (ns lang.core.runtime
   (:require [lang.core.eval :as evaluation]
+            [lang.core.library :as library]
             [lang.core.registry :as registry]
             [std.lib.component :as component]))
 
-(def +language-registry+ (atom {}))
 (def +type-registry+ (atom {}))
 
 (defstruct RuntimeDefault
@@ -22,21 +22,19 @@
   (deref reference))
 
 (defn runtime-snapshot
-  "Captures the selected languages and explicitly installed runtime entries."
+  "Captures explicitly installed runtime entries; Library owns Book selection."
   []
-  {:languages (atom-value +language-registry+)
-   :types (atom-value +type-registry+)})
+  {:types (atom-value +type-registry+)})
 
 (defn runtime-restore!
-  "Restores runtime selection state; nil is the deterministic empty baseline."
+  "Restores runtime implementation state; Library snapshots own Book selection."
   [snapshot]
   (let [snapshot (or snapshot {})]
-    (reset! +language-registry+ (or (:languages snapshot) {}))
     (reset! +type-registry+ (or (:types snapshot) {}))
     (runtime-snapshot)))
 
 (defn runtime-reset!
-  "Clears runtime selection and installed type state idempotently."
+  "Clears installed runtime types without modifying Library-owned Book state."
   []
   (runtime-restore! nil))
 
@@ -138,15 +136,19 @@
     runtime))
 
 (defn install-lang
-  "Installs a selected immutable book version for runtime construction."
+  "Selects one Book in the active Library for runtime construction."
   ([language]
    (install-lang language {}))
   ([language options]
    (let [options (or options {})
+         current-library (library/runtime-library)
          book-key (or (:book-key options) :default)
          requested-version (:version options)
-         book (or (:book options)
-                  (registry/registry-book language book-key requested-version))]
+         supplied-book (:book options)
+         _ (if supplied-book
+             (library/library-add-book! current-library supplied-book)
+             (library/library-select-book! current-library language book-key requested-version))
+         book (library/library-get-book current-library language)]
      (if (nil? book)
        (throw (ex :not-found {:language language :book-key book-key
                               :version requested-version}
@@ -156,7 +158,6 @@
                            :book-key book-key
                            :version (or requested-version (:version book))
                            :book book})]
-         (swap! +language-registry+ assoc language entry)
          entry)))))
 
 (defn select-lang-version
@@ -173,7 +174,12 @@
 
 (defn language-info
   [language]
-  (get (atom-value +language-registry+) language))
+  (let [record (library/library-book-record (library/runtime-library) language)
+        info (:info record)]
+    (if record
+      {:lang language
+       :book-key (:key info)
+       :version (:version info)})))
 
 (defn runtime-installed?
   [language runtime]
@@ -281,7 +287,7 @@
       (registry/registry-book-default-version language :default)))
 
 (defn bootstrap
-  "Selects installed books and confirms requested runtime implementations."
+  "Selects active-Library Books and confirms requested runtime implementations."
   ([] (bootstrap {}))
   ([options]
    (let [options (or options {})
@@ -292,10 +298,9 @@
          selected
          (reduce (fn [out language]
                    (let [selected-version (requested-version language version versions)
-                         book (registry/registry-book language :default selected-version)]
-                     (install-lang language {:book-key :default
-                                             :version selected-version
-                                             :book book})
+                         entry (install-lang language {:book-key :default
+                                                       :version selected-version})
+                         book (:book entry)]
                      {:books (assoc (:books out) language book)
                       :versions (assoc (:versions out) language selected-version)}))
                  {:books {} :versions {}}
@@ -312,5 +317,5 @@
      {:version version
       :versions (:versions selected)
       :books (:books selected)
-      :languages (atom-value +language-registry+)
+      :library (library/library-snapshot (library/runtime-library))
       :runtimes (atom-value +type-registry+)})))

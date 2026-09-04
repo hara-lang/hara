@@ -96,7 +96,7 @@
                     (finally
                       (clean-root root ["config/packages.edn" "config" "project.edn"])))))
    :expected {'demo/base {:include ['[demo.base :complete]]}}}
-  {:name "loads the complete Foundation split catalog"
+  {:name "loads the Foundation-compatible target-split catalog"
    :test (fn [] (mapv (fn [value] (str value ""))
                       (sort-by (fn [value] (str value ""))
                                (keys (catalog/read-catalog ".")))))
@@ -108,12 +108,19 @@
               "hara/db.postgres"
               "hara/lang.common"
               "hara/lang.core"
-              "hara/lang.model"
+              "hara/lang.model.base"
+              "hara/lang.model.c"
+              "hara/lang.model.go"
+              "hara/lang.model.hara"
+              "hara/lang.model.js"
+              "hara/lang.model.lua"
+              "hara/lang.model.postgres"
+              "hara/lang.model.python"
+              "hara/lang.model.xtalk"
               "hara/lang.runtime"
               "hara/lang.typed"
               "hara/postgres.core"
               "hara/postgres.entity"
-              "hara/postgres.model"
               "hara/postgres.typed"
               "hara/std.block"
               "hara/std.config"
@@ -127,6 +134,33 @@
               "hara/tool.sh"
               "hara/work"
               "hara/xt.lang"]}])
+
+^{:refer code.deploy.catalog/plan}
+(Test/check
+ [{:name "plans target models without an eager core compiler context"
+   :test (fn []
+           (let [plan (catalog/plan ".")
+                 packages (reduce (fn [output package]
+                                    (assoc output (:package/name package) package))
+                                  {}
+                                  (:deploy/packages plan))]
+             {:lang/unowned (vec (filter (fn [namespace]
+                                           (str/starts-with? (str namespace) "lang."))
+                                         (:deploy/unowned-namespaces plan)))
+              :core/context (:package/context-dependencies (get packages "hara/lang.core"))
+              :legacy/model? (has? packages "hara/lang.model")
+              :xtalk/fn-js? (has? (set (:package/namespaces (get packages "hara/lang.model.xtalk")))
+                                  'lang.model.v1.spec-xtalk.fn-js)
+              :js/fn-js? (has? (set (:package/namespaces (get packages "hara/lang.model.js")))
+                               'lang.model.v1.spec-xtalk.fn-js)
+              :go/fn-go? (has? (set (:package/namespaces (get packages "hara/lang.model.go")))
+                               'lang.model.v1.spec-xtalk.fn-go)}))
+   :expected {:lang/unowned []
+              :core/context []
+              :legacy/model? false
+              :xtalk/fn-js? false
+              :js/fn-js? true
+              :go/fn-go? true}}])
 
 ^{:refer code.deploy.catalog/source-path}
 (Test/check

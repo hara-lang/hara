@@ -35,23 +35,61 @@
               :test (fn [] (annex/coordinate 'demo.source :one))
               :expected ['demo.source :one]}])
 
+^{:refer lang.core.script-annex/annex?}
+(Test/check [{:name "recognizes one state-owning RuntimeAnnex"
+              :test (fn [] (annex/annex? (annex/annex-create 'demo.source)))
+              :expected true}])
+
+^{:refer lang.core.script-annex/annex-create}
+(Test/check [{:name "creates an empty child-Library annex"
+              :test (fn [] (let [value (annex/annex-create 'demo.source)]
+                             [(:id value)
+                              (library/library? (:library value))
+                              (= (library/default-library)
+                                 (library/library-parent (:library value)))
+                              (deref (:state value))]))
+              :expected ['demo.source true true {:registry {} :runtimes {}}]}])
+
+^{:refer lang.core.script-annex/annex-existing}
+(Test/check [{:name "looks up an annex without creating it"
+              :test (fn [] (isolated (fn []
+                                       [(nil? (annex/annex-existing 'demo.source))
+                                        (library/library? (annex/annex-library-in 'demo.source))
+                                        (annex/annex? (annex/annex-existing 'demo.source))])))
+              :expected [true true true]}])
+
+^{:refer lang.core.script-annex/annex-in}
+(Test/check [{:name "creates one stable annex per namespace"
+              :test (fn [] (isolated (fn []
+                                       (let [first (annex/annex-in 'demo.source)]
+                                         [(annex/annex? first)
+                                          (= first (annex/annex-in 'demo.source))]))))
+              :expected [true true]}])
+
 ^{:refer lang.core.script-annex/annex-snapshot}
 (Test/check [{:name "captures empty tagged-runtime state"
               :test (fn [] (isolated annex/annex-snapshot))
               :expected {:registry {} :runtimes {} :libraries {} :active #{}}}])
 
 ^{:refer lang.core.script-annex/annex-restore!}
-(Test/check [{:name "restores registered tags without retaining live instances"
+(Test/check [{:name "restores registered tags with their namespace-owned child Library"
               :test (fn [] (isolated (fn []
                                        (annex/annex-restore!
                                         {:registry {['demo.source :one]
                                                     {:namespace 'demo.source :tag :one
                                                      :lang :postgres :runtime :default :config {}}}
-                                         :runtimes {}}))))
-              :expected {:registry {['demo.source :one]
-                                    {:namespace 'demo.source :tag :one
-                                     :lang :postgres :runtime :default :config {}}}
-                         :runtimes {} :libraries {} :active #{}}}])
+                                         :runtimes {}})
+                                       (let [value (annex/annex-snapshot)]
+                                         [(:registry value)
+                                          (:runtimes value)
+                                          (set (keys (:libraries value)))
+                                          (:active value)]))))
+              :expected [{['demo.source :one]
+                          {:namespace 'demo.source :tag :one
+                           :lang :postgres :runtime :default :config {}}}
+                         {}
+                         #{'demo.source}
+                         #{}]}])
 
 ^{:refer lang.core.script-annex/annex-restore!}
 (Test/check [{:name "restores an active tagged runtime to its prior started state"

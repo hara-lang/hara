@@ -19,29 +19,37 @@
               :test (fn [] (let [value (isolated script/script-snapshot)]
                              [(dissoc value :library)
                               (select-keys (:library value) [:revision :books :selected])]))
-              :expected [{:modules {} :scripts {} :loaded-modules {}
-                          :module-contexts {} :compile-cache {}}
+              :expected [{:scripts {} :compile-cache {}}
                          {:revision 0 :books {} :selected {}}]}])
 
 ^{:refer lang.core.script/script-restore!}
-(Test/check [{:name "restores script registries"
+(Test/check [{:name "restores source modules through the Library snapshot"
               :test (fn [] (let [value (isolated (fn []
-                                                    (script/script-restore! {:modules {'demo {:id 'demo}}
-                                                                             :scripts {} :loaded-modules {}
-                                                                             :module-contexts {} :compile-cache {}})))]
+                                                    (let [current (library/library-create {:id :fixture})]
+                                                      (library/library-add-module!
+                                                       current :postgres
+                                                       {:id 'demo :lang :postgres :code {} :fragment {}})
+                                                      (script/script-restore!
+                                                       {:library (library/library-raw-snapshot current)
+                                                        :scripts {} :compile-cache {}}))))]
                              [(dissoc value :library)
-                              (select-keys (:library value) [:revision :books :selected])]))
-              :expected [{:modules {'demo {:id 'demo}}
-                          :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}
-                         {:revision 0 :books {} :selected {}}]}])
+                              (keys (:selected (:library value)))
+                              (try
+                                (script/script-restore!
+                                 {:modules {'legacy {:id 'legacy :lang :postgres}}})
+                                false
+                                (catch error true))]))
+              :expected [{:scripts {} :compile-cache {}}
+                         [:postgres]
+                         true]}])
 
 ^{:refer lang.core.script/script-reset!}
 (Test/check [{:name "clears script state idempotently"
               :test (fn [] (isolated (fn [] (mapv (fn [value]
                                                     (dissoc value :library))
                                                   [(script/script-reset!) (script/script-reset!)]))))
-              :expected [{:modules {} :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}
-                         {:modules {} :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}]}])
+              :expected [{:scripts {} :compile-cache {}}
+                         {:scripts {} :compile-cache {}}]}])
 
 ^{:refer lang.core.script/reset-compile-cache!}
 (Test/check [{:name "clears only structural compile cache"
@@ -193,7 +201,9 @@
               :test (fn [] (isolated (fn []
                                        (script/configure-module :postgres 'demo.a {})
                                        (script/register-code '(defn exposed [] 1))
-                                       (select-keys (get-in (deref script/+modules+) ['demo.a :code 'exposed])
+                                       (select-keys (library/library-get-entry
+                                                     (library/default-library)
+                                                     :postgres 'demo.a :code 'exposed)
                                                     [:id :module :lang :section :op]))))
               :expected {:id 'exposed :module 'demo.a :lang :postgres :section :code :op 'defn}}])
 
@@ -237,7 +247,9 @@
               :test (fn [] (isolated (fn []
                                        (script/configure-module :postgres 'demo.a {})
                                        (script/register-fragment '(defmacro hidden [] 1) nil)
-                                       (select-keys (get-in (deref script/+modules+) ['demo.a :fragment 'hidden])
+                                       (select-keys (library/library-get-entry
+                                                     (library/default-library)
+                                                     :postgres 'demo.a :fragment 'hidden)
                                                     [:id :module :lang :section]))))
               :expected {:id 'hidden :module 'demo.a :lang :postgres :section :fragment}}])
 
@@ -263,8 +275,9 @@
                                        (let [value (script/register-fragment-pointer
                                                     :postgres 'helper '(auth.uid)
                                                     {:- [:uuid]})
-                                             entry (get-in (deref script/+modules+)
-                                                           ['demo.a :fragment 'helper])]
+                                             entry (library/library-get-entry
+                                                    (library/default-library)
+                                                    :postgres 'demo.a :fragment 'helper)]
                                          [(pointer? value)
                                           (IPointer/ptr-context value)
                                           (:op entry)
@@ -279,8 +292,9 @@
                                         :postgres
                                         '(defmacro auth-uid [] '(auth.uid))
                                         (fn [] '(auth.uid)))
-                                       (let [entry (get-in (deref script/+modules+)
-                                                           ['demo.a :fragment 'auth-uid])]
+                                       (let [entry (library/library-get-entry
+                                                    (library/default-library)
+                                                    :postgres 'demo.a :fragment 'auth-uid)]
                                          [(select-keys entry [:lang :section :op :op-key])
                                           (fn? (:template entry))]))))
               :expected [{:lang :postgres :section :fragment
@@ -496,7 +510,6 @@
              {:name "loads a generic module through a target Book parent"
               :test (fn [] (isolated (fn []
                                        (script/configure-module :xtalk 'demo.a {})
-                                       (swap! script/+loaded-modules+ assoc [:js 'demo.a] true)
                                        (script/load-module :js 'demo.a))))
               :expected 'demo.a}])
 
@@ -524,14 +537,14 @@
 
 ^{:refer lang.core.script/setup}
 (Test/check
- [{:name "prepares only the explicit basic target Book during script setup"
+ [{:name "records only the explicit basic target descriptor during script setup"
    :test (fn [] (isolated (fn []
                             (script/setup :js 'demo.a {:runtime :basic} true)
-                            [(:lang (:book (library/library-book-record
-                                            (library/runtime-library) :js)))
+                            [(:book (library/library-book-record
+                                     (library/runtime-library) :js))
                              (library/library-book-record
                               (library/runtime-library) :python)])))
-   :expected [:js nil]}])
+   :expected [nil nil]}])
 
 ^{:refer lang.core.script/compile-script-module}
 (Test/check
@@ -609,7 +622,7 @@
                                          (:diagnostics (ex-data error))])))]
                               [result (deref calls)]))))
    :expected [[:hara/dependency 'demo.a [{:code :fixture/missing}]] []]}
-  {:name "loads only the selected Book while skipping empty-module compilation"
+  {:name "skips Book materialization while an empty module has nothing to compile"
    :test (fn [] (isolated (fn []
                             (script/configure-module :postgres 'demo.a {})
                             (let [result
@@ -624,7 +637,16 @@
                                (not (nil? (:book
                                             (library/library-book-record
                                              (library/runtime-library) :postgres))))]))))
-   :expected [:postgres true]}])
+   :expected [:postgres false]}])
+
+^{:refer lang.core.script/start-runtime}
+(Test/check
+ [{:name "starts a selected runtime through the shared lifecycle"
+   :test (fn [] (let [instance (script/start-runtime :postgres :default {})]
+                  [(:lang instance)
+                   (:runtime instance)
+                   (:status (deref (:state instance)))]))
+   :expected [:postgres :default :started]}])
 
 ^{:refer lang.core.script/start-script}
 (Test/check [{:name "starts, replaces, and records one selected script runtime"
@@ -665,7 +687,7 @@
               :expected 'do}])
 
 ^{:refer lang.core.script/selected-book}
-(Test/check [{:name "selects target grammar without eagerly merging XTalk modules"
+(Test/check [{:name "selects the canonical Book with its inherited XTalk source overlay"
               :test (fn [] (isolated (fn []
                                        (script/register-library-module!
                                         :xtalk
@@ -674,7 +696,7 @@
                                          [(:lang selected)
                                           (:parent selected)
                                           (get-in selected [:modules 'demo.xtalk])]))))
-              :expected [:js :xtalk nil]}])
+              :expected [:js nil {:id 'demo.xtalk :lang :xtalk :code {} :fragment {}}]}])
 
 ^{:refer lang.core.script/compile-cache-key}
 (Test/check [{:name "keys cache entries by language module source and registry snapshot"
