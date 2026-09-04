@@ -1,0 +1,286 @@
+(ns code.deploy.registry
+  (:config {:role :internal})
+  (:require [code.deploy.catalog :as catalog]
+            [code.deploy.dependency :as dependency]
+            [std.package.project :as package]
+            [tool.sh :as sh]))
+
+(defn lock-path
+  "Returns the project lock path for a deploy root."
+  [root]
+  (File/join root "project.lock.edn"))
+
+(defn ^{:public true} read-lock
+  "Reads the project lock when present, otherwise returns nil."
+  [root]
+  (let [path (lock-path root)]
+    (if (deref (File/exists? path))
+      (catalog/read-edn path)
+      nil)))
+
+(defn write-lock
+  "Writes a lockfile through a temporary sibling and atomic native move."
+  [root value]
+  (let [path (lock-path root)
+        parent (File/parent path)
+        temporary (deref (File/temp-file parent {:prefix "project.lock-"}))]
+    (try
+      (deref (File/write temporary
+                          (String/encode-utf8 (Edn/write value))
+                          {:mode :replace :parents? true}))
+      (deref (File/move temporary path {:replace? true :parents? true}))
+      path
+      (finally
+        (deref (File/delete temporary {:missing-ok? true}))))))
+
+(defn ^{:public true} registry-value
+  "Loads a local EDN registry or an HTTP registry document."
+  [root project]
+  (let [configured (or (:project/dependency-registry project)
+                       (get-in project [:project/repositories :hara]))
+        configured (if (map? configured)
+                     (or (:path configured) (:url configured))
+                     configured)
+        fallback (File/join root "target/deploy/index.edn")
+        value (or configured
+                  (if (deref (File/exists? fallback))
+                    fallback
+                    dependency/+default-registry+))]
+    (cond
+      (and (string? value) (deref (File/exists? value)))
+      (assoc (catalog/read-edn value) :registry/url (str value))
+
+      (and (string? value) (or (str/starts-with? value "http://")
+                               (str/starts-with? value "https://")))
+      (let [url (if (or (str/ends-with? value "/registry")
+                        (str/ends-with? value "/v1/registry")
+                        (str/includes? value "/registry?")
+                        (str/includes? value "/v1/registry?"))
+                  value
+                  (str value "/v1/registry"))]
+        (assoc (Edn/read (:stdout (sh/run-checked ["curl" "-fsSL" url])))
+               :registry/url value))
+
+      :else
+      (throw
+       (ex :code.deploy/registry-unavailable
+           {:registry value}
+           :ex/message "Hara dependency registry must be a local EDN file or HTTP URL")))))
+
+(defn archive-path
+  [candidate]
+  (or (:archive candidate) (:archive/path candidate)))
+
+(defn ^{:public true} archive-url
+  "Returns the verified object URL for a registry archive descriptor."
+  [registry candidate]
+  (let [provided (:archive-url candidate)
+        digest (:archive-sha256 candidate)
+        valid-digest? (and (string? digest)
+                           (re-find (regexp "^sha256:[0-9a-f]{64}$") digest))
+        base (let [base (:registry/url registry)
+                   query (if (string? base) (str/index-of base "?") -1)]
+               (if (and (string? base) (>= query 0))
+                 (str/slice base 0 query)
+                 base))]
+    (cond
+      (and provided valid-digest?) provided
+      (not (and (string? base) valid-digest?)) nil
+      :else
+      (let [base (cond
+                    (str/ends-with? base "/v1/registry")
+                    (str/slice base 0 (- (str/length base) 12))
+
+                    (str/ends-with? base "/registry")
+                    (str/slice base 0 (- (str/length base) 9))
+
+                    (str/ends-with? base "/")
+                    (str/slice base 0 (dec (str/length base)))
+
+                    :else base)]
+        (str/join "" [base "/objects/sha256/"
+                       (str/slice digest 7 (str/length digest))])))))
+
+(defn ^{:public true} archive-cache-path
+  "Returns the digest-addressed archive cache path for one project."
+  [root candidate]
+  (let [digest (:archive-sha256 candidate)]
+    (if (and (string? digest)
+             (re-find (regexp "^sha256:[0-9a-f]{64}$") digest))
+      (File/join
+       (File/join root "target/hara-packages/archives/sha256")
+       (str/join "" [(str/slice digest 7 (str/length digest)) ".harp"]))
+      nil)))
+
+(defn ^{:public true} fetch-archive
+  "Returns a candidate with a local archive, fetching only by verified digest."
+  [root registry coordinate candidate]
+  (let [existing (archive-path candidate)
+        cached (archive-cache-path root candidate)
+        url (archive-url registry candidate)]
+    (cond
+      existing candidate
+      (and cached (deref (File/exists? cached)))
+      (assoc candidate :archive cached)
+      (nil? url)
+      (throw
+       (ex :code.deploy/archive-unavailable
+           {:coordinate coordinate
+            :version (dependency/candidate-version candidate)
+            :digest (:archive-sha256 candidate)}
+           :ex/message "Hara package has no verified downloadable archive"))
+      :else
+      (let [parent (File/parent cached)
+            temporary
+            (do
+              (deref (File/mkdir parent {:parents? true :exists-ok? true}))
+              (deref (File/temp-file parent {:prefix "archive-"})))]
+        (try
+          (sh/run-checked ["curl" "-fsSL" url "-o" temporary])
+          (deref (File/move temporary cached {:replace? true :parents? true}))
+          (assoc candidate :archive cached)
+          (catch error
+            (throw
+             (ex :code.deploy/archive-fetch
+                 {:coordinate coordinate :url url :cause (ex-message error)}
+                 :ex/message "Unable to download Hara package archive"
+                 :ex/cause error)))
+          (finally
+            (deref (File/delete temporary {:missing-ok? true}))))))))
+
+(defn verify-archive
+  "Verifies a selected local archive when the registry supplied a digest."
+  [coordinate candidate]
+  (let [path (archive-path candidate)
+        expected (:archive-sha256 candidate)]
+    (cond
+      (nil? path) candidate
+      (not (deref (File/exists? path)))
+      (throw
+       (ex :code.deploy/archive-missing
+           {:coordinate coordinate :path path}
+           :ex/message "Selected Hara package archive is missing"))
+      (nil? expected) candidate
+      :else
+      (let [actual (str "sha256:" (Crypto/sha256 (deref (File/read path))))]
+        (if (= actual expected)
+          candidate
+          (throw
+           (ex :code.deploy/archive-integrity
+               {:coordinate coordinate :path path :expected expected :actual actual}
+               :ex/message "Selected Hara package archive failed digest verification")))))))
+
+(defn install-selected
+  [resolved]
+  (doseq [coordinate (sort (keys (:selected resolved)))]
+    (let [candidate (get-in resolved [:selected coordinate])
+          path (archive-path candidate)]
+      (if path
+        (package/project-install path)
+        (throw
+         (ex :code.deploy/archive-unavailable
+             {:coordinate coordinate :version (:version candidate)}
+             :ex/message "Hara package installation requires a local archive")))))
+  resolved)
+
+(defn materialize-selected
+  "Fetches and verifies every selected archive before installation."
+  [root registry resolved]
+  (reduce
+   (fn [state coordinate]
+     (let [candidate (get-in state [:selected coordinate])
+           fetched (fetch-archive root registry coordinate candidate)
+           verified (verify-archive coordinate fetched)]
+       (assoc-in state [:selected coordinate] verified)))
+   resolved
+   (sort (keys (:selected resolved)))))
+
+(defn ^{:public true} sync
+  "Resolves, verifies, installs and writes project.lock.edn.
+
+  Locked and frozen modes are read-only and require an exact existing lock."
+  [root options]
+  (let [project (catalog/read-project root)
+        project (if (:registry options)
+                  (assoc project :project/dependency-registry (:registry options))
+                  project)
+        mode (or (:mode options) :sync)
+        existing (read-lock root)]
+    (cond
+      (has? #{:locked :frozen} mode)
+      (if (and existing (dependency/lock-valid? project existing))
+        existing
+        (throw
+         (ex :code.deploy/lock-required
+             {:path (lock-path root) :mode mode}
+             :ex/message "Locked and frozen resolution require an existing project.lock.edn")))
+
+      :else
+      (let [registry (if (empty? (:project/dependencies project))
+                       {:registry/url dependency/+default-registry+ :packages {}}
+                       (registry-value root project))
+            resolved (dependency/resolve project registry)
+            selected (materialize-selected root registry resolved)
+            lock (dependency/lock-document project registry selected)]
+        (install-selected selected)
+        (write-lock root lock)
+        lock))))
+
+(defn ^{:public true} pull
+  "Resolves and materializes the Hara dependency graph without installation or locking.
+
+  Pull is the download-only boundary: it reuses local archives, fetches missing
+  digest-addressed archives, and verifies them, but never changes project.edn or
+  project.lock.edn."
+  [root options]
+  (let [project (catalog/read-project root)
+        project (if (:registry options)
+                  (assoc project :project/dependency-registry (:registry options))
+                  project)
+        registry (if (empty? (:project/dependencies project))
+                   {:registry/url dependency/+default-registry+ :packages {}}
+                   (registry-value root project))]
+    (materialize-selected
+     root registry (dependency/resolve project registry))))
+
+(defn ^{:public true} check
+  "Validates dependency declaration shape and, when present, lock structure."
+  [root]
+  (let [project (catalog/read-project root)
+        declared (dependency/dependencies (:project/dependencies project))
+        lock (read-lock root)]
+    {:project/id (:project/id project)
+     :dependencies declared
+     :locked? (boolean lock)
+     :lock/path (if lock (lock-path root) nil)
+     :lock/valid? (if lock (dependency/lock-valid? project lock) true)}))
+
+(defn ^{:public true} add
+  "Adds or replaces one Hara dependency in project.edn and returns its path."
+  [root coordinate declaration]
+  (let [path (catalog/project-path root)
+        project (catalog/read-project root)
+        value (dependency/dependency coordinate declaration)
+        next (assoc project :project/dependencies
+                    (assoc (or (:project/dependencies project) {})
+                           coordinate value))]
+    (deref (File/write path (String/encode-utf8 (Edn/write next))
+                       {:mode :replace :parents? true}))
+    path))
+
+(defn ^{:public true} remove
+  "Removes one Hara dependency from project.edn and returns its path."
+  [root coordinate]
+  (let [path (catalog/project-path root)
+        project (catalog/read-project root)
+        next (assoc project :project/dependencies
+                    (reduce
+                     (fn [output key]
+                       (if (= (str key) (str coordinate))
+                         output
+                         (assoc output key (get (:project/dependencies project) key))))
+                     {}
+                     (keys (or (:project/dependencies project) {}))))]
+    (deref (File/write path (String/encode-utf8 (Edn/write next))
+                       {:mode :replace :parents? true}))
+    path))

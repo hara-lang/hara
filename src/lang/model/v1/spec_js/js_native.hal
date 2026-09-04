@@ -1,6 +1,8 @@
 (ns lang.model.v1.spec-js.js-native
   (:require [lang.common.emit-common :as common]
-            [lang.common.emit-data :as data]))
+            [lang.common.emit-data :as data]
+            [lang.common.emit-top-level :as top]
+            [lang.common.preprocess-base :as preprocess]))
 
 (defn js-set
   "Emits JavaScript object destructuring and object-set forms."
@@ -52,6 +54,43 @@
     (list (quote .)
           (list (quote .) (quote Promise) (list (quote resolve)))
           (list (quote then) thunk))))
+
+(defn js-defclass
+  "Creates a JavaScript class definition form."
+  [form]
+  (let [sym (nth form 1)
+        inherit (nth form 2)
+        body (top/transform-defclass-inner (drop 3 form))
+        module-id (get-in (preprocess/macro-opts) [:module :id])
+        name (if module-id
+               (symbol (name module-id) (name sym))
+               sym)
+        supers (list (quote quote) (vec (remove keyword? inherit)))]
+    (list :-
+          :class
+          name
+          :extends
+          supers
+          \{
+          (list \\
+                \\
+                (list \| (apply list (quote do) body))
+                \\)
+          \})))
+
+(defn js-tf-var-let
+  "Lowers a JavaScript var form to let."
+  [form]
+  (let [decl (nth form 1)
+        args (vec (drop 2 form))]
+    (list (quote var*) :let decl := (last args))))
+
+(defn js-tf-var-const
+  "Lowers a JavaScript const form to const."
+  [form]
+  (let [decl (nth form 1)
+        args (vec (drop 2 form))]
+    (list (quote var*) :const decl := (last args))))
 
 (defn js-prototype-create
   [form]
@@ -323,8 +362,17 @@
 (defn js-x-obj-keys [form]
   (list (quote Object.keys) (nth form 1)))
 
+(defn js-x-obj-vals [form]
+  (list (quote Object.values) (nth form 1)))
+
+(defn js-x-obj-pairs [form]
+  (list (quote Object.entries) (nth form 1)))
+
 (defn js-x-obj-clone [form]
   (list (quote Object.assign) {} (nth form 1)))
+
+(defn js-x-obj-assign [form]
+  (list (quote Object.assign) (nth form 1) (nth form 2)))
 
 (defn js-x-arr-method [method form]
   (list (quote .) (nth form 1)
@@ -332,6 +380,36 @@
 
 (defn js-x-arr-clone [form]
   (list (quote .) (nth form 1) (list (quote slice))))
+
+(defn js-x-arr-slice [form]
+  (let [arr (nth form 1)
+        args (if (> (count form) 3)
+               [(nth form 2) (nth form 3)]
+               [(nth form 2)])]
+    (list (quote .) arr (apply list (quote slice) args))))
+
+(defn js-x-arr-reverse [form]
+  (list (quote .) (nth form 1)
+        (list (quote slice))
+        (list (quote reverse))))
+
+(defn js-x-arr-each [form]
+  (js-x-arr-method (quote forEach) form))
+
+(defn js-x-arr-every [form]
+  (js-x-arr-method (quote every) form))
+
+(defn js-x-arr-some [form]
+  (js-x-arr-method (quote some) form))
+
+(defn js-x-arr-filter [form]
+  (js-x-arr-method (quote filter) form))
+
+(defn js-x-arr-find [form]
+  (js-x-arr-method (quote findIndex) form))
+
+(defn js-x-arr-concat [form]
+  (js-x-arr-method (quote concat) form))
 
 (defn js-string-method [method form]
   (list (quote .) (nth form 1)
@@ -520,7 +598,10 @@
   {:eq {:raw "==="}
    :neq {:raw "!=="}
    :with-global {:value true :raw "globalThis"}
-   :pow {:raw "Math.pow" :emit :invoke}})
+   :pow {:raw "Math.pow" :emit :invoke}
+   :mul {:value true}
+   :defn {:symbol #{'defn 'defn- 'defelem}}
+   :defclass {:macro js-defclass :emit :macro}})
 
 (def +js-native-vars+
   {:var {:symbol #{'var*} :raw ""}})
@@ -532,17 +613,26 @@
    :for-index {:macro js-for-index :emit :macro}})
 
 (def +js-native-prototype+
-  {:prototype-get {:raw "Object.getPrototypeOf" :emit :invoke}
-   :prototype-set {:raw "Object.setPrototypeOf" :emit :invoke}
+  {:prototype-get {:raw "Object.getPrototypeOf" :emit :alias}
+   :prototype-set {:raw "Object.setPrototypeOf" :emit :alias}
    :prototype-create {:macro js-prototype-create :emit :macro
                       :op-spec {:allow-blocks true}}
    :prototype-method {:macro js-prototype-method :emit :macro}
    :prototype-tostring {:default "toString" :emit :unit}})
 
 (def +js-native-definitions+
-  {:var-let {:op :var-let :symbol #{'var} :macro js-var :emit :macro}
+  {:property {:op :property :symbol #{'property} :assign ":" :raw "property"
+              :value true :emit :def-assign}
+   :teq {:op :teq :symbol #{'===} :raw "===" :emit :bi}
+   :tneq {:op :tneq :symbol #{'not==} :raw "!==" :emit :bi}
+   :delete {:op :delete :symbol #{'del} :raw "delete" :value true :emit :prefix}
    :typeof {:op :typeof :symbol #{'typeof} :raw "typeof" :emit :prefix}
-   :instof {:op :instof :symbol #{'instanceof} :raw "instanceof" :emit :infix}})
+   :instanceof {:op :instof :symbol #{'instanceof} :raw "instanceof" :emit :bi}
+   :undef {:op :undef :symbol #{'undefined} :raw "undefined" :value true :emit :throw}
+   :nan {:op :nan :symbol #{'NaN} :raw "NaN" :value true :emit :throw}
+   :vargs {:op :vargs :symbol #{'...} :raw "...vargs" :value true :emit :throw}
+   :var-let {:op :var-let :symbol #{'var} :macro js-tf-var-let :emit :macro}
+   :var-const {:op :var-const :symbol #{'const} :macro js-tf-var-const :emit :macro}})
 
 (def +js-native+
   (merge +js-native-core+ +js-native-vars+ +js-native-for+

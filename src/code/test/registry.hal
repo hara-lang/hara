@@ -4,6 +4,8 @@
 
 (def +facts+ (atom {}))
 (def +setup+ (atom #{}))
+(def +lifecycle+ (atom {}))
+(def +lifecycle-config+ (atom {}))
 
 (defn ^{:public true} fact-key
   [namespace description]
@@ -15,7 +17,65 @@
   []
   (reset! +facts+ {})
   (reset! +setup+ #{})
+  (reset! +lifecycle+ {})
+  (reset! +lifecycle-config+ {})
   {:facts (deref +facts+) :setup (deref +setup+)})
+
+(defn ^{:public true} configure-lifecycle
+  "Installs the global fact lifecycle and clears its run state."
+  [options]
+  (reset! +lifecycle+ {})
+  (reset! +lifecycle-config+ (or options {}))
+  (deref +lifecycle-config+))
+
+(defn ^{:public true} lifecycle?
+  "Returns true when a global fact lifecycle is configured."
+  []
+  (not (empty? (deref +lifecycle-config+))))
+
+(defn ^{:public true} lifecycle-before
+  "Runs the configured global setup once for a namespace."
+  [namespace]
+  (let [entry (get (deref +lifecycle+) namespace)
+        active? (and (:started entry) (not (:closed entry)))
+        hook (:before-all (deref +lifecycle-config+))]
+    (if active?
+      true
+      (try
+        (if hook (hook))
+        (swap! +lifecycle+ assoc namespace {:started true
+                                            :completed 0
+                                            :closed false})
+        true
+        (catch error
+          (do
+            (swap! +lifecycle+ dissoc namespace)
+            (throw error)))))))
+
+(defn ^{:public true} lifecycle-after
+  "Runs the configured global teardown after the final fact."
+  [namespace total]
+  (let [entry (get (deref +lifecycle+) namespace)
+        completed (inc (or (:completed entry) 0))
+        finished? (and entry
+                       (not (:closed entry))
+                       (>= completed (or total 0)))
+        hook (:after-all (deref +lifecycle-config+))]
+    (if (nil? entry)
+      true
+      (do
+        (swap! +lifecycle+ assoc namespace (assoc entry :completed completed))
+        (if finished?
+          (try
+            (if hook (hook))
+            true
+            (finally
+              (swap! +lifecycle+
+                     assoc
+                     namespace
+                     (assoc (get (deref +lifecycle+) namespace)
+                            :closed true))))
+          true)))))
 
 (defn ^{:public true} snapshot
   "Captures the library's selector index and explicit setup lifecycle state."
@@ -29,16 +89,37 @@
   (reset! +setup+ (:setup snapshot))
   snapshot)
 
-(defn ^{:public true} register
-  "Registers one fact with native Test and indexes it for selector execution."
-  [namespace descriptor]
-  (let [descriptor (assoc descriptor
-                          :meta (merge {:code.test/namespace namespace}
-                                       (or (:meta descriptor) {})))
-        native-fact (Test/register descriptor)
-        fact (assoc native-fact :namespace namespace)]
+(defn ^{:public true} register-index
+  "Indexes a native Test fact for selector execution under an explicit namespace."
+  [namespace native-fact]
+  (let [fact (assoc native-fact :namespace namespace)]
     (swap! +facts+ assoc (fact-key namespace (:desc fact)) fact)
     fact))
+
+(defmacro ^{:public true} register
+  "Registers one fact with native Test and indexes it for selector execution."
+  [namespace descriptor]
+  `(let [source# ~descriptor
+         before# (:before source#)
+         after# (:after source#)
+         descriptor# (assoc source#
+                            :meta (merge {:code.test/namespace ~namespace}
+                                         (or (:meta source#) {})))
+         descriptor# (if (code.test.registry/lifecycle?)
+                       (assoc descriptor#
+                              :before (fn []
+                                        (do
+                                          (code.test.registry/lifecycle-before ~namespace)
+                                          (if before# (before#))))
+                              :after (fn []
+                                       (do
+                                         (if after# (after#))
+                                         (code.test.registry/lifecycle-after
+                                          ~namespace
+                                          (count (code.test.registry/facts ~namespace))))))
+                       descriptor#)
+         native-fact# (Test/register descriptor#)]
+     (code.test.registry/register-index ~namespace native-fact#)))
 
 (defn ^{:public true} facts
   ([] (vec (vals (deref +facts+))))

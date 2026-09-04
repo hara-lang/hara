@@ -693,13 +693,14 @@
   "Interns a Var root and optional metadata into namespace."
   ([namespace symbol variable] (Runtime/intern-var namespace symbol variable))
   ([namespace symbol variable metadata]
-   (Runtime/intern-var
-    namespace
-    symbol
-    variable
-    (merge metadata
-           (select-keys (or (meta variable) {})
-                        [:file :line :column])))))
+   (let [source-meta (or (meta variable) {})]
+     (Runtime/intern-var
+      namespace
+      symbol
+      variable
+      (merge metadata
+             (select-keys source-meta
+                          [:macro :file :line :column]))))))
 
 (defn ^{:inline true :schema [:fn [:any :any] :any]}
   eval-in-ns "Evaluates form values in an existing namespace." [namespace forms] (Runtime/eval-in namespace forms))
@@ -3386,9 +3387,13 @@
       (fn [entry]
         (let [to (if (vector? entry) (first entry) entry)
               from (if (vector? entry) (second entry) entry)
+              source-meta (or (meta (Base/resolve from)) {})
               metadata (select-keys
                         (merge (meta &form) (meta entry))
-                        [:file :line :column])]
+                        [:file :line :column])
+              metadata (merge
+                        (select-keys source-meta [:macro])
+                        metadata)]
           (list 'intern-var
                 target
                 (list 'quote (symbol (INamespaced/name to)))
@@ -3401,14 +3406,17 @@
   [& namespaces]
   (vec
    (mapcat
-    (fn [source]
-      (map
-       (fn [entry]
-         (list 'intern-var
-               (list 'ns-current)
-               (list 'quote entry)
-               (list 'var (symbol (str source) (INamespaced/name entry)))))
-       (keys (Runtime/ns-publics source))))
+   (fn [source]
+      (let [publics (Runtime/ns-publics source)]
+        (map
+         (fn [entry]
+           (let [source-meta (or (meta (get publics entry)) {})]
+             (list 'intern-var
+                   (list 'ns-current)
+                   (list 'quote entry)
+                   (list 'var (symbol (str source) (INamespaced/name entry)))
+                   (select-keys source-meta [:macro]))))
+         (keys publics))))
     namespaces)))
 
 ;; ---------------------------------------------------------------------------

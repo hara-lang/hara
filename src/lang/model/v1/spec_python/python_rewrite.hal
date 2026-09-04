@@ -212,6 +212,58 @@
              (concat (map python-normalize-form body)
                      (map python-rewrite-handler handlers))))))
 
+(defn python-normalize-for
+  "Normalizes Foundation numeric loops to Python range loops."
+  [form]
+  (let [params (second form)
+        init (first params)
+        check (second params)
+        update (nth params 2)
+        index (second init)
+        start (if (= := (nth init 2)) (nth init 3) (nth init 2))
+        stop (nth check 2)
+        step-form (nth update 2)
+        step (if (and (list? step-form)
+                      (= index (second step-form)))
+               (if (= '+ (first step-form))
+                 (nth step-form 2)
+                 (if (= '- (first step-form))
+                   (list '- 0 (nth step-form 2))
+                   1))
+               1)
+        range-form (list 'range start stop step)
+        body (map python-normalize-form (drop 2 form))]
+    (with-form-meta form
+      (apply list 'for
+             (concat [[index :in range-form]] body)))))
+
+(defn python-numeric-for?
+  "Checks for the generic numeric loop shape produced by Foundation."
+  [form]
+  (let [params (second form)
+        init (if (vector? params) (first params) nil)
+        check (if (vector? params) (second params) nil)
+        update (if (and (vector? params) (> (count params) 2))
+                 (nth params 2)
+                 nil)
+        step-form (if (and (list? update) (> (count update) 2))
+                   (nth update 2)
+                   nil)]
+    (and (list? form)
+         (= 'for (first form))
+         (vector? params)
+         (= 3 (count params))
+         (list? init)
+         (= 'var (first init))
+         (list? check)
+         (or (= '< (first check)) (= '> (first check)))
+         (list? update)
+         (= := (first update))
+         (= (second init) (second update))
+         (list? step-form)
+         (= (second init) (second step-form))
+         (or (= '+ (first step-form)) (= '- (first step-form))))))
+
 (defn python-rewrite-list
   [form]
   (cond
@@ -227,6 +279,25 @@
     (= 'try (first form))
     (python-rewrite-try form)
 
+    (let [target (if (> (count form) 1) (nth form 1) nil)
+          props (if (and (list? target) (> (count target) 2))
+                  (nth target 2)
+                  nil)]
+      (and (= ':= (first form))
+           (list? target)
+           (= '. (first target))
+           (vector? props)
+           (= 1 (count props))))
+    (let [target (nth form 1)
+          props (nth target 2)]
+      (with-form-meta form
+        (list ':=
+              (list '. (nth target 1) (list 'setitem (first props)))
+              (nth form 2))))
+
+    (python-numeric-for? form)
+    (python-normalize-for form)
+
 
     :else
     (with-form-meta form
@@ -240,12 +311,6 @@
 
 (defn python-rewrite-stage
   [form opts]
-  (let [hoisted (try
-                  ((:rewrite-stage +python-rewriter+) form opts)
-                  (catch error
-                    (throw (ex :io {:form form} :ex/message "Python hoist rewrite failed" :ex/cause error))))
-        normalized (try
-                     (python-normalize-form hoisted)
-                     (catch error
-                       (throw (ex :io {:form hoisted} :ex/message "Python normalize rewrite failed" :ex/cause error))))]
-    (inline/rewrite-inline-do normalized)))
+  (-> ((:rewrite-stage +python-rewriter+) form opts)
+      (python-normalize-form)
+      (inline/rewrite-inline-do)))

@@ -67,28 +67,33 @@
       nil)))
 
 (defn analyse-path
-  "Reads one path only after its timestamp and byte count invalidate cached analysis."
-  [state source-path]
-  (let [revision (source-revision source-path)
-        cached (cached-path-analysis state source-path revision)]
-    (cond
-      cached
-      {:index state
-       :analysis cached
-       :cached? true}
+  "Reads one path with either full reference or bounded linkage analysis."
+  ([state source-path]
+   (analyse-path state source-path :full))
+  ([state source-path mode]
+   (let [revision (source-revision source-path)
+         cached (cached-path-analysis state source-path revision)]
+     (cond
+       cached
+       {:index state
+        :analysis cached
+        :cached? true}
 
-      :else
-      (let [source (String/decode-utf8 (deref (File/read source-path)))
-            fingerprint (reader/source-fingerprint source)
-            analysis (reader/analyse-source source)
-            next-index
-            (assoc-in
-             (index/upsert-analysis state source-path fingerprint analysis)
-             [:entries source-path :revision]
-             revision)]
-        {:index next-index
-         :analysis analysis
-         :cached? false}))))
+       :else
+       (let [source (String/decode-utf8 (deref (File/read source-path)))
+             fingerprint (reader/source-fingerprint source)
+             analysis
+             (if (= :linkage mode)
+               (reader/analyse-linkage-source source)
+               (reader/analyse-source source))
+             next-index
+             (assoc-in
+              (index/upsert-analysis state source-path fingerprint analysis)
+              [:entries source-path :revision]
+              revision)]
+         {:index next-index
+          :analysis analysis
+          :cached? false})))))
 
 (defn refresh-path
   "Refreshes one source path and durably saves only a successful fresh analysis."

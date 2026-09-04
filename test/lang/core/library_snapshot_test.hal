@@ -1,0 +1,189 @@
+(ns lang.core.library-snapshot-test
+  (:require [lang.common.book-entry :as entry]
+            [lang.common.book-module :as module]
+            [lang.core.library-snapshot :as snapshot]))
+
+(defn selected
+  []
+  (snapshot/snapshot-select-book (snapshot/snapshot-empty)
+                                 :js :default 1 {:namespace 'demo.js}))
+
+^{:refer lang.core.library-snapshot/snapshot?}
+(Test/check [{:name "identifies immutable LibrarySnapshot values"
+              :test (fn [] [(snapshot/snapshot? (snapshot/snapshot-empty))
+                             (snapshot/snapshot? {})])
+              :expected [true false]}])
+
+^{:refer lang.core.library-snapshot/snapshot}
+(Test/check [{:name "applies the empty lazy-book baseline"
+              :test (fn [] (select-keys (snapshot/snapshot {:revision 3})
+                                        [:revision :books :selected]))
+              :expected {:revision 3 :books {} :selected {}}}])
+
+^{:refer lang.core.library-snapshot/snapshot-empty}
+(Test/check [{:name "returns the deterministic empty baseline"
+              :test (fn [] (select-keys (snapshot/snapshot-empty)
+                                        [:revision :books :selected]))
+              :expected {:revision 0 :books {} :selected {}}}])
+
+^{:refer lang.core.library-snapshot/snapshot-coordinate}
+(Test/check [{:name "uses language key version coordinates"
+              :test (fn [] (snapshot/snapshot-coordinate :js :default 1))
+              :expected [:js :default 1]}])
+
+^{:refer lang.core.library-snapshot/snapshot-book-coordinate}
+(Test/check [{:name "returns the selected coordinate"
+              :test (fn [] (snapshot/snapshot-book-coordinate (selected) :js))
+              :expected [:js :default 1]}])
+
+^{:refer lang.core.library-snapshot/snapshot-book}
+(Test/check [{:name "returns a lazy selected Book record"
+              :test (fn [] (snapshot/snapshot-book (selected) :js))
+              :expected {:info {:namespace 'demo.js} :book nil :modules {}}}])
+
+^{:refer lang.core.library-snapshot/snapshot-book-at}
+(Test/check [{:name "looks up Book records by exact coordinate"
+              :test (fn [] (snapshot/snapshot-book-at (selected) [:js :default 1]))
+              :expected {:info {:namespace 'demo.js} :book nil :modules {}}}])
+
+^{:refer lang.core.library-snapshot/snapshot-book-info}
+(Test/check [{:name "returns only Book descriptor metadata"
+              :test (fn [] (snapshot/snapshot-book-info (selected) :js))
+              :expected {:namespace 'demo.js}}])
+
+^{:refer lang.core.library-snapshot/snapshot-revision}
+(Test/check [{:name "reads the deterministic mutation revision"
+              :test (fn [] (snapshot/snapshot-revision (selected)))
+              :expected 1}])
+
+^{:refer lang.core.library-snapshot/snapshot-next}
+(Test/check [{:name "advances a snapshot revision without changing books"
+              :test (fn [] (snapshot/snapshot-revision (snapshot/snapshot-next (selected))))
+              :expected 2}])
+
+^{:refer lang.core.library-snapshot/snapshot-select-book}
+(Test/check [{:name "selects a Book without resolving its Book value"
+              :test (fn [] (select-keys (snapshot/snapshot-select-book
+                                          (selected) :python :default 1 {:namespace 'demo.py})
+                                         [:revision :selected]))
+              :expected {:revision 2
+                         :selected {:js [:js :default 1]
+                                    :python [:python :default 1]}}}])
+
+^{:refer lang.core.library-snapshot/snapshot-cache-book}
+(Test/check [{:name "caches a resolved immutable Book independently of modules"
+              :test (fn [] (get-in (snapshot/snapshot-cache-book (selected) :js :book)
+                                   [:books [:js :default 1] :book]))
+              :expected :book}])
+
+^{:refer lang.core.library-snapshot/snapshot-module}
+(Test/check [{:name "returns nil for an unregistered module"
+              :test (fn [] (snapshot/snapshot-module (selected) :js 'demo.module))
+              :expected nil}])
+
+^{:refer lang.core.library-snapshot/snapshot-entry}
+(Test/check [{:name "returns nil for an unregistered entry"
+              :test (fn [] (snapshot/snapshot-entry (selected) :js 'demo.module :code 'value))
+              :expected nil}])
+
+^{:refer lang.core.library-snapshot/snapshot-require-book}
+(Test/check [{:name "returns a selected record for mutation validation"
+              :test (fn [] (:info (snapshot/snapshot-require-book (selected) :js)))
+              :expected {:namespace 'demo.js}}])
+
+^{:refer lang.core.library-snapshot/snapshot-module-value}
+(Test/check [{:name "retains typed modules and metadata-bearing source maps"
+              :test (fn [] (let [typed (module/book-module {:lang :js :id 'typed})
+                                 source {:lang :js :id 'source :emit {:layout :flat}}]
+                             [(module/book-module? (snapshot/snapshot-module-value typed))
+                              (snapshot/snapshot-module-value source)]))
+              :expected [true {:lang :js :id 'source :emit {:layout :flat}}]}])
+
+^{:refer lang.core.library-snapshot/snapshot-entry-value}
+(Test/check [{:name "retains typed entries and metadata-bearing source maps"
+              :test (fn [] (let [typed (entry/book-entry {:lang :js :module 'demo.module
+                                                           :section :code :id 'typed})
+                                 source {:lang :js :module 'demo.module :section :code :id 'source
+                                         :op-key :defn}]
+                             [(entry/book-entry? (snapshot/snapshot-entry-value typed))
+                              (snapshot/snapshot-entry-value source)]))
+              :expected [true {:lang :js :module 'demo.module :section :code :id 'source
+                               :op-key :defn}]}])
+
+^{:refer lang.core.library-snapshot/snapshot-set-module}
+(Test/check [{:name "stores a module under its declared language Book"
+              :test (fn [] (select-keys
+                             (snapshot/snapshot-module
+                              (snapshot/snapshot-set-module (selected) :js
+                                                            {:lang :js :id 'demo.module})
+                              :js 'demo.module)
+                             [:lang :id]))
+              :expected {:lang :js :id 'demo.module}}])
+
+^{:refer lang.core.library-snapshot/snapshot-delete-module}
+(Test/check [{:name "deletes a locally owned module and advances revision"
+              :test (fn [] (let [with-module (snapshot/snapshot-set-module
+                                               (selected) :js {:lang :js :id 'demo.module})
+                               deleted (snapshot/snapshot-delete-module with-module :js 'demo.module)]
+                           [(snapshot/snapshot-module deleted :js 'demo.module)
+                            (snapshot/snapshot-revision deleted)]))
+              :expected [nil 3]}])
+
+^{:refer lang.core.library-snapshot/snapshot-set-entry}
+(Test/check [{:name "stores BookEntry data in its owned BookModule"
+              :test (fn [] (let [with-module (snapshot/snapshot-set-module
+                                               (selected) :js {:lang :js :id 'demo.module})
+                               with-entry (snapshot/snapshot-set-entry
+                                           with-module :js
+                                           {:lang :js :module 'demo.module :section :code :id 'value})]
+                           (select-keys (snapshot/snapshot-entry with-entry :js 'demo.module :code 'value)
+                                        [:lang :module :section :id])))
+              :expected {:lang :js :module 'demo.module :section :code :id 'value}}])
+
+^{:refer lang.core.library-snapshot/snapshot-delete-entry}
+(Test/check [{:name "deletes one locally owned entry"
+              :test (fn [] (let [with-module (snapshot/snapshot-set-module
+                                               (selected) :js {:lang :js :id 'demo.module})
+                               with-entry (snapshot/snapshot-set-entry
+                                           with-module :js
+                                           {:lang :js :module 'demo.module :section :code :id 'value})]
+                           (snapshot/snapshot-entry
+                            (snapshot/snapshot-delete-entry with-entry :js 'demo.module :code 'value)
+                            :js 'demo.module :code 'value)))
+              :expected nil}])
+
+^{:refer lang.core.library-snapshot/snapshot-list-modules}
+(Test/check [{:name "lists module ids in stable order"
+              :test (fn [] (snapshot/snapshot-list-modules
+                             (snapshot/snapshot-set-module (selected) :js {:lang :js :id 'demo.module})
+                             :js))
+              :expected ['demo.module]}])
+
+^{:refer lang.core.library-snapshot/snapshot-list-entries}
+(Test/check [{:name "lists entry ids in stable order"
+              :test (fn [] (let [with-module (snapshot/snapshot-set-module
+                                               (selected) :js {:lang :js :id 'demo.module})
+                               with-entry (snapshot/snapshot-set-entry
+                                           with-module :js
+                                           {:lang :js :module 'demo.module :section :code :id 'value})]
+                           (snapshot/snapshot-list-entries with-entry :js 'demo.module :code)))
+              :expected ['value]}])
+
+^{:refer lang.core.library-snapshot/snapshot-merge-book}
+(Test/check [{:name "prefers child modules while retaining a parent Book cache"
+              :test (fn [] (snapshot/snapshot-merge-book
+                             {:info {:parent true} :book :parent :modules {'a 1}}
+                             {:info {:child true} :book nil :modules {'a 2 'b 3}}))
+              :expected {:info {:child true} :book :parent :modules {'a 2 'b 3}}}])
+
+^{:refer lang.core.library-snapshot/snapshot-merge}
+(Test/check [{:name "merges parent Books with child selection and overlays"
+              :test (fn [] (let [parent (snapshot/snapshot-set-module
+                                       (selected) :js {:lang :js :id 'parent.module})
+                               child (snapshot/snapshot-set-module
+                                      (snapshot/snapshot-select-book (snapshot/snapshot-empty)
+                                                                      :js :default 1 {:namespace 'demo.js})
+                                      :js {:lang :js :id 'child.module})]
+                           (snapshot/snapshot-list-modules
+                            (snapshot/snapshot-merge parent child) :js)))
+              :expected ['child.module 'parent.module]}])

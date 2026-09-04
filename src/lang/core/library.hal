@@ -1,0 +1,297 @@
+(ns lang.core.library
+  (:config {:role :internal})
+  (:require [lang.common.book :as book]
+            [lang.core.library-snapshot :as snapshot]
+            [lang.core.registry :as registry]))
+
+(defstruct Library [id parent state])
+
+(def ^{:dynamic true} *library* nil)
+
+(def +default-library+ (atom nil))
+
+(defn library?
+  "Returns true when value is a state-owning Library."
+  [value]
+  (instance? lang.core.library/Library value))
+
+(defn library-create
+  "Creates a Library with a pure local snapshot and an optional parent Library."
+  [options]
+  (let [options (or options {})]
+    (lang.core.library/Library
+     (or (:id options) :library)
+     (:parent options)
+     (atom (or (:snapshot options) (snapshot/snapshot-empty))))))
+
+(defn library-parent
+  "Returns the direct parent Library, if any."
+  [library]
+  (:parent library))
+
+(defn library-raw-snapshot
+  "Returns the local, non-inherited immutable snapshot."
+  [library]
+  (deref (:state library)))
+
+(defn library-snapshot
+  "Returns the effective snapshot after parent Library overlays are merged."
+  [library]
+  (let [parent (library-parent library)
+        current (library-raw-snapshot library)]
+    (if parent
+      (snapshot/snapshot-merge (library-snapshot parent) current)
+      current)))
+
+(defn library-restore!
+  "Replaces local Library state with a supplied pure snapshot or the blank baseline."
+  [library value]
+  (reset! (:state library) (or value (snapshot/snapshot-empty)))
+  (library-raw-snapshot library))
+
+(defn library-reset!
+  "Clears every locally owned Book descriptor and module overlay idempotently."
+  [library]
+  (library-restore! library nil))
+
+(defn library-book-record
+  "Returns the effective lazy Book record selected for one language."
+  [library language]
+  (snapshot/snapshot-book (library-snapshot library) language))
+
+(defn library-raw-book-record
+  "Returns the locally owned lazy Book record selected for one language."
+  [library language]
+  (snapshot/snapshot-book (library-raw-snapshot library) language))
+
+(defn library-book-info
+  "Returns cheap selected Book metadata without materializing a grammar Book."
+  [library language]
+  (:info (library-book-record library language)))
+
+(defn library-select-book!
+  "Selects one registered Book version without resolving its Book value."
+  ([library language]
+   (library-select-book! library language :default nil))
+  ([library language key]
+   (library-select-book! library language key nil))
+  ([library language key version]
+   (let [info (registry/registry-book-info language key version)]
+     (if (nil? info)
+       (throw (ex :not-found {:language language :key key :version version}
+                  :ex/message "Book is not registered"))
+       (do
+         (swap! (:state library)
+                (fn [current]
+                  (snapshot/snapshot-select-book current language key (:version info) info)))
+         (library-raw-book-record library language))))))
+
+(defn library-ensure-book!
+  "Ensures this Library locally owns a lazy descriptor for one effective Book."
+  [library language]
+  (let [local (library-raw-book-record library language)]
+    (if local
+      local
+      (let [effective (library-book-record library language)]
+        (if effective
+          (let [{:keys [key version]} (:info effective)]
+            (library-select-book! library language (or key :default) version))
+          (library-select-book! library language :default nil))))))
+
+(defn library-cache-book!
+  "Memoizes one resolved immutable Book in this Library's local descriptor."
+  [library language resolved]
+  (library-ensure-book! library language)
+  (swap! (:state library)
+         (fn [current]
+           (snapshot/snapshot-cache-book current language resolved)))
+  resolved)
+
+(defn library-base-book
+  "Returns the selected immutable Book, resolving its registry provider only on demand."
+  [library language]
+  (let [record (library-ensure-book! library language)
+        cached (:book record)]
+    (if cached
+      cached
+      (let [{:keys [key version]} (:info record)
+            resolved (registry/registry-book language (or key :default) version)]
+        (if (nil? resolved)
+          (throw (ex :not-found {:language language :key key :version version}
+                     :ex/message "Selected Book provider did not return a Book"))
+          (library-cache-book! library language resolved))))))
+
+(defn library-book-modules
+  "Returns the effective locally registered module overlay for one language."
+  [library language]
+  (or (:modules (library-book-record library language)) {}))
+
+(defn library-raw-book-modules
+  "Returns only the current Library's local module overlay for one language."
+  [library language]
+  (or (:modules (library-raw-book-record library language)) {}))
+
+(defn library-get-source-module
+  "Finds a registered source module through declared Book parents without materializing a Book."
+  [library language module-id]
+  (loop [current language seen #{}]
+    (if (or (nil? current) (has? seen current))
+      nil
+      (let [module-value (get (library-book-modules library current) module-id)]
+        (if module-value
+          module-value
+          (let [info (or (library-book-info library current)
+                         (registry/registry-book-info current))]
+            (recur (:parent info) (conj seen current))))))))
+
+(defn library-apply-modules
+  "Overlays persistent source BookModules onto an immutable resolved Book."
+  [resolved modules]
+  (reduce-kv
+   (fn [output _ module-value]
+     (book/put-module output module-value))
+   resolved
+   (or modules {})))
+
+(defn library-get-book-raw
+  "Returns the selected Book with only this Library's local module overlay."
+  [library language]
+  (library-apply-modules (library-base-book library language)
+                         (library-raw-book-modules library language)))
+
+(defn library-get-book-selection
+  "Returns one target Book and its visible source overlay without eagerly merging Book parents."
+  [library language]
+  (library-apply-modules (library-base-book library language)
+                         (library-book-modules library language)))
+
+(defn library-get-book
+  "Returns the effective selected Book including source overlays and Book parents."
+  [library language]
+  (let [current (library-apply-modules (library-base-book library language)
+                                       (library-book-modules library language))
+        parent (:parent current)]
+    (if parent
+      (book/book-merge current (library-get-book library parent))
+      current)))
+
+(defn library-get-module
+  "Returns one effective BookModule, materializing only the requested language chain."
+  [library language module-id]
+  (book/get-module (library-get-book library language) module-id))
+
+(defn library-get-entry
+  "Returns one effective BookEntry from its selected language Book."
+  [library language module-id section entry-id]
+  (book/get-base-entry (library-get-book library language)
+                       module-id entry-id section))
+
+(defn library-add-book!
+  "Installs an already resolved immutable Book as a lazy descriptor cache."
+  [library resolved]
+  (let [language (:lang resolved)
+        key (or (:id resolved) :default)
+        version (:version resolved)
+        info {:language language :key key :version version}]
+    (swap! (:state library)
+           (fn [current]
+             (-> current
+                 (snapshot/snapshot-select-book language key version info)
+                 (snapshot/snapshot-cache-book language resolved))))
+    (library-raw-book-record library language)))
+
+(defn library-add-module!
+  "Adds or replaces one local BookModule without resolving a grammar Book."
+  [library language module-value]
+  (library-ensure-book! library language)
+  (swap! (:state library)
+         (fn [current]
+           (snapshot/snapshot-set-module current language module-value)))
+  (snapshot/snapshot-module (library-raw-snapshot library) language (:id module-value)))
+
+(defn library-delete-module!
+  "Deletes one local module while leaving an inherited parent module untouched."
+  [library language module-id]
+  (library-ensure-book! library language)
+  (let [previous (snapshot/snapshot-module (library-raw-snapshot library) language module-id)]
+    (swap! (:state library)
+           (fn [current]
+             (snapshot/snapshot-delete-module current language module-id)))
+    previous))
+
+(defn library-set-entry!
+  "Adds or replaces one local BookEntry without resolving a grammar Book."
+  [library language entry-value]
+  (library-ensure-book! library language)
+  (swap! (:state library)
+         (fn [current]
+           (snapshot/snapshot-set-entry current language entry-value)))
+  (snapshot/snapshot-entry (library-raw-snapshot library)
+                           language (:module entry-value) (:section entry-value)
+                           (:id entry-value)))
+
+(defn library-delete-entry!
+  "Deletes one locally owned BookEntry."
+  [library language module-id section entry-id]
+  (library-ensure-book! library language)
+  (let [previous (snapshot/snapshot-entry (library-raw-snapshot library)
+                                          language module-id section entry-id)]
+    (swap! (:state library)
+           (fn [current]
+             (snapshot/snapshot-delete-entry current language module-id section entry-id)))
+    previous))
+
+(defn library-purge-book!
+  "Removes all locally owned source modules for one selected language Book."
+  [library language]
+  (let [modules (snapshot/snapshot-list-modules (library-raw-snapshot library) language)]
+    (reduce (fn [_ module-id]
+              (library-delete-module! library language module-id))
+            nil
+            modules)
+    modules))
+
+(defn library-list-modules
+  "Lists effective source module ids without materializing a Book."
+  [library language]
+  (snapshot/snapshot-list-modules (library-snapshot library) language))
+
+(defn library-list-entries
+  "Lists effective source entry ids without materializing a Book."
+  [library language module-id section]
+  (snapshot/snapshot-list-entries (library-snapshot library)
+                                  language module-id section))
+
+(defn library-clone
+  "Creates an independent Library from the current effective pure snapshot."
+  [library]
+  (library-create {:id (:id library)
+                   :snapshot (library-snapshot library)}))
+
+(defn default-library
+  "Returns the process default Library, creating its blank state exactly once."
+  []
+  (let [current (deref +default-library+)]
+    (if current
+      current
+      (let [created (library-create {:id :default})]
+        (swap! +default-library+
+               (fn [existing]
+                 (or existing created)))
+        (deref +default-library+)))))
+
+(defn default-library:reset
+  "Resets the default Library to its deterministic empty local baseline."
+  []
+  (library-reset! (default-library)))
+
+(defn runtime-library
+  "Returns the dynamically bound Library or the process default Library."
+  []
+  (or *library* (default-library)))
+
+(defmacro with:library
+  "Evaluates body against an explicitly selected Library."
+  [[library] & body]
+  `(binding [lang.core.library/*library* ~library]
+     ~@body))

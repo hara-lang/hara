@@ -1,0 +1,80 @@
+(ns lang.runtime.basic.impl.process-c-test
+  (:require [lang.core.registry :as registry]
+            [lang.core.runtime :as runtime]
+            [lang.core.script :as script]
+            [lang.runtime.basic.impl.process-c :as subject]
+            [lang.runtime.basic.type-common :as common]))
+
+^{:refer lang.runtime.basic.impl.process-c/c-source-transform}
+(Test/check
+ [{:name "wraps a C expression in an executable main function"
+   :test (fn [] (let [source (subject/c-source-transform "1 + 2")]
+                  [(str/includes? source "#include <stdio.h>")
+                   (str/includes? source "int main(void)")
+                   (str/includes? source "printf(\"%d\\n\", (int) (1 + 2))")]))
+   :expected [true true true]}])
+
+^{:refer lang.runtime.basic.impl.process-c/+c-program-init+}
+(Test/check
+ [{:name "declares GCC as the default C two-step and verifier program"
+   :test (fn [] [(get-in subject/+c-program-init+ [:default :twostep])
+                 (get-in subject/+c-program-init+ [:default :verify])
+                 (get-in subject/+c-program-init+ [:env :gcc :flags :verify])
+                 (get-in (common/get-program-options :c) [:env :gcc :extension])])
+   :expected [:gcc :gcc ["-fsyntax-only"] "c"]}])
+
+^{:refer lang.runtime.basic.impl.process-c/+c-twostep-config+}
+(Test/check
+ [{:name "configures C expressions for standalone compiler execution"
+   :test (fn [] [(select-keys subject/+c-twostep-config+ [:main :emit :json])
+                 (fn? (:source-transform subject/+c-twostep-config+))])
+   :expected [{:main {} :emit {} :json :string} true]}])
+
+^{:refer lang.runtime.basic.impl.process-c/+c-verify-config+}
+(Test/check
+ [{:name "configures C verification as a compile-only source round trip"
+   :test (fn [] (select-keys subject/+c-verify-config+
+                              [:json :compile-only :return-source]))
+   :expected {:json false :compile-only true :return-source true}}])
+
+^{:refer lang.runtime.basic.impl.process-c/+c-twostep+}
+(Test/check
+ [{:name "installs the C compiler runtime type"
+   :test (fn [] [(select-keys subject/+c-twostep+ [:lang :runtime :type])
+                 (set (keys (:instance subject/+c-twostep+)))
+                 (registry/registry-runtime-ns :c :twostep)])
+   :expected [{:lang :c :runtime :twostep :type :lang/rt.twostep}
+              #{:create :raw-eval}
+              'lang.runtime.basic.impl.process-c]}])
+
+^{:refer lang.runtime.basic.impl.process-c/+c-verify+}
+(Test/check
+ [{:name "installs the C compile-only verification coordinate"
+   :test (fn [] [(select-keys subject/+c-verify+ [:lang :runtime :type])
+                 (:type (runtime/runtime-spec :c :verify))])
+   :expected [{:lang :c :runtime :verify :type :lang/rt.twostep}
+              :lang/rt.twostep]}])
+
+^{:refer lang.runtime.basic.impl.process-c/+init+}
+(Test/check
+ [{:name "publishes the complete C process runtime family"
+   :test (fn [] [(get subject/+init+ :lang)
+                 (set (keys (dissoc subject/+init+ :lang)))])
+   :expected [:c #{:program :twostep :verify}]}])
+
+^{:refer lang.runtime.basic.impl.process-c/c-source-transform}
+(Test/check
+ [{:name "runs emitted C expressions and verifies them without running a binary"
+   :test (fn [] (let [twostep (runtime/rt-start (runtime/rt-create :c :twostep))
+                       verify (runtime/rt-start (runtime/rt-create :c :verify))]
+                  [(runtime/rt-raw-eval twostep "1 + 2")
+                   (runtime/rt-raw-eval verify "1 + 2")]))
+   :expected ["3" "1 + 2"]}])
+
+^{:refer lang.runtime.basic.impl.process-c/c-source-transform}
+(Test/check
+ [{:name "executes the native C grammar output through the two-step runtime"
+   :test (fn [] (let [runtime (runtime/rt-start (runtime/rt-create :c :twostep))
+                       source (script/compile-form :c 'play.c-runtime '(+ 1 2))]
+                  [source (runtime/rt-raw-eval runtime source)]))
+   :expected ["1 + 2" "3"]}])

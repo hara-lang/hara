@@ -6,7 +6,9 @@
             [hara.command.run :as run :lazy true]
             [hara.command.test :as test :lazy true]
             [hara.command.specs :as specs :lazy true]
-            [hara.command.deploy :as deploy :lazy true]))
+            [hara.command.deploy :as deploy :lazy true]
+            [hara.command.package :as package :lazy true]
+            [hara.command.lifecycle :as lifecycle :lazy true]))
 
 (defn application
   "Creates one ephemeral Hara command application for an argv invocation."
@@ -55,6 +57,41 @@
                                  :options [{:id :root :type :string}]
                                  :arguments [{:id :action :type :string :required? false}]
                                  :handler (fn [request] (deploy/response request))})
+    (Command/install app
+                                {:id :package
+                                 :path ["package"]
+                                 :desc "Pull, resolve, and lock Hara packages"
+                                 :passthrough? true
+                                 :arguments [{:id :argv :type :string :required? false :many? true}]
+                                 :handler (fn [request] (package/response request))})
+    (Command/install app
+                                {:id :lifecycle
+                                 :path ["lifecycle"]
+                                 :desc "Run the Hara build lifecycle"
+                                 :options [{:id :root :type :string}]
+                                 :arguments [{:id :argv :type :string :required? false :many? true}]
+                                 :handler (fn [request] (lifecycle/response request))})
+    (Command/install app
+                                {:id :goal
+                                 :path ["goal"]
+                                 :desc "Run a locked Hara goal"
+                                 :options [{:id :root :type :string}]
+                                 :arguments [{:id :plugin :type :string}
+                                             {:id :entry :type :string}]
+                                 :handler (fn [request]
+                                            (try
+                                              (let [arguments (:arguments request)
+                                                    root (or (:root (:options request)) (OS/cwd))
+                                                    result (lifecycle/goal root
+                                                                           (:plugin arguments)
+                                                                           (:entry arguments))]
+                                                {:stdout (str (Edn/write result) "\n")
+                                                 :stderr ""
+                                                 :exit 0})
+                                              (catch error
+                                                {:stdout ""
+                                                 :stderr (str error "\n")
+                                                 :exit 2})))})
     (Command/install app
                                 {:id :specs-test
                                  :path ["specs" "test"]

@@ -1,0 +1,41 @@
+(ns play.c-000-pthreads-hello.build-test
+  (:require [std.fs :as fs]
+            [work.flow.make :as make]
+            [work.flow.make.common :as common]
+            [work.flow.make.project :as project]
+            [play.c-000-pthreads-hello.build :as subject]))
+
+(defn read-text [file]
+  (str/decode-utf8 (fs/read-bytes file)))
+
+^{:refer play.c-000-pthreads-hello.build/PROJECT}
+(Test/check
+ [{:name "defines the pthreads build through the generic make flow"
+   :test (fn [] [(make/host? subject/PROJECT)
+                 (:make/id (make/plan subject/PROJECT))])
+   :expected [true 'play.c-000-pthreads-hello.build/PROJECT]}])
+
+^{:refer play.c-000-pthreads-hello.build/-main}
+(Test/check
+ [{:name "writes, compiles, and runs the pthreads C translation unit"
+   :test (fn []
+           (let [config (common/make-config-fn
+                         (assoc (:make/definition (make/plan subject/PROJECT))
+                                :root "src-build/play/c_000_pthreads_hello"
+                                :build ".build/test-c-pthreads-hello"))
+                 out-dir (common/make-dir config)
+                 file (str out-dir "/src/pthreads_hello.c")]
+             (try
+               (project/build-all config)
+               (let [source (read-text file)
+                     run-result (common/run-command config :run)]
+                 [(fs/exists? (str out-dir "/Makefile"))
+                  (fs/exists? file)
+                  (str/includes? source "#include <pthread.h>")
+                  (str/includes? source "int main(")
+                  (str/includes? source "void * print_message_function(void * ptr)")
+                  (str/includes? source "char * message =")
+                  (second run-result)])
+               (finally
+                 (common/make-dir-teardown config)))))
+   :expected [true true true true true true true]}])

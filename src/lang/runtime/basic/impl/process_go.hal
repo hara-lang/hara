@@ -1,0 +1,67 @@
+;; ============================================================================
+;; lang.runtime.basic.impl.process-go — local Go compiler runtime registration.
+;; ============================================================================
+(ns lang.runtime.basic.impl.process-go
+  (:config {:role :internal})
+  (:require [lang.core.runtime :as runtime]
+            [lang.runtime.basic.type-common :as common]
+            [lang.runtime.basic.type-twostep :as twostep]))
+
+(defn go-source-transform
+  "Wraps one emitted Go expression in a standalone main package and function."
+  [body]
+  (str "package main\n\n"
+       "import \"fmt\"\n\n"
+       "func main() {\n"
+       "  fmt.Println(" body ")\n"
+       "}\n"))
+
+(def +go-program-init+
+  (common/put-program-options
+   :go
+   {:default {:twostep :go
+              :verify :go}
+    :env {:go {:exec "go"
+               :extension "go"
+               :stderr true
+               :flags {:twostep ["build"]
+                       :verify ["build"]}
+               :output-flag "-o"}}}))
+
+(def +go-twostep-config+
+  (common/set-context-options
+   [:go :twostep :default]
+   {:main {}
+    :emit {}
+    :json :string
+    :source-transform go-source-transform}))
+
+(def +go-verify-config+
+  (common/set-context-options
+   [:go :verify :default]
+   {:main {}
+    :emit {}
+    :json false
+    :source-transform go-source-transform
+    :compile-only true
+    :return-source true}))
+
+(def +go-twostep+
+  (runtime/install-type
+   :go :twostep
+   {:type :lang/rt.twostep
+    :instance {:create twostep/rt-twostep:create
+               :raw-eval twostep/raw-eval-twostep}}))
+
+(def +go-verify+
+  (runtime/install-type
+   :go :verify
+   {:type :lang/rt.twostep
+    :instance {:create twostep/rt-twostep:create
+               :raw-eval twostep/raw-eval-twostep}}))
+
+(def +init+
+  {:lang :go
+   :program +go-program-init+
+   :twostep +go-twostep+
+   :verify +go-verify+})

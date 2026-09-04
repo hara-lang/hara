@@ -1,5 +1,6 @@
 (ns lang.typed.xtalk-parse
-  (:require [lang.core.script :as script]
+  (:require [lang.core.library :as library]
+            [lang.core.script :as script]
             [lang.typed.xtalk-common :as types]))
 
 (declare merge-spec-inputs)
@@ -142,7 +143,8 @@
 
 (defn parse-decl-preamble
   [items form-sym]
-  (let [[docstring items]
+  (let [items (vec items)
+        [docstring items]
         (if (string? (first items))
           [(first items) (rest items)]
           [nil items])
@@ -315,14 +317,15 @@
 
 (defn analyze-module-raw
   [ns-sym]
-  (let [module (get (deref script/+modules+) ns-sym)]
+  (let [current (library/runtime-library)
+        module (get (library/library-book-modules current :xtalk) ns-sym)]
     (when (nil? module)
       (throw (ex :not-found {:ns ns-sym
                        :available (sort-by str
-                                           (keys (deref script/+modules+)))} :ex/message "Tahto script module not found")))
-    (script/refresh-module-schemas ns-sym)
-    (let [module (get (deref script/+modules+) ns-sym)
-          schema-ns (script/module-source-symbol ns-sym)
+                                           (library/library-list-modules current :xtalk))} :ex/message "Tahto script module not found")))
+    (script/refresh-module-schemas :xtalk ns-sym)
+    (let [module (get (library/library-book-modules current :xtalk) ns-sym)
+          schema-ns (script/module-source-symbol :xtalk ns-sym)
           aliases (module-aliases module)
           module-specs (module-schema-specs schema-ns module aliases)
           fragment-specs (->> (:fragment module)

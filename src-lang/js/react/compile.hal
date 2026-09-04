@@ -1,0 +1,191 @@
+(ns js.react.compile
+  (:config {:role :internal})
+  (:require [js.react.compile-components :as components]
+            [js.react.compile-directives :as directives]))
+
+(def +registry+ (atom {}))
+
+(defn registry-snapshot
+  "Captures the registered default React component groups."
+  []
+  (deref +registry+))
+
+(defn registry-restore!
+  "Restores registered default React component groups."
+  [snapshot]
+  (reset! +registry+ (or snapshot {}))
+  (registry-snapshot))
+
+(defn registry-reset!
+  "Idempotently clears registered default React component groups."
+  []
+  (registry-restore! nil))
+
+(defn get-registry
+  "Returns the registered default React component groups."
+  []
+  (registry-snapshot))
+
+(defn put-registry
+  "Registers or replaces a named component group."
+  [group components]
+  (swap! +registry+ assoc group components))
+
+(defn del-registry
+  "Removes a named component group."
+  [group]
+  (swap! +registry+ dissoc group))
+
+(defn get-default-components
+  "Merges all registered default component groups."
+  [_]
+  (apply merge (vals (deref +registry+))))
+
+(defn check-valid-variables
+  "Rejects :var/* references which are absent from states."
+  [states form]
+  (components/postwalk-form
+   form
+   (fn [entry]
+     (when (and (keyword? entry)
+                (= "var" (namespace entry))
+                (not (has? states entry)))
+       (throw (ex :invalid
+                  {:keyword entry :valid (sort (keys states))}
+                  :ex/message "Invalid React state variable")))
+     entry)))
+
+(defn compile-states-deps
+  "Returns state-variable dependencies for each declared state."
+  {:added "4.0"}
+  [states]
+  (map-vals
+   (fn [state]
+     (let [dependencies (atom #{})]
+       (components/postwalk-form
+        state
+        (fn [entry]
+          (when (and (keyword? entry)
+                     (= "var" (namespace entry)))
+            (swap! dependencies conj entry))
+          entry))
+       (deref dependencies)))
+   states))
+
+(defn compile-states
+  "Compiles state declarations to React variable bindings in dependency order."
+  {:added "4.0"}
+  [states]
+  (let [dependencies (compile-states-deps states)
+        order (topological-sort dependencies)
+        forms
+        (reduce-kv
+         (fn [output entry-key entry]
+           (assoc output entry-key
+                  (cond (and (map? entry) (:% entry))
+                        (list 'var
+                              (components/getter-symbol entry-key)
+                              (components/compile-walk-variables (:% entry)))
+
+                        (and (map? entry) (:%/args entry))
+                        (list 'var
+                              [(components/getter-symbol entry-key)
+                               (components/setter-symbol entry-key)]
+                              (apply list
+                                     (or (:%/fn entry) 'React.useState)
+                                     (:%/args entry)))
+
+                        :else
+                        (list 'var
+                              [(components/getter-symbol entry-key)
+                               (components/setter-symbol entry-key)]
+                              (list 'React.useState entry)))))
+         {}
+         states)]
+    (map (fn [entry-key] (get forms entry-key)) order)))
+
+(defn compile-layout-raw
+  "Expands component and directive vectors in a layout form."
+  [layout components]
+  (components/postwalk-form
+   layout
+   (fn [element]
+     (cond (and (vector? element)
+                (keyword? (first element))
+                (= "*" (namespace (first element))))
+           (directives/compile-directives element components)
+
+           (and (vector? element)
+                (keyword? (first element))
+                (namespace (first element)))
+           (if (not (has? #{"%" "var" "props"}
+                          (namespace (first element))))
+             (components/compile-element-loop
+              element components compile-layout-raw)
+             element)
+
+           :else element))))
+
+(defn compile-replace-actions
+  "Replaces :action/* references with declared action forms."
+  {:added "4.0"}
+  [layout actions]
+  (components/postwalk-form
+   layout
+   (fn [entry]
+     (if (and (keyword? entry)
+              (= "action" (namespace entry)))
+       (or (get actions entry)
+           (throw (ex :invalid
+                      {:keyword entry :valid (sort (keys actions))}
+                      :ex/message "Invalid React action variable")))
+       entry))))
+
+(defn compile-triggers
+  "Compiles trigger declarations to React effects."
+  {:added "4.0"}
+  [triggers]
+  (reduce-kv
+   (fn [output _ trigger]
+     (let [action-form
+           (components/compile-element-actions (:%/action trigger))]
+       (conj output
+             (list 'React.useEffect
+                   action-form
+                   (mapv components/getter-symbol (:%/watch trigger))))))
+   []
+   triggers))
+
+(defn compile-layout
+  "Compiles a layout using explicit and registered component templates."
+  {:added "4.0"}
+  [layout components]
+  (let [resolved (-> components
+                     (components/components-resolve)
+                     (merge (get-default-components nil))
+                     (components/components-expand))]
+    (components/compile-walk-variables
+     (compile-layout-raw layout resolved))))
+
+(defn compile-full
+  "Compiles a declarative React UI specification to a target do form."
+  [{:keys [triggers actions states layout components]}]
+  (let [resolved-components (components/components-resolve components)
+        default-components (get-default-components nil)
+        expanded-components (components/components-expand
+                             (merge default-components resolved-components))
+        trigger-input (compile-replace-actions triggers actions)
+        layout-input (compile-replace-actions layout actions)
+        component-input (compile-replace-actions
+                         expanded-components actions)
+        state-forms (compile-states
+                     (check-valid-variables states states))
+        trigger-forms (compile-triggers
+                       (check-valid-variables states trigger-input))
+        layout-form (compile-layout
+                     (check-valid-variables states layout-input)
+                     (check-valid-variables states component-input))]
+    (concat ['do]
+            state-forms
+            trigger-forms
+            [(list 'return layout-form)])))

@@ -31,6 +31,11 @@
   [stage]
   (File/join stage "project.lock.edn"))
 
+(defn stage-marker-path
+  "Returns the private input marker used to preserve an unchanged stage."
+  [stage]
+  (File/join stage ".stage.edn"))
+
 (defn source-lock-path
   "Returns the optional source-project lockfile that staged projects preserve."
   [root]
@@ -53,10 +58,65 @@
    (or (:project/dependencies source-project) {})
    (:package/internal-dependencies package)))
 
+(defn package-context-files
+  "Returns owned source files plus transitive compiler-context sources.
+
+  Package archives compile with this closure as their source context. Ordinary
+  dependencies are install-time edges; context-only dependencies supply source
+  for declarations such as lazy links without changing package order."
+  [deploy-plan package]
+  (let [packages (:deploy/packages deploy-plan)
+        by-name
+        (reduce
+         (fn [output value]
+           (assoc output (:package/name value) value))
+         {}
+         packages)
+        names
+        (loop [pending [(:package/name package)]
+               visited #{}]
+          (if (empty? pending)
+            visited
+            (let [name (first pending)
+                  pending (vec (rest pending))
+                  value (get by-name name)]
+              (cond
+                (has? visited name)
+                (recur pending visited)
+
+                (nil? value)
+                (throw
+                 (ex :code.deploy/missing-package
+                     {:package/name name}
+                     :ex/message "package context references a package absent from the plan"))
+
+                :else
+                (recur
+                 (into pending
+                       (concat (:package/internal-dependencies value)
+                               (:package/context-dependencies value)))
+                 (conj visited name))))))
+        selected
+        (set
+         (mapcat
+          (fn [name]
+            (:package/source-files (get by-name name)))
+          names))
+        owned (set (:package/source-files package))
+        source-order (or (:project/source-files (:deploy/project deploy-plan))
+                         (catalog/project-source-files
+                          (:deploy/root deploy-plan)
+                          (:deploy/project deploy-plan)))
+        ordered (vec (filter (fn [path] (has? selected path)) source-order))
+        missing (sort (filter (fn [path] (not (has? (set ordered) path))) selected))
+        ordered-context (filter (fn [path] (not (has? owned path))) ordered)
+        ordered-owned (filter (fn [path] (has? owned path)) ordered)]
+    (vec (concat ordered-context ordered-owned missing))))
+
 (defn ^{:public true} package-project
   "Builds the individual standard project.edn used to build one semantic package.
 
-  The staged project retains the full explicit source graph solely as native
+  The staged project retains the package dependency closure as native
   compilation context. Its :project/package selector ensures the resulting
   HARP contains only this package's owned namespaces."
   [source-project package]
@@ -66,6 +126,7 @@
                  :hara/version
                  :project/version
                  :project/native
+                 :project/main
                  :project/source-paths
                  :project/source-files
                  :project/capabilities
@@ -81,6 +142,8 @@
                     :package/coordinate (:package/coordinate package)
                     :package/internal-dependencies
                     (vec (:package/internal-dependencies package))
+                    :package/context-dependencies
+                    (vec (:package/context-dependencies package))
                     :package/external-dependencies
                     (vec (:package/external-dependencies package))}))
 
@@ -93,6 +156,33 @@
                {:mode :replace :parents? true}))
   path)
 
+(defn stage-fingerprint
+  "Returns a content fingerprint for one staged package input closure."
+  [root source-project package context-files manifest]
+  (let [value
+        (reduce
+         (fn [output relative-path]
+           (str output "\n" relative-path "\n"
+                (Crypto/sha256
+                 (deref (File/read (File/join root relative-path))))))
+         (str (Edn/write manifest) "\n"
+              (Edn/write (select-keys source-project
+                                      [:project/id :project/version
+                                       :project/dependencies])))
+         context-files)]
+    (str "sha256:" (Crypto/sha256 (String/encode-utf8 value)))))
+
+(defn staged-input?
+  [stage fingerprint]
+  (and (deref (File/exists? (stage-marker-path stage)))
+       (deref (File/exists? (project-path stage)))
+       (deref (File/exists? (lock-path stage)))
+       (= fingerprint
+          (:fingerprint
+           (try
+             (catalog/read-edn (stage-marker-path stage))
+             (catch error nil))))))
+
 (defn copy-file
   "Copies one project-relative file into a stage without mutating the source tree."
   [root stage relative-path]
@@ -103,13 +193,16 @@
     target))
 
 (defn copy-source-files
-  "Copies the complete declared source graph used as package compiler context."
+  "Copies the complete deploy source graph into a package stage.
+
+  The generated manifest narrows compiler context separately; retaining the
+  full physical graph keeps stages inspectable and reproducible."
   [root stage project]
   (vec
    (map
     (fn [relative-path]
       (copy-file root stage relative-path))
-    (or (:project/source-files project) []))))
+    (catalog/project-source-files root project))))
 
 (defn copy-catalog
   "Copies the declared Foundation catalogue beside a staged child project."
@@ -164,18 +257,34 @@
   [deploy-plan package]
   (let [root (:deploy/root deploy-plan)
         source-project (:deploy/project deploy-plan)
+        context-files (package-context-files deploy-plan package)
+        context-project
+        (assoc source-project
+               :project/source-files
+               context-files)
+        copy-project (assoc context-project :project/source-paths [])
         output (output-root root source-project)
         stage (package-stage-path output package)
-        manifest (package-project source-project package)]
-    (delete-tree stage)
-    (copy-source-files root stage source-project)
-    (copy-catalog root stage source-project)
-    (write-edn (project-path stage) manifest)
-    (copy-lock root stage)
-    (assoc package
-           :package/stage stage
-           :package/project (project-path stage)
-           :package/lock (lock-path stage))))
+        manifest (package-project context-project package)
+        fingerprint (stage-fingerprint root source-project package context-files manifest)]
+    (if (staged-input? stage fingerprint)
+      (assoc package
+             :package/stage stage
+             :package/project (project-path stage)
+             :package/lock (lock-path stage)
+             :package/stage-cached? true)
+      (do
+        (delete-tree stage)
+        (copy-source-files root stage copy-project)
+        (copy-catalog root stage source-project)
+        (write-edn (project-path stage) manifest)
+        (copy-lock root stage)
+        (write-edn (stage-marker-path stage) {:fingerprint fingerprint})
+        (assoc package
+               :package/stage stage
+               :package/project (project-path stage)
+               :package/lock (lock-path stage)
+               :package/stage-cached? false)))))
 
 (defn package-by-name
   "Finds one planned package by semantic publication name."
@@ -187,11 +296,11 @@
     (:deploy/packages deploy-plan))))
 
 (defn ^{:public true} stage-plan
-  "Stages every package in dependency-first order after resetting old generated state."
+  "Stages every package in dependency-first order while retaining unchanged inputs."
   [deploy-plan]
   (let [root (:deploy/root deploy-plan)
         project (:deploy/project deploy-plan)
-        output (reset-stage root project)
+        output (output-root root project)
         staged
         (vec
          (map
@@ -206,5 +315,6 @@
                      :ex/message "deploy order names a package absent from the plan")))))
           (:deploy/order deploy-plan)))]
     {:deploy/output output
+     :deploy/project project
      :deploy/packages staged
      :deploy/order (:deploy/order deploy-plan)}))

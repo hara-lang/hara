@@ -1,0 +1,88 @@
+(ns work.flow.make.bulk-test
+  (:require [work.flow.make.bulk :as bulk]
+            [work.flow.make.common :as common]))
+
+^{:refer work.flow.make.bulk/map-values}
+(Test/check
+ [{:name "maps values while retaining keys"
+   :test (fn [] (bulk/map-values inc {:a 1 :b 2}))
+   :expected {:a 2 :b 3}}])
+
+^{:refer work.flow.make.bulk/filter-values}
+(Test/check
+ [{:name "filters values by predicate"
+   :test (fn [] (bulk/filter-values even? {:a 1 :b 2 :c 4}))
+   :expected {:b 2 :c 4}}])
+
+^{:refer work.flow.make.bulk/topological-order}
+(Test/check
+ [{:name "orders dependencies before dependants"
+   :test (fn [] (bulk/topological-order
+                 {:a {:deps []}
+                  :b {:deps [:a]}
+                  :c {:deps [:a :b]}}))
+   :expected [:a :b :c]}
+  {:name "rejects dependency cycles"
+   :test (fn [] (try (bulk/topological-order
+                      {:a {:deps [:b]} :b {:deps [:a]}})
+                     false
+                     (catch error true)))
+   :expected true}])
+
+^{:refer work.flow.make.bulk/make-bulk-get-keys}
+(Test/check
+ [{:name "selects changed actions and their dependants"
+   :test (fn [] (bulk/make-bulk-get-keys
+                 {:a true :b false :c false}
+                 {:a {:deps []} :b {:deps [:a]} :c {:deps [:b]}}))
+   :expected [[:a :b :c] [:a :b :c]]}])
+
+^{:refer work.flow.make.bulk/measure}
+(Test/check
+ [{:name "returns elapsed time and the measured value"
+   :test (fn [] (let [value (bulk/measure (fn [] 7))]
+                  [(number? (first value)) (second value)]))
+   :expected [true 7]}])
+
+^{:refer work.flow.make.bulk/make-bulk-build}
+(Test/check
+ [{:name "handles an empty bulk build deterministically"
+   :test (fn [] (bulk/make-bulk-build {:configs {}
+                                       :actions {:a {}}
+                                       :refresh :all}))
+   :expected [{} {:a true}]}])
+
+^{:refer work.flow.make.bulk/make-bulk}
+(Test/check
+ [{:name "returns empty build and bulk results without configurations"
+   :test (fn [] (let [value (bulk/make-bulk {:configs {} :actions {}})]
+                  [(:built value) (:bulked value) (number? (:total value))]))
+   :expected [{} {} true]}])
+
+^{:refer work.flow.make.bulk/make-bulk-container-filter}
+(Test/check
+ [{:name "filters configs by their container"
+   :test (fn [] (let [one (common/make-config-fn {:default [] :container :one})
+                      two (common/make-config-fn {:default [] :container :two})]
+                  (vec (keys (bulk/make-bulk-container-filter
+                              {:one one :two two} [:two])))))
+   :expected [:two]}])
+
+^{:refer work.flow.make.bulk/make-bulk-container-build}
+(Test/check
+ [{:name "handles an empty container build"
+   :test (fn [] (let [value (bulk/make-bulk-container-build {} [])]
+                  [(:built value) (:bulked value) (number? (:total value))]))
+   :expected [{} {} true]}])
+
+^{:refer work.flow.make.bulk/make-bulk-gh-init}
+(Test/check
+ [{:name "returns no GitHub work for an empty config set"
+   :test (fn [] (bulk/make-bulk-gh-init {}))
+   :expected {}}])
+
+^{:refer work.flow.make.bulk/make-bulk-gh-push}
+(Test/check
+ [{:name "returns no GitHub push work for an empty config set"
+   :test (fn [] (bulk/make-bulk-gh-push {}))
+   :expected {}}])

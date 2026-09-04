@@ -1,0 +1,175 @@
+(ns xt.event.base-log-test
+  (:require [lang.core :as l]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-log :as log]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-log :as log]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-log :as log]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.base-log/new-log}
+  {:name "creates a bounded event log with defaults"
+   :test (fn [] (get (deref +results+) "new"))
+   :expected ["event.log" 10 5 nil []]}
+
+  ^{:refer xt.event.base-log/get-count}
+  {:name "counts processed entries"
+   :test (fn [] (get (deref +results+) "count"))
+   :expected 3}
+
+  ^{:refer xt.event.base-log/get-last}
+  {:name "returns the latest processed entry"
+   :test (fn [] (get (deref +results+) "last"))
+   :expected {"id" "c"}}
+
+  ^{:refer xt.event.base-log/get-head}
+  {:name "returns the requested head slice"
+   :test (fn [] (get (deref +results+) "head"))
+   :expected [{"id" "a"} {"id" "b"}]}
+
+  ^{:refer xt.event.base-log/get-filtered}
+  {:name "filters processed entries through a predicate"
+   :test (fn [] (get (deref +results+) "filtered"))
+   :expected [{"id" "b"} {"id" "c"}]}
+
+  ^{:refer xt.event.base-log/get-tail}
+  {:name "returns the requested tail slice"
+   :test (fn [] (get (deref +results+) "tail"))
+   :expected [{"id" "b"} {"id" "c"}]}
+
+  ^{:refer xt.event.base-log/get-slice}
+  {:name "clamps an arbitrary slice to the processed range"
+   :test (fn [] (get (deref +results+) "slice"))
+   :expected [{"id" "a"} {"id" "b"}]}
+
+  ^{:refer xt.event.base-log/clear}
+  {:name "clears processed entries and returns the removed values"
+   :test (fn [] (get (deref +results+) "clear"))
+   :expected [[{"id" "a"} {"id" "b"} {"id" "c"}] 0]}
+
+  ^{:refer xt.event.base-log/clear-cache}
+  {:name "evicts stale duplicate keys once per interval"
+   :test (fn [] (get (deref +results+) "cache"))
+   :expected [["old"] []]}
+
+  ^{:refer xt.event.base-log/queue-entry}
+  {:name "queues one transformed entry and rejects duplicate keys"
+   :test (fn [] (get (deref +results+) "queue"))
+   :expected [{"value" 1} nil [{"value" 1}] [[{"value" 1} 100] "a"]]}
+
+  ^{:refer xt.event.base-log/add-listener}
+  {:name "adds a listener to the log"
+   :test (fn [] (get (deref +results+) "add"))
+   :expected ["listener" "a1"]}
+
+  ^{:refer xt.event.base-log/remove-listener}
+  {:name "removes a listener by id"
+   :test (fn [] (get (deref +results+) "remove"))
+   :expected ["a1" nil []]}
+
+  ^{:refer xt.event.base-log/list-listeners}
+  {:name "lists listeners in insertion order"
+   :test (fn [] (get (deref +results+) "list"))
+   :expected ["a1" "b2"]}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var fresh (log/new-log {:interval 10 :maximum 5}))
+             (var source (log/new-log {:processed [{"id" "a"}
+                                                   {"id" "b"}
+                                                   {"id" "c"}]}))
+             (var count (log/get-count source))
+             (var last (log/get-last source))
+             (var head (log/get-head source 2))
+             (var filtered (log/get-filtered source
+                                             (fn [entry]
+                                               (return (not= "a" (. entry ["id"]))))))
+             (var tail (log/get-tail source 2))
+             (var slice (log/get-slice source -2 2))
+             (var cleared (log/clear source))
+             (var clear-log (log/new-log {:interval 50
+                                          :last nil
+                                          :cache {"old" 0 "new" 80}}))
+             (var cache-first (log/clear-cache clear-log 100))
+             (var cache-second (log/clear-cache clear-log 120))
+             (var queue-log (log/new-log {:interval 0 :maximum 3}))
+             (var callback-seen [])
+             (var listener-seen [])
+             (xt/x:set-key queue-log "callback"
+                           (fn [data time]
+                             (xt/x:arr-push callback-seen [data time])))
+             (log/add-listener queue-log "a"
+                               (fn [id data time meta]
+                                 (xt/x:arr-push listener-seen id)) nil)
+             (var first-entry
+                  (log/queue-entry queue-log
+                                   {"id" "a" "value" 1}
+                                   (fn [input time]
+                                     (return (. input ["id"])))
+                                   (fn [input]
+                                     (return {"value" (. input ["value"])}))
+                                   100))
+             (var duplicate
+                  (log/queue-entry queue-log
+                                   {"id" "a" "value" 2}
+                                   (fn [input time]
+                                     (return (. input ["id"])))
+                                   (fn [input]
+                                     (return {"value" (. input ["value"])}))
+                                   101))
+             (var add-log (log/new-log nil))
+             (var added (log/add-listener add-log "a1" (fn []) nil))
+             (log/add-listener add-log "b2" (fn []) nil)
+             (var remove-log (log/new-log nil))
+             (log/add-listener remove-log "a1" (fn []) nil)
+             (var removed (log/remove-listener remove-log "a1"))
+             (var missing (log/remove-listener remove-log "a1"))
+             {"new" [(. fresh ["::"]) (. fresh ["interval"])
+                     (. fresh ["maximum"]) (. fresh ["callback"])
+                     (. fresh ["processed"])]
+              "count" count "last" last "head" head "filtered" filtered
+              "tail" tail "slice" slice
+              "clear" [cleared (log/get-count source)]
+              "cache" [cache-first cache-second]
+              "queue" [first-entry duplicate
+                       (. queue-log ["processed"])
+                       [callback-seen (xt/x:first listener-seen)]]
+              "add" [(xt/x:get-key (xt/x:get-key added "meta") "listener/type")
+                     (xt/x:get-key (xt/x:get-key added "meta") "listener/id")]
+              "remove" [(xt/x:get-key (xt/x:get-key removed "meta") "listener/id")
+                        missing (log/list-listeners remove-log)]
+              "list" (log/list-listeners add-log)})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.base-log/new-log}
+  {:name "creates log state in every basic target"
+   :test (fn []
+           [(!.js (log/get-count (log/new-log nil)))
+            (!.lua (log/get-count (log/new-log nil)))
+            (!.py (log/get-count (log/new-log nil)))])
+   :expected [0 0 0]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

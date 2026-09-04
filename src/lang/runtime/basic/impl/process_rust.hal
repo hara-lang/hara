@@ -1,0 +1,65 @@
+;; ============================================================================
+;; lang.runtime.basic.impl.process-rust — local Rust compiler runtime registration.
+;; ============================================================================
+(ns lang.runtime.basic.impl.process-rust
+  (:config {:role :internal})
+  (:require [lang.core.runtime :as runtime]
+            [lang.runtime.basic.type-common :as common]
+            [lang.runtime.basic.type-twostep :as twostep]))
+
+(defn rust-source-transform
+  "Wraps one emitted Rust expression in an executable main function."
+  [body]
+  (str "fn main() {\n"
+       "  println!(\"{}\", " body ");\n"
+       "}\n"))
+
+(def +rust-program-init+
+  (common/put-program-options
+   :rust
+   {:default {:twostep :rustc
+              :verify :rustc}
+    :env {:rustc {:exec "rustc"
+                  :extension "rs"
+                  :stderr true
+                  :flags {:twostep []
+                          :verify ["--emit=metadata"]}
+                  :output-flag "-o"}}}))
+
+(def +rust-twostep-config+
+  (common/set-context-options
+   [:rust :twostep :default]
+   {:main {}
+    :emit {}
+    :json :string
+    :source-transform rust-source-transform}))
+
+(def +rust-verify-config+
+  (common/set-context-options
+   [:rust :verify :default]
+   {:main {}
+    :emit {}
+    :json false
+    :source-transform rust-source-transform
+    :compile-only true
+    :return-source true}))
+
+(def +rust-twostep+
+  (runtime/install-type
+   :rust :twostep
+   {:type :lang/rt.twostep
+    :instance {:create twostep/rt-twostep:create
+               :raw-eval twostep/raw-eval-twostep}}))
+
+(def +rust-verify+
+  (runtime/install-type
+   :rust :verify
+   {:type :lang/rt.twostep
+    :instance {:create twostep/rt-twostep:create
+               :raw-eval twostep/raw-eval-twostep}}))
+
+(def +init+
+  {:lang :rust
+   :program +rust-program-init+
+   :twostep +rust-twostep+
+   :verify +rust-verify+})

@@ -1,0 +1,84 @@
+(ns lang.model.v1.spec-lua.lua-native-test
+  (:require [lang.model.v1.spec-lua.lua-native :as subject]))
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-tf-incby}
+(Test/check
+ [{:name "lowers Lua increment assignment"
+   :test (fn [] (subject/lua-tf-incby '(incby target value)))
+   :expected '(:= target (+ target value))}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-tf-decby}
+(Test/check
+ [{:name "lowers Lua decrement assignment"
+   :test (fn [] (subject/lua-tf-decby '(decby target value)))
+   :expected '(:= target (- target value))}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-tf-mulby}
+(Test/check
+ [{:name "lowers Lua multiply assignment"
+   :test (fn [] (subject/lua-tf-mulby '(mulby target value)))
+   :expected '(:= target (* target value))}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/+lua-native-prototype+}
+(Test/check
+ [{:name "uses Lua prototype aliases and allows prototype blocks"
+   :test (fn [] [(get-in subject/+lua-native-prototype+ [:prototype-get :emit])
+                 (get-in subject/+lua-native-prototype+ [:prototype-set :emit])
+                 (get-in subject/+lua-native-prototype+ [:prototype-create :op-spec :allow-blocks])])
+   :expected [:alias :alias true]}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-tf-c-ffi}
+(Test/check
+ [{:name "transforms C FFI declarations"
+   :test (fn [] (subject/lua-tf-c-ffi
+                 '(%.c (fn add [x] nil) (fn sub [y] nil))))
+   :expected "void add(void* x);\nvoid sub(void* y);"}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/+lua-native-definitions+}
+(Test/check
+ [{:name "defines the Lua repeat-until block"
+   :test (fn [] (select-keys (:repeat subject/+lua-native-definitions+)
+                             [:op :symbol :type :block]))
+   :expected {:op :repeat
+              :symbol #{'repeat}
+              :type :block
+              :block {:raw "repeat"
+                      :main #{:body}
+                      :control [[:until {:required true
+                                         :input #{:parameter}}]]}}}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-x-global-has}
+(Test/check
+ [{:name "checks a Lua global binding"
+   :test (fn [] (subject/lua-x-global-has '(x:global-has? NAME)))
+   :expected '(not= NAME nil)}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-x-global-set}
+(Test/check
+ [{:name "sets a Lua global binding"
+   :test (fn [] (subject/lua-x-global-set '(x:global-set NAME value)))
+   :expected '(:= NAME value)}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-x-global-del}
+(Test/check
+ [{:name "deletes a Lua global binding"
+   :test (fn [] (subject/lua-x-global-del '(x:global-del NAME)))
+   :expected '(:= NAME nil)}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-x-arr-clone}
+(Test/check
+ [{:name "clones a Lua array by unpacking it"
+   :test (fn [] (subject/lua-x-arr-clone '(x:arr-clone arr)))
+   :expected '[(unpack arr)]}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-x-arr-slice}
+(Test/check
+ [{:name "slices a Lua array with the target offset"
+   :test (fn [] (subject/lua-x-arr-slice '(x:arr-slice arr start end)))
+   :expected '[(unpack arr (x:offset start) end)]}])
+
+^{:refer lang.model.v1.spec-lua.lua-native/lua-x-arr-find}
+(Test/check
+ [{:name "preserves the original Lua arr-find lowering"
+   :test (fn [] (subject/lua-x-arr-find '(x:arr-find arr idx)))
+   :expected '(table.remove arr (x:offset idx))}])

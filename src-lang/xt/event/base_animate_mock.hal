@@ -1,0 +1,71 @@
+(ns xt.event.base-animate-mock
+  (:require [lang.core :as l]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]]})
+
+(defn.xt ^{:public true}
+  new-observed
+  "Creates a mutable observed value for deterministic animation tests."
+  [value]
+  (return {"::" "observed"
+           :value value
+           :listeners []}))
+
+(defn.xt ^{:public true}
+  is-observed
+  "Checks whether a value is the mock observed representation."
+  [value]
+  (return (and (xt/x:is-object? value)
+               (== "observed" (. value ["::"])))))
+
+(defn.xt ^{:public true}
+  add-listener
+  "Adds an observed-value callback."
+  [observed callback]
+  (var #{listeners} observed)
+  (xt/x:arr-push listeners callback))
+
+(defn.xt ^{:public true}
+  notify-listeners
+  "Notifies every callback with the current observed value."
+  [observed]
+  (var #{listeners value} observed)
+  (xt/for:array [listener listeners]
+    (listener value)))
+
+(defn.xt ^{:public true}
+  get-value
+  "Returns the current observed value."
+  [observed]
+  (var #{value} observed)
+  (return value))
+
+(defn.xt ^{:public true}
+  set-value
+  "Updates an observed value and notifies its callbacks."
+  [observed value]
+  (xt/x:set-key observed "value" value)
+  (-/notify-listeners observed))
+
+(defn.xt ^{:public true}
+  mock-transition
+  "Creates a synchronous transition compatible with the animation adapter."
+  {:added "4.0"}
+  [indicator transition-params transition transform]
+  (var [previous current] transition)
+  (return (fn [callback]
+            (-/set-value indicator (transform current))
+            (when (xt/x:not-nil? callback)
+              (callback nil)))))
+
+(def.xt ^{:public true}
+  MOCK
+  {:create-val -/new-observed
+   :add-listener -/add-listener
+   :get-value -/get-value
+   :set-value -/set-value
+   :set-props (fn [element props] (xt/x:set-key element "props" props))
+   :is-animated -/is-observed
+   :create-transition -/mock-transition
+   :stop-transition (fn [])})

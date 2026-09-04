@@ -1,0 +1,123 @@
+(ns hara.command.package
+  (:config {:role :internal})
+  (:require [code.deploy.catalog :as catalog]
+            [code.deploy.registry :as registry]))
+
+(defn root
+  [options]
+  (or (:root options) (OS/cwd)))
+
+(defn parse
+  "Parses package subcommand options without interpreting shell strings."
+  [argv]
+  (loop [remaining (vec argv)
+         operation nil
+         arguments []
+         options {}]
+    (if (empty? remaining)
+      {:operation (or operation :help)
+       :arguments arguments
+       :options options}
+      (let [value (first remaining)
+            more (rest remaining)]
+        (cond
+          (= value "--root")
+          (if (empty? more)
+            (throw (ex :command/invalid-package
+                       {:option value}
+                       :ex/message "--root requires a value"))
+            (recur (rest more) operation arguments (assoc options :root (first more))))
+
+          (= value "--registry")
+          (if (empty? more)
+            (throw (ex :command/invalid-package
+                       {:option value}
+                       :ex/message "--registry requires a value"))
+            (recur (rest more) operation arguments (assoc options :registry (first more))))
+
+          (= value "--locked")
+          (recur more operation arguments (assoc options :mode :locked))
+
+          (= value "--frozen")
+          (recur more operation arguments (assoc options :mode :frozen))
+
+          (str/starts-with? value "-")
+          (throw (ex :command/invalid-package
+                     {:option value}
+                     :ex/message "Unknown Hara package option"))
+
+          operation
+          (recur more operation (conj arguments value) options)
+
+          :else
+          (recur more (keyword value) arguments options))))))
+
+(defn output
+  [value]
+  {:stdout (str (Edn/write value) "\n")
+   :stderr ""
+   :exit 0})
+
+(defn execute
+  [parsed]
+  (let [root (root (:options parsed))
+        operation (:operation parsed)
+        arguments (:arguments parsed)
+        options (:options parsed)]
+    (cond
+      (= operation :check)
+      (registry/check root)
+
+      (or (= operation :sync) (= operation :update))
+      (registry/sync root options)
+
+      (= operation :pull)
+      (registry/pull root options)
+
+      (= operation :add)
+      (let [[coordinate version & more] arguments]
+        (if (and coordinate version (empty? more))
+          {:path (registry/add root coordinate {:version version})}
+          (throw (ex :command/invalid-package
+                     {:arguments arguments}
+                     :ex/message "hara package add requires COORDINATE VERSION"))))
+
+      (= operation :remove)
+      (let [[coordinate & more] arguments]
+        (if (and coordinate (empty? more))
+          {:path (registry/remove root coordinate)}
+          (throw (ex :command/invalid-package
+                     {:arguments arguments}
+                     :ex/message "hara package remove requires COORDINATE"))))
+
+      (= operation :search)
+      (let [term (or (first arguments) "")
+            registry (registry/registry-value root (catalog/read-project root))]
+        {:registry (:registry/url registry)
+         :coordinates
+         (vec (sort (filter (fn [coordinate]
+                              (str/includes? (str coordinate) term))
+                            (keys (or (:registry/packages registry)
+                                      (:packages registry)
+                                      {})))))} )
+
+      (= operation :info)
+      (let [coordinate (first arguments)
+            registry (registry/registry-value root (catalog/read-project root))]
+        (or (get (or (:registry/packages registry) (:packages registry) {}) coordinate)
+            (throw (ex :command/package-not-found
+                       {:coordinate coordinate}
+                       :ex/message "Hara package is not present in the selected registry"))))
+
+      :else
+      {:usage "hara package <check|sync|pull|add|remove|update|search|info>"})))
+
+(defn ^{:public true} response
+  "Runs the Hara-owned package command surface."
+  [request]
+  (try
+    (output (execute (parse (or (:argv (:arguments request)) []))))
+    (catch error
+      {:stdout ""
+       :stderr (str error "\n")
+       :exit 2})))

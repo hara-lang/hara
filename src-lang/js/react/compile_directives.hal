@@ -1,0 +1,54 @@
+(ns js.react.compile-directives
+  (:config {:role :internal})
+  (:require [js.react.compile-components :as components]))
+
+(defn compile-ui-tailwind
+  "Compiles a compact layout directive into a div with Tailwind classes."
+  {:added "4.0"}
+  [element classes]
+  (let [{:keys [props children]} (components/classify-tagged element false)
+        property-classes (if (string? (:class props))
+                           (str/split (:class props) " ")
+                           (:class props))
+        generated-classes
+        (map (fn [[key value]]
+               (if (boolean? value)
+                 (name key)
+                 (str (name key) "-" (strn value))))
+             (dissoc (unqualified-keys props) :style :class))]
+    (apply vector
+           :div
+           (merge {:class (vec (concat classes
+                                       property-classes
+                                       generated-classes))}
+                  (select-keys props [:style]))
+           children)))
+
+(defn compile-directives
+  "Compiles built-in layout directives and preserves inert directives."
+  {:added "4.0"}
+  [element components]
+  (let [operation (first element)
+        control (second element)
+        more (vec (drop 2 element))
+        operation-name (name operation)]
+    (if (= operation-name "pad")
+      (compile-ui-tailwind element ["flex" "grow"])
+      (if (= operation-name "v")
+        (compile-ui-tailwind element ["flex" "flex-col"])
+        (if (= operation-name "h")
+          (compile-ui-tailwind element ["flex" "flex-row"])
+          (if (= operation-name "for")
+            (let [binding (first control)
+                  index (first binding)
+                  value (second binding)
+                  array (second control)]
+              (list '. array
+                    (list 'map
+                          (list 'fn [value index]
+                                (list 'return
+                                      (apply vector
+                                             :<>
+                                             {:key index}
+                                             more))))))
+            operation))))))

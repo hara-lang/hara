@@ -1,0 +1,51 @@
+(ns play.go-001-xtalk-user-directory.build-test
+  (:require [std.fs :as fs]
+            [tool.sh :as sh]
+            [work.flow.make :as make]
+            [work.flow.make.common :as common]
+            [work.flow.make.project :as project]
+            [play.go-001-xtalk-user-directory.build :as subject]))
+
+(defn read-text [file]
+  (str/decode-utf8 (fs/read-bytes file)))
+
+^{:refer play.go-001-xtalk-user-directory.build/PROJECT}
+(Test/check
+ [{:name "defines the XTalk Go build through the generic make flow"
+   :test (fn [] [(make/host? subject/PROJECT)
+                 (:make/id (make/plan subject/PROJECT))])
+   :expected [true 'play.go-001-xtalk-user-directory.build/PROJECT]}])
+
+^{:refer play.go-001-xtalk-user-directory.build/-main}
+(Test/check
+ [{:name "writes the complete XTalk Go sample project"
+   :test (fn []
+           (let [config (common/make-config-fn
+                         (assoc (:make/definition (make/plan subject/PROJECT))
+                                :root "src-build/play/go_001_xtalk_user_directory"
+                                :build ".build/test-go-xtalk-user-directory"))
+                 out-dir (common/make-dir config)
+                 cache-dir (str (deref (File/temp-directory (OS/cwd)
+                                                        {:prefix "hara-go-cache-"})))
+                 expected-files [".gitignore" "Makefile" "go.mod" "user_directory.go"]]
+             (try
+               (project/build-all config)
+                (let [source (read-text (str out-dir "/user_directory.go"))
+                     process-options {:cwd out-dir
+                                      :env {"GOCACHE" cache-dir}}
+                     build-result (sh/result-record
+                                   (sh/run ["make" "build"] process-options))
+                     test-result (sh/result-record
+                                  (sh/run ["make" "test"] process-options))]
+                 [(every? (fn [file] (fs/exists? (str out-dir "/" file))) expected-files)
+                  (str/includes? (read-text (str out-dir "/go.mod"))
+                                 "module example.com/go-001-xtalk-user-directory")
+                  (str/includes? source "package userdirectory")
+                  (str/includes? source "type User map[string]any")
+                  (str/includes? source "type UserId string")
+                  (= 0 (:exit build-result))
+                  (= 0 (:exit test-result))])
+               (finally
+                 (fs/delete cache-dir {:recursive? true :missing-ok? true})
+                 (common/make-dir-teardown config)))))
+   :expected [true true true true true true true]}])

@@ -3,13 +3,24 @@
   (:require [code.test.context :as context]
             [code.test.registry :as registry]))
 
-(defn ^{:public true} fact:global
-  "Gets or replaces the code.test run-settings map. Global setup evaluation is
-  deliberately owned by the native Test lifecycle hooks, not a second evaluator."
-  ([] (:settings (context/state)))
+(defmacro ^{:public true} fact:global
+  "Gets or installs the Foundation global test settings and lifecycle hooks."
+  ([]
+   `(:settings (code.test.context/state)))
   ([settings]
-   (context/configure {:settings (or settings {})})
-   (:settings (context/state))))
+   (let [settings (or settings {})
+         setup (vec (or (:setup settings) []))
+         teardown (vec (or (:teardown settings) []))
+         options (dissoc settings :setup :teardown)]
+     `(do
+        (code.test.registry/configure-lifecycle
+         {:before-all (fn [] (do ~@setup))
+          :after-all (fn [] (do ~@teardown))})
+        (code.test.context/configure
+         {:settings ~options
+          :lifecycle {:before-all (fn [] (do ~@setup))
+                      :after-all (fn [] (do ~@teardown))}})
+        (:settings (code.test.context/state))))))
 
 (defn ^{:public true} fact:ns
   "Returns requested namespace operations for the Hara CLI route to own.

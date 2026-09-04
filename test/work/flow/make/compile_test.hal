@@ -1,0 +1,135 @@
+(ns work.flow.make.compile-test
+  (:require [work.flow.make.compile :as compile]))
+
+^{:refer work.flow.make.compile/target-spec}
+(Test/check
+ [{:name "normalises target values to entries"
+   :test (fn [] [(compile/target-spec nil)
+                 (compile/target-spec [:a :b])
+                 (compile/target-spec {:pre identity})])
+   :expected [{:entries []} {:entries [:a :b]} {:entries [] :pre identity}]}])
+
+^{:refer work.flow.make.compile/target-specs}
+(Test/check
+ [{:name "combines sections targets and default"
+   :test (fn [] (compile/target-specs {:sections {:setup [:a]}
+                                       :targets {:build [:b]}
+                                       :default [:c]}))
+   :expected {:setup {:entries [:a]} :build {:entries [:b]} :default {:entries [:c]}}}])
+
+^{:refer work.flow.make.compile/entry-id}
+(Test/check
+ [{:name "prefers explicit entry identity before its index"
+   :test (fn [] [(compile/entry-id {:id :id} 1)
+                 (compile/entry-id {:name :name} 1)
+                 (compile/entry-id :entry 1)])
+   :expected [:id :name 1]}])
+
+^{:refer work.flow.make.compile/entry-compiler}
+(Test/check
+ [{:name "resolves a function entry and a typed entry"
+   :test (fn [] [(= identity (compile/entry-compiler {} identity))
+                 (= identity (compile/entry-compiler {:types {:raw identity}}
+                                                     {:type :raw}))])
+   :expected [true true]}])
+
+^{:refer work.flow.make.compile/assert-entry-compiler}
+(Test/check
+ [{:name "returns a valid entry compiler and rejects missing compilers"
+   :test (fn [] [(= identity (compile/assert-entry-compiler {} :build identity 0))
+                 (try (compile/assert-entry-compiler {} :build :entry 0)
+                      false
+                      (catch error true))])
+   :expected [true true]}])
+
+^{:refer work.flow.make.compile/assert-hook}
+(Test/check
+ [{:name "accepts nil or functions and rejects other hook values"
+   :test (fn [] [(nil? (compile/assert-hook {} :build :pre nil))
+                 (try (compile/assert-hook {} :build :pre :bad)
+                      false
+                      (catch error true))])
+   :expected [true true]}])
+
+^{:refer work.flow.make.compile/pure-work}
+(Test/check
+ [{:name "exposes the pure-work constructor boundary"
+   :test (fn [] (fn? compile/pure-work))
+   :expected true}])
+
+^{:refer work.flow.make.compile/step-work}
+(Test/check
+ [{:name "exposes the step-work constructor boundary"
+   :test (fn [] (fn? compile/step-work))
+   :expected true}])
+
+^{:refer work.flow.make.compile/prepare-work}
+(Test/check
+ [{:name "exposes target preparation as a work constructor"
+   :test (fn [] (fn? compile/prepare-work))
+   :expected true}])
+
+^{:refer work.flow.make.compile/hook-work}
+(Test/check
+ [{:name "exposes hook compilation as a work constructor"
+   :test (fn [] (fn? compile/hook-work))
+   :expected true}])
+
+^{:refer work.flow.make.compile/entry-work}
+(Test/check
+ [{:name "exposes entry compilation as a work constructor"
+   :test (fn [] (fn? compile/entry-work))
+   :expected true}])
+
+^{:refer work.flow.make.compile/complete-work}
+(Test/check
+ [{:name "exposes completion as a work constructor"
+   :test (fn [] (fn? compile/complete-work))
+   :expected true}])
+
+^{:refer work.flow.make.compile/compile-target}
+(Test/check
+ [{:name "exposes target compilation as a work constructor"
+   :test (fn [] (fn? compile/compile-target))
+   :expected true}])
+
+^{:refer work.flow.make.compile/compile-targets}
+(Test/check
+ [{:name "exposes target collection compilation"
+   :test (fn [] (fn? compile/compile-targets))
+   :expected true}])
+
+^{:refer work.flow.make.compile/compile-plan}
+(Test/check
+ [{:name "retains the immutable make plan boundary"
+   :test (fn [] (fn? compile/compile-plan))
+   :expected true}])
+
+^{:refer work.flow.make.compile/matches-selector?}
+(Test/check
+ [{:name "matches nil maps and stable entry ids"
+   :test (fn [] [(compile/matches-selector? nil {:id :x} 0)
+                 (compile/matches-selector? {:kind :source} {:kind :source} 0)
+                 (compile/matches-selector? :x {:id :x} 0)])
+   :expected [true true true]}])
+
+^{:refer work.flow.make.compile/select-spec}
+(Test/check
+ [{:name "filters target entries by selector"
+   :test (fn [] (compile/select-spec {:entries [{:id :a :kind :source}
+                                                 {:id :b :kind :test}]}
+                                      {:kind :source}))
+   :expected {:entries [{:id :a :kind :source}]}}])
+
+^{:refer work.flow.make.compile/directive-parts}
+(Test/check
+ [{:name "splits target directives"
+   :test (fn [] [(compile/directive-parts :build)
+                 (compile/directive-parts [:build :source])])
+   :expected [[:build nil] [:build :source]]}])
+
+^{:refer work.flow.make.compile/target-work}
+(Test/check
+ [{:name "exposes target selection through the compiled plan"
+   :test (fn [] (fn? compile/target-work))
+   :expected true}])

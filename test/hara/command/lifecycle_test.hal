@@ -1,0 +1,39 @@
+(ns hara.command.lifecycle-test
+  (:require [hara.command.lifecycle :as lifecycle]
+            [code.deploy.stage :as stage]))
+
+(defn fixture-root
+  []
+  (let [root (deref (File/temp-directory "." {:prefix "hara-lifecycle-command-"}))]
+    (deref (File/write (File/join root "project.edn")
+                       (String/encode-utf8 "{:project/id \"fixture/lifecycle-command\" :project/version \"1.0.0\" :project/source-paths [] :project/source-files [] :project/deploy {:catalog \"config/packages.edn\"}}")
+                       {:mode :replace :parents? true}))
+    (deref (File/write (File/join root "config/packages.edn")
+                       (String/encode-utf8 "{}")
+                       {:mode :replace :parents? true}))
+    root))
+
+^{:refer hara.command.lifecycle/root}
+(Test/check
+ [{:name "reads the lifecycle root from command options"
+   :test (fn [] (lifecycle/root {:options {:root "/fixture/lifecycle"}}))
+   :expected "/fixture/lifecycle"}])
+
+^{:refer hara.command.lifecycle/response}
+(Test/check
+ [{:name "returns EDN for a successful lifecycle phase"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (select-keys (lifecycle/response {:options {:root root}
+                                                      :arguments ["initialize"]})
+                                 [:stderr :exit])
+                    (finally (stage/delete-tree root)))))
+   :expected {:stderr "" :exit 0}}
+  {:name "returns a stable clean response"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (select-keys (lifecycle/response {:options {:root root}
+                                                      :arguments ["clean"]})
+                                 [:stderr :exit])
+                    (finally (stage/delete-tree root)))))
+   :expected {:stderr "" :exit 0}}])

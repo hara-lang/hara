@@ -1,0 +1,152 @@
+(ns lang.model.v1.spec-go.typed-test
+  (:require [lang.core.script :as script]
+            [lang.model.v1.spec-go.typed :as subject]))
+
+^{:refer lang.model.v1.spec-go.typed/sanitize-ident}
+(Test/check
+ [{:name "sanitizes Go identifiers and leading digits"
+   :test (fn [] (subject/sanitize-ident "9bad-name.value"))
+   :expected "_9bad_name_value"}])
+
+^{:refer lang.model.v1.spec-go.typed/capitalize-ident}
+(Test/check
+ [{:name "capitalizes a sanitized identifier"
+   :test (fn [] [(subject/capitalize-ident "user-id")
+                 (subject/capitalize-ident "")])
+   :expected ["User_id" "X"]}])
+
+^{:refer lang.model.v1.spec-go.typed/named-go-ident}
+(Test/check
+ [{:name "qualifies foreign named types and preserves local names"
+   :test (fn [] [(subject/named-go-ident 'Thing 'demo)
+                 (subject/named-go-ident 'other/Thing 'demo)
+                 (subject/named-go-ident "user-id" 'demo)
+                 (subject/named-go-ident 1 'demo)])
+   :expected ["Thing" "other_Thing" "user_id" "any"]}])
+
+^{:refer lang.model.v1.spec-go.typed/maybe-go-type}
+(Test/check
+ [{:name "uses Go pointers only for non-scalar maybe types"
+   :test (fn [] [(subject/maybe-go-type {:kind :primitive :name :xt/int} 'demo)
+                 (subject/maybe-go-type {:kind :named :name 'User} 'demo)])
+   :expected ["any" "*User"]}])
+
+^{:refer lang.model.v1.spec-go.typed/lossy-go-type}
+(Test/check
+ [{:name "uses the configured fallback and rejects lossy strict conversion"
+   :test (fn [] [(subject/lossy-go-type :tuple)
+                 (try
+                   (binding [lang.model.v1.spec-go.typed/*emit-options*
+                             {:strict? true :lossy-fallback "any"}]
+                     (subject/lossy-go-type :tuple))
+                   :missing
+                   (catch error
+                     true))])
+   :expected ["any" true]}])
+
+^{:refer lang.model.v1.spec-go.typed/emit-go-type}
+(Test/check
+ [{:name "emits the supported Go type forms"
+   :test (fn [] [(subject/emit-go-type {:kind :primitive :name :xt/str} 'demo)
+                 (subject/emit-go-type {:kind :primitive :name :xt/obj} 'demo)
+                 (subject/emit-go-type {:kind :named :name 'other/User} 'demo)
+                 (subject/emit-go-type {:kind :maybe
+                                        :item {:kind :named :name 'User}}
+                                       'demo)
+                 (subject/emit-go-type {:kind :array
+                                        :item {:kind :primitive :name :xt/int}}
+                                       'demo)
+                 (subject/emit-go-type {:kind :dict} 'demo)
+                 (subject/emit-go-type {:kind :record} 'demo)
+                 (subject/emit-go-type {:kind :fn
+                                        :inputs [{:kind :primitive :name :xt/int}]
+                                        :output {:kind :primitive :name :xt/str}}
+                                       'demo)])
+   :expected ["string" "map[string]any" "other_User" "*User"
+              "[]int" "map[any]any" "map[string]any" "func(arg0 int) string"]}])
+
+^{:refer lang.model.v1.spec-go.typed/emit-struct-field}
+(Test/check
+ [{:name "emits a JSON-tagged exported field"
+   :test (fn [] (subject/emit-struct-field
+                 {:name "user-id"
+                  :type {:kind :primitive :name :xt/int}}
+                 'demo))
+   :expected "  User_id int `json:\"user-id\"`"}])
+
+^{:refer lang.model.v1.spec-go.typed/emit-struct-type}
+(Test/check
+ [{:name "emits struct fields in source order"
+   :test (fn [] (subject/emit-struct-type
+                 {:fields [{:name "id"
+                            :type {:kind :primitive :name :xt/int}}
+                           {:name "name"
+                            :type {:kind :primitive :name :xt/str}}]}
+                 'demo))
+   :expected "struct {\n  Id int `json:\"id\"`\n  Name string `json:\"name\"`\n}"}])
+
+^{:refer lang.model.v1.spec-go.typed/emit-spec-declaration}
+(Test/check
+ [{:name "emits a named type declaration"
+   :test (fn [] (subject/emit-spec-declaration
+                 {:ns 'demo
+                  :name "user-id"
+                  :type {:kind :primitive :name :xt/int}}))
+   :expected "type user_id int"}])
+
+^{:refer lang.model.v1.spec-go.typed/emit-function-declaration}
+(Test/check
+ [{:name "emits a typed function declaration"
+   :test (fn [] (subject/emit-function-declaration
+                 {:ns 'demo
+                  :name "load-user"
+                  :inputs [{:type {:kind :primitive :name :xt/int}}]
+                  :output {:kind :primitive :name :xt/str}}))
+   :expected "type load_user func(arg0 int) string"}])
+
+^{:refer lang.model.v1.spec-go.typed/emit-value-declaration}
+(Test/check
+ [{:name "emits a typed value declaration"
+   :test (fn [] (subject/emit-value-declaration
+                 {:ns 'demo
+                  :name "default-name"
+                  :type {:kind :primitive :name :xt/str}}))
+   :expected "var default_name string"}])
+
+^{:refer lang.model.v1.spec-go.typed/emitted-specs}
+(Test/check
+ [{:name "filters specs represented by functions and values"
+   :test (fn [] (vec (subject/emitted-specs
+                      {:specs [{:name 'run :type {:kind :fn}}
+                               {:name 'User :type {:kind :record}}
+                               {:name 'count :type {:kind :primitive}}]
+                       :functions [{:name 'run}]
+                       :values [{:name 'count}]})))
+   :expected [{:name 'User :type {:kind :record}}]}])
+
+^{:refer lang.model.v1.spec-go.typed/emit-analysis-declarations}
+(Test/check
+ [{:name "emits declarations from an analyzed value"
+   :test (fn [] (subject/emit-analysis-declarations
+                 {:specs [{:name 'User
+                           :type {:kind :primitive :name :xt/str}}]
+                  :functions [{:ns 'demo
+                               :name 'load
+                               :inputs []
+                               :output {:kind :primitive :name :xt/int}}]
+                  :values [{:ns 'demo
+                            :name 'count
+                            :type {:kind :primitive :name :xt/int}}]}))
+   :expected "type User string\n\ntype load func() int\n\nvar count int"}])
+
+^{:refer lang.model.v1.spec-go.typed/emit-namespace-declarations}
+(Test/check
+ [{:name "emits declarations from a registered script module"
+   :test (fn [] (let [before (script/script-snapshot)]
+                  (try
+                    (script/script-reset!)
+                    (script/configure-module :xtalk 'demo {})
+                    (script/register-code '(defn ping [] 1))
+                    (subject/emit-namespace-declarations 'demo)
+                    (finally (script/script-restore! before)))))
+   :expected "type ping func() any"}])

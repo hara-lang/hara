@@ -1,0 +1,169 @@
+(ns xt.event.base-log
+  (:require [lang.core :as l]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-data :as xtd]
+             [xt.event.base-listener :as event-common]]})
+
+(defn.xt ^{:public true}
+  new-log
+  "Creates an event log with bounded processed entries and a duplicate cache."
+  {:added "4.0"}
+  [opts]
+  (return
+   (event-common/blank-container
+    "event.log"
+    (xt/x:obj-assign
+     {:last nil
+      :processed []
+      :cache {}
+      :interval 30000
+      :maximum 100
+      :callback nil
+      :listeners {}}
+     opts))))
+
+(defn.xt ^{:public true}
+  get-count
+  "Returns the number of processed entries."
+  {:added "4.0"}
+  [log]
+  (var #{processed} log)
+  (return (xt/x:len processed)))
+
+(defn.xt ^{:public true}
+  get-last
+  "Returns the most recently processed entry."
+  {:added "4.0"}
+  [log]
+  (var #{processed} log)
+  (return (xt/x:last processed)))
+
+(defn.xt ^{:public true}
+  get-head
+  "Returns up to n entries from the beginning of the log."
+  {:added "4.0"}
+  [log n]
+  (var #{processed} log)
+  (var total (xt/x:len processed))
+  (return (xt/x:arr-slice processed 0 (xt/x:m-min n total))))
+
+(defn.xt ^{:public true}
+  get-filtered
+  "Returns processed entries accepted by a predicate."
+  {:added "4.0"}
+  [log pred]
+  (var #{processed} log)
+  (return (xt/x:arr-filter processed pred)))
+
+(defn.xt ^{:public true}
+  get-tail
+  "Returns up to n entries from the end of the log."
+  {:added "4.0"}
+  [log n]
+  (var #{processed} log)
+  (var total (xt/x:len processed))
+  (return (xt/x:arr-slice processed (xt/x:m-max 0 (- total n)) total)))
+
+(defn.xt ^{:public true}
+  get-slice
+  "Returns a bounds-clamped slice of processed entries."
+  {:added "4.0"}
+  [log start finish]
+  (var #{processed} log)
+  (var total (xt/x:len processed))
+  (return
+   (xt/x:arr-slice processed
+                    (xt/x:m-min (xt/x:m-max 0 start) total)
+                    (xt/x:m-min (xt/x:m-max 0 finish) total))))
+
+(defn.xt ^{:public true}
+  clear
+  "Clears processed entries and returns the removed array."
+  {:added "4.0"}
+  [log]
+  (var #{processed} log)
+  (xt/x:set-key log "processed" [])
+  (return processed))
+
+(defn.xt ^{:public true}
+  clear-cache
+  "Evicts duplicate-cache keys older than the configured interval."
+  {:added "4.0"}
+  [log time]
+  (when (xt/x:nil? time)
+    (:= time (xt/x:now-ms)))
+  (var #{last interval cache} log)
+  (var out [])
+  (when (and (xt/x:not-nil? last)
+             (>= interval (- time last)))
+    (return out))
+  (xt/x:set-key log "last" time)
+  (var stale [])
+  (xt/for:object [[key cached-time] cache]
+    (when (< interval (- time cached-time))
+      (xt/x:arr-push stale key)))
+  (xt/for:array [key stale]
+    (xt/x:del-key cache key)
+    (xt/x:arr-push out key))
+  (return out))
+
+(def.xt ^{:public true}
+  METHODS
+  {:count {:handler -/get-count
+           :input []}
+   :last {:handler -/get-last
+          :input []}
+   :tail {:handler -/get-tail
+          :input [{:symbol "n" :type "integer"}]}
+   :head {:handler -/get-head
+          :input [{:symbol "n" :type "integer"}]}
+   :slice {:handler -/get-slice
+           :input [{:symbol "start" :type "integer"}
+                   {:symbol "finish" :type "integer"}]}
+   :clear {:handler -/clear
+           :input []}
+   :clear-cache {:handler -/clear-cache
+                 :input [{:symbol "t" :type "integer"}]}})
+
+(defn.xt ^{:public true}
+  queue-entry
+  "Adds a transformed entry once per cache key and notifies listeners."
+  {:added "4.0"}
+  [log input key-fn data-fn time]
+  (when (xt/x:nil? time)
+    (:= time (xt/x:now-ms)))
+  (var #{processed cache maximum callback listeners} log)
+  (var key (:? key-fn (key-fn input time) time))
+  (var data (data-fn input))
+  (-/clear-cache log time)
+  (cond (or (xt/x:nil? key)
+            (not (xt/x:nil? (xt/x:get-key cache key))))
+        (return nil)
+
+        :else
+        (do (xt/x:set-key cache key time)
+            (xtd/arr-pushl processed (xtd/clone-nested data) maximum)
+            (when callback
+              (callback data time))
+            (xt/for:object [[id listener-entry] listeners]
+              (var #{callback meta} listener-entry)
+              (when callback
+                (callback id data time meta)))
+            (return data))))
+
+(defn.xt ^{:public true}
+  add-listener
+  "Adds a listener to queue entries."
+  {:added "4.0"}
+  [log listener-id callback meta]
+  (return (event-common/add-listener log listener-id "log" callback meta nil)))
+
+(def.xt ^{:public true :arglists '([log listener-id])}
+  remove-listener
+  event-common/remove-listener)
+
+(def.xt ^{:public true :arglists '([log])}
+  list-listeners
+  event-common/list-listeners)

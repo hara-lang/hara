@@ -1,0 +1,44 @@
+(ns lang.core.compile-intrinsic-dependency-candidate-test
+  (:require [lang.core.compile :as subject])
+  (:use code.test))
+
+(defn candidate-module-dependency-ids
+  [module]
+  (let [code-dependencies
+        (reduce
+         (fn [output entry]
+           (reduce
+            (fn [dependencies dependency]
+              (let [dependency-module (if (namespace dependency)
+                                        (symbol (namespace dependency))
+                                        nil)]
+                (if (and dependency-module
+                         (str/includes? (namespace dependency) ".")
+                         (not= dependency-module (:id module)))
+                  (conj dependencies dependency-module)
+                  dependencies)))
+            output
+            (or (:deps entry)
+                (get-in entry [:dependencies :code])
+                #{})))
+         #{}
+         (vals (or (:code module) {})))]
+    (subject/stable-values
+     (filter (fn [dependency]
+               (and (symbol? dependency)
+                    (not= dependency (:id module))))
+             (concat
+              (map subject/require-module-id (or (:require module) []))
+              code-dependencies
+              (vals (or (:link module) {}))
+              (or (:includes module) []))))))
+
+(Test/check
+ [{:name "keeps real module namespaces and ignores target aliases"
+   :test (fn []
+           (candidate-module-dependency-ids
+            {:id 'demo.main
+             :code {'entry {:dependencies {:code #{'demo.dep/value
+                                                    '-/gcd
+                                                    'x:m-mod}}}}}))
+   :expected ['demo.dep]}])

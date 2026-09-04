@@ -1,0 +1,179 @@
+(ns work.flow.make.project-test
+  (:require [work.flow :as flow]
+            [work.flow.make.artifact :as artifact]
+            [work.flow.make.common :as common]
+            [work.flow.make.host :as host]
+            [work.flow.make.project :as project]))
+
+(defn with-registries [function]
+  (let [flow-state (flow/snapshot)
+        trigger-state (common/triggers-snapshot)]
+    (try
+      (function)
+      (finally
+        (flow/restore flow-state)
+        (common/triggers-restore! trigger-state)))))
+
+(defn plain-config []
+  {:root "."
+   :build "build"
+   :default [{:type :raw :file "default.txt" :main ["default"]}]
+   :sections {:setup [{:type :raw :file "setup.txt" :main ["setup"]}]}})
+
+^{:refer work.flow.make.project/config-value}
+(Test/check
+ [{:name "returns plain definitions and live config values"
+   :test (fn [] [(project/config-value {:root "."})
+                 (project/config-value (common/make-config-fn {:default [] :root "."}))])
+   :expected [{:root "."}
+              {:ns 'work.flow.make.common :build ".build" :orgfile "Main.org"
+               :default [] :root "."}]}])
+
+^{:refer work.flow.make.project/section-entries}
+(Test/check
+ [{:name "orders section entries by section name"
+   :test (fn [] (project/section-entries
+                 {:sections {:z [{:id :z}] :a [{:id :a}]}}))
+   :expected [{:id :a} {:id :z}]}])
+
+^{:refer work.flow.make.project/prepare-definition}
+(Test/check
+ [{:name "adds the native build target and default paths"
+   :test (fn [] (let [value (project/prepare-definition (plain-config))]
+                  [(select-keys value [:root :build])
+                   (get-in value [:targets :build])
+                   (function? (:compile-entry value))]))
+   :expected [{:root "." :build "build"}
+              [{:type :raw :file "setup.txt" :main ["setup"]}
+               {:type :raw :file "default.txt" :main ["default"]}]
+              true]}])
+
+^{:refer work.flow.make.project/compile-entry}
+(Test/check
+ [{:name "delegates one entry to the artifact compiler"
+   :test (fn [] (binding [artifact/*mock-compile* true]
+                  (project/compile-entry (plain-config)
+                                         {:type :raw :file "x.txt" :main ["x"]}
+                                         nil nil)))
+   :expected ["/build/x.txt" "x"]}])
+
+^{:refer work.flow.make.project/def-make-fn}
+(Test/check
+ [{:name "registers a live host through the generic flow path with its triggers"
+   :test (fn []
+           (with-registries
+            (fn []
+              (let [value
+                    (project/def-make-fn
+                     'work.flow.make.project-test/triggered
+                     {:tag "trigger-fixture"
+                      :trigger-policy :manual
+                      :triggers ["demo.sample"]
+                      :default []})]
+                [(host/host? value)
+                 (:make/id (host/plan value))
+                 (host/host? (flow/definition 'work.flow.make.project-test/triggered))
+                 (vec (map host/host?
+                           (common/get-triggered "demo.sample/item")))
+                 (get (common/triggers-list) "trigger-fixture")]))))
+   :expected [true
+              'work.flow.make.project-test/triggered
+              true
+              [true]
+              ["demo.sample"]]}])
+
+^{:refer work.flow.make.project/build-all}
+(Test/check
+ [{:name "builds every prepared entry in definition order"
+   :test (fn [] (binding [artifact/*mock-compile* true]
+                  (project/build-all (plain-config))))
+   :expected [["/build/setup.txt" "setup"] ["/build/default.txt" "default"]]}])
+
+^{:refer work.flow.make.project/build-default}
+(Test/check
+ [{:name "builds a plain definition default section"
+   :test (fn [] (binding [artifact/*mock-compile* true]
+                  (project/build-default (plain-config))))
+   :expected (list {:files 1 :status :changed :written [["./build/default.txt" "default"]]})}])
+
+^{:refer work.flow.make.project/flatten-results}
+(Test/check
+ [{:name "flattens nested build results"
+   :test (fn [] (project/flatten-results [[:a [:b]] :c]))
+   :expected [:a :b :c]}])
+
+^{:refer work.flow.make.project/changed-files}
+(Test/check
+ [{:name "selects string file results"
+   :test (fn [] (project/changed-files [[:written "a"] [:unchanged "b"]]))
+   :expected ["a" "b"]}])
+
+^{:refer work.flow.make.project/is-changed?}
+(Test/check
+ [{:name "detects string file results"
+   :test (fn [] [(project/is-changed? [[:written "a"]])
+                 (project/is-changed? [[:blank nil]])])
+   :expected [true false]}])
+
+^{:refer work.flow.make.project/build-at}
+(Test/check
+ [{:name "builds a named section through the artifact layer"
+   :test (fn [] (binding [artifact/*mock-compile* true]
+                  (project/build-at "." [{:type :raw :file "x.txt" :main ["x"]}])))
+   :expected [{:files 1 :status :changed :written [["./x.txt" "x"]]}]}])
+
+^{:refer work.flow.make.project/build-triggered}
+(Test/check
+ [{:name "builds a registered host for a matching trigger"
+   :test (fn []
+           (with-registries
+            (fn []
+              (let [value
+                    (project/def-make-fn
+                     'work.flow.make.project-test/build-triggered-fixture
+                     {:tag "build-trigger-fixture"
+                      :trigger-policy :manual
+                      :triggers ["demo.sample"]
+                      :default []})
+                    result (project/build-triggered "demo.sample/item")]
+                [(host/host? value)
+                 (first (first result))
+                 (get-in (second (first result)) [:make/target])
+                 (get-in (second (first result)) [:make/count])]))))
+   :expected [true
+              'work.flow.make.project-test/build-triggered-fixture
+              :default
+              0]}])
+
+^{:refer work.flow.make.project/file-watcher-heal}
+(Test/check
+ [{:name "exposes watcher healing as a function boundary"
+   :test (fn [] (function? project/file-watcher-heal))
+   :expected true}])
+
+^{:refer work.flow.make.project/file-watcher-handler}
+(Test/check
+ [{:name "ignores unsupported watcher paths"
+   :test (fn [] [(nil? (project/file-watcher-handler "notes.txt"))
+                 (nil? (project/file-watcher-handler "src/.#notes.hal"))])
+   :expected [true true]}])
+
+^{:refer work.flow.make.project/watch}
+(Test/check
+ [{:name "creates a watcher descriptor"
+   :test (fn [] (let [value (project/watch "src" {:recursive true})]
+                  [(select-keys value [:watch/path :watch/options])
+                   (function? (:watch/handler value))]))
+   :expected [{:watch/path "src" :watch/options {:recursive true}} true]}])
+
+^{:refer work.flow.make.project/watch-project}
+(Test/check
+ [{:name "collects watcher paths from entries"
+   :test (fn [] (mapv (fn [value]
+                        (select-keys value [:watch/path :watch/options]))
+                      (project/watch-project
+                       {:default [{:search ["src" "test"]}]
+                        :sections {:extra [{:search ["test" "lib"]}]}})))
+   :expected [{:watch/path "lib" :watch/options {}}
+              {:watch/path "src" :watch/options {}}
+              {:watch/path "test" :watch/options {}}]}])

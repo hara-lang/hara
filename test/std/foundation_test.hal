@@ -1,5 +1,7 @@
 (ns std.foundation-test)
 
+(intern-in [published-when std.foundation/when])
+
 ^{:refer std.foundation/type}
 (Test/check
  [{:name "returns the portable runtime type keyword"
@@ -595,11 +597,21 @@
                  published-meta (meta published)]
              [(= (get published-meta :file)
                  (get source-meta :file))
-              (= (get published-meta :line)
+             (= (get published-meta :line)
                  (get source-meta :line))
-              (= (get published-meta :column)
+             (= (get published-meta :column)
                  (get source-meta :column))]))
-   :expected [true true true]}])
+   :expected [true true true]}
+  {:name "publishes a source macro Var through the direct function"
+   :test (fn []
+           (let [published (std.foundation/intern-var
+                            'std.foundation-test
+                            'published-when-var
+                            (var std.foundation/when)
+                            {})]
+             [(:macro (meta published))
+              (std.foundation/macroexpand-1 '(published-when-var true 1))]))
+   :expected [true '(if true (do 1) nil)]}])
 
 ^{:refer std.foundation/eval-in-ns}
 (Test/check
@@ -1882,7 +1894,10 @@
 
 ^{:refer std.foundation/intern-in}
 (Test/check
- [{:name "retains publication source metadata in generated intern-var forms"
+ [{:name "publishes macro Vars as usable macros"
+   :test (fn [] (macroexpand-1 '(published-when true 1)))
+   :expected '(if true (do 1) nil)}
+  {:name "retains publication source metadata in generated intern-var forms"
    :test (fn []
            (let [form '(intern-in [published source/value])
                  expanded (std.foundation/macroexpand-1 form)
@@ -1897,7 +1912,19 @@
    :expected [true true true]}])
 
 ^{:refer std.foundation/intern-all}
-(Test/check [])
+(Test/check
+ [{:name "emits macro publication metadata for every public source Var"
+   :test (fn []
+           (let [expanded (std.foundation/macroexpand-1 '(intern-all std.foundation))
+                 macro-entry (first
+                              (filter
+                               (fn [form]
+                                 (= (nth form 2) '(quote when)))
+                               expanded))]
+             [(= (count expanded)
+                 (count (std.foundation/ns-publics 'std.foundation)))
+              (= (nth macro-entry 4) {:macro true})]))
+   :expected [true true]}])
 
 ^{:refer std.foundation/with-template-meta}
 (Test/check [])

@@ -6,6 +6,7 @@
             [lang.common.grammar :as grammar]
             [lang.common.grammar-api :as grammar-api]
             [lang.model.v1.spec-python.python-native :as native]
+            [lang.model.v1.spec-python.python-rewrite :as rewrite]
             [lang.model.v1.spec-xtalk.fn-python :as xtalk-ops]))
 
 (def +language+ :python)
@@ -27,26 +28,37 @@
       (merge-nested
        {:banned #{:keyword}
         :allow {:assign #{:symbol :quote}}
+        :highlight #{'return 'break 'tup 'with 'await 'yield 'pass 'raise}
         :default {:comment {:prefix "#"}
                   :common {:start "(" :end ")" :space " " :assign "=" :sep ","
                            :statement "" :namespace "." :newline "\n" :indent 4}
-                  :invoke {:start "(" :end ")" :sep "," :space " "}
+                  :invoke {:start "(" :end ")" :sep "," :space " "
+                           :reversed true :hint ":"}
                   :infix {:if {:check "and" :then "or"}}
                   :block {:parameter {:start " " :end ""}
                           :body {:start ":" :end ""}
                           :space-before-body ""}
                   :function {:raw "def" :space ""
-                             :args {:start "(" :end ")" :sep "," :space ""}
-                             :body {:start ":" :end ""}
-                             :space-before-body ""}}
+                             :args {:start "(" :end ")" :sep "," :space ""
+                                    :rest native/python-emit-input-rest}
+                             :body {:start ":" :end "" :append true}
+                             :space-before-body ""
+                             :defn {:raw "def"
+                                    :args {:start "(" :end "):" :sep "," :space ""}}
+                             :fn.inner {:raw "def"
+                                        :symbol {:layout :flat}
+                                        :args {:start "(" :end "):" :sep "," :space ""}}}}
         :token {:nil "None" :true "True" :false "False"
+                :boolean {:as native/python-token-boolean}
                 :string {:quote :double}
-                :symbol {:namespace "."
+                :symbol {:namespace {:alias true :link false}
+                         :global native/python-symbol-global
                          :replace {"-" "_" "?" "_p" "!" "_bang"}}}
         :data {:vector {:start "[" :end "]" :sep "," :space " "}
                :set {:start "{" :end "}" :sep "," :space " "}
                :map {:start "{" :end "}" :sep "," :space " "}
                :map-entry {:assign ":" :space " " :key-fn data/default-map-key}}
+        :global {:reference '(globals)}
         :define {:defglobal {:raw ""} :def {:raw ""}}
         :block {:try {:control {:catch {:raw "except"
                                         :args {:start "" :end ":" :space ""}}}}
@@ -71,6 +83,9 @@
     :grammar/release "alpha"
     :grammar/language +language+
     :grammar/tag +tag+
+    :grammar/rewrite
+    {:staging
+     {:append ['lang.model.v1.spec-python.python-rewrite/python-rewrite-stage]}}
     :grammar/engine {:minimum 1 :maximum 1}
     :grammar/emit-template {:template/id +tag+
                             :template/version +grammar-version+}

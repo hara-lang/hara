@@ -58,6 +58,32 @@
   [root relative-path]
   (File/join root relative-path))
 
+(defn merge-sorted-paths
+  "Merges two already ordered path vectors in linear time."
+  [left right]
+  (loop [left left
+         right right
+         output []]
+    (cond
+      (empty? left) (into output right)
+      (empty? right) (into output left)
+      (<= (compare (first left) (first right)) 0)
+      (recur (rest left) right (conj output (first left)))
+      :else
+      (recur left (rest right) (conj output (first right))))))
+
+(defn ^{:public true} sort-paths
+  "Orders source paths with a merge sort instead of Foundation's insertion sort."
+  [paths]
+  (let [paths (vec paths)
+        size (count paths)]
+    (if (<= size 1)
+      paths
+      (let [middle (quot size 2)]
+        (merge-sorted-paths
+         (sort-paths (subvec paths 0 middle))
+         (sort-paths (subvec paths middle size)))))))
+
 (defn source-analysis
   "Refreshes reader-first analysis using the timestamp-and-bytes framework cache."
   [root state relative-path]
@@ -65,20 +91,98 @@
         result (cache/refresh-path root state path)]
     (assoc result :source/path relative-path)))
 
+(defn project-source-files
+  "Returns the deterministic deploy source graph for a project.
+
+  Explicit files remain supported for compatibility, but deploy planning also
+  discovers Hara files below :project/source-paths. This keeps package
+  profiles complete when a project grows without requiring a generated source
+  list to be maintained by hand. :project/deploy :source-excludes removes
+  intentionally non-release trees from the discovered graph."
+  [root project]
+  (let [root-path (File/resolve (str root) "")
+        root-prefix (if (str/ends-with? root-path "/")
+                      root-path
+                      (str root-path "/"))
+        explicit (or (:project/source-files project) [])
+        source-roots (or (:project/source-paths project) ["src" "src-lang"])
+        discovered
+        (mapcat
+        (fn [source-root]
+           (let [path (File/join root-path source-root)]
+             (if (deref (File/exists? path))
+               (deref (File/walk path))
+               [])))
+         source-roots)
+        candidates
+        (concat
+         explicit
+         (map
+          (fn [path]
+            (let [path (str path)]
+              (if (str/starts-with? path root-prefix)
+                (str/slice path (str/length root-prefix) (str/length path))
+                path)))
+          discovered))
+        excludes (or (get-in project [:project/deploy :source-excludes]) [])
+        file-state
+        (reduce
+         (fn [state path]
+           (let [path (str path)
+                 output (:files state)
+                 excluded?
+                 (reduce
+                  (fn [excluded? exclude]
+                    (let [exclude (str exclude)]
+                      (or excluded?
+                          (= path exclude)
+                          (str/starts-with? path (str exclude "/")))))
+                  false
+                  excludes)]
+             (cond
+               (not (str/ends-with? path ".hal")) state
+               (str/includes? path "/.#") state
+               excluded? state
+               (has? (:seen state) path) state
+               :else {:files (conj output path)
+                      :seen (conj (:seen state) path)})))
+         {:files [] :seen #{}}
+         candidates)]
+    (:files file-state)))
+
 (defn ^{:public true} project-analyses
-  "Returns reader-first analyses for the project's explicit portable sources.
+  "Returns reader-first analyses for the project's portable source graph.
 
   The deploy graph retains only the Linkage facts it needs during a release;
-  durable full-fidelity source caching remains available through
-  code.framework.cache for editors and source-analysis callers."
+  durable source revisions are reused from code.framework.cache and the
+  resulting index is persisted once per plan rather than once per source."
   [root project]
-  (vec
-   (map
-    (fn [relative-path]
-      (let [path (source-path root relative-path)
-            source (String/decode-utf8 (deref (File/read path)))]
-        (assoc (framework/analyse-linkage-source source) :source/path relative-path)))
-    (or (:project/source-files project) []))))
+  (let [paths (project-source-files root project)
+        initial (cache/load-index root)
+        result
+        (reduce
+         (fn [state relative-path]
+           (let [path (source-path root relative-path)
+                 analysed (cache/analyse-path (:index state) path :linkage)
+                 next-state
+                 {:index (:index analysed)
+                  :fresh? (or (:fresh? state) (not (:cached? analysed)))
+                  :analyses (conj (:analyses state)
+                                  (assoc (:analysis analysed)
+                                         :source/path relative-path))
+                  :analysed (inc (:analysed state))}]
+             (if (and (not (:cached? analysed))
+                      (= 0 (mod (:analysed next-state) 8)))
+               (do
+                 (cache/save-index root (:index next-state))
+                 next-state)
+               next-state)))
+         {:index initial :fresh? false :analyses [] :analysed 0}
+         paths)]
+    (if (:fresh? result)
+      (cache/save-index root (:index result))
+      nil)
+    (vec (:analyses result))))
 
 (defn namespace-text
   "Returns the stable text form used by package selectors and coordinates."
@@ -159,6 +263,20 @@
          {:package/name name :package/definition definition}
          :ex/message "package definition requires an :include vector"))
 
+    (and (:dependencies definition)
+         (not (vector? (:dependencies definition))))
+    (throw
+     (ex :code.deploy/invalid-package
+         {:package/name name :package/definition definition}
+         :ex/message "package definition :dependencies must be a vector"))
+
+    (and (:context-dependencies definition)
+         (not (vector? (:context-dependencies definition))))
+    (throw
+     (ex :code.deploy/invalid-package
+         {:package/name name :package/definition definition}
+         :ex/message "package definition :context-dependencies must be a vector"))
+
     :else
     (assoc definition :package/name (str name))))
 
@@ -174,47 +292,98 @@
 (defn selected-namespaces
   "Expands a package's selectors against reader-analysed source namespaces."
   [definition analyses]
-  (vec
-   (sort-by
-    str
-    (keep
-     (fn [analysis]
-       (let [namespace (:namespace analysis)]
-         (cond
-           (and namespace
-                (reduce
-                 (fn [selected? selector]
-                   (or selected? (selector-matches? selector namespace)))
-                 false
-                 (:include definition)))
-           namespace
+  (let [selectors
+        (vec
+         (map
+          (fn [selector]
+            (selector-matches? selector (first selector))
+            (let [root (namespace-text (first selector))
+                  mode (second selector)]
+              {:mode mode
+               :root root
+               :prefix (str root ".")
+               :base-prefix (str root ".base.")
+               :excluded
+               (vec
+                (map namespace-text
+                     (if (= mode :exclude)
+                       (nth selector 2)
+                       [])))}))
+          (:include definition)))]
+    (vec
+     (keep
+      (fn [analysis]
+        (let [namespace (:namespace analysis)
+              namespace-text (if namespace (namespace-text namespace) nil)]
+          (cond
+            (and namespace-text
+                 (reduce
+                  (fn [selected? selector]
+                    (or selected?
+                        (let [root (:root selector)
+                              mode (:mode selector)]
+                          (cond
+                            (= mode :base)
+                            (or (= namespace-text root)
+                                (str/starts-with? namespace-text
+                                                   (:base-prefix selector)))
 
-           :else nil)))
-     analyses))))
+                            (= mode :complete)
+                            (or (= namespace-text root)
+                                (str/starts-with? namespace-text
+                                                   (:prefix selector)))
+
+                            (= mode :exclude)
+                            (and (or (= namespace-text root)
+                                     (str/starts-with? namespace-text
+                                                        (:prefix selector)))
+                                 (not
+                                  (reduce
+                                   (fn [excluded? excluded-root]
+                                     (or excluded?
+                                         (= namespace-text excluded-root)
+                                         (str/starts-with?
+                                          namespace-text
+                                          (str excluded-root "."))))
+                                   false
+                                   (:excluded selector))))
+
+                            :else false))))
+                  false
+                  selectors))
+            namespace
+
+            :else nil)))
+      analyses))))
 
 (defn ^{:public true} ownership
   "Assigns every selected namespace to exactly one package or raises overlap."
-  [definitions analyses]
-  (reduce
-   (fn [owners definition]
-     (reduce
-      (fn [current namespace]
-        (let [previous (get current namespace)]
-          (cond
-            (nil? previous)
-            (assoc current namespace (:package/name definition))
+  ([definitions analyses]
+   (ownership definitions analyses {}))
+  ([definitions analyses selections]
+   (reduce
+    (fn [owners definition]
+      (let [name (:package/name definition)
+            namespaces (or (get selections name)
+                           (selected-namespaces definition analyses))]
+        (reduce
+         (fn [current namespace]
+           (let [previous (get current namespace)]
+             (cond
+               (nil? previous)
+               (assoc current namespace name)
 
-            :else
-            (throw
-             (ex :code.deploy/namespace-overlap
-                 {:namespace namespace
-                  :previous previous
-                  :package (:package/name definition)}
-                 :ex/message "package selectors assign a namespace more than once")))))
-      owners
-      (selected-namespaces definition analyses)))
-   {}
-   definitions))
+               :else
+               (throw
+                (ex :code.deploy/namespace-overlap
+                    {:namespace namespace
+                     :previous previous
+                     :package name}
+                    :ex/message "package selectors assign a namespace more than once")))))
+         owners
+         namespaces)))
+    {}
+    definitions)))
 
 (defn ^{:public true} coordinate
   "Converts a semantic Foundation package name to the native Hara coordinate."
@@ -225,36 +394,112 @@
       (str/includes? name "/") (str "hara:" name)
       :else (str "hara:hara/" name))))
 
+(defn dependency-package-name
+  "Resolves a catalog dependency by semantic name or native coordinate."
+  [definitions dependency]
+  (let [dependency (str dependency)]
+    (first
+     (keep
+      (fn [definition]
+        (let [name (:package/name definition)]
+          (cond
+            (= dependency name) name
+            (= dependency (coordinate name)) name
+            :else nil)))
+      definitions))))
+
+(defn explicit-dependency-split
+  "Separates catalog dependencies into profile-internal and external names."
+  [definitions definition]
+  (let [declared (or (:dependencies definition) [])
+        internal
+        (set
+         (keep
+          (fn [dependency]
+            (dependency-package-name definitions dependency))
+          declared))
+        external
+        (set
+         (keep
+          (fn [dependency]
+            (let [dependency (str dependency)]
+              (if (has? internal (dependency-package-name definitions dependency))
+                nil
+                dependency)))
+          declared))]
+    {:internal (vec (sort internal))
+     :external (vec (sort external))}))
+
+(defn explicit-context-dependency-split
+  "Resolves compile-context-only package dependencies from a catalogue entry.
+
+  Context dependencies make source available to the native compiler without
+  becoming install-time package edges. This is required for lazy namespace
+  links whose declarations are still resolved while a package is compiled."
+  [definitions definition]
+  (let [declared (or (:context-dependencies definition) [])
+        internal
+        (set
+         (keep
+          (fn [dependency]
+            (dependency-package-name definitions dependency))
+          declared))
+        unresolved
+        (vec
+         (sort
+          (keep
+           (fn [dependency]
+             (let [dependency (str dependency)]
+               (if (has? internal (dependency-package-name definitions dependency))
+                 nil
+                 dependency)))
+           declared)))]
+    (cond
+      (empty? unresolved)
+      (vec (sort internal))
+
+      :else
+      (throw
+       (ex :code.deploy/invalid-context-dependency
+           {:package/name (:package/name definition)
+            :dependencies unresolved}
+           :ex/message "package context dependencies must name packages in the catalogue")))))
+
 (defn package-dependencies
   "Infers direct internal dependencies through Linkage, excluding self ownership."
-  [linkage owners definition analyses]
-  (let [name (:package/name definition)
-        namespaces (set (selected-namespaces definition analyses))
-        dependencies (framework/dependency-map linkage)]
-    (set
-     (keep
-      (fn [namespace]
-        (let [owner (get owners namespace)]
-          (cond
-            (or (nil? owner) (= owner name)) nil
-            :else owner)))
-      (mapcat
+  ([linkage owners definition analyses]
+   (package-dependencies linkage
+                         owners
+                         definition
+                         analyses
+                         (framework/dependency-map linkage)
+                         (selected-namespaces definition analyses)))
+  ([linkage owners definition analyses dependencies namespaces]
+   (let [name (:package/name definition)
+         namespaces (set namespaces)]
+     (set
+      (keep
        (fn [namespace]
-         (get dependencies namespace #{}))
-       namespaces)))))
+         (let [owner (get owners namespace)]
+           (cond
+             (or (nil? owner) (= owner name)) nil
+             :else owner)))
+       (mapcat
+        (fn [namespace]
+          (get dependencies namespace #{}))
+        namespaces))))))
 
 (defn unresolved-namespaces
   "Reports selected source namespaces that no package catalogue entry owns."
   [owners analyses]
-  (vec
-   (sort-by str
-            (keep
-             (fn [analysis]
-               (let [namespace (:namespace analysis)]
-                 (cond
-                   (and namespace (nil? (get owners namespace))) namespace
-                   :else nil)))
-             analyses))))
+  (sort-paths
+   (keep
+    (fn [analysis]
+      (let [namespace (:namespace analysis)]
+        (cond
+          (and namespace (nil? (get owners namespace))) namespace
+          :else nil)))
+    analyses)))
 
 (defn ^{:public true} dependency-order
   "Returns a dependency-first order and rejects cycles before staging any output."
@@ -305,34 +550,58 @@
         catalog (read-catalog root)
         analyses (project-analyses root project)
         definitions (package-definitions catalog)
-        owners (ownership definitions analyses)
+        selections
+        (reduce
+         (fn [output definition]
+           (assoc output
+                  (:package/name definition)
+                  (selected-namespaces definition analyses)))
+         {}
+         definitions)
+        owners (ownership definitions analyses selections)
         linkage (framework/linkage analyses)
+        namespace-dependencies (framework/dependency-map linkage)
+        source-by-namespace
+        (reduce
+         (fn [output analysis]
+           (let [namespace (:namespace analysis)]
+             (if namespace
+               (assoc output namespace (:source/path analysis))
+               output)))
+         {}
+         analyses)
         packages
         (vec
          (map
           (fn [definition]
             (let [name (:package/name definition)
-                  namespaces (selected-namespaces definition analyses)]
+                  namespaces (get selections name)
+                  explicit (explicit-dependency-split definitions definition)
+                  context (explicit-context-dependency-split definitions definition)
+                  inferred (package-dependencies linkage
+                                                  owners
+                                                  definition
+                                                  analyses
+                                                  namespace-dependencies
+                                                  namespaces)]
               {:package/name name
                :package/coordinate (coordinate name)
+               :package/version (:project/version project)
                :package/definition definition
                :package/namespaces namespaces
                :package/source-files
                (vec
-                (sort
-                 (keep
-                  (fn [analysis]
-                    (cond
-                      (has? (set namespaces) (:namespace analysis))
-                      (:source/path analysis)
-                      :else nil))
-                  analyses)))
+                (keep
+                 (fn [namespace]
+                   (get source-by-namespace namespace))
+                 namespaces))
                :package/internal-dependencies
                (vec
-                (sort
-                 (package-dependencies linkage owners definition analyses)))
+                (sort-paths
+                 (into (set inferred) (:internal explicit))))
+               :package/context-dependencies context
                :package/external-dependencies
-               (vec (sort (map str (or (:dependencies definition) []))))}))
+               (:external explicit)}))
           definitions))
         order (dependency-order packages)]
     {:deploy/root root

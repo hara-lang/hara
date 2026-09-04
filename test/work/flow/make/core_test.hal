@@ -1,0 +1,222 @@
+(ns work.flow.make.core-test
+  (:require [work.core :as work]
+            [work.flow :as flow]
+            [work.flow.make.artifact :as artifact]
+            [work.flow.make.common :as common]
+            [work.flow.make.compile :as compiler]
+            [work.flow.make.core :as core]
+            [work.flow.make.host :as host]))
+
+(defn definition-fixture []
+  {:make/id :fixture
+   :trigger-policy :manual
+   :default [{:id :default
+              :compile (fn [_ _ input _] input)}]
+   :targets {:build [{:id :build
+                      :compile (fn [_ _ input _] (if (nil? input) 5 (+ input 1)))}]
+             :clean [{:id :clean
+                      :compile (fn [_ _ input _] {:cleaned input})}]}})
+
+(defn profile-fixture []
+  {:workflow/options {:defaults {:trigger-policy :manual
+                                 :nested {:left 1}}
+                       :nested {:right 2}}})
+
+(defn isolated
+  [function]
+  (let [before (flow/snapshot)]
+    (try
+      (flow/reset)
+      (flow/register core/+flow+)
+      (function)
+      (finally (flow/restore before)))))
+
+^{:refer work.flow.make.core/profile-definition-options}
+(Test/check
+ [{:name "merges make defaults with direct profile options"
+   :test (fn [] (core/profile-definition-options (profile-fixture)))
+   :expected {:trigger-policy :manual :nested {:left 1 :right 2}}}])
+
+^{:refer work.flow.make.core/section-entries}
+(Test/check
+ [{:name "orders project setup sections by their section name"
+   :test (fn [] (core/section-entries
+                 {:sections {:z [{:id :z}] :a [{:id :a}]}}))
+   :expected [{:id :a} {:id :z}]}])
+
+^{:refer work.flow.make.core/compile-entry}
+(Test/check
+ [{:name "delegates project entries to the artifact compiler"
+   :test (fn [] (binding [artifact/*mock-compile* true]
+                  (core/compile-entry {:root "." :build "build"}
+                                      {:type :raw :file "x.txt" :main ["x"]}
+                                      nil nil)))
+   :expected ["/build/x.txt" "x"]}])
+
+^{:refer work.flow.make.core/prepare-definition}
+(Test/check
+ [{:name "adds the native artifact compiler and aggregate build target"
+   :test (fn [] (let [value (core/prepare-definition
+                            {:root "." :build "build"
+                             :default [{:type :raw :file "default.txt" :main ["default"]}]
+                             :sections {:setup [{:type :raw :file "setup.txt" :main ["setup"]}]}})]
+                [(select-keys value [:root :build])
+                 (get-in value [:targets :build])
+                 (function? (:compile-entry value))]))
+   :expected [{:root "." :build "build"}
+              [{:type :raw :file "setup.txt" :main ["setup"]}
+               {:type :raw :file "default.txt" :main ["default"]}]
+              true]}])
+
+^{:refer work.flow.make.core/normalise}
+(Test/check
+ [{:name "prepares a qualified make definition after applying profile options"
+   :test (fn [] (let [value (core/normalise (profile-fixture) :fixture {:default []})]
+                [(select-keys value [:trigger-policy :nested :default :make/id :root :build])
+                 (function? (:compile-entry value))
+                 (get-in value [:targets :build])]))
+   :expected [{:trigger-policy :manual
+               :nested {:left 1 :right 2}
+               :default []
+               :make/id :fixture
+               :root "."
+               :build ".build/fixture"}
+              true
+              []]}])
+
+^{:refer work.flow.make.core/compile}
+(Test/check
+ [{:name "compiles a definition into an immutable make plan"
+   :test (fn [] (let [plan (core/compile (definition-fixture))]
+                  [(:make/id plan)
+                   (vec (sort (keys (:make/targets plan))))
+                   (:make/trigger-policy plan)]))
+   :expected [:fixture [:build :clean :default] :manual]}])
+
+^{:refer work.flow.make.core/sync-common-triggers}
+(Test/check
+ [{:name "replaces stale legacy trigger filters with the host declaration"
+   :test (fn []
+           (let [before (common/triggers-snapshot)
+                 value (host/create
+                        (core/compile
+                         (assoc (definition-fixture) :triggers ["demo.sample"])))]
+             (try
+               (common/triggers-set value [:stale])
+               (core/sync-common-triggers value)
+               (common/triggers-get value)
+               (finally (common/triggers-restore! before)))))
+   :expected ["demo.sample"]}])
+
+^{:refer work.flow.make.core/reconcile-existing}
+(Test/check
+ [{:name "updates an existing host without changing its identity"
+   :test (fn [] (let [before (host/create (core/compile (definition-fixture)))
+                      candidate (assoc (core/compile (definition-fixture)) :make/id :next)
+                      after (core/reconcile-existing before candidate)]
+                  [(host/host? after) (:make/id (host/plan after)) (host/revision after)]))
+   :expected [true :next 2]}])
+
+^{:refer work.flow.make.core/reconcile}
+(Test/check
+ [{:name "creates a stopped host for manual definitions"
+   :test (fn [] (let [value (core/reconcile nil nil (core/compile (definition-fixture)) nil)]
+                  [(host/host? value) (host/status value)]))
+   :expected [true :stopped]}])
+
+^{:refer work.flow.make.core/configure-profile}
+(Test/check
+ [{:name "configures the registered make workflow"
+   :test (fn [] (isolated (fn []
+                            (select-keys (core/configure-profile)
+                                         [:workflow/path :workflow/options]))))
+   :expected {:workflow/path [:make]
+              :workflow/options {:defaults {:trigger-policy :on-define}}}}])
+
+^{:refer work.flow.make.core/define}
+(Test/check
+ [{:name "defines and installs a make host through work.flow"
+   :test (fn [] (isolated (fn []
+                            (let [value (core/define :fixture {:default []})]
+                              [(host/host? value)
+                               (:make/id (host/plan value))
+                               (host/status value)
+                               (host/host? (flow/definition :fixture))]))))
+   :expected [true :fixture :running true]}])
+
+^{:refer work.flow.make.core/plan}
+(Test/check
+ [{:name "returns the host plan"
+   :test (fn [] (let [value (host/create (core/compile (definition-fixture)))]
+                  [(= :fixture (:make/id (core/plan value)))
+                   (vec (sort (keys (:make/targets (core/plan value))))) ]))
+   :expected [true [:build :clean :default]]}])
+
+^{:refer work.flow.make.core/targets}
+(Test/check
+ [{:name "returns compiled target bundles"
+   :test (fn [] (let [value (host/create (core/compile (definition-fixture)))]
+                  (vec (sort (keys (core/targets value))))))
+   :expected [:build :clean :default]}])
+
+^{:refer work.flow.make.core/target-work}
+(Test/check
+ [{:name "selects a compiled target bundle"
+   :test (fn [] (let [value (host/create (core/compile (definition-fixture)))]
+                  (work/bundle? (core/target-work value :build))))
+   :expected true}])
+
+^{:refer work.flow.make.core/revision}
+(Test/check
+ [{:name "exposes the host revision"
+   :test (fn [] (core/revision (host/create (core/compile (definition-fixture)))))
+   :expected 1}])
+
+^{:refer work.flow.make.core/status}
+(Test/check
+ [{:name "exposes the host lifecycle status"
+   :test (fn [] (let [value (host/create (core/compile (definition-fixture)))]
+                  (core/status value)))
+   :expected :stopped}])
+
+^{:refer work.flow.make.core/host?}
+(Test/check
+ [{:name "recognises a live make host"
+   :test (fn [] [(core/host? {})
+                 (core/host? (host/create (core/compile (definition-fixture))))])
+   :expected [false true]}])
+
+^{:refer work.flow.make.core/start}
+(Test/check
+ [{:name "starts a manually compiled host"
+   :test (fn [] (let [value (host/create (core/compile (definition-fixture)))]
+                  (core/start value)
+                  (core/status value)))
+   :expected :running}])
+
+^{:refer work.flow.make.core/stop}
+(Test/check
+ [{:name "stops a running host"
+   :test (fn [] (let [value (host/create (core/compile (definition-fixture)))]
+                  (core/start value)
+                  (core/stop value)
+                  (core/status value)))
+   :expected :stopped}])
+
+^{:refer work.flow.make.core/build}
+(Test/check
+ [{:name "aliases the build target"
+   :test (fn [] (let [value (host/create (core/compile (definition-fixture)))
+                      result (deref (core/build value :build))]
+                  (:make/value (first (:make/results result)))))
+   :expected 5}])
+
+^{:refer work.flow.make.core/clean}
+(Test/check
+ [{:name "evaluates an explicitly defined clean target"
+   :test (fn [] (let [value (host/create (core/compile (definition-fixture)))
+                      result (deref (core/clean value :reset))]
+                  [(:make/target result) (:make/input result)
+                   (:make/value (first (:make/results result)))
+                  (:make/count result)]))
+   :expected [:clean :reset {:cleaned :reset} 1]}])

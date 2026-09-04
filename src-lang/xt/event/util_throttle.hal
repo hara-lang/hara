@@ -1,0 +1,94 @@
+(ns xt.event.util-throttle
+  (:require [lang.core :as l]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-data :as xtd]
+             [xt.lang.spec-promise :as spec-promise]]})
+
+(defn.xt ^{:public true
+            :schema [:fn [[:fn [:xt/any] :xt/any] [:xt/maybe [:fn [] :xt/int]]] :xt/any]}
+  throttle-create
+  "Creates throttle state for a handler and optional clock."
+  {:added "4.1"}
+  [handler now-fn]
+  (return {:now-fn (:? (xt/x:nil? now-fn) xt/x:now-ms now-fn)
+           :handler handler
+           :active {}
+           :queued {}}))
+
+(defn.xt ^{:public true
+            :schema [:fn [:xt/any :xt/any [:xt/maybe [:xt/array :xt/any]]] :xt/promise]}
+  throttle-run-async
+  "Runs one handler invocation and drains one queued replacement invocation."
+  {:added "4.1"}
+  [throttle id args]
+  (var #{active queued handler} throttle)
+  (var key (xt/x:to-string id))
+  (:= args (xtd/arrayify args))
+  (var inputs [id])
+  (xt/for:array [arg args]
+    (xt/x:arr-push inputs arg))
+  (var base-promise
+       (spec-promise/x:promise
+        (fn []
+          (return (xt/x:apply handler inputs)))))
+  (return
+   (spec-promise/x:promise-finally
+    base-promise
+    (fn []
+      (xt/x:del-key active key)
+      (var queued-entry (xt/x:get-key queued key))
+      (when (xt/x:not-nil? queued-entry)
+        (xt/x:set-key active key queued-entry)
+        (xt/x:del-key queued key)
+        (-/throttle-run-async throttle id (. queued-entry ["args"])))))))
+
+(defn.xt ^{:public true
+            :schema [:fn [:xt/any :xt/any [:xt/maybe [:xt/array :xt/any]]] :xt/any]}
+  throttle-run
+  "Starts a handler or queues its one permitted replacement invocation."
+  {:added "4.1"}
+  [throttle id args]
+  (var #{active queued now-fn} throttle)
+  (var key (xt/x:to-string id))
+  (:= args (xtd/arrayify args))
+  (var queued-entry (xt/x:get-key queued key))
+  (when (xt/x:not-nil? queued-entry)
+    (return queued-entry))
+  (var active-entry (xt/x:get-key active key))
+  (when (xt/x:not-nil? active-entry)
+    (:= queued-entry {:promise (. active-entry ["promise"])
+                      :started (now-fn)
+                      :args (. active-entry ["args"])})
+    (xt/x:set-key queued key queued-entry)
+    (return queued-entry))
+  (:= active-entry {:promise nil :started (now-fn) :args args})
+  (xt/x:set-key active key active-entry)
+  (var promise (-/throttle-run-async throttle id args))
+  (xt/x:set-key active-entry "promise" promise)
+  (return active-entry))
+
+(defn.xt ^{:public true :schema [:fn [:xt/any] [:xt/array :xt/any]]}
+  throttle-waiting
+  "Returns the union of active and queued ids."
+  {:added "4.1"}
+  [throttle]
+  (var #{active queued} throttle)
+  (return (xtd/arr-union (xt/x:obj-keys active) (xt/x:obj-keys queued))))
+
+(defn.xt ^{:public true :schema [:fn [:xt/any] [:xt/array :xt/any]]}
+  throttle-active
+  "Returns ids with a currently active handler invocation."
+  {:added "4.1"}
+  [throttle]
+  (var #{active} throttle)
+  (return (xt/x:obj-keys active)))
+
+(defn.xt ^{:public true :schema [:fn [:xt/any] [:xt/array :xt/any]]}
+  throttle-queued
+  "Returns ids that have one queued replacement invocation."
+  {:added "4.1"}
+  [throttle]
+  (var #{queued} throttle)
+  (return (xt/x:obj-keys queued)))

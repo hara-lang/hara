@@ -1,0 +1,85 @@
+(ns lang.runtime.basic.impl.process-python-test
+  (:require [lang.core.registry :as registry]
+            [lang.core.runtime :as runtime]
+            [lang.runtime.basic.impl.process-python :as subject]
+            [lang.runtime.basic.type-common :as common]))
+
+^{:refer lang.runtime.basic.impl.process-python/+python-init+}
+(Test/check
+ [{:name "declares CPython as the default persistent program"
+   :test (fn [] [(get-in subject/+python-init+ [:default :basic])
+                 (get-in subject/+python-init+ [:env :cpython :exec])
+                 (get-in subject/+python-init+ [:env :cpython :extension])
+                 (get-in subject/+python-init+ [:env :cpython :flags :basic])
+                 (get-in subject/+python-init+ [:env :cpython :flags :verify])
+                 (get-in (common/get-program-options :python) [:default :basic])])
+   :expected [:cpython "python3" "py" ["-c"]
+              ["-c" "import sys; compile(sys.stdin.read(), '<hara>', 'exec')"]
+              :cpython]}])
+
+^{:refer lang.runtime.basic.impl.process-python/+python-oneshot-config+}
+(Test/check
+ [{:name "configures Python one-shot JSON output"
+   :test (fn [] (select-keys subject/+python-oneshot-config+ [:main :emit :json]))
+   :expected {:main {} :emit {} :json :full}}])
+
+^{:refer lang.runtime.basic.impl.process-python/+python-verify-config+}
+(Test/check
+ [{:name "configures Python verification through stdin"
+   :test (fn [] (select-keys subject/+python-verify-config+ [:main :emit :json :transport]))
+   :expected {:main {} :emit {} :json false :transport :process-stdin}}])
+
+^{:refer lang.runtime.basic.impl.process-python/+python-basic-config+}
+(Test/check
+ [{:name "configures persistent Python evaluation over JSON lines"
+   :test (fn [] (let [config subject/+python-basic-config+]
+                  [(select-keys config [:main :emit :json :encode :timeout :transport])
+                   (:profile config)
+                   (boolean (:bootstrap config))]))
+   :expected [{:main {} :emit {} :json :full :encode :json
+               :timeout 2000 :transport :process-socket}
+              {:input [] :source []
+               :response [[:lang/node-response 1]]}
+              true]}])
+
+^{:refer lang.runtime.basic.impl.process-python/+python-oneshot+}
+(Test/check
+ [{:name "installs the Python one-shot runtime type"
+   :test (fn [] [(select-keys subject/+python-oneshot+ [:lang :runtime :type])
+                 (set (keys (:instance subject/+python-oneshot+)))
+                 (registry/registry-runtime-ns :python :oneshot)])
+   :expected [{:lang :python :runtime :oneshot :type :lang/rt.oneshot}
+              #{:create :raw-eval}
+              'lang.runtime.basic.impl.process-python]}])
+
+^{:refer lang.runtime.basic.impl.process-python/+python-verify+}
+(Test/check
+ [{:name "installs the Python verification runtime type"
+   :test (fn [] [(select-keys subject/+python-verify+ [:lang :runtime :type])
+                 (set (keys (:instance subject/+python-verify+)))
+                 (:type (runtime/runtime-spec :python :verify))])
+   :expected [{:lang :python :runtime :verify :type :lang/rt.verify}
+              #{:create :raw-eval}
+              :lang/rt.verify]}])
+
+^{:refer lang.runtime.basic.impl.process-python/+python-basic+}
+(Test/check
+ [{:name "installs the Python persistent basic runtime type"
+   :test (fn [] [(select-keys subject/+python-basic+ [:lang :runtime :type])
+                 (get-in subject/+python-basic+ [:config :layout])
+                 (set (keys (:instance subject/+python-basic+)))
+                 (:type (runtime/runtime-spec :python :basic))])
+   :expected [{:lang :python :runtime :basic :type :lang/rt.basic}
+              :full
+              #{:create :start :stop :raw-eval}
+              :lang/rt.basic]}])
+
+^{:refer lang.runtime.basic.impl.process-python/+init+}
+(Test/check
+ [{:name "publishes all Python runtime coordinates"
+   :test (fn [] [(get subject/+init+ :lang)
+                 (set (keys (dissoc subject/+init+ :lang)))
+                 (boolean (:oneshot subject/+init+))
+                 (boolean (:verify subject/+init+))
+                 (boolean (:basic subject/+init+))])
+   :expected [:python #{:program :oneshot :verify :basic} true true true]}])

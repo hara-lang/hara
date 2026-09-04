@@ -1,0 +1,106 @@
+(ns work.flow.make.project
+  (:config {:role :internal})
+  (:require [std.fs :as fs]
+            [work.flow :as flow]
+            [work.flow.make.artifact :as artifact]
+            [work.flow.make.common :as common]
+            [work.flow.make.core :as make]))
+
+(defn config-value
+  [config]
+  (if (or (common/make-config? config)
+          (and (map? config) (has? config :instance)))
+    (deref (:instance config))
+    config))
+
+(defn section-entries
+  [definition]
+  (make/section-entries definition))
+
+(defn compile-entry
+  "Compiles one project entry into the project's deterministic build root."
+  [definition entry input context]
+  (make/compile-entry (config-value definition) entry input context))
+
+(defn prepare-definition
+  "Adds the native artifact compiler and aggregate build target to a project."
+  [definition]
+  (make/prepare-definition (config-value definition)))
+
+(defn def-make-fn
+  "Creates and registers a native make host through the generic workflow path."
+  [definition-symbol config]
+  (flow/define-work definition-symbol make/path (config-value config)))
+
+(defn ^{:public true} build-all
+  "Builds every setup and default artifact in a make project."
+  [make-host]
+  (if (make/host? make-host)
+    (deref (make/build make-host :build))
+    (let [config (config-value make-host)
+          definition (prepare-definition config)
+          entries (get-in definition [:targets :build])]
+      (vec (map (fn [entry] (compile-entry definition entry nil nil)) entries)))))
+
+(defn build-default
+  [config]
+  (if (make/host? config)
+    (deref (make/build config :default))
+    (artifact/compile config :default)))
+
+(defn flatten-results
+  [value]
+  (cond
+    (sequential? value) (mapcat flatten-results value)
+    :else [value]))
+
+(defn changed-files
+  [result]
+  (vec (filter string? (flatten-results result))))
+
+(defn is-changed?
+  [result]
+  (not (empty? (changed-files result))))
+
+(defn build-at
+  [root section]
+  (artifact/compile-section {:root root :default section} :default section))
+
+(defn build-triggered
+  ([] (build-triggered (symbol (str (ns-current)))))
+  ([namespace]
+   (mapv (fn [config]
+           (let [value (common/config-value config)]
+             [(or (:make/id value) (:id value))
+              (build-default config)]))
+         (common/get-triggered namespace))))
+
+(defn file-watcher-heal
+  [file namespace]
+  (let [content (str/decode-utf8 (fs/read-bytes file))]
+    (fs/write-bytes file (str/encode-utf8 content))
+    content))
+
+(defn file-watcher-handler
+  ([file] (file-watcher-handler file {}))
+  ([file options]
+   (let [path (str file)]
+     (if (and (or (str/ends-with? path ".hal")
+                  (str/ends-with? path ".clj")
+                  (str/ends-with? path ".cljc"))
+              (not (str/includes? path ".#")))
+       (file-watcher-heal file nil)
+       nil))))
+
+(defn watch
+  ([path] (watch path {}))
+  ([path options]
+   {:watch/path path :watch/options options :watch/handler file-watcher-handler}))
+
+(defn watch-project
+  [config]
+  (let [value (config-value config)
+        tasks (concat (or (:default value) [])
+                      (section-entries value))
+        paths (sort (vec (set (mapcat (fn [task] (or (:search task) [])) tasks))))]
+    (mapv watch paths)))

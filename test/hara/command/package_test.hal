@@ -1,0 +1,63 @@
+(ns hara.command.package-test
+  (:require [code.deploy.stage :as stage]
+            [hara.command.package :as package]))
+
+(defn fixture-root
+  []
+  (let [root (deref (File/temp-directory "." {:prefix "hara-package-command-"}))
+        registry (File/join root "registry.edn")]
+    (deref (File/write (File/join root "project.edn")
+                       (String/encode-utf8 (str "{:project/id \"fixture/command\" :project/version \"1.0.0\" :project/dependencies {} :project/dependency-registry \"" registry "\"}"))
+                       {:mode :replace :parents? true}))
+    (deref (File/write registry
+                       (String/encode-utf8 "{:packages {\"hara:demo/base\" {\"1.0.0\" {:description \"demo\"}}}}")
+                       {:mode :replace :parents? true}))
+    root))
+
+^{:refer hara.command.package/root}
+(Test/check
+ [{:name "uses an explicit package command root"
+   :test (fn [] (package/root {:root "/fixture/project"}))
+   :expected "/fixture/project"}])
+
+^{:refer hara.command.package/parse}
+(Test/check
+ [{:name "parses package options and positional arguments"
+   :test (fn [] (package/parse ["add" "hara:demo/base" "^1.0.0"
+                                "--root" "/tmp/demo" "--locked"]))
+   :expected {:operation :add
+              :arguments ["hara:demo/base" "^1.0.0"]
+              :options {:root "/tmp/demo" :mode :locked}}}])
+
+^{:refer hara.command.package/output}
+(Test/check
+ [{:name "renders package command values as EDN output"
+   :test (fn [] (package/output {:status :ok}))
+   :expected {:stdout "{:status :ok}\n" :stderr "" :exit 0}}])
+
+^{:refer hara.command.package/execute}
+(Test/check
+ [{:name "executes local registry search and package info"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (let [search (package/execute (package/parse ["search" "demo" "--root" root]))
+                          info (package/execute (package/parse ["info" "hara:demo/base" "--root" root]))
+                          pull (package/execute (package/parse ["pull" "--root" root]))]
+                      [(str/ends-with? (:registry search) "/registry.edn")
+                       (:coordinates search)
+                       info
+                       (:selected pull)])
+                    (finally (stage/delete-tree root)))))
+   :expected [true ["hara:demo/base"]
+              {"1.0.0" {:description "demo"}}
+              {}]}])
+
+^{:refer hara.command.package/response}
+(Test/check
+ [{:name "returns a successful EDN command response"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (select-keys (package/response {:arguments {:argv ["check" "--root" root]}})
+                                 [:stderr :exit])
+                    (finally (stage/delete-tree root)))))
+   :expected {:stderr "" :exit 0}}])

@@ -1,0 +1,70 @@
+(ns lang.runtime.basic.impl.process-rust-test
+  (:require [lang.core.registry :as registry]
+            [lang.core.runtime :as runtime]
+            [lang.runtime.basic.impl.process-rust :as subject]
+            [lang.runtime.basic.type-common :as common]))
+
+^{:refer lang.runtime.basic.impl.process-rust/rust-source-transform}
+(Test/check
+ [{:name "wraps a Rust expression in an executable main function"
+   :test (fn [] (let [source (subject/rust-source-transform "1 + 2")]
+                  [(str/includes? source "fn main()")
+                   (str/includes? source "println!(\"{}\", 1 + 2)")]))
+   :expected [true true]}])
+
+^{:refer lang.runtime.basic.impl.process-rust/+rust-program-init+}
+(Test/check
+ [{:name "declares rustc for two-step execution and metadata verification"
+   :test (fn [] [(get-in subject/+rust-program-init+ [:default :twostep])
+                 (get-in subject/+rust-program-init+ [:default :verify])
+                 (get-in subject/+rust-program-init+ [:env :rustc :flags :verify])
+                 (get-in (common/get-program-options :rust) [:env :rustc :extension])])
+   :expected [:rustc :rustc ["--emit=metadata"] "rs"]}])
+
+^{:refer lang.runtime.basic.impl.process-rust/+rust-twostep-config+}
+(Test/check
+ [{:name "configures Rust expressions for standalone compiler execution"
+   :test (fn [] [(select-keys subject/+rust-twostep-config+ [:main :emit :json])
+                 (fn? (:source-transform subject/+rust-twostep-config+))])
+   :expected [{:main {} :emit {} :json :string} true]}])
+
+^{:refer lang.runtime.basic.impl.process-rust/+rust-verify-config+}
+(Test/check
+ [{:name "configures Rust verification as a compile-only source round trip"
+   :test (fn [] (select-keys subject/+rust-verify-config+
+                              [:json :compile-only :return-source]))
+   :expected {:json false :compile-only true :return-source true}}])
+
+^{:refer lang.runtime.basic.impl.process-rust/+rust-twostep+}
+(Test/check
+ [{:name "installs the Rust compiler runtime type"
+   :test (fn [] [(select-keys subject/+rust-twostep+ [:lang :runtime :type])
+                 (set (keys (:instance subject/+rust-twostep+)))
+                 (registry/registry-runtime-ns :rust :twostep)])
+   :expected [{:lang :rust :runtime :twostep :type :lang/rt.twostep}
+              #{:create :raw-eval}
+              'lang.runtime.basic.impl.process-rust]}])
+
+^{:refer lang.runtime.basic.impl.process-rust/+rust-verify+}
+(Test/check
+ [{:name "installs the Rust compile-only verification coordinate"
+   :test (fn [] [(select-keys subject/+rust-verify+ [:lang :runtime :type])
+                 (:type (runtime/runtime-spec :rust :verify))])
+   :expected [{:lang :rust :runtime :verify :type :lang/rt.twostep}
+              :lang/rt.twostep]}])
+
+^{:refer lang.runtime.basic.impl.process-rust/+init+}
+(Test/check
+ [{:name "publishes the complete Rust process runtime family"
+   :test (fn [] [(get subject/+init+ :lang)
+                 (set (keys (dissoc subject/+init+ :lang)))])
+   :expected [:rust #{:program :twostep :verify}]}])
+
+^{:refer lang.runtime.basic.impl.process-rust/rust-source-transform}
+(Test/check
+ [{:name "runs and verifies emitted Rust expressions"
+   :test (fn [] (let [twostep (runtime/rt-start (runtime/rt-create :rust :twostep))
+                       verify (runtime/rt-start (runtime/rt-create :rust :verify))]
+                  [(runtime/rt-raw-eval twostep "1 + 2")
+                   (runtime/rt-raw-eval verify "1 + 2")]))
+   :expected ["3" "1 + 2"]}])

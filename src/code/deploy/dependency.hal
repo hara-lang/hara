@@ -1,0 +1,382 @@
+(ns code.deploy.dependency
+  (:config {:role :internal})
+  (:require [std.lib.format.version :as version]))
+
+(def +scopes+
+  #{:compile :runtime :test})
+
+(def +default-registry+
+  "https://packages.hara-lang.org")
+
+(defn ^{:public true} dependency
+  "Normalises one Hara dependency declaration.
+
+  Strings remain the compact version form. Maps may add :scope, :optional,
+  and :exclusions; these fields are intentionally data-only so the resolver
+  can reproduce the exact declaration in the lockfile."
+  [coordinate value]
+  (let [coordinate (str coordinate)
+        declaration (cond
+                      (string? value) {:version value}
+                      (map? value) value
+                      :else
+                      (throw
+                       (ex :code.deploy/invalid-dependency
+                           {:coordinate coordinate :value value}
+                           :ex/message "Hara dependencies must be version strings or maps")))
+        requirement (:version declaration)
+        scope (or (:scope declaration) :compile)
+        optional (or (:optional declaration) false)
+        exclusions (or (:exclusions declaration) [])]
+    (cond
+      (not (string? requirement))
+      (throw
+       (ex :code.deploy/invalid-dependency
+           {:coordinate coordinate :declaration declaration}
+           :ex/message "Hara dependency declarations require a string :version"))
+
+      (not (has? +scopes+ scope))
+      (throw
+       (ex :code.deploy/invalid-dependency
+           {:coordinate coordinate :scope scope}
+           :ex/message "Hara dependency :scope must be :compile, :runtime, or :test"))
+
+      (not (vector? exclusions))
+      (throw
+       (ex :code.deploy/invalid-dependency
+           {:coordinate coordinate :exclusions exclusions}
+           :ex/message "Hara dependency :exclusions must be a vector"))
+
+      :else
+      {:version requirement
+       :scope scope
+       :optional optional
+       :exclusions (vec (sort (map str exclusions)))})))
+
+(defn ^{:public true} dependencies
+  "Normalises a project's Hara-only dependency map in coordinate order."
+  [value]
+  (if (nil? value)
+    {}
+    (if (not (map? value))
+      (throw
+       (ex :code.deploy/invalid-dependencies
+           {:dependencies value}
+           :ex/message "Hara project dependencies must be a map"))
+      (reduce
+       (fn [output coordinate]
+         (assoc output
+                (str coordinate)
+                (dependency coordinate (get value coordinate))))
+       {}
+       (sort-by str (keys value))))))
+
+(defn version-order
+  [value]
+  (let [parsed (version/parse (str value))]
+    [(or (:major parsed) 0)
+     (or (:minor parsed) 0)
+     (or (:incremental parsed) 0)
+     (or (:qualifier parsed) -1)]))
+
+(defn valid-version?
+  [value]
+  (let [parsed (version/parse (str value))]
+    (and (string? value)
+         (long? (:major parsed))
+         (long? (:minor parsed))
+         (long? (:incremental parsed)))))
+
+(defn compare-version
+  [left right]
+  (compare (version-order left) (version-order right)))
+
+(defn upper-bound
+  [value kind]
+  (let [parsed (version/parse (str value))
+        major (or (:major parsed) 0)
+        minor (or (:minor parsed) 0)]
+    (cond
+      (= kind :caret)
+      (if (= 0 major)
+        (str/join "" [(str major) "." (str (inc minor)) ".0"])
+        (str/join "" [(str (inc major)) ".0.0"]))
+
+      :else
+      (str/join "" [(str major) "." (str (inc minor)) ".0"]))))
+
+(defn clause-satisfies?
+  [candidate clause]
+  (let [clause (str/trim (str clause))]
+    (cond
+      (or (= clause "") (= clause "*") (= clause "latest")) true
+
+      (str/starts-with? clause "^")
+      (let [lower (str/slice clause 1 (str/length clause))
+            upper (upper-bound lower :caret)]
+        (and (>= (compare-version candidate lower) 0)
+             (< (compare-version candidate upper) 0)))
+
+      (str/starts-with? clause "~")
+      (let [lower (str/slice clause 1 (str/length clause))
+            upper (upper-bound lower :tilde)]
+        (and (>= (compare-version candidate lower) 0)
+             (< (compare-version candidate upper) 0)))
+
+      (str/starts-with? clause ">=")
+      (>= (compare-version candidate (str/slice clause 2 (str/length clause))) 0)
+
+      (str/starts-with? clause "<=")
+      (<= (compare-version candidate (str/slice clause 2 (str/length clause))) 0)
+
+      (str/starts-with? clause ">")
+      (> (compare-version candidate (str/slice clause 1 (str/length clause))) 0)
+
+      (str/starts-with? clause "<")
+      (< (compare-version candidate (str/slice clause 1 (str/length clause))) 0)
+
+      (str/starts-with? clause "=")
+      (version/equal? candidate (str/slice clause 1 (str/length clause)))
+
+      :else
+      (version/equal? candidate clause))))
+
+(defn requirement-satisfies?
+  "Returns whether a release satisfies every comma-separated version clause.
+
+  The supported Hara range vocabulary is exact, =, ^, ~, and ordered bounds.
+  A caret range uses the conventional zero-major rule, so ^0.1.0 ends before
+  0.2.0 while ^1.0.0 ends before 2.0.0."
+  [candidate requirement]
+  (and (valid-version? (str candidate))
+       (every? (fn [clause]
+                 (clause-satisfies? candidate clause))
+               (str/split (str requirement) ","))))
+
+(defn ^{:public true} satisfies?
+  "Returns whether a release satisfies every supported version clause."
+  [candidate requirement]
+  (requirement-satisfies? candidate requirement))
+
+(defn candidate-version
+  [candidate]
+  (or (:version candidate) (:package/version candidate)))
+
+(defn ^{:public true} release-candidates
+  "Normalises a registry coordinate into versioned release descriptors."
+  [registry coordinate]
+  (let [packages (or (:registry/packages registry) (:packages registry) {})
+        entry (get packages coordinate)]
+    (cond
+      (nil? entry) []
+      (and (map? entry) (candidate-version entry)) [entry]
+      (map? entry)
+      (vec
+       (keep
+        (fn [tag]
+          (let [value (get entry tag)]
+            (if (map? value)
+              (assoc value :version (str (or (:version value) tag)))
+              nil)))
+        (sort-by str (keys entry))))
+      :else [])))
+
+(defn stable-candidates
+  [registry coordinate constraints]
+  (let [released (release-candidates registry coordinate)
+        filtered
+        (reduce
+         (fn [output candidate]
+           (let [value (candidate-version candidate)
+                 stable? (or (= 6 (:qualifier (version/parse (str value))))
+                             (loop [remaining constraints]
+                               (if (empty? remaining)
+                                 false
+                                 (if (str/includes? (str (first remaining)) "-")
+                                   true
+                                   (recur (rest remaining))))))
+                 matches?
+                 (loop [remaining constraints]
+                   (if (empty? remaining)
+                     true
+                     (and (requirement-satisfies? value (first remaining))
+                          (recur (rest remaining)))))]
+             (if (and (valid-version? value) stable? matches?)
+               (conj output candidate)
+               output)))
+         []
+         released)]
+    (vec (sort-by (fn [candidate]
+                    (version-order (candidate-version candidate)))
+                  filtered))))
+
+(defn candidate-dependencies
+  [candidate]
+  (let [raw (or (:dependencies candidate)
+                (:dependency-declarations candidate)
+                (:package/dependencies candidate)
+                {})]
+    (cond
+      (map? raw)
+      (dependencies raw)
+
+      (vector? raw)
+      (dependencies
+       (reduce
+        (fn [output coordinate]
+          (assoc output
+                 coordinate
+                 {:version (str "=" (candidate-version candidate))}))
+        {}
+        raw))
+
+      :else
+      (dependencies raw))))
+
+(defn dependency-path
+  [chain coordinate]
+  (vec (conj (vec chain) coordinate)))
+
+(defn candidate-pending
+  [pending item coordinate candidate]
+  (let [declaration (:declaration item)
+        chain (dependency-path (:chain item) coordinate)]
+    (reduce
+     (fn [output child]
+       (let [[child-coordinate child-declaration] child]
+         (if (or (:optional child-declaration)
+                 (= :test (:scope child-declaration))
+                 (has? (set (:exclusions declaration)) child-coordinate))
+           output
+           (conj output
+                 {:coordinate child-coordinate
+                  :declaration child-declaration
+                  :chain chain}))))
+     pending
+     (candidate-dependencies candidate))))
+
+(defn resolve-candidates
+  [candidates pending state registry item coordinate]
+  (let [candidate (last candidates)
+        state (assoc-in state [:selected coordinate] candidate)
+        state (assoc-in state [:paths coordinate]
+                        (conj (vec (or (get-in state [:paths coordinate]) []))
+                              (:chain item)))
+        next (candidate-pending pending item coordinate candidate)
+        remaining (vec (butlast candidates))]
+    (try
+      (resolve-pending next state registry)
+      (catch error
+        (if (empty? remaining)
+          (throw error)
+          (resolve-candidates remaining pending state registry item coordinate))))))
+
+(defn resolve-pending
+  [pending state registry]
+  (if (empty? pending)
+    state
+    (let [item (first pending)
+          pending (vec (rest pending))
+          coordinate (:coordinate item)
+          declaration (:declaration item)
+          chain (:chain item)
+          constraints (conj (vec (or (get-in state [:constraints coordinate]) []))
+                            (:version declaration))
+          state (assoc-in state [:constraints coordinate] constraints)
+          selected (get-in state [:selected coordinate])]
+      (cond
+        (has? (set chain) coordinate)
+        (throw
+         (ex :code.deploy/dependency-cycle
+             {:coordinate coordinate
+              :path (dependency-path chain coordinate)}
+             :ex/message "Hara dependency graph contains a cycle"))
+
+        (and selected
+             (loop [remaining constraints]
+               (if (empty? remaining)
+                 true
+                 (and (requirement-satisfies? (candidate-version selected)
+                                              (first remaining))
+                      (recur (rest remaining))))))
+        (resolve-pending pending state registry)
+
+        selected
+        (throw
+         (ex :code.deploy/version-conflict
+             {:coordinate coordinate
+              :constraints constraints
+              :selected selected
+              :paths (conj (vec (or (get-in state [:paths coordinate]) [])) chain)}
+             :ex/message "Hara dependency constraints have no strict intersection"))
+
+        :else
+        (let [candidates (stable-candidates registry coordinate constraints)]
+          (if (empty? candidates)
+            (throw
+             (ex :code.deploy/unresolved-dependency
+                 {:coordinate coordinate
+                  :constraints constraints
+                 :path (dependency-path chain coordinate)}
+                 :ex/message "No Hara release satisfies the dependency constraints"))
+            (resolve-candidates candidates pending state registry item coordinate)))))))
+
+(defn ^{:public true} resolve
+  "Resolves Hara-only dependencies by strict constraint intersection."
+  [project registry]
+  (let [declared (dependencies (:project/dependencies project))
+        pending (reduce
+                 (fn [output coordinate]
+                   (conj output
+                         {:coordinate coordinate
+                          :declaration (get declared coordinate)
+                          :chain [(str (:project/id project))]}))
+                 []
+                 (sort (keys declared)))]
+    (resolve-pending pending {:constraints {} :paths {} :selected {}} registry)))
+
+(defn lock-project
+  [project]
+  {:id (:project/id project)
+   :version (:project/version project)
+   :digest (str "sha256:" (Crypto/sha256 (String/encode-utf8 (Edn/write project))))})
+
+(defn lock-package
+  [candidate]
+  (select-keys
+   candidate
+   [:version :source :archive-sha256 :archive-size :oci/repository
+    :oci/manifest :namespaces :dependencies]))
+
+(defn ^{:public true} lock-document
+  "Builds a deterministic lock document from the selected Hara graph."
+  [project registry resolved]
+  {:lock/format "0.1.0"
+   :lock/project (lock-project project)
+   :lock/registry {:url (or (:registry/url registry) (:url registry) +default-registry+)
+                   :digest (str "sha256:" (Crypto/sha256
+                                             (String/encode-utf8 (Edn/write registry))))}
+   :packages
+   (reduce
+    (fn [output coordinate]
+      (assoc output coordinate
+             (lock-package (get-in resolved [:selected coordinate]))))
+    {}
+    (sort (keys (:selected resolved))))})
+
+(defn ^{:public true} lock-valid?
+  "Returns true when a lock belongs to the exact current project declaration."
+  [project lock]
+  (and (map? lock)
+       (= "0.1.0" (:lock/format lock))
+       (= (lock-project project) (:lock/project lock))
+       (map? (:lock/registry lock))
+       (string? (get-in lock [:lock/registry :url]))
+       (string? (get-in lock [:lock/registry :digest]))
+       (map? (:packages lock))
+       (every?
+        (fn [coordinate]
+          (let [candidate (get (:packages lock) coordinate)]
+            (and (map? candidate)
+                 (string? (:version candidate)))))
+        (keys (:packages lock)))))

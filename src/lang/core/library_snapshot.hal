@@ -1,0 +1,209 @@
+(ns lang.core.library-snapshot
+  (:config {:role :internal})
+  (:require [lang.common.book-entry :as entry]
+            [lang.common.book-module :as module]))
+
+(defstruct LibrarySnapshot [revision books selected])
+
+(defn snapshot?
+  "Returns true when value is a pure LibrarySnapshot."
+  [value]
+  (instance? lang.core.library-snapshot/LibrarySnapshot value))
+
+(defn snapshot
+  "Constructs an immutable LibrarySnapshot with lazy Book records."
+  [value]
+  (map->LibrarySnapshot
+   (merge {:revision 0 :books {} :selected {}}
+          (or value {}))))
+
+(defn snapshot-empty
+  "Returns the deterministic blank library snapshot."
+  []
+  (snapshot {}))
+
+(defn snapshot-coordinate
+  "Returns the stable coordinate for a selected Book version."
+  [language key version]
+  [language key version])
+
+(defn snapshot-book-coordinate
+  "Returns the selected Book coordinate for one language."
+  [value language]
+  (get (:selected value) language))
+
+(defn snapshot-book
+  "Returns the lazy Book record selected for one language."
+  [value language]
+  (let [coordinate (snapshot-book-coordinate value language)]
+    (if coordinate (get (:books value) coordinate))))
+
+(defn snapshot-book-at
+  "Returns a lazy Book record by its exact coordinate."
+  [value coordinate]
+  (get (:books value) coordinate))
+
+(defn snapshot-book-info
+  "Returns cheap registry metadata for the selected Book."
+  [value language]
+  (:info (snapshot-book value language)))
+
+(defn snapshot-revision
+  "Returns the revision used to invalidate derived compilation state."
+  [value]
+  (:revision value))
+
+(defn snapshot-next
+  "Returns a snapshot with one advanced mutation revision."
+  [value]
+  (assoc value :revision (inc (snapshot-revision value))))
+
+(defn snapshot-select-book
+  "Selects a lazy Book coordinate without resolving its Book value."
+  [value language key version info]
+  (let [coordinate (snapshot-coordinate language key version)
+        previous (snapshot-book-at value coordinate)
+        record (merge {:info info :book nil :modules {}}
+                      previous
+                      {:info info})]
+    (-> value
+        (assoc-in [:books coordinate] record)
+        (assoc-in [:selected language] coordinate)
+        (snapshot-next))))
+
+(defn snapshot-cache-book
+  "Stores an already resolved immutable Book in its selected lazy record."
+  [value language resolved]
+  (let [coordinate (snapshot-book-coordinate value language)]
+    (if (nil? coordinate)
+      (throw (ex :not-found {:language language}
+                 :ex/message "Book is not selected in this LibrarySnapshot"))
+      (assoc-in value [:books coordinate :book] resolved))))
+
+(defn snapshot-module
+  "Returns one source module owned by the selected language Book."
+  [value language module-id]
+  (get-in value [:books (snapshot-book-coordinate value language)
+                 :modules module-id]))
+
+(defn snapshot-entry
+  "Returns one source entry owned by a selected Book module."
+  [value language module-id section entry-id]
+  (get-in value [:books (snapshot-book-coordinate value language)
+                 :modules module-id section entry-id]))
+
+(defn snapshot-require-book
+  "Returns a selected Book record or throws a stable missing-selection error."
+  [value language]
+  (let [record (snapshot-book value language)]
+    (if record
+      record
+      (throw (ex :not-found {:language language
+                             :available (keys (:selected value))}
+                 :ex/message "Book is not selected in this LibrarySnapshot")))))
+
+(defn snapshot-module-value
+  "Retains a BookModule or persistent source module map without dropping metadata."
+  [value]
+  value)
+
+(defn snapshot-entry-value
+  "Retains a BookEntry or persistent source entry map without dropping metadata."
+  [value]
+  value)
+
+(defn snapshot-set-module
+  "Associates one BookModule with its declared language Book."
+  [value language module-value]
+  (let [module-value (snapshot-module-value module-value)
+        _ (snapshot-require-book value language)]
+    (if (not= language (:lang module-value))
+      (throw (ex :argument {:language language :module module-value}
+                 :ex/message "BookModule language does not match selected Book"))
+      (-> value
+          (assoc-in [:books (snapshot-book-coordinate value language)
+                     :modules (:id module-value)]
+                    module-value)
+          (snapshot-next)))))
+
+(defn snapshot-delete-module
+  "Deletes one locally owned BookModule from its selected language Book."
+  [value language module-id]
+  (let [_ (snapshot-require-book value language)]
+    (-> value
+        (update-in [:books (snapshot-book-coordinate value language) :modules]
+                   dissoc module-id)
+        (snapshot-next))))
+
+(defn snapshot-set-entry
+  "Associates one BookEntry with an existing locally owned BookModule."
+  [value language entry-value]
+  (let [entry-value (snapshot-entry-value entry-value)
+        module-value (snapshot-module value language (:module entry-value))]
+    (if (nil? module-value)
+      (throw (ex :not-found {:language language
+                             :module (:module entry-value)
+                             :entry (:id entry-value)}
+                 :ex/message "BookModule is not owned by this LibrarySnapshot"))
+      (if (not= language (:lang entry-value))
+        (throw (ex :argument {:language language :entry entry-value}
+                   :ex/message "BookEntry language does not match selected Book"))
+        (-> value
+            (assoc-in [:books (snapshot-book-coordinate value language)
+                       :modules (:module entry-value) (:section entry-value)
+                       (:id entry-value)]
+                      entry-value)
+            (snapshot-next))))))
+
+(defn snapshot-delete-entry
+  "Deletes one locally owned BookEntry."
+  [value language module-id section entry-id]
+  (let [_ (snapshot-require-book value language)]
+    (-> value
+        (update-in [:books (snapshot-book-coordinate value language)
+                    :modules module-id section]
+                   dissoc entry-id)
+        (snapshot-next))))
+
+(defn snapshot-list-modules
+  "Lists locally owned module ids in deterministic order."
+  [value language]
+  (vec (sort-by str (keys (or (:modules (snapshot-book value language)) {})))))
+
+(defn snapshot-list-entries
+  "Lists locally owned entry ids in deterministic order."
+  [value language module-id section]
+  (vec (sort-by str
+                (keys (or (get-in value [:books
+                                         (snapshot-book-coordinate value language)
+                                         :modules module-id section]) {})))))
+
+(defn snapshot-merge-book
+  "Merges parent and child records for one exact Book coordinate."
+  [parent child]
+  (cond (nil? parent) child
+        (nil? child) parent
+        :else {:info (or (:info child) (:info parent))
+               :book (or (:book child) (:book parent))
+               :modules (merge (or (:modules parent) {})
+                               (or (:modules child) {}))}))
+
+(defn snapshot-merge
+  "Builds an effective child snapshot without mutating either input snapshot."
+  [parent child]
+  (cond (nil? parent) child
+        (nil? child) parent
+        :else
+        (let [books (reduce-kv
+                     (fn [output coordinate record]
+                       (assoc output coordinate
+                              (snapshot-merge-book (get output coordinate) record)))
+                     (or (:books parent) {})
+                     (or (:books child) {}))
+              selected (merge (or (:selected parent) {})
+                              (or (:selected child) {}))]
+          (snapshot {:revision (hash [(:revision parent)
+                                      (:revision child)
+                                      selected])
+                     :books books
+                     :selected selected}))))

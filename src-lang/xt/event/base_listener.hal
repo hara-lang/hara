@@ -1,0 +1,294 @@
+(ns xt.event.base-listener
+  (:require [lang.core :as l]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-data :as xtd]]})
+
+(def ^{:schema :xt/any} EventPayload nil)
+
+(def ^{:schema :xt/any} EventListenerMeta nil)
+
+(def ^{:schema [:fn [EventPayload] :xt/any]} EventListenerCallback nil)
+
+(def ^{:schema [:xt/record
+                ["callback" EventListenerCallback]
+                ["meta" EventListenerMeta]
+                ["pred" [:xt/maybe [:fn [:xt/any] :xt/bool]]]]}
+  EventListenerEntry
+  nil)
+
+(def ^{:schema [:xt/dict :xt/str EventListenerEntry]} EventListenerMap nil)
+
+(def ^{:schema [:xt/dict :xt/str EventListenerMap]} EventListenerGroups nil)
+
+(def ^{:schema [:xt/dict :xt/str [:xt/array :xt/str]]} EventTypeIndex nil)
+
+(def ^{:schema [:xt/record
+                ["::" :xt/str]
+                ["listeners" EventListenerMap]]}
+  EventContainer
+  nil)
+
+(defn.xt ^{:schema [:fn [:xt/str [:xt/dict :xt/str :xt/any]] EventContainer]}
+  blank-container
+  "Creates an empty listener container with caller-supplied attributes."
+  {:added "4.1"}
+  [type-name opts]
+  (var container (xt/x:obj-assign
+                  {"::" type-name
+                   :listeners {}}
+                  opts))
+  (return container))
+
+(defn.xt ^{:schema [:fn [:xt/any :xt/str [:xt/dict :xt/str :xt/any]] EventContainer]}
+  make-container
+  "Creates a listener container and normalizes a value initialiser to a function."
+  {:added "4.1"}
+  [initial type-name opts]
+  (var initial-fn initial)
+  (when (not (xt/x:is-function? initial-fn))
+    (:= initial-fn (fn [] (return initial))))
+  (var data (initial-fn))
+  (var container (xt/x:obj-assign
+                  {"::" type-name
+                   :data data
+                   :initial initial-fn
+                   :listeners {}}
+                  opts))
+  (return container))
+
+(defn.xt ^{:schema [:fn [:xt/str :xt/str EventListenerCallback
+                         [:xt/maybe EventListenerMeta]
+                         [:xt/maybe [:fn [:xt/any] :xt/bool]]]
+                        EventListenerEntry]}
+  make-listener-entry
+  "Creates a listener entry with its identity and type metadata."
+  {:added "4.1"}
+  [listener-id listener-type callback meta pred]
+  (return {:callback callback
+           :pred pred
+           :meta (xt/x:obj-assign
+                  {:listener/id listener-id
+                   :listener/type listener-type}
+                  meta)}))
+
+(defn.xt ^{:schema [:fn [:xt/any] :xt/bool]}
+  listener-entry?
+  "Returns true only for a plain listener entry, not a keyed listener group."
+  {:added "4.1"}
+  [entry]
+  (return (and (xt/x:not-nil? entry)
+               (xt/x:is-function? (. entry ["callback"])))))
+
+(defn.xt ^{:schema [:fn [:xt/any] [:xt/array :xt/any]]}
+  arrayify-path
+  "Normalizes an event path, with nil and an empty object representing no path."
+  {:added "4.1"}
+  [x]
+  (when (xt/x:is-array? x)
+    (return x))
+  (when (or (xt/x:nil? x)
+            (and (xt/x:is-object? x)
+                 (xtd/is-empty? x)))
+    (return []))
+  (return [x]))
+
+(defn.xt ^{:schema [:fn [EventPayload] :xt/any]}
+  callback-data
+  "Clones object event data while removing callback-internal metadata."
+  {:added "4.1"}
+  [event]
+  (when (not (xt/x:is-object? event))
+    (return event))
+  (var out (xt/x:obj-clone event))
+  (when (xt/x:has-key? out "meta")
+    (xt/x:del-key out "meta"))
+  (return out))
+
+(defn.xt ^{:schema [:fn [EventPayload] :xt/any]}
+  callback-time
+  "Returns the explicit event time, falling back to its short t key."
+  {:added "4.1"}
+  [event]
+  (when (not (xt/x:is-object? event))
+    (return nil))
+  (when (xt/x:has-key? event "time")
+    (return (. event ["time"])))
+  (when (xt/x:has-key? event "t")
+    (return (. event ["t"])))
+  (return nil))
+
+(defn.xt ^{:schema [:fn [EventContainer] EventListenerMap]}
+  clear-listeners
+  "Removes plain listeners while retaining keyed listener groups."
+  {:added "4.1"}
+  [container]
+  (var #{listeners} container)
+  (var cleared {})
+  (var kept {})
+  (xt/for:object [[id entry] listeners]
+    (if (-/listener-entry? entry)
+      (xt/x:set-key cleared id entry)
+      (xt/x:set-key kept id entry)))
+  (xt/x:set-key container "listeners" kept)
+  (return cleared))
+
+(defn.xt ^{:schema [:fn [EventContainer :xt/str :xt/str EventListenerCallback
+                         [:xt/maybe EventListenerMeta]
+                         [:xt/maybe [:fn [:xt/any] :xt/bool]]]
+                        EventListenerEntry]}
+  add-listener
+  "Adds a plain listener to a container."
+  {:added "4.1"}
+  [container listener-id listener-type callback meta pred]
+  (var #{listeners} container)
+  (var entry (-/make-listener-entry listener-id listener-type callback meta pred))
+  (xt/x:set-key listeners listener-id entry)
+  (return entry))
+
+(defn.xt ^{:schema [:fn [EventContainer :xt/str] [:xt/maybe EventListenerEntry]]}
+  remove-listener
+  "Removes a plain listener by id without deleting keyed listener groups."
+  {:added "4.1"}
+  [container listener-id]
+  (var #{listeners} container)
+  (var entry (xt/x:get-key listeners listener-id))
+  (when (not (-/listener-entry? entry))
+    (return nil))
+  (xt/x:del-key listeners listener-id)
+  (return entry))
+
+(defn.xt ^{:schema [:fn [EventContainer] [:xt/array :xt/str]]}
+  list-listeners
+  "Lists ids belonging to plain listeners only."
+  {:added "4.1"}
+  [container]
+  (var #{listeners} container)
+  (var out [])
+  (xt/for:object [[id entry] listeners]
+    (when (-/listener-entry? entry)
+      (xt/x:arr-push out id)))
+  (return out))
+
+(defn.xt ^{:schema [:fn [EventContainer] EventTypeIndex]}
+  list-listener-types
+  "Indexes plain listener ids by listener type."
+  {:added "4.1"}
+  [container]
+  (var #{listeners} container)
+  (var out {})
+  (xt/for:object [[id listener-entry] listeners]
+    (when (-/listener-entry? listener-entry)
+      (var #{meta} listener-entry)
+      (var listener-type (. meta ["listener/type"]))
+      (var ids (xt/x:get-key out listener-type))
+      (when (xt/x:nil? ids)
+        (:= ids [])
+        (xt/x:set-key out listener-type ids))
+      (xt/x:arr-push ids id)))
+  (return out))
+
+(defn.xt ^{:schema [:fn [EventListenerEntry EventPayload] [:xt/maybe :xt/any]]}
+  trigger-entry
+  "Calls an entry when its predicate accepts the event."
+  {:added "4.1"}
+  [entry event]
+  (var #{callback meta pred} entry)
+  (when (or (xt/x:nil? pred)
+            (pred event))
+    (var callback-meta (xt/x:obj-assign (or (. event ["meta"]) {}) meta))
+    (var listener-id (. meta ["listener/id"]))
+    (return (callback listener-id
+                      (-/callback-data event)
+                      (-/callback-time event)
+                      callback-meta))))
+
+(defn.xt ^{:schema [:fn [EventContainer [:xt/maybe EventPayload]] [:xt/array :xt/str]]}
+  trigger-listeners
+  "Triggers every plain listener and returns the attempted listener ids."
+  {:added "4.1"}
+  [container event]
+  (when (xt/x:nil? event)
+    (:= event {}))
+  (var #{listeners} container)
+  (var triggered [])
+  (xt/for:object [[id entry] listeners]
+    (when (-/listener-entry? entry)
+      (-/trigger-entry entry event)
+      (xt/x:arr-push triggered id)))
+  (return triggered))
+
+(defn.xt ^{:schema [:fn [EventContainer :xt/str :xt/str :xt/str EventListenerCallback
+                         [:xt/maybe EventListenerMeta]
+                         [:xt/maybe [:fn [:xt/any] :xt/bool]]]
+                        EventListenerEntry]}
+  add-keyed-listener
+  "Adds a listener under a named keyed group."
+  {:added "4.1"}
+  [container key listener-id listener-type callback meta pred]
+  (var #{listeners} container)
+  (var entry (-/make-listener-entry listener-id listener-type callback meta pred))
+  (var group (xt/x:get-key listeners key))
+  (when (xt/x:nil? group)
+    (:= group {})
+    (xt/x:set-key listeners key group))
+  (xt/x:set-key group listener-id entry)
+  (return entry))
+
+(defn.xt ^{:schema [:fn [EventContainer :xt/str :xt/str] [:xt/maybe EventListenerEntry]]}
+  remove-keyed-listener
+  "Removes a keyed listener and removes its group once empty."
+  {:added "4.1"}
+  [container key listener-id]
+  (var #{listeners} container)
+  (var group (xt/x:get-key listeners key))
+  (when (or (xt/x:nil? group)
+            (-/listener-entry? group))
+    (return nil))
+  (var entry (xt/x:get-key group listener-id))
+  (xt/x:del-key group listener-id)
+  (when (xtd/obj-empty? group)
+    (xt/x:del-key listeners key))
+  (return entry))
+
+(defn.xt ^{:schema [:fn [EventContainer :xt/str] [:xt/array :xt/str]]}
+  list-keyed-listeners
+  "Lists ids in a keyed group, returning an empty array for a plain listener id."
+  {:added "4.1"}
+  [container key]
+  (var #{listeners} container)
+  (var group (xt/x:get-key listeners key))
+  (when (or (xt/x:nil? group)
+            (-/listener-entry? group))
+    (return []))
+  (return (xt/x:obj-keys group)))
+
+(defn.xt ^{:schema [:fn [EventContainer] [:xt/dict :xt/str [:xt/array :xt/str]]]}
+  all-keyed-listeners
+  "Lists every keyed group and its listener ids."
+  {:added "4.1"}
+  [container]
+  (var #{listeners} container)
+  (var out {})
+  (xt/for:object [[key group] listeners]
+    (when (not (-/listener-entry? group))
+      (xt/x:set-key out key (-/list-keyed-listeners container key))))
+  (return out))
+
+(defn.xt ^{:schema [:fn [EventContainer :xt/str [:xt/maybe EventPayload]] [:xt/array :xt/str]]}
+  trigger-keyed-listeners
+  "Triggers listeners in one keyed group and returns their ids."
+  {:added "4.1"}
+  [container key event]
+  (when (xt/x:nil? event)
+    (:= event {}))
+  (var #{listeners} container)
+  (var group (xt/x:get-key listeners key))
+  (var triggered [])
+  (when (and (xt/x:not-nil? group)
+             (not (-/listener-entry? group)))
+    (xt/for:object [[id entry] group]
+      (-/trigger-entry entry event)
+      (xt/x:arr-push triggered id)))
+  (return triggered))

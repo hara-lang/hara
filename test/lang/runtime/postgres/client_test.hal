@@ -353,7 +353,9 @@
  [{:name "recognizes only source-pipeline modules as compilable"
    :test (fn [] (let [snapshot (script/script-snapshot)]
                   (try
-                    (reset! script/+modules+ {'demo.pg {:id 'demo.pg}})
+                    (script/register-library-module!
+                     :postgres {:id 'demo.pg :lang :postgres :code {} :fragment {}})
+                    (reset! script/+modules+ {})
                     [(client/module-source? {:id 'demo.pg})
                      (client/module-source? {:id :demo})]
                     (finally (script/script-restore! snapshot)))))
@@ -375,7 +377,8 @@
                              {:adapter {:compile-module (fn [client module] "SELECT 1")
                                         :lifecycle-eval (fn [client source] [:ran source])}})]
                   (try
-                    (reset! script/+modules+ {'demo.pg {:id 'demo.pg}})
+                    (script/register-library-module!
+                     :postgres {:id 'demo.pg :lang :postgres :code {} :fragment {}})
                     (client/run-module-code value {:id 'demo.pg})
                     (finally (script/script-restore! snapshot)))))
    :expected [:ran "SELECT 1"]}])
@@ -386,7 +389,9 @@
    :test (fn [] (let [snapshot (script/script-snapshot)
                       entry {:id 'Log :static {:static/dbtype :table}}]
                   (try
-                    (reset! script/+modules+ {'demo.pg {:id 'demo.pg :code {'Log entry}}})
+                    (script/register-library-module!
+                     :postgres {:id 'demo.pg :lang :postgres :code {'Log entry} :fragment {}})
+                    (reset! script/+modules+ {})
                     (client/pointer-entry {:module 'demo.pg :id 'Log})
                     (finally (script/script-restore! snapshot)))))
    :expected {:id 'Log :static {:static/dbtype :table}}}])
@@ -460,8 +465,14 @@
 ^{:refer lang.runtime.postgres.client/runtime-entry}
 (Test/check
  [{:name "returns the canonical client entry without compatibility aliases"
-   :test (fn [] (select-keys (client/runtime-entry) [:key :runtime :create]))
-   :expected {:key :client :runtime :client :create client/rt-create}}])
+   :test (fn [] (let [entry (client/runtime-entry)
+                      value ((:create entry) {:id :entry})]
+                  [(:key entry)
+                   (:runtime entry)
+                   (:id value)
+                   (:language value)
+                   (:runtime value)]))
+   :expected [:client :client :entry :postgres :client]}])
 
 ^{:refer lang.runtime.postgres.client/install}
 (Test/check

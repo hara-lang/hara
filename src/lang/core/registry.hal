@@ -1,11 +1,4 @@
-(ns lang.core.registry
-  (:require [lang.common.registry :as grammar-registry]
-            [lang.model.v1.spec-hara :as spec-hara :lazy true]
-            [lang.model.v1.spec-js :as spec-js :lazy true]
-            [lang.model.v1.spec-lua :as spec-lua :lazy true]
-            [lang.model.v1.spec-python :as spec-python :lazy true]
-            [lang.model.v1.spec-xtalk :as spec-xtalk :lazy true]
-            [lang.model.v1.spec-postgres :as spec-postgres :lazy true]))
+(ns lang.core.registry)
 
 ;; Runtime coordinates are declarative.  The native package loader owns
 ;; namespace loading; this registry only confirms that the declared runtime is
@@ -29,6 +22,22 @@
    {:namespace 'lang.runtime.basic.impl.process-lua}
    [:lua :basic]
    {:namespace 'lang.runtime.basic.impl.process-lua}
+   [:c :twostep]
+   {:namespace 'lang.runtime.basic.impl.process-c}
+   [:c :verify]
+   {:namespace 'lang.runtime.basic.impl.process-c}
+   [:go :twostep]
+   {:namespace 'lang.runtime.basic.impl.process-go}
+   [:go :verify]
+   {:namespace 'lang.runtime.basic.impl.process-go}
+   [:rust :twostep]
+   {:namespace 'lang.runtime.basic.impl.process-rust}
+   [:rust :verify]
+   {:namespace 'lang.runtime.basic.impl.process-rust}
+   [:dart :twostep]
+   {:namespace 'lang.runtime.basic.impl.process-dart}
+   [:dart :verify]
+   {:namespace 'lang.runtime.basic.impl.process-dart}
    [:xtalk :host]
    {:namespace 'lang.runtime.basic.impl.process-xtalk}
    [:hara :host]
@@ -50,55 +59,127 @@
    {:default-version 1
     :versions
     {1 {:ns 'lang.model.v1.spec-xtalk
-        :load (fn [] spec-xtalk/+book+)}}}
+        :book '+book+}}}
 
    [:postgres :default]
    {:default-version 1
     :versions
     {1 {:ns 'lang.model.v1.spec-postgres
-        :load (fn [] spec-postgres/+book+)}}}
+        :book '+book+}}}
 
    [:hara :default]
    {:default-version 1
     :versions
     {1 {:ns 'lang.model.v1.spec-hara
-        :load (fn [] spec-hara/+book+)}}}
+        :book '+book+
+        :parent :xtalk}}}
 
    [:js :default]
    {:default-version 1
     :versions
     {1 {:ns 'lang.model.v1.spec-js
-        :load (fn [] spec-js/+book+)}}}
+        :book '+book+
+        :parent :xtalk}}}
 
    [:python :default]
    {:default-version 1
     :versions
     {1 {:ns 'lang.model.v1.spec-python
-        :load (fn [] spec-python/+book+)}}}
+        :book '+book+
+        :parent :xtalk}}}
 
    [:lua :default]
    {:default-version 1
     :versions
     {1 {:ns 'lang.model.v1.spec-lua
-        :load (fn [] spec-lua/+book+)}}}})
+        :book '+book+
+        :parent :xtalk}}}
+
+   [:go :default]
+   {:default-version 1
+    :versions
+    {1 {:ns 'lang.model.v1.spec-go
+        :book '+book+
+        :parent :xtalk}}}
+
+   [:c :default]
+   {:default-version 1
+    :versions
+    {1 {:ns 'lang.model.v1.spec-c
+        :book '+book+
+        :parent :xtalk}}}})
 
 (def +book-registry+ (atom +book-baseline+))
 
-(def +grammar-loaders+
-  {:xtalk (fn [catalog] (spec-xtalk/install catalog))
-   :hara (fn [catalog] (spec-hara/install catalog))
-   :js (fn [catalog] (spec-js/install catalog))
-   :python (fn [catalog] (spec-python/install catalog))
-   :lua (fn [catalog] (spec-lua/install catalog))
-   :postgres (fn [catalog] (spec-postgres/install catalog))})
+;; Declaration macros are a small, stable surface.  Keeping them in the core
+;; registry lets l/script- expand without selecting a target grammar; Books
+;; remain lazily materialized only when code is compiled or evaluated.
+(def +basic-definition-symbols+
+  '[def defabstract defclass defgen defglobal defn defn- defrun deftemp])
 
-(def +grammar-registry+ (atom (grammar-registry/registry)))
+(def +basic-highlight-meta+
+  {'br {} 'break {} 'return {} 'set= {}})
+
+(def +python-highlight-meta+
+  {'await {} 'break {} 'pass {} 'raise {}
+   'return {} 'tup {} 'with {} 'yield {}})
+
+(def +book-macro-baseline+
+  {:xtalk {:tag :xtalk
+           :definitions +basic-definition-symbols+
+           :highlights ['br 'break 'return 'set=]
+           :highlight-meta +basic-highlight-meta+}
+   :js {:tag :js
+        :definitions +basic-definition-symbols+
+        :highlights ['br 'break 'return 'set=]
+        :highlight-meta +basic-highlight-meta+}
+   :python {:tag :py
+            :definitions +basic-definition-symbols+
+            :highlights ['await 'break 'pass 'raise
+                         'return 'tup 'with 'yield]
+            :highlight-meta +python-highlight-meta+}
+   :lua {:tag :lua
+         :definitions +basic-definition-symbols+
+         :highlights ['br 'break 'return 'set=]
+         :highlight-meta +basic-highlight-meta+}})
+(def +book-macro-registry+ (atom +book-macro-baseline+))
+
+;; A verified native image may hydrate a complete basic Book without loading
+;; its owning spec namespace. Image state remains distinct from source book
+;; registrations so reset and snapshot boundaries can restore deterministic
+;; source-owned behavior.
+(def +book-image-baseline+ {})
+(def +book-image-registry+ (atom +book-image-baseline+))
+
+(def +grammar-baseline+ nil)
+
+(def +grammar-loaders+
+  {:xtalk {:namespace 'lang.model.v1.spec-xtalk
+            :install 'lang.model.v1.spec-xtalk/install}
+   :hara {:namespace 'lang.model.v1.spec-hara
+           :install 'lang.model.v1.spec-hara/install}
+   :js {:namespace 'lang.model.v1.spec-js
+        :install 'lang.model.v1.spec-js/install}
+   :python {:namespace 'lang.model.v1.spec-python
+            :install 'lang.model.v1.spec-python/install}
+   :lua {:namespace 'lang.model.v1.spec-lua
+         :install 'lang.model.v1.spec-lua/install}
+   :go {:namespace 'lang.model.v1.spec-go
+        :install 'lang.model.v1.spec-go/install}
+   :c {:namespace 'lang.model.v1.spec-c
+       :install 'lang.model.v1.spec-c/install}
+   :postgres {:namespace 'lang.model.v1.spec-postgres
+              :install 'lang.model.v1.spec-postgres/install}})
+
+(def +grammar-registry+ (atom +grammar-baseline+))
 
 (defn ^{:public true} registry-snapshot
   "Returns a value snapshot of the runtime, book, and source-grammar registries."
   []
   {:runtime (deref +registry+)
    :books (deref +book-registry+)
+   :book-macros (deref +book-macro-registry+)
+   :book-images (deref +book-image-registry+)
    :grammars (deref +grammar-registry+)})
 
 (defn ^{:public true} registry-restore!
@@ -107,8 +188,12 @@
   (let [snapshot (or snapshot {})]
     (reset! +registry+ (or (:runtime snapshot) +runtime-baseline+))
     (reset! +book-registry+ (or (:books snapshot) +book-baseline+))
+    (reset! +book-macro-registry+
+            (or (:book-macros snapshot) +book-macro-baseline+))
+    (reset! +book-image-registry+
+            (or (:book-images snapshot) +book-image-baseline+))
     (reset! +grammar-registry+
-            (or (:grammars snapshot) (grammar-registry/registry)))
+            (or (:grammars snapshot) +grammar-baseline+))
     (registry-snapshot)))
 
 (defn ^{:public true} registry-reset!
@@ -160,12 +245,20 @@
 (defn ^{:public true} registry-grammar-load
   "Loads one supported grammar source on first use."
   [grammar-id]
-  (let [loader (get +grammar-loaders+ grammar-id)
-        current (deref +grammar-registry+)]
+  (let [_ (require 'lang.common.registry)
+        registry (deref (resolve 'lang.common.registry/registry))
+        versions (deref (resolve 'lang.common.registry/versions))
+        loader (get +grammar-loaders+ grammar-id)
+        current (or (deref +grammar-registry+) (registry))]
+    (reset! +grammar-registry+ current)
     (if (or (nil? loader)
-            (not (empty? (grammar-registry/versions current grammar-id))))
+            (not (empty? (versions current grammar-id))))
       current
-      (swap! +grammar-registry+ loader))))
+      (let [namespace-symbol (:namespace loader)
+            install-symbol (:install loader)
+            _ (eval (list 'require (list 'quote namespace-symbol)))
+            install (deref (resolve install-symbol))]
+        (swap! +grammar-registry+ install)))))
 
 (defn ^{:public true} registry-grammar-list
   "Lists installed grammar sources, optionally filtered by source fields."
@@ -179,13 +272,19 @@
                nil
                (keys +grammar-loaders+))
        (registry-grammar-load (:source/id query)))
-     (grammar-registry/list (deref +grammar-registry+) query))))
+     (require 'lang.common.registry)
+     ((deref (resolve 'lang.common.registry/list))
+      (deref +grammar-registry+)
+      query))))
 
 (defn ^{:public true} registry-grammar-versions
   "Lists all installed versions of a grammar identity."
   [grammar-id]
   (registry-grammar-load grammar-id)
-  (grammar-registry/versions (deref +grammar-registry+) grammar-id))
+  (require 'lang.common.registry)
+  ((deref (resolve 'lang.common.registry/versions))
+   (deref +grammar-registry+)
+   grammar-id))
 
 (defn ^{:public true} registry-grammar
   "Resolves one exact grammar id and version without consulting book defaults."
@@ -193,7 +292,8 @@
    (registry-grammar grammar-id version []))
   ([grammar-id version facets]
    (registry-grammar-load grammar-id)
-   (grammar-registry/resolve
+   (require 'lang.common.registry)
+   ((deref (resolve 'lang.common.registry/resolve))
     (deref +grammar-registry+)
     {:grammar/id grammar-id
      :grammar/version version
@@ -256,7 +356,8 @@
            (not (number? version))
            (<= version 0)
            (nil? (:ns info))
-           (not (fn? (:load info))))
+           (not (or (fn? (:load info))
+                    (symbol? (:book info)))))
      (throw
       (ex :argument
           {:language language :key key :version version :info info}
@@ -357,13 +458,26 @@
   ([language key]
    (registry-book language key nil))
   ([language key requested-version]
-   (let [{:keys [ns load version] :as info}
-         (registry-book-info language key requested-version)]
+   (let [{:keys [ns load book version] :as info}
+         (registry-book-info language key requested-version)
+         cached (get (deref +book-image-registry+) [language key version])]
      (if (nil? info)
        nil
-       (let [value (load)
+       (let [value (or cached
+                       (if (fn? load)
+                         (load)
+                         (let [_ (eval (list 'require (list 'quote ns)))
+                               book-var (resolve (symbol (str ns) (name book)))]
+                           (if (nil? book-var)
+                             (throw
+                              (ex :dependency
+                                  {:language language :key key :version version
+                                   :namespace ns :book book}
+                                  :ex/message "Registered book symbol is not linked"))
+                             (deref book-var)))))
              actual-version (:version value)]
-         (if (not (registry-namespace-loaded? ns))
+         (if (and (nil? cached)
+                  (not (registry-namespace-loaded? ns)))
            (throw
             (ex :dependency
                 {:language language :key key :version version :namespace ns}
@@ -378,3 +492,38 @@
                    :namespace ns}
                   :ex/message "Registered book version does not match loaded book"))
              value)))))))
+
+(defn ^{:public true} registry-book-macro-info
+  "Returns the pure declaration-macro index for a language Book.
+
+  The source fallback derives it from the selected Book. Native precompile may
+  install equivalent data without eagerly loading executable grammar helpers."
+  [language]
+  (or (get (deref +book-macro-registry+) language)
+      (let [grammar (:grammar (registry-book language))
+            reserved (or (:reserved grammar) {})
+            definitions
+            (vec
+             (sort-by
+              str
+              (reduce-kv
+               (fn [out candidate operation]
+                 (if (and (symbol? candidate) (= :def (:type operation)))
+                   (conj out candidate)
+                   out))
+               []
+               reserved)))
+            highlights
+            (vec
+             (sort-by str
+                      (filter symbol? (or (:highlight grammar) #{}))))]
+        {:tag (:tag grammar)
+         :definitions definitions
+         :highlights highlights
+         :highlight-meta
+         (reduce (fn [out highlight]
+                   (assoc out highlight
+                          (select-keys (or (get reserved highlight) {})
+                                       [:arglists :style/indent])))
+                 {}
+                 highlights)})))

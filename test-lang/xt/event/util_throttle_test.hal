@@ -1,0 +1,118 @@
+(ns xt.event.util-throttle-test
+  (:require [lang.core :as l]
+            [xt.lang.common-notify :as notify]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-throttle :as throttle]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-throttle :as throttle]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-throttle :as throttle]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.util-throttle/throttle-create}
+  {:name "creates active and queued throttle state"
+   :test (fn [] (get (deref +results+) "create"))
+   :expected [true true true true]}
+
+  ^{:refer xt.event.util-throttle/throttle-run}
+  {:name "keeps one active promise and one queued replacement"
+   :test (fn [] (get (deref +results+) "run"))
+   :expected [true ["a"]]}
+
+  ^{:refer xt.event.util-throttle/throttle-waiting}
+  {:name "returns the union of active and queued identifiers"
+   :test (fn [] (get (deref +results+) "waiting"))
+   :expected ["a" "b" "c"]}
+
+  ^{:refer xt.event.util-throttle/throttle-active}
+  {:name "returns active identifiers"
+   :test (fn [] (get (deref +results+) "active"))
+   :expected ["a" "b"]}
+
+  ^{:refer xt.event.util-throttle/throttle-queued}
+  {:name "returns queued identifiers"
+   :test (fn [] (get (deref +results+) "queued"))
+   :expected ["b" "c"]}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var created (throttle/throttle-create (fn []) nil))
+             (var run-instance
+                  (throttle/throttle-create
+                   (fn [id]
+                     (return (spec-promise/x:with-delay 100
+                               (fn [] (return id)))))
+                   (fn [] (return 1))))
+             (var first (throttle/throttle-run run-instance "a" nil))
+             (var second (throttle/throttle-run run-instance "a" nil))
+             (var run-result [(== (. first ["promise"]) (. second ["promise"]))
+                             (throttle/throttle-queued run-instance)])
+             (var state {:active {"a" {} "b" {}}
+                         :queued {"b" {} "c" {}}})
+             {"create" [(xt/x:has-key? created "handler")
+                         (xt/x:has-key? created "now_fn")
+                         (xt/x:has-key? created "active")
+                         (xt/x:has-key? created "queued")]
+              "run" run-result
+              "waiting" (throttle/throttle-waiting state)
+              "active" (throttle/throttle-active state)
+              "queued" (throttle/throttle-queued state)})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.util-throttle/throttle-run-async}
+  {:name "resolves one asynchronous handler invocation"
+   :test (fn []
+           (notify/wait-on :js
+             (var instance (throttle/throttle-create
+                            (fn [id] (return (* id 2))) nil))
+             (spec-promise/x:promise-then
+              (throttle/throttle-run-async instance 3 nil)
+              (fn [value] (repl/notify value)))))
+   :expected 6}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})
+
+(Test/check
+ [^{:refer xt.event.util-throttle/throttle-create}
+  {:name "creates throttle state in every basic target"
+   :test (fn []
+           [(!.js (xt/x:get-key (throttle/throttle-create
+                                 (fn [value] (return value)) nil)
+                                "queued"))
+            (!.lua (xt/x:get-key (throttle/throttle-create
+                                  (fn [value] (return value)) nil)
+                                 "queued"))
+            (!.py (xt/x:get-key (throttle/throttle-create
+                                 (fn [value] (return value)) nil)
+                                "queued"))])
+   :expected [{} {} {}]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

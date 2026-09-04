@@ -19,7 +19,7 @@
                         (String/encode-utf8 "(ns demo.base) (def answer 42)")
                         {:mode :replace :parents? true}))
     (deref (File/write (File/join root "src/demo/app.hal")
-                        (String/encode-utf8 "(ns demo.app (:require [demo.base]))")
+                        (String/encode-utf8 "(ns demo.app (:require [demo.base])) (def value 43)")
                         {:mode :replace :parents? true}))
     root))
 
@@ -28,6 +28,20 @@
  [{:name "uses a fixed artifact name inside every staged child project"
    :test (fn [] (deploy/package-archive {:package/stage "/fixture/stage"}))
    :expected "/fixture/stage/target/package.harp"}])
+
+^{:refer code.deploy.task/archive-fingerprint}
+(Test/check
+ [{:name "returns the stable SHA-256 digest for a local archive"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-digest-"}))
+                      path (File/join root "package.harp")]
+                  (try
+                    (deref (File/write path
+                                        (String/encode-utf8 "hello")
+                                        {:mode :replace :parents? true}))
+                    (deploy/archive-fingerprint path)
+                    (finally
+                      (clean-root root)))))
+   :expected "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}])
 
 ^{:refer code.deploy.task/build-package}
 (Test/check
@@ -45,9 +59,70 @@
    :test (fn [] (try (deploy/build-package {:package/stage "target/deploy-missing"}) false (catch error true)))
    :expected true}])
 
+^{:refer code.deploy.task/package-index}
+(Test/check
+ [{:name "emits a registry-neutral package index with canonical dependency coordinates"
+   :test (fn [] (deploy/package-index
+                 {:deploy/project {:project/id 'fixture/root :project/version "1.2.3"}
+                  :deploy/packages [{:package/name "fixture/base"
+                                     :package/coordinate "hara:fixture/base"
+                                     :package/version "1.2.3"
+                                     :package/namespaces ['demo.base]
+                                     :package/internal-dependencies []
+                                     :package/context-dependencies []
+                                     :package/external-dependencies []}
+                                    {:package/name "fixture/app"
+                                     :package/coordinate "hara:fixture/app"
+                                     :package/version "1.2.3"
+                                     :package/namespaces ['demo.app]
+                                     :package/internal-dependencies ["fixture/base"]
+                                     :package/context-dependencies []
+                                     :package/external-dependencies ["hara:external/http"]}]}))
+   :expected {:index/format "0.0.1"
+              :project/id 'fixture/root
+              :project/version "1.2.3"
+              :packages {"hara:fixture/base"
+                         {:name "fixture/base"
+                          :version "1.2.3"
+                          :namespaces ['demo.base]
+                          :dependencies {}
+                          :context-dependencies []
+                          :external-dependencies []
+                          :archive nil}
+                         "hara:fixture/app"
+                         {:name "fixture/app"
+                          :version "1.2.3"
+                          :namespaces ['demo.app]
+                          :dependencies {"hara:fixture/base"
+                                         {:version "=1.2.3"
+                                          :scope :compile
+                                          :optional false
+                                          :exclusions []}}
+                          :context-dependencies []
+                          :external-dependencies ["hara:external/http"]
+                          :archive nil}}}}])
+
+^{:refer code.deploy.task/index-path}
+(Test/check
+ [{:name "keeps the local index at the deploy root"
+   :test (fn [] (deploy/index-path {:deploy/output "/fixture/target/deploy"}))
+   :expected "/fixture/target/deploy/index.edn"}])
+
 ^{:refer code.deploy.task/build-staged}
 (Test/check
- [{:name "preserves dependency order while mapping every staged package to build"
+ [{:name "writes a deterministic local package index after building every staged package"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (let [result (deploy/build-staged (deploy/action {:root root :action :stage} {}))
+                          index (Edn/read (String/decode-utf8
+                                          (deref (File/read (:deploy/index-path result)))))]
+                      [(:index/format index)
+                       (:project/version index)
+                       (sort (keys (:packages index)))])
+                    (finally
+                      (clean-root root)))))
+   :expected ["0.0.1" "1.2.3" ["hara:fixture/app" "hara:fixture/base"]]}
+  {:name "preserves dependency order while mapping every staged package to build"
    :test (fn [] (try
                   (deploy/build-staged {:deploy/output "target/deploy"
                                         :deploy/order ["fixture/missing"]

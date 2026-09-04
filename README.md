@@ -32,10 +32,11 @@ The project is ready for source development, native project tests, and a local
 relocatable executable distribution. Its initial `hara.command/main` command
 application uses `std.native.Command` for route parsing and response
 validation, and supports `--version`, `help`, and the `headless` RESP-server
-declaration; the full legacy command set remains source work. It is **not yet ready for a registry release**: it has no release recipe,
-published compatibility policy, or completed end-user command package. Do not
-create a release tag or send a publication request until the source-package
-release checklist below has been completed.
+declaration; the full legacy command set remains source work. The source
+publication contract is explicit in `project.edn`, `project.recipe.edn`,
+`config/packages.edn`, and `package-publication-request.yml`. A working tree is
+not a release candidate until the source-package checklist below passes from a
+clean, reviewed commit.
 
 ## Develop locally with Hara Native
 
@@ -210,9 +211,12 @@ or smoke assertion.
 `config/packages.edn` is the Foundation-compatible source-package catalogue.
 Each map key is a semantic package name and each `:include` selector owns a
 non-overlapping namespace family. `code.deploy` reads that catalogue together
-with the explicit `:project/source-files` list, uses reader-first linkage to
-infer cross-package dependencies, and emits standard child projects in
-dependency order.
+with the declared source files and the project's `:project/source-paths`, uses
+reader-first linkage plus explicit catalog dependencies to infer cross-package
+dependencies, and emits standard child projects in dependency order. The
+Foundation profile is split into standard, language, PostgreSQL, database,
+framework, test, deploy, work, command, XTalk, and metaspec packages; the
+legacy umbrella project remains available for compatibility.
 
 Use the Hara command once the companion distribution has been built:
 
@@ -221,6 +225,19 @@ target/hara/bin/hara deploy plan    # read-only graph and ownership check
 target/hara/bin/hara deploy stage   # reset and materialise target/deploy/
 target/hara/bin/hara deploy build   # stage, then build each HARP
 ```
+
+Project dependencies can be downloaded and verified without changing the
+project declaration or lockfile:
+
+```text
+target/hara/bin/hara package pull --root .
+```
+
+`package pull` resolves the declared Hara dependency graph, reuses local
+archives, fetches missing digest-addressed archives into
+`target/hara-packages/archives/sha256/`, and verifies their SHA-256 values. Use
+`package sync` when the selected packages should also be installed and recorded
+in `project.lock.edn`.
 
 The same source API is available to native development and release automation:
 
@@ -236,13 +253,42 @@ read-only. `stage` owns `target/deploy/` and resets it idempotently
 before it writes; it never changes the source project. Each staged child has a
 normal `project.edn`, a preserved source `project.lock.edn` when one exists,
 and inferred sibling dependencies projected as exact package dependencies. A
-child retains the complete declared source graph only as compile context; its
-HARP contains the namespace selection owned by that package. The resulting
+child uses and stages its owned namespaces plus transitive internal dependency
+sources as compile context; its HARP contains only the namespace selection
+owned by that package. The resulting
 archives are deterministic paths below:
 
 ```text
 target/deploy/<semantic-package>/target/package.harp
+target/deploy/index.edn
 ```
+
+`index.edn` is a local, registry-neutral build index. It records each package's
+canonical coordinate, version, owned namespaces, dependency coordinates,
+external declarations, archive path, and archive digest. It is intentionally
+not a registry lockfile: signed tap and OCI metadata are added only by the
+reviewed package publication workflow.
+
+## Local dependency checkouts
+
+Native project resolution supports the Leiningen-style development convention
+of placing sibling projects below `checkouts/`:
+
+```text
+application/gwtrade/
+  checkouts/
+    hara-lang-core/project.edn
+    hara-postgres-core/project.edn
+```
+
+Each immediate child with a `project.edn` is matched by its normalized
+`:project/id`, not by its directory name. A matching checkout must satisfy the
+declared dependency version and takes precedence over an installed HARP. The
+checkout may be a symlink to a sibling repository, but it is never included in
+an archive or lockfile. Children without `project.edn` are ignored; malformed
+checkout manifests fail with their path in the diagnostic. This keeps local
+source iteration fast while preserving the installed package graph for clean
+builds and publication.
 
 The compiler understands the direct Foundation selector forms `[namespace
 :base]`, `[namespace :complete]`, and `[namespace :exclude [...]]`. It rejects
@@ -302,8 +348,9 @@ clients do not need a GitHub token or an Identity-policy checkout.
    - keep the complete specification corpus under `spec/content/`; its
      artifact-only `spec/project.edn` is built through
      `std.package.build/build-specs`;
-   - pin the native revision that performs the rebuild in the release
-     environment variable `HARA_NATIVE_PUBLICATION_REVISION`.
+   - keep `:project/native` at the exact released Hara Native version; the
+     request workflow resolves that version's signed tag and records its
+     commit revision in the receipt.
 2. Use that target Hara Native binary to run the HAL suite and inspect both
    reproducible local inputs:
 
@@ -339,6 +386,25 @@ clients do not need a GitHub token or an Identity-policy checkout.
    and digest tags, makes them public, and reads the manifests back from GHCR.
    A merged receipt is the authority; a locally built HARP or a source tag
    alone is not a published package.
+
+### GitHub-side setup
+
+An administrator must configure the release boundary before the first tag:
+
+- In `hara-lang/hara`, protect the `hara-package-release` environment and
+  provide the `HARA_PACKAGES_APP_ID` variable plus
+  `HARA_PACKAGES_APP_PRIVATE_KEY` secret. The App may write only receipt PRs in
+  `hara-lang/hara-packages`.
+- In `hara-lang/hara-packages`, protect `main`, require the publication
+  workflow checks and reviewers for `hara-packages-publish`, and allow that
+  environment's `GITHUB_TOKEN` to write organization GHCR packages. No GHCR
+  token belongs in either source repository.
+- Keep the Hara release-signing public key fingerprint in the source and
+  registry workflows aligned; the private signing key remains outside GitHub
+  repository contents.
+- Configure the public service with the optional read-only
+  `HARA_GITHUB_PACKAGES_READ_TOKEN` when unauthenticated GitHub Packages API
+  rate limits would otherwise be a concern.
 
 Never reuse or move a published version tag, upload an archive with `curl`,
 copy an archive into registry storage, or place a GHCR credential in this

@@ -1,5 +1,6 @@
 (ns lang.core.script-annex-test
-  (:require [lang.core.script :as script]
+  (:require [lang.core.library :as library]
+            [lang.core.script :as script]
             [lang.core.script-annex :as annex]
             [lang.core.runtime :as runtime]))
 
@@ -37,7 +38,7 @@
 ^{:refer lang.core.script-annex/annex-snapshot}
 (Test/check [{:name "captures empty tagged-runtime state"
               :test (fn [] (isolated annex/annex-snapshot))
-              :expected {:registry {} :runtimes {} :active #{}}}])
+              :expected {:registry {} :runtimes {} :libraries {} :active #{}}}])
 
 ^{:refer lang.core.script-annex/annex-restore!}
 (Test/check [{:name "restores registered tags without retaining live instances"
@@ -50,7 +51,7 @@
               :expected {:registry {['demo.source :one]
                                     {:namespace 'demo.source :tag :one
                                      :lang :postgres :runtime :default :config {}}}
-                         :runtimes {} :active #{}}}])
+                         :runtimes {} :libraries {} :active #{}}}])
 
 ^{:refer lang.core.script-annex/annex-restore!}
 (Test/check [{:name "restores an active tagged runtime to its prior started state"
@@ -69,8 +70,25 @@
                                        (register-default :one)
                                        [(annex/annex-reset!)
                                         (annex/annex-reset!)])))
-              :expected [{:registry {} :runtimes {} :active #{}}
-                         {:registry {} :runtimes {} :active #{}}]}])
+              :expected [{:registry {} :runtimes {} :libraries {} :active #{}}
+                         {:registry {} :runtimes {} :libraries {} :active #{}}]}])
+
+^{:refer lang.core.script-annex/annex-library-in}
+(Test/check [{:name "creates a namespace-owned Library that inherits the default Library"
+              :test (fn [] (isolated (fn []
+                                       (let [current (annex/annex-library-in (test-namespace))]
+                                         [(library/library? current)
+                                          (= (library/default-library)
+                                             (library/library-parent current))
+                                          (= current
+                                             (annex/annex-library-in (test-namespace)))]))))
+              :expected [true true true]}])
+
+^{:refer lang.core.script-annex/annex-library}
+(Test/check [{:name "creates a child Library for the current namespace"
+              :test (fn [] (isolated (fn []
+                                       (library/library? (annex/annex-library)))))
+              :expected true}])
 
 ^{:refer lang.core.script-annex/register-tag-in}
 (Test/check [{:name "registers a coordinate and returns the replaced record"
@@ -180,8 +198,15 @@
                                        (register-default :one)
                                        (let [[previous instance] (annex/start-tag-in (test-namespace) :one)]
                                          [previous (:lang instance)
-                                          (get-in (annex/status-in (test-namespace)) [:active])]))))
-              :expected [nil :postgres #{:one}]}])
+                                          (get-in (annex/status-in (test-namespace)) [:active])
+                                          (not (nil? (get (library/library-raw-book-modules
+                                                           (annex/annex-library-in (test-namespace))
+                                                           :postgres)
+                                                           (test-namespace))))
+                                          (get (library/library-raw-book-modules
+                                                (library/default-library) :postgres)
+                                               (test-namespace))]))))
+              :expected [nil :postgres #{:one} true nil]}])
 
 ^{:refer lang.core.script-annex/start-tag}
 (Test/check [{:name "starts a tag in the current namespace"
@@ -344,12 +369,12 @@
 
 ^{:refer lang.core.script-annex/script+}
 (Test/check [{:name "expands to portable tagged script setup"
-              :test (fn [] (first (macroexpand-1 '(annex/script+ [:one :postgres]))))
+              :test (fn [] (first (macroexpand-1 '(lang.core.script-annex/script+ [:one :postgres]))))
               :expected 'do}])
 
 ^{:refer lang.core.script-annex/!}
 (Test/check [{:name "expands to portable tagged evaluation"
-              :test (fn [] (first (macroexpand-1 '(annex/! [:one] (+ 1 2)))))
+              :test (fn [] (first (macroexpand-1 '(lang.core.script-annex/! [:one] (+ 1 2)))))
               :expected 'lang.core.script-annex/eval-tag-in}])
 
 ^{:refer lang.core.script-annex/annex:start}

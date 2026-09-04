@@ -1,0 +1,159 @@
+(ns work.flow.make.core
+  (:config {:role :internal})
+  (:require [work.core :as work]
+            [work.flow :as flow]
+            [work.flow.make.artifact :as artifact]
+            [work.flow.make.common :as common]
+            [work.flow.make.compile :as compiler]
+            [work.flow.make.host :as host]
+            [work.flow.make.trigger :as trigger]))
+
+(def path [:make])
+
+(defn section-entries
+  "Returns project setup sections in deterministic section-name order."
+  [definition]
+  (let [sections (or (:sections definition) {})]
+    (vec
+     (reduce (fn [output key]
+               (concat output (or (get sections key) [])))
+             []
+             (sort (keys sections))))))
+
+(defn compile-entry
+  "Compiles one project entry into the configured build root."
+  [definition entry input context]
+  (let [root (File/join (:root definition) (:build definition))]
+    (artifact/compile-single root (:params definition) entry)))
+
+(defn prepare-definition
+  "Adds the native artifact compiler and aggregate build target to a project."
+  [definition]
+  (let [entries (vec (concat (section-entries definition)
+                             (or (:default definition) [])))]
+    (assoc definition
+           :root (or (:root definition) ".")
+           :build (or (:build definition)
+                      (str ".build/" (str/tag (or (:tag definition)
+                                                   (:make/id definition)
+                                                   "project"))))
+           :compile-entry compile-entry
+           :targets (assoc (or (:targets definition) {}) :build entries))))
+
+(defn profile-definition-options
+  [profile]
+  (let [options (:workflow/options profile)
+        defaults (or (:defaults options) {})
+        direct (dissoc options :defaults)]
+    (flow/merge-options defaults direct)))
+
+(defn normalise
+  "Normalises a make definition while retaining the qualified definition id."
+  [profile qualified-name raw-definition]
+  (if (not (map? raw-definition))
+    (throw (ex :argument
+               {:workflow/name qualified-name
+                :workflow/definition raw-definition}
+               :ex/message "Make workflow definition must be a map")))
+  (let [options (profile-definition-options profile)
+        definition (flow/merge-options options raw-definition)]
+    (prepare-definition
+     (assoc definition :make/id (or (:make/id definition)
+                                    (:id definition)
+                                    qualified-name)))))
+
+(defn compile
+  "Compiles one normalised make definition into an immutable plan."
+  ([definition] (compiler/compile-plan definition))
+  ([profile definition] (compiler/compile-plan definition)))
+
+(defn sync-common-triggers
+  "Mirrors a live host's declared trigger filters into the legacy query registry."
+  [make-host]
+  (let [triggers (get-in (host/plan make-host) [:make/definition :triggers])]
+    (if (nil? triggers)
+      (common/triggers-clear make-host)
+      (common/triggers-set make-host triggers))
+    make-host))
+
+(defn reconcile-existing
+  [make-host candidate]
+  (let [previous-plan (host/plan make-host)
+        was-running? (host/running? make-host)
+        starts-on-define? (= :on-define (:make/trigger-policy candidate))
+        will-run? (or was-running? starts-on-define?)
+        receipts (cond
+                   was-running?
+                   (trigger/transition-running make-host previous-plan candidate)
+                   starts-on-define?
+                   (trigger/install-all make-host candidate)
+                   :else [])]
+    (host/install-plan make-host candidate (if will-run? :running :stopped) receipts)
+    (sync-common-triggers make-host)))
+
+(defn reconcile
+  "Installs a candidate plan while preserving an existing host identity."
+  [profile previous candidate definition]
+  (if (host/host? previous)
+    (reconcile-existing previous candidate)
+    (let [make-host (host/create candidate)]
+      (if (= :on-define (:make/trigger-policy candidate))
+        (trigger/start make-host))
+      (sync-common-triggers make-host))))
+
+(def +flow+
+  {:flow/path path
+   :flow/version 1
+   :flow/product :host
+   :flow/defaults {:defaults {:trigger-policy :on-define}}
+   :flow/merge flow/merge-options
+   :flow/normalise normalise
+   :flow/compile compile
+   :flow/reconcile reconcile})
+
+(flow/register +flow+)
+
+(defn configure-profile
+  "Returns a configured profile for the make workflow."
+  []
+  (flow/configure path))
+
+(defn define
+  "Defines and installs a named make host through the shared flow registry."
+  [qualified-name definition]
+  (flow/define (configure-profile) qualified-name definition))
+
+(defn plan [make-host] (host/plan make-host))
+(defn targets [make-host] (:make/targets (plan make-host)))
+(defn target-work [make-host directive]
+  (compiler/target-work (plan make-host) directive))
+(defn revision [make-host] (host/revision make-host))
+(defn status [make-host] (host/status make-host))
+(def host? host/host?)
+
+(defn start [make-host] (trigger/start make-host))
+(defn stop [make-host] (trigger/stop make-host))
+
+(defn run
+  "Evaluates one make target through the native Work runtime.
+
+  A directive may be a target keyword or [target selector]."
+  ([make-host] (run make-host :default nil {}))
+  ([make-host directive] (run make-host directive nil {}))
+  ([make-host directive input] (run make-host directive input {}))
+  ([make-host directive input options]
+   (let [bundle (target-work make-host directive)]
+     (if (:prepared options)
+       (work/evaluate (:prepared options) bundle input)
+       (work/evaluate bundle input)))))
+
+(defn build
+  ([make-host] (run make-host :build))
+  ([make-host directive] (run make-host directive)))
+
+(defn clean
+  ([make-host] (clean make-host nil))
+  ([make-host input]
+   (if (has? (targets make-host) :clean)
+     (run make-host :clean input)
+     nil)))

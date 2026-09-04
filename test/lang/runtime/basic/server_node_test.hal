@@ -1,0 +1,165 @@
+(ns lang.runtime.basic.server-node-test
+  (:require [lang.core.eval :as evaluation]
+            [lang.runtime.basic.server-node :as server]))
+
+^{:refer lang.runtime.basic.server-node/state}
+(Test/check
+ [{:name "reads server state"
+   :test (fn [] (let [value (server/BasicServer "127.0.0.1" 4123 nil nil 2000 (atom {:status :listening}))]
+                   (server/state value)))
+   :expected {:status :listening}}])
+
+^{:refer lang.runtime.basic.server-node/get-port}
+(Test/check
+ [{:name "returns the bound port"
+   :test (fn [] (server/get-port (server/BasicServer "127.0.0.1" 4123 nil nil 2000 (atom {}))))
+   :expected 4123}])
+
+^{:refer lang.runtime.basic.server-node/create-basic-server}
+(Test/check
+ [{:name "binds an ephemeral listener and stops it"
+   :test (fn [] (let [value (server/create-basic-server "127.0.0.1" 0 2000)]
+                   (try
+                     [(number? (server/get-port value))
+                      (:status (server/state value))]
+                     (finally
+                       (server/stop-server value)))))
+   :expected [true :listening]}])
+
+^{:refer lang.runtime.basic.server-node/wait-ready}
+(Test/check
+ [{:name "is idempotent after readiness"
+   :test (fn [] (let [value (server/BasicServer "127.0.0.1" 4123 nil nil 2000 (atom {:status :ready}))]
+                   (= value (server/wait-ready value))))
+   :expected true}])
+
+^{:refer lang.runtime.basic.server-node/get-connection}
+(Test/check
+ [{:name "returns the accepted connection"
+   :test (fn [] (let [connection :connection
+                       value (server/BasicServer "127.0.0.1" 4123 nil nil 2000 (atom {:connection connection}))]
+                   (server/get-connection value)))
+   :expected :connection}])
+
+^{:refer lang.runtime.basic.server-node/mark-started}
+(Test/check
+ [{:name "marks a ready listener and initializes the request buffer"
+   :test (fn [] (let [value (server/BasicServer
+                              "127.0.0.1"
+                              4123
+                              nil
+                              nil
+                              2000
+                              (atom {:status :ready}))]
+                  [(= value (server/mark-started value))
+                   (server/state value)]))
+   :expected [true {:status :started :next-id 0 :raw []}]}])
+
+^{:refer lang.runtime.basic.server-node/next-event}
+(Test/check
+ [{:name "reads a close event for the accepted connection"
+   :test (fn [] (let [value (server/create-basic-server "127.0.0.1" 0 2000)
+                       pending (promise/new
+                                (fn [resolve reject]
+                                  (Socket/connect
+                                   "127.0.0.1"
+                                   (server/get-port value)
+                                   {}
+                                   (fn [error connection]
+                                     (if error
+                                       (reject error)
+                                       (resolve connection))))))
+                       client (evaluation/await pending 2000)]
+                  (try
+                    (server/wait-ready value)
+                    (Socket/close client)
+                    (:type (server/next-event value))
+                    (finally
+                      (server/stop-server value)))))
+   :expected :close}])
+
+^{:refer lang.runtime.basic.server-node/line-index}
+(Test/check
+ [{:name "finds the first newline in a byte buffer"
+   :test (fn [] [(server/line-index [])
+                 (server/line-index [1 2 10 3 10])
+                 (server/line-index [1 2 3])])
+   :expected [nil 2 nil]}])
+
+^{:refer lang.runtime.basic.server-node/read-response}
+(Test/check
+ [{:name "decodes a complete buffered JSON response and retains no bytes"
+   :test (fn [] (let [value (server/BasicServer
+                              "127.0.0.1"
+                              4123
+                              nil
+                              nil
+                              2000
+                              (atom {:status :started
+                                     :raw (vec (str/encode-utf8
+                                                "{\"id\":0,\"ok\":true}\n"))}))]
+                  [(server/read-response value)
+                   (server/state value)]))
+   :expected [{"id" 0 "ok" true} {:status :started :raw []}]}])
+
+^{:refer lang.runtime.basic.server-node/request-response}
+(Test/check
+ [{:name "sends a correlated request and reads its buffered response"
+   :test (fn [] (let [value (server/create-basic-server "127.0.0.1" 0 2000)
+                       pending (promise/new
+                                (fn [resolve reject]
+                                  (Socket/connect
+                                   "127.0.0.1"
+                                   (server/get-port value)
+                                   {}
+                                   (fn [error connection]
+                                     (if error
+                                       (reject error)
+                                       (resolve connection))))))
+                       client (evaluation/await pending 2000)]
+                  (try
+                    (server/wait-ready value)
+                    (swap! (:state value)
+                           assoc
+                           :raw (vec (str/encode-utf8
+                                      "{\"id\":0,\"ok\":true}\n")))
+                    [(server/request-response value {"source" "1 + 1"
+                                                      "timeout" 2000})
+                     (:next-id (server/state value))]
+                    (finally
+                      (Socket/close client)
+                      (server/stop-server value)))))
+   :expected [{"id" 0 "ok" true} 1]}])
+
+^{:refer lang.runtime.basic.server-node/get-relay}
+(Test/check
+ [{:name "returns nil before a relay is attached"
+   :test (fn [] (server/get-relay (server/BasicServer "127.0.0.1" 4123 nil nil 2000 (atom {}))))
+   :expected nil}])
+
+^{:refer lang.runtime.basic.server-node/response-id}
+(Test/check
+ [{:name "reads keyword and wire response ids"
+   :test (fn [] [(server/response-id {:id 7})
+                 (server/response-id {"id" 8})])
+   :expected [7 8]}])
+
+^{:refer lang.runtime.basic.server-node/attach-relay}
+(Test/check
+ [{:name "rejects a transport that is not a duplex"
+   :test (fn [] (try
+                  (server/attach-relay
+                   (server/BasicServer "127.0.0.1" 4123 nil nil 2000 (atom {:status :ready}))
+                   nil)
+                  :missing
+                  (catch error (:ex/code (ex-data error)))))
+   :expected :hara/io}])
+
+^{:refer lang.runtime.basic.server-node/stop-server}
+(Test/check
+ [{:name "is idempotent and restores stopped state"
+   :test (fn [] (let [value (server/BasicServer "127.0.0.1" 4123 nil nil 2000 (atom {:status :ready :connection nil :relay nil}))]
+                   (server/stop-server value)
+                   [(server/state value)
+                    (server/state (server/stop-server value))]))
+   :expected [{:status :stopped} {:status :stopped}]}])

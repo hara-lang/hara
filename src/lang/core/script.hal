@@ -5,6 +5,7 @@
   (:require [lang.common.book :as book]
             [lang.common.compiler :as compiler]
             [lang.core.eval :as evaluation]
+            [lang.core.library :as library]
             [lang.core.registry :as registry]
             [lang.core.runtime :as runtime]))
 
@@ -17,6 +18,16 @@
 (def ^{:dynamic true} *cache-none* false)
 (def ^{:dynamic true} *cache-force* false)
 
+(def ^{:dynamic true} *module-compiler*
+  (fn [options]
+    (let [_ (require 'lang.core.compile)
+          compile-module (deref (resolve 'lang.core.compile/compile-module))]
+      (compile-module options))))
+
+(def ^{:dynamic true} *module-evaluator*
+  (fn [instance source options]
+    (evaluation/eval-await instance source options)))
+
 (def +module-metadata-keys+
   [:static :application :schema :source :require-impl :implements :import
    :specialize :includes :export :file :display :emit :module/primary])
@@ -24,7 +35,8 @@
 (defn script-snapshot
   "Captures all source-registration and structural compilation state."
   []
-  {:modules (deref +modules+)
+  {:library (library/library-raw-snapshot (library/default-library))
+   :modules (deref +modules+)
    :scripts (deref +scripts+)
    :loaded-modules (deref +loaded-modules+)
    :module-contexts (deref +module-contexts+)
@@ -34,7 +46,20 @@
   "Restores a script snapshot; nil returns every script registry to baseline."
   [snapshot]
   (let [snapshot (or snapshot {})]
-    (reset! +modules+ (or (:modules snapshot) {}))
+    (if (has? snapshot :library)
+      (library/library-restore! (library/default-library) (:library snapshot))
+      (do
+        (library/library-reset! (library/default-library))
+        (reduce-kv
+         (fn [_ _ module-value]
+           (if (:lang module-value)
+             (library/library-add-module! (library/default-library)
+                                          (:lang module-value) module-value))
+           nil)
+         nil
+         (or (:modules snapshot) {}))))
+    (reset! +modules+ (or (:modules snapshot)
+                          (sync-module-index!)))
     (reset! +scripts+ (or (:scripts snapshot) {}))
     (reset! +loaded-modules+ (or (:loaded-modules snapshot) {}))
     (reset! +module-contexts+ (or (:module-contexts snapshot) {}))
@@ -51,6 +76,40 @@
   []
   (reset! +compile-cache+ {})
   nil)
+
+(defn sync-module-index!
+  "Rebuilds the legacy flat module index from the active Library snapshot."
+  []
+  (let [value (library/library-snapshot (library/runtime-library))
+        modules
+        (reduce-kv
+         (fn [output _ coordinate]
+           (merge output
+                  (or (get-in value [:books coordinate :modules]) {})))
+         {}
+         (:selected value))]
+    (reset! +modules+ modules)
+    modules))
+
+(defn register-library-module!
+  "Writes a source module through the active Library and updates its compatibility index."
+  [language module-value]
+  (let [stored (library/library-add-module! (library/runtime-library)
+                                            language module-value)]
+    (swap! +modules+ assoc (:id stored) stored)
+    (reset-compile-cache!)
+    stored))
+
+(defn register-library-entry!
+  "Writes a source entry through the active Library and updates its compatibility index."
+  [language entry-value]
+  (let [stored (library/library-set-entry! (library/runtime-library)
+                                           language entry-value)]
+    (swap! +modules+
+           (fn [modules]
+             (assoc-in modules [(:module stored) (:section stored) (:id stored)] stored)))
+    (reset-compile-cache!)
+    stored))
 
 (defmacro with:cache-none
   [& body]
@@ -128,10 +187,13 @@
 
 (defn configure-module
   ([lang config]
-   (configure-module lang (namespace-symbol) config))
+   (configure-module lang (namespace-symbol) config (namespace-symbol)))
   ([lang module config]
-   (let [source (namespace-symbol)
-         current (get (deref +modules+) module)
+   (configure-module lang module config (namespace-symbol)))
+  ([lang module config source]
+   (let [source (or source (namespace-symbol))
+         current (get (library/library-raw-book-modules (library/runtime-library) lang)
+                      module)
          configured (merge current (module-config lang module config))
          configured (assoc configured
                            :code (or (:code current) {})
@@ -140,8 +202,7 @@
                       (assoc configured :native (:native current))
                       configured)]
      (swap! +module-contexts+ assoc source module)
-     (swap! +modules+ assoc module configured)
-     configured)))
+     (register-library-module! lang configured))))
 
 (defn portable-schema-form
   "Retains source schemas as data without leaking mutable host descriptors."
@@ -171,38 +232,52 @@
           :else nil)))
 
 (defn module-source-symbol
-  [module-id]
-  (let [module (get (deref +modules+) module-id)
-        source (:source module)]
-    (or (when (symbol? source) source)
-        (reduce-kv (fn [found source-symbol target]
-                     (if (or found (not= target module-id)) found source-symbol))
-                   nil
-                   (deref +module-contexts+))
-        module-id)))
+  ([module-id]
+   (module-source-symbol (or (:lang (get (deref +modules+) module-id)) :xtalk)
+                         module-id))
+  ([language module-id]
+   (let [current-library (library/runtime-library)
+         module (or (get (library/library-book-modules current-library language)
+                         module-id)
+                    (library/library-get-source-module current-library language module-id))
+         source (:source module)]
+     (or (when (symbol? source) source)
+         (reduce-kv (fn [found source-symbol target]
+                      (if (or found (not= target module-id)) found source-symbol))
+                    nil
+                    (deref +module-contexts+))
+         module-id))))
 
 (defn module-schema-values
-  [module-id]
-  (let [source (module-source-symbol module-id)]
-    (if (not= :loaded (:namespace/state (ns-info source)))
-      {}
-      (reduce-kv (fn [out var-name variable]
-                   (let [form (schema-value-form variable)]
-                     (if form (assoc out (symbol (str source) (name var-name)) form) out)))
-                 {}
-                 (Runtime/vars source)))))
+  ([module-id]
+   (module-schema-values (or (:lang (get (deref +modules+) module-id)) :xtalk)
+                         module-id))
+  ([language module-id]
+   (let [source (module-source-symbol language module-id)]
+     (if (not= :loaded (:namespace/state (ns-info source)))
+       {}
+       (reduce-kv (fn [out var-name variable]
+                    (let [form (schema-value-form variable)]
+                      (if form (assoc out (symbol (str source) (name var-name)) form) out)))
+                  {}
+                  (Runtime/vars source))))))
 
 (defn refresh-module-schemas
-  [module-id]
-  (let [module (get (deref +modules+) module-id)]
-    (if (nil? module)
-      (throw (ex :not-found {:module module-id}
-                 :ex/message "Script module is not registered"))
-      (let [updated (assoc module :schema
-                           (merge (or (:schema module) {})
-                                  (module-schema-values module-id)))]
-        (swap! +modules+ assoc module-id updated)
-        updated))))
+  ([module-id]
+   (refresh-module-schemas (or (:lang (get (deref +modules+) module-id)) :xtalk)
+                           module-id))
+  ([language module-id]
+   (let [current-library (library/runtime-library)
+         module (or (get (library/library-book-modules current-library language)
+                         module-id)
+                    (library/library-get-source-module current-library language module-id))]
+     (if (nil? module)
+       (throw (ex :not-found {:language language :module module-id}
+                  :ex/message "Script module is not registered"))
+       (let [updated (assoc module :schema
+                            (merge (or (:schema module) {})
+                                   (module-schema-values language module-id)))]
+         (register-library-module! (:lang updated) updated))))))
 
 (defn code-operation-key
   "Returns the grammar declaration key retained by a registered code entry."
@@ -213,44 +288,58 @@
       :def)))
 
 (defn register-code
-  ([form] (register-code nil form))
-  ([explicit-language form]
+  ([form] (register-code nil form nil))
+  ([explicit-language form] (register-code explicit-language form nil))
+  ([explicit-language form declaration-metadata]
    (let [module (module-symbol)
          entry-symbol (second form)
+         metadata (merge (or (meta entry-symbol) {})
+                         (or declaration-metadata {}))
+         entry-symbol (with-meta entry-symbol metadata)
+         form (apply list (first form) entry-symbol (drop 2 form))
          id (symbol-id entry-symbol)
          current (or (get (deref +modules+) module)
-                     (module-config :xtalk module {}))
-         metadata (or (meta entry-symbol) {})
+                     (module-config (or explicit-language :xtalk) module {}))
+         language (or explicit-language (:lang current) :xtalk)
          entry (merge metadata
                       {:id id :symbol (symbol (str module "/" (name id)))
                        :module module
-                       :lang (or explicit-language (:lang current) :xtalk)
+                       :lang language
                        :section :code :op (first form)
                        :op-key (code-operation-key form)
+                       :declaration-meta metadata
                        :form form :form-input form})
          entry (if (has? metadata :public)
                  (assoc entry :static/public (:public metadata))
                  entry)]
-     (swap! +modules+ assoc-in [module :code id] entry)
-     (reset-compile-cache!)
-     entry)))
+     (if (nil? (library/library-raw-book-record (library/runtime-library) language))
+       (register-library-module! language current))
+     (register-library-entry! language entry))))
 
 (defn register-fragment
-  [form template]
+  ([form template]
+   (register-fragment nil form template nil))
+  ([explicit-language form template]
+   (register-fragment explicit-language form template nil))
+  ([explicit-language form template declaration-metadata]
    (let [module (module-symbol)
          entry-symbol (second form)
+         metadata (merge (or (meta entry-symbol) {})
+                         (or declaration-metadata {}))
+         entry-symbol (with-meta entry-symbol metadata)
+         form (apply list (first form) entry-symbol (drop 2 form))
          id (symbol-id entry-symbol)
          current (or (get (deref +modules+) module)
-                     (module-config :xtalk module {}))
-         metadata (or (meta entry-symbol) {})
+                     (module-config (or explicit-language :xtalk) module {}))
+         language (or explicit-language (:lang current) :xtalk)
          entry (merge metadata
                       {:id id :symbol (symbol (str module "/" (name id)))
-                       :module module :lang (:lang current) :section :fragment
+                       :module module :lang language :section :fragment
                        :op 'defmacro :op-key :defmacro
                        :form form :form-input form :template template})]
-     (swap! +modules+ assoc-in [module :fragment id] entry)
-     (reset-compile-cache!)
-    entry))
+     (if (nil? (library/library-raw-book-record (library/runtime-library) language))
+       (register-library-module! language current))
+     (register-library-entry! language entry))))
 
 (defn register-fragment-pointer
   "Registers a def$.<tag> fragment and returns its portable language pointer."
@@ -276,18 +365,18 @@
                 (assoc entry :static/return return-value)
                 entry)
         context (script-context language)]
-    (swap! +modules+ assoc-in [module :fragment id] entry)
-    (reset-compile-cache!)
+    (if (nil? (library/library-raw-book-record (library/runtime-library) language))
+      (register-library-module! language current))
+    (register-library-entry! language entry)
     (pointer (assoc entry :entry entry :context context))))
 
 (defn register-macro-fragment
   "Registers a defmacro.<tag> source macro as a target-language fragment."
-  [explicit-language form template]
-  (let [entry (assoc (register-fragment form template) :lang explicit-language)
-        module (:module entry)]
-    (swap! +modules+ assoc-in [module :fragment (:id entry)] entry)
-    (reset-compile-cache!)
-    nil))
+  ([explicit-language form template]
+   (register-macro-fragment explicit-language form template nil))
+  ([explicit-language form template declaration-metadata]
+   (register-fragment explicit-language form template declaration-metadata)
+   nil))
 
 (defn script-context
   "Returns the language context key carried by registered source pointers."
@@ -297,9 +386,11 @@
 (defn register-code-pointer
   "Registers a grammar declaration and returns its portable language pointer."
   ([form]
-   (register-code-pointer nil form))
+   (register-code-pointer nil form nil))
   ([explicit-language form]
-   (let [entry (register-code explicit-language form)
+   (register-code-pointer explicit-language form nil))
+  ([explicit-language form declaration-metadata]
+   (let [entry (register-code explicit-language form declaration-metadata)
          context (script-context (:lang entry))]
      (pointer (assoc entry :entry entry :context context)))))
 
@@ -310,34 +401,20 @@
 (defn script-tags
   "Returns the selected grammar tag and its Foundation declaration tag."
   [lang]
-  (let [book (registry/registry-book lang)
-        tag (or (get-in book [:grammar :tag]) lang)
+  (let [info (registry/registry-book-macro-info lang)
+        tag (or (:tag info) lang)
         alias (or (get +script-tag-aliases+ lang) tag)]
     (if (= alias tag) [tag] [alias tag])))
 
 (defn script-definition-symbols
   "Lists top-level grammar definitions that must receive source macros."
   [lang]
-  (let [reserved (get-in (registry/registry-book lang) [:grammar :reserved])]
-    (vec
-     (sort-by
-      str
-      (reduce-kv
-       (fn [out candidate operation]
-         (if (and (symbol? candidate) (= :def (:type operation)))
-           (conj out candidate)
-           out))
-       []
-       reserved)))))
+  (:definitions (registry/registry-book-macro-info lang)))
 
 (defn script-highlight-symbols
   "Lists grammar highlight forms that must remain callable after script setup."
   [lang]
-  (vec
-   (sort-by str
-            (filter symbol?
-                    (or (get-in (registry/registry-book lang) [:grammar :highlight])
-                        #{})))))
+  (:highlights (registry/registry-book-macro-info lang)))
 
 (defn script-quote-macro-expansion
   "Wraps target macro output so the host macro does not eagerly execute it."
@@ -369,7 +446,9 @@
 (defn script-defmacro-expansion
   "Defines a host macro and registers its target-language fragment template."
   [lang declaration-symbol body namespace-symbol]
-  (let [form (apply list 'defmacro declaration-symbol body)
+  (let [metadata (or (meta declaration-symbol) {})
+        declaration-symbol (with-meta declaration-symbol metadata)
+        form (apply list 'defmacro declaration-symbol body)
         runtime-form (apply list 'defmacro declaration-symbol
                             (script-runtime-macro-body body))
         qualified (symbol (str namespace-symbol) (name declaration-symbol))]
@@ -383,7 +462,8 @@
             (if (and (list? expanded)
                      (= 'quote (first expanded)))
               (second expanded)
-              expanded)))))))
+              expanded)))
+        '~metadata))))
 
 (defn script-eval-macro-form
   "Builds the caller-local !.<tag> evaluator macro for one language."
@@ -434,7 +514,13 @@
          'list
          (list 'quote operation)
          'symbol
-         'body)))))))
+         'body))
+       (list
+        'list
+        (list 'quote 'quote)
+        (list 'merge
+              (list 'or (list 'meta 'symbol) {})
+              (list 'or (list 'meta (list 'second '&form)) {}))))))))
 
 (defn script-fragment-macro-form
   "Builds one def$.<tag> fragment pointer declaration macro."
@@ -471,8 +557,8 @@
 (defn script-highlight-macro-form
   "Builds an inert host declaration for a grammar-highlighted macro symbol."
   [lang highlight-symbol]
-  (let [operation (get-in (registry/registry-book lang)
-                          [:grammar :reserved highlight-symbol])
+  (let [operation (get-in (registry/registry-book-macro-info lang)
+                          [:highlight-meta highlight-symbol])
         macro-symbol (with-meta (symbol (name highlight-symbol))
                        (select-keys (or operation {}) [:arglists :style/indent]))]
     (list 'defmacro macro-symbol (vector '& 'body) nil)))
@@ -515,6 +601,7 @@
     (case tag
       :xt :xtalk
       :pg :postgres
+      :py :python
       tag)))
 
 (defn script-generated-macro-source
@@ -538,35 +625,74 @@
       :else
       'lang.core.script/script-generated-highlight)))
 
+(defn script-macro-bindings
+  "Builds generated grammar macro aliases and their stable implementation Vars."
+  [lang]
+  (let [tags (script-tags lang)
+        definitions (script-definition-symbols lang)
+        highlights (script-highlight-symbols lang)
+        evaluator-bindings
+        (map (fn [tag]
+               [(symbol (str "!." (name tag)))
+                'lang.core.script/script-generated-eval])
+             tags)
+        special-bindings
+        (mapcat (fn [tag]
+                  [[(symbol (str "def$." (name tag)))
+                    'lang.core.script/script-generated-fragment]
+                   [(symbol (str "defmacro." (name tag)))
+                    'lang.core.script/script-generated-defmacro]])
+                tags)
+        definition-bindings
+        (mapcat
+         (fn [tag]
+           (map (fn [operation]
+                  [(symbol (str (name operation) "." (name tag)))
+                   'lang.core.script/script-generated-definition])
+                definitions))
+         tags)
+        highlight-bindings
+        (map (fn [highlight]
+               [(symbol (name highlight))
+                'lang.core.script/script-generated-highlight])
+             highlights)]
+    (vec
+     (concat evaluator-bindings
+             special-bindings
+             definition-bindings
+             highlight-bindings))))
+
 (defn script-intern-macros!
-  "Interns generated grammar macro Vars into a caller namespace."
+  "Interns missing generated grammar macro Vars into a caller namespace."
   [namespace-symbol lang]
   (reduce
-   (fn [_ form]
-     (let [macro-symbol (second form)
-           qualified (symbol (str namespace-symbol) (name macro-symbol))
-           source (script-generated-macro-source form)]
-       (if (Base/resolve qualified)
-         nil
-         (intern-var namespace-symbol
-                     macro-symbol
-                     (Base/resolve source)))))
+   (fn [_ [macro-symbol source]]
+     (let [qualified (symbol (str namespace-symbol) (name macro-symbol))]
+       (when (nil? (Base/resolve qualified))
+         (Runtime/intern-var namespace-symbol
+                             macro-symbol
+                             (Base/resolve source)
+                             {:macro true
+                              :arglists '([& body])}))))
    nil
-   (script-macro-forms lang)))
+   (script-macro-bindings lang)))
 
 (defmacro script-generated-eval
   "Expansion source used by the generated !.<tag> evaluator aliases."
   [& body]
   (let [lang (script-macro-language &form)
+        module (symbol (str (:ns &env)))
         target-form (if (= 1 (count body))
                       (first body)
                       (apply list 'do body))]
     (if (= lang :postgres)
       (list 'lang.core.script/eval-forms
             lang
+            (list 'quote module)
             (list 'quote body))
       (list 'lang.core.script/eval-form
             lang
+            (list 'quote module)
             (list 'quote target-form)))))
 
 (defmacro script-generated-definition
@@ -574,12 +700,18 @@
   [declaration-symbol & body]
   (let [{:keys [operation]} (script-macro-parts &form)
         operation (symbol operation)
+        declaration-metadata (merge (or (meta declaration-symbol) {})
+                                    (or (meta (second &form)) {})
+                                    (or (meta &form) {}))
+        declaration-symbol (with-meta declaration-symbol
+                             declaration-metadata)
         target-form (apply list operation declaration-symbol body)]
     (list 'def
           declaration-symbol
           (list 'lang.core.script/register-code-pointer
                 (script-macro-language &form)
-                (list 'quote target-form)))))
+                (list 'quote target-form)
+                (list 'quote declaration-metadata)))))
 
 (defmacro script-generated-fragment
   "Expansion source used by generated def$.<tag> fragment aliases."
@@ -632,25 +764,38 @@
      (defmacro ~symbol ~@body)))
 
 (defn module-loaded?
-  [module]
-  (or (has? (deref +loaded-modules+) module)
-      (has? (deref +modules+) module)))
+  ([module]
+   (or (has? (deref +loaded-modules+) module)
+       (has? (deref +modules+) module)))
+  ([language module]
+   (or (has? (deref +loaded-modules+) [language module])
+       (not (nil? (get (library/library-book-modules (library/runtime-library)
+                                               language)
+                       module))))))
 
 (defn load-module
-  [spec]
-  (let [source (require-module spec)
-        module (or (get (deref +module-contexts+) source) source)]
-    (if (not (module-loaded? module))
-      (eval (list 'require (list 'quote source))))
-    (let [module (or (get (deref +module-contexts+) source) source)
-          value (get (deref +modules+) module)]
-      (if (nil? value)
-        (throw (ex :dependency {:module module :source source}
-                   :ex/message "Required namespace did not provide a script module"))
-        (do
-          (refresh-module-schemas module)
-          (swap! +loaded-modules+ assoc module true)
-          module)))))
+  ([spec]
+   (let [source (require-module spec)
+         module (or (get (deref +module-contexts+) source) source)
+         language (or (:lang (get (deref +modules+) module)) :xtalk)]
+     (load-module language spec)))
+  ([language spec]
+   (let [source (require-module spec)
+         module (or (get (deref +module-contexts+) source) source)]
+     (if (not (module-loaded? language module))
+       (eval (list 'require (list 'quote source))))
+     (let [module (or (get (deref +module-contexts+) source) source)
+           current-library (library/runtime-library)
+           value (or (get (library/library-book-modules current-library language)
+                          module)
+                     (library/library-get-source-module current-library language module))]
+       (if (nil? value)
+         (throw (ex :dependency {:language language :module module :source source}
+                    :ex/message "Required namespace did not provide a script module"))
+         (do
+           (refresh-module-schemas (:lang value) module)
+           (swap! +loaded-modules+ assoc [language module] true)
+           module))))))
 
 (defn script-options
   [options]
@@ -664,7 +809,7 @@
   [lang config]
   (reduce (fn [primary spec]
             (let [source (require-module spec)]
-              (load-module spec)
+              (load-module lang spec)
               (if (require-primary? spec) (conj primary source) primary)))
           #{}
           (concat (or (:require-impl config) [])
@@ -675,14 +820,62 @@
   ([lang config test?]
    (setup lang (namespace-symbol) config test?))
   ([lang module config test?]
-   (let [config (or config {})
+   (let [source (namespace-symbol)
+         config (or config {})
+         _ (if (= :basic (:runtime config))
+             (library/library-get-book-selection (library/runtime-library) lang))
          primary (script-ns-import lang config)
-         configured (configure-module lang module (assoc config :module/primary primary))]
+         configured (configure-module lang module
+                                      (assoc config :module/primary primary)
+                                      source)]
      (if test?
        (swap! +scripts+ assoc [module lang]
-              {:lang lang :module module :source (namespace-symbol)
+              {:lang lang :module module :source source
                :config config :runtime nil}))
      configured)))
+
+(defn compile-script-module
+  "Compiles one selected script module through its active Library Book."
+  [lang module config]
+  (let [current-library (library/runtime-library)]
+    (*module-compiler*
+      {:lang lang
+      :main module
+      :layout :flat
+      :emit (or (:emit config) {})
+      :book (library/library-get-book-selection current-library lang)})))
+
+(defn script-module-source?
+  "Returns whether a selected script module owns emitted source declarations."
+  [lang module]
+  (let [module-value (get (library/library-book-modules (library/runtime-library)
+                                                           lang)
+                          module)]
+    (or (not (empty? (:code module-value)))
+        (not (empty? (:fragment module-value))))))
+
+(defn initialize-script!
+  "Compiles and injects a selected basic-runtime module after transport startup."
+  [instance lang module config]
+  (let [_ (library/library-get-book-selection (library/runtime-library) lang)
+        compiled (if (script-module-source? lang module)
+                   (compile-script-module lang module config)
+                   {:output "" :diagnostics []})
+        diagnostics (or (:diagnostics compiled) [])
+        output (or (:output compiled) "")]
+    (if (not (empty? diagnostics))
+      (throw
+       (ex :dependency {:lang lang
+                        :module module
+                        :diagnostics diagnostics}
+           :ex/message "Script module compilation failed"))
+      (do
+        (if (not (empty? output))
+          (*module-evaluator* instance output
+                             {:timeout (or (:timeout config)
+                                           (:timeout instance)
+                                           2000)}))
+        instance))))
 
 (defn start-script
   "Creates, starts, and records the selected runtime for one script coordinate."
@@ -694,6 +887,14 @@
         runtime-id (or (:runtime config) :default)
         instance (runtime/rt-start
                   (runtime/rt-create lang runtime-id (assoc config :module module)))
+        instance (if (= runtime-id :basic)
+                   (try
+                     (initialize-script! instance lang module config)
+                     (catch error
+                       (do
+                         (runtime/rt-stop instance)
+                         (throw error))))
+                   instance)
         instance
         (if (= lang :postgres)
           (reduce
@@ -770,17 +971,19 @@
 
 (defn selected-book
   [lang]
-  (registry/registry-book lang :default nil))
+  (library/library-get-book-selection (library/runtime-library) lang))
 
 (defn compile-cache-key
   [lang module form]
-  [lang module form (hash (registry/registry-snapshot))])
+  [lang module form
+   (:revision (library/library-snapshot (library/runtime-library)))])
 
 (defn compile-one
   [lang form module entry]
   (let [book (selected-book lang)
-        context {:book (assoc book :modules (deref +modules+))
-                 :modules (deref +modules+) :module module :entry entry
+        modules (:modules book)
+        context {:book book
+                 :modules modules :module module :entry entry
                  :lang lang :layout :flat}
         work (fn []
                (if entry
@@ -797,7 +1000,7 @@
 (defn compile-form
   "Compiles a single target expression against registered module source."
   [lang module form]
-  (let [module-value (or (get (deref +modules+) module)
+  (let [module-value (or (get (:modules (selected-book lang)) module)
                          (module-config lang module {}))]
     (:output (compile-one lang form module-value nil))))
 
@@ -822,19 +1025,22 @@
   nil)
 
 (defn eval-form
-  [lang form]
-  (let [module (namespace-symbol)
-        script (get (deref +scripts+) [module lang])
-        instance (:runtime script)]
-    (if (nil? script)
-      (throw (ex :dependency {:module module :lang lang}
-                 :ex/message "Script is not configured"))
-      (if (nil? instance)
-        (throw (ex :dependency {:module module :lang lang}
-                   :ex/message "Script runtime is not started"))
-        (evaluation/eval-await instance (compile-form lang module form) {})))))
+  ([lang form]
+   (eval-form lang (namespace-symbol) form))
+  ([lang module form]
+   (let [script (get (deref +scripts+) [module lang])
+         instance (:runtime script)]
+     (if (nil? script)
+       (throw (ex :dependency {:module module :lang lang}
+                  :ex/message "Script is not configured"))
+       (if (nil? instance)
+         (throw (ex :dependency {:module module :lang lang}
+                    :ex/message "Script runtime is not started"))
+         (evaluation/eval-await instance (compile-form lang module form) {}))))))
 
 (defn eval-forms
-  [lang forms]
-  (let [results (vec (map (fn [form] (eval-form lang form)) forms))]
-    (if (= 1 (count results)) (first results) results)))
+  ([lang forms]
+   (eval-forms lang (namespace-symbol) forms))
+  ([lang module forms]
+   (let [results (vec (map (fn [form] (eval-form lang module form)) forms))]
+     (if (= 1 (count results)) (first results) results))))

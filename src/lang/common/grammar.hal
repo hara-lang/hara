@@ -292,19 +292,21 @@
 
 (defn missing-keys
   [required available]
-  (loop [result #{}
-         entries (vec required)]
-    (if (= 0 (count entries))
-      result
-      (let [key (first (first entries))]
-        (recur (if (key-member? available key)
+  (reduce-kv (fn [result key _]
+               (if (has? available key)
                  result
-                 (conj result key))
-               (vec (drop 1 entries)))))))
+                 (conj result key)))
+             #{}
+             required))
 
 (defn nested-merge-entry
   [current replacement]
-  (normalize-op-entry (merge current replacement)))
+  (let [current (if (and (= :macro (:emit replacement))
+                         (:macro replacement)
+                         (not (key-member? replacement :lower)))
+                  (dissoc current :lower)
+                  current)]
+    (normalize-op-entry (merge current replacement))))
 
 (defn build:override
   "Overrides existing operators."
@@ -313,34 +315,31 @@
     (if (> (count missing) 0)
       (throw
        (ex :not-found {:keys missing} :ex/message "Keys not in original map"))
-      (reduce (fn [result pair]
-                (let [key (first pair)]
-                  (assoc result key
-                         (nested-merge-entry
-                          (get result key)
-                          (second pair)))))
-              built
-              replacements))))
+      (reduce-kv
+       (fn [result key replacement]
+         (assoc result key
+                (nested-merge-entry (get result key) replacement)))
+       built
+       replacements))))
 
 (defn build:extend
   "Adds operators not already present."
   [built additions]
   (let [existing
-        (reduce (fn [keys pair]
-                  (if (key-member? built (first pair))
-                    (conj keys (first pair))
-                    keys))
-                #{}
-                additions)]
+        (reduce-kv (fn [keys key _]
+                     (if (has? built key)
+                       (conj keys key)
+                       keys))
+                   #{}
+                   additions)]
     (if (> (count existing) 0)
       (throw
        (ex :generic {:keys existing} :ex/message "Keys in original map"))
-      (reduce (fn [result pair]
-                (assoc result
-                       (first pair)
-                       (normalize-op-entry (second pair))))
-              built
-              additions))))
+      (reduce-kv
+       (fn [result key entry]
+         (assoc result key (normalize-op-entry entry)))
+       built
+       additions))))
 
 (defn to-reserved
   "Converts an operator map to a symbol lookup."
@@ -356,22 +355,25 @@
 
 (defn ops-of-type
   [reserved type]
-  (loop [ops #{}
-         entries (vec reserved)]
-    (if (= 0 (count entries))
-      ops
-      (let [entry (second (first entries))]
-        (recur (if (= type (:type entry))
+  (reduce-kv (fn [ops _ entry]
+               (if (= type (:type entry))
                  (conj ops (:op entry))
-                 ops)
-               (vec (drop 1 entries)))))))
+                 ops))
+             #{}
+             reserved))
 
 (defn grammar-structure
   "Returns block, definition, and function operator sets."
   [reserved]
-  {:block (ops-of-type reserved :block)
-   :def (ops-of-type reserved :def)
-   :fn (ops-of-type reserved :fn)})
+  (reduce-kv
+   (fn [structure _ entry]
+     (let [entry-type (:type entry)]
+       (if (has? structure entry-type)
+         (assoc structure entry-type
+                (conj (get structure entry-type) (:op entry)))
+         structure)))
+   {:block #{} :def #{} :fn #{}}
+   reserved))
 
 (defn grammar-sections
   "Returns grammar sections."

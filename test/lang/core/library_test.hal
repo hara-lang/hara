@@ -1,0 +1,330 @@
+(ns lang.core.library-test
+  (:require [lang.common.book :as book]
+            [lang.core.library :as library]
+            [lang.core.registry :as registry]))
+
+(defn temporary-library
+  ([] (temporary-library nil))
+  ([parent] (library/library-create {:id :test :parent parent})))
+
+(defn module-value
+  [language id]
+  {:lang language :id id :code {} :fragment {}})
+
+(defn entry-value
+  [language module id]
+  {:lang language :module module :section :code :id id})
+
+^{:refer lang.core.library/library?}
+(Test/check [{:name "identifies state-owning Library values"
+              :test (fn [] [(library/library? (temporary-library))
+                             (library/library? {})])
+              :expected [true false]}])
+
+^{:refer lang.core.library/library-create}
+(Test/check [{:name "creates a blank local snapshot with identity and parent"
+              :test (fn [] (let [parent (temporary-library)
+                                 child (temporary-library parent)]
+                             [(:id child)
+                              (= parent (:parent child))
+                              (select-keys (library/library-raw-snapshot child)
+                                           [:revision :books :selected])]))
+              :expected [:test true {:revision 0 :books {} :selected {}}]}])
+
+^{:refer lang.core.library/library-parent}
+(Test/check [{:name "returns the direct parent Library"
+              :test (fn [] (let [parent (temporary-library)]
+                             (= parent (library/library-parent (temporary-library parent)))))
+              :expected true}])
+
+^{:refer lang.core.library/library-raw-snapshot}
+(Test/check [{:name "returns only locally owned source state"
+              :test (fn [] (select-keys (library/library-raw-snapshot (temporary-library))
+                                        [:revision :books :selected]))
+              :expected {:revision 0 :books {} :selected {}}}])
+
+^{:refer lang.core.library/library-snapshot}
+(Test/check [{:name "merges parent source overlays into a child view"
+              :test (fn [] (let [parent (temporary-library)
+                                 _ (library/library-select-book! parent :xtalk)
+                                 _ (library/library-add-module! parent :xtalk
+                                                                (module-value :xtalk 'parent.module))
+                                 child (temporary-library parent)]
+                             (library/library-list-modules child :xtalk)))
+              :expected ['parent.module]}])
+
+^{:refer lang.core.library/library-restore!}
+(Test/check [{:name "restores a supplied local snapshot"
+              :test (fn [] (let [value (temporary-library)
+                                 snapshot (library/library-raw-snapshot value)]
+                             (library/library-select-book! value :xtalk)
+                             (select-keys (library/library-restore! value snapshot)
+                                          [:revision :books :selected])))
+              :expected {:revision 0 :books {} :selected {}}}])
+
+^{:refer lang.core.library/library-reset!}
+(Test/check [{:name "clears local Library state idempotently"
+              :test (fn [] (let [value (temporary-library)]
+                             (library/library-select-book! value :xtalk)
+                             [(select-keys (library/library-reset! value) [:revision :books :selected])
+                              (select-keys (library/library-reset! value) [:revision :books :selected])]))
+              :expected [{:revision 0 :books {} :selected {}}
+                         {:revision 0 :books {} :selected {}}]}])
+
+^{:refer lang.core.library/library-book-record}
+(Test/check [{:name "returns a selected lazy Book descriptor"
+              :test (fn [] (let [value (temporary-library)]
+                             (library/library-select-book! value :xtalk)
+                             (select-keys (library/library-book-record value :xtalk)
+                                          [:info :book :modules])))
+              :expected {:info (registry/registry-book-info :xtalk) :book nil :modules {}}}])
+
+^{:refer lang.core.library/library-raw-book-record}
+(Test/check [{:name "returns a locally selected lazy Book descriptor"
+              :test (fn [] (let [value (temporary-library)]
+                             (library/library-select-book! value :xtalk)
+                             (select-keys (library/library-raw-book-record value :xtalk)
+                                          [:info :book :modules])))
+              :expected {:info (registry/registry-book-info :xtalk) :book nil :modules {}}}])
+
+^{:refer lang.core.library/library-book-info}
+(Test/check [{:name "reads selected metadata without materializing a Book"
+              :test (fn [] (let [value (temporary-library)]
+                             (library/library-select-book! value :xtalk)
+                             (library/library-book-info value :xtalk)))
+              :expected (registry/registry-book-info :xtalk)}])
+
+^{:refer lang.core.library/library-select-book!}
+(Test/check [{:name "records Book selection without a resolved Book value"
+              :test (fn [] (let [value (temporary-library)]
+                             (select-keys (library/library-select-book! value :js)
+                                          [:info :book :modules])))
+              :expected {:info (registry/registry-book-info :js) :book nil :modules {}}}])
+
+^{:refer lang.core.library/library-ensure-book!}
+(Test/check [{:name "creates a default descriptor only when a language is requested"
+              :test (fn [] (let [value (temporary-library)]
+                             [(library/library-book-record value :lua)
+                              (select-keys (library/library-ensure-book! value :lua)
+                                           [:info :book :modules])]))
+              :expected [nil {:info (registry/registry-book-info :lua) :book nil :modules {}}]}])
+
+^{:refer lang.core.library/library-cache-book!}
+(Test/check [{:name "caches a supplied immutable Book after lazy selection"
+              :test (fn [] (let [value (temporary-library)]
+                             (library/library-cache-book! value :xtalk :fixture)
+                             (get-in (library/library-raw-snapshot value)
+                                     [:books [:xtalk :default 1] :book])))
+              :expected :fixture}])
+
+^{:refer lang.core.library/library-base-book}
+(Test/check [{:name "materializes only the requested registered Book"
+              :test (fn [] (let [value (temporary-library)
+                                 resolved (library/library-base-book value :xtalk)]
+                             [(book/book? resolved)
+                              (book/book? (get-in (library/library-raw-snapshot value)
+                                                  [:books [:xtalk :default 1] :book]))]))
+              :expected [true true]}])
+
+^{:refer lang.core.library/library-book-modules}
+(Test/check [{:name "returns effective module overlays without Book materialization"
+              :test (fn [] (let [value (temporary-library)]
+                             (library/library-add-module! value :xtalk
+                                                          (module-value :xtalk 'demo.module))
+                             (keys (library/library-book-modules value :xtalk))))
+              :expected ['demo.module]}])
+
+^{:refer lang.core.library/library-raw-book-modules}
+(Test/check [{:name "returns only locally owned module overlays"
+              :test (fn [] (let [parent (temporary-library)
+                                 _ (library/library-add-module! parent :xtalk
+                                                                (module-value :xtalk 'parent.module))
+                                 child (temporary-library parent)]
+                             (library/library-raw-book-modules child :xtalk)))
+              :expected {}}])
+
+^{:refer lang.core.library/library-apply-modules}
+(Test/check [{:name "overlays BookModule values onto an immutable Book"
+              :test (fn [] (let [base (registry/registry-book :xtalk)
+                                 resolved (library/library-apply-modules
+                                           base {'demo.module (module-value :xtalk 'demo.module)})]
+                             (:id (book/get-module resolved 'demo.module))))
+              :expected 'demo.module}])
+
+^{:refer lang.core.library/library-get-book-raw}
+(Test/check [{:name "returns a Book with only local source modules"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))]
+                             (:id (book/get-module (library/library-get-book-raw value :xtalk)
+                                                   'demo.module))))
+              :expected 'demo.module}])
+
+^{:refer lang.core.library/library-get-book-selection}
+(Test/check [{:name "keeps target grammar selection independent of unused Book parents"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))
+                                 selected (library/library-get-book-selection value :js)]
+                             [(:lang selected)
+                              (:parent selected)
+                              (book/get-module selected 'demo.module)]))
+              :expected [:js :xtalk nil]}])
+
+^{:refer lang.core.library/library-get-book}
+(Test/check [{:name "merges the target Book with its XTalk parent overlay"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))]
+                             (:id (book/get-module (library/library-get-book value :js)
+                                                   'demo.module))))
+              :expected 'demo.module}])
+
+^{:refer lang.core.library/library-get-module}
+(Test/check [{:name "resolves a module through the effective Book chain"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))]
+                             (:id (library/library-get-module value :js 'demo.module))))
+              :expected 'demo.module}])
+
+^{:refer lang.core.library/library-get-source-module}
+(Test/check [{:name "resolves a generic source module through parent metadata without materializing Books"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))
+                                 module-value (library/library-get-source-module
+                                               value :js 'demo.module)]
+                             [(select-keys module-value [:id :lang])
+                              (get-in (library/library-raw-snapshot value)
+                                      [:books [:js :default 1] :book])
+                              (get-in (library/library-raw-snapshot value)
+                                      [:books [:xtalk :default 1] :book])]))
+              :expected [{:id 'demo.module :lang :xtalk} nil nil]}])
+
+^{:refer lang.core.library/library-get-entry}
+(Test/check [{:name "resolves an entry through the effective Book chain"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))
+                                 _ (library/library-set-entry! value :xtalk
+                                                               (entry-value :xtalk 'demo.module 'value))]
+                             (:id (library/library-get-entry value :js 'demo.module :code 'value))))
+              :expected 'value}])
+
+^{:refer lang.core.library/library-add-book!}
+(Test/check [{:name "registers an already resolved Book without a provider reload"
+              :test (fn [] (let [value (temporary-library)
+                                 resolved (registry/registry-book :xtalk)]
+                             (book/book? (:book (library/library-add-book! value resolved)))))
+              :expected true}])
+
+^{:refer lang.core.library/library-add-module!}
+(Test/check [{:name "stores BookModule values without resolving their Book"
+              :test (fn [] (let [value (temporary-library)]
+                             (select-keys (library/library-add-module! value :xtalk
+                                                                      (module-value :xtalk 'demo.module))
+                                          [:lang :id :code :fragment])))
+              :expected {:lang :xtalk :id 'demo.module :code {} :fragment {}}}])
+
+^{:refer lang.core.library/library-delete-module!}
+(Test/check [{:name "deletes only a locally owned module"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))]
+                             [(:id (library/library-delete-module! value :xtalk 'demo.module))
+                              (library/library-list-modules value :xtalk)]))
+              :expected ['demo.module []]}])
+
+^{:refer lang.core.library/library-set-entry!}
+(Test/check [{:name "stores a BookEntry in its local BookModule"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))]
+                             (select-keys (library/library-set-entry! value :xtalk
+                                                                      (entry-value :xtalk 'demo.module 'value))
+                                          [:lang :module :section :id])))
+              :expected {:lang :xtalk :module 'demo.module :section :code :id 'value}}])
+
+^{:refer lang.core.library/library-delete-entry!}
+(Test/check [{:name "deletes a locally owned BookEntry"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))
+                                 _ (library/library-set-entry! value :xtalk
+                                                               (entry-value :xtalk 'demo.module 'value))]
+                             [(:id (library/library-delete-entry! value :xtalk 'demo.module :code 'value))
+                              (library/library-list-entries value :xtalk 'demo.module :code)]))
+              :expected ['value []]}])
+
+^{:refer lang.core.library/library-purge-book!}
+(Test/check [{:name "purges every locally owned source module"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'a))
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'b))]
+                             [(library/library-purge-book! value :xtalk)
+                              (library/library-list-modules value :xtalk)]))
+              :expected [['a 'b] []]}])
+
+^{:refer lang.core.library/library-list-modules}
+(Test/check [{:name "lists effective source modules without resolving Books"
+              :test (fn [] (let [parent (temporary-library)
+                                 _ (library/library-add-module! parent :xtalk
+                                                                (module-value :xtalk 'parent.module))]
+                             (library/library-list-modules (temporary-library parent) :xtalk)))
+              :expected ['parent.module]}])
+
+^{:refer lang.core.library/library-list-entries}
+(Test/check [{:name "lists effective source entries without resolving Books"
+              :test (fn [] (let [value (temporary-library)
+                                 _ (library/library-add-module! value :xtalk
+                                                                (module-value :xtalk 'demo.module))
+                                 _ (library/library-set-entry! value :xtalk
+                                                               (entry-value :xtalk 'demo.module 'value))]
+                             (library/library-list-entries value :xtalk 'demo.module :code)))
+              :expected ['value]}])
+
+^{:refer lang.core.library/library-clone}
+(Test/check [{:name "clones the effective snapshot without retaining a parent"
+              :test (fn [] (let [parent (temporary-library)
+                                 _ (library/library-add-module! parent :xtalk
+                                                                (module-value :xtalk 'parent.module))
+                                 clone (library/library-clone (temporary-library parent))]
+                             [(library/library-parent clone)
+                              (library/library-list-modules clone :xtalk)]))
+              :expected [nil ['parent.module]]}])
+
+^{:refer lang.core.library/default-library}
+(Test/check [{:name "returns one process default Library"
+              :test (fn [] (let [first (library/default-library)
+                                 second (library/default-library)]
+                             [(library/library? first) (= first second)]))
+              :expected [true true]}])
+
+^{:refer lang.core.library/default-library:reset}
+(Test/check [{:name "resets the process default Library idempotently"
+              :test (fn [] (let [value (library/default-library)
+                                 before (library/library-raw-snapshot value)]
+                             (try
+                               (library/library-add-module! value :xtalk
+                                                            (module-value :xtalk 'temporary.module))
+                               [(library/default-library:reset)
+                                (library/default-library:reset)]
+                               [(library/library-list-modules (library/default-library) :xtalk)
+                                (library/library-list-modules (library/default-library) :xtalk)]
+                               (finally (library/library-restore! value before)))))
+              :expected [[] []]}])
+
+^{:refer lang.core.library/runtime-library}
+(Test/check [{:name "uses the default Library outside an explicit binding"
+              :test (fn [] (= (library/default-library) (library/runtime-library)))
+              :expected true}])
+
+^{:refer lang.core.library/with:library}
+(Test/check [{:name "binds the current Library for registration and compilation"
+              :test (fn [] (let [value (temporary-library)]
+                             (library/with:library [value]
+                               (= value (library/runtime-library)))))
+              :expected true}])

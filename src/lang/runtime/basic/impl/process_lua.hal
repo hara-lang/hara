@@ -17,7 +17,33 @@
                 :extension "lua"
                 :flags {:oneshot ["-e" "loadstring=loadstring or load;unpack=unpack or table.unpack" "-e"]
                         :verify ["-e" "local loader=loadstring or load; assert(loader(io.read('*a'), '@<hara>'))"]
-                        :basic ["-e"]}}}}))
+                        :basic ["-e"]}}
+          :luajit {:exec "luajit"
+                   :extension "lua"
+                   :flags {:oneshot ["-e"]
+                           :verify ["-e" "local loader=loadstring or load; assert(loader(io.read('*a'), '@<hara>'))"]
+                   :basic ["-e"]}}}}))
+
+(defn lua-basic-script-globalize-entry
+  "Converts Lua basic-runtime declarations to globals for later eval chunks."
+  [body opts]
+  (let [op-key (get-in opts [:entry :op-key])]
+    (cond
+      (or (= op-key :defn) (= op-key :defgen))
+      (if (str/starts-with? body "local function ")
+        (str "function "
+             (str/slice body 15 (str/length body)))
+        body)
+
+      (= op-key :def)
+      (if (str/starts-with? body "local ")
+        (str/slice body 6 (str/length body))
+        body)
+
+      :else body)))
+
+(def +lua-basic-script-emit+
+  {:code {:transforms {:entry [lua-basic-script-globalize-entry]}}})
 
 (def +lua-oneshot-config+
   (common/set-context-options
@@ -35,7 +61,7 @@
 (def +lua-basic-config+
   (common/set-context-options
    [:lua :basic :default]
-   {:main {} :emit {} :json :full :timeout 2000
+   {:main {} :emit +lua-basic-script-emit+ :json :full :encode :json :timeout 2000
     :transport :process-socket
     :bootstrap source/transport-source
     :profile {:input []

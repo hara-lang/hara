@@ -1,0 +1,65 @@
+(ns lang.model.v1.spec-python.python-rewrite-test
+  (:require [lang.model.v1.spec-python.python-rewrite :as subject]))
+
+^{:refer lang.model.v1.spec-python.python-rewrite/python-normalize-for}
+(Test/check
+ [{:name "normalizes Foundation numeric loops to Python range loops"
+   :test (fn [] (subject/python-normalize-for
+                 '(for [(var i := 0)
+                        (< i limit)
+                        (:= i (+ i 1))]
+                    (return i))))
+   :expected '(for [i :in (range 0 limit 1)] (return i))}])
+
+^{:refer lang.model.v1.spec-python.python-rewrite/python-normalize-form}
+(Test/check
+ [{:name "rewrites numeric loop forms during Python staging"
+   :test (fn [] (subject/python-normalize-form
+                 '(for [(var i := 0)
+                        (< i limit)
+                        (:= i (+ i 1))]
+                    (return i))))
+   :expected '(for [i :in (range 0 limit 1)] (return i))}])
+
+^{:refer lang.model.v1.spec-python.python-rewrite/python-numeric-for?}
+(Test/check
+ [{:name "recognizes numeric loops without claiming in-loops"
+   :test (fn [] [(subject/python-numeric-for?
+                  '(for [(var i := 0)
+                         (< i limit)
+                         (:= i (+ i 1))]
+                     body))
+                 (subject/python-numeric-for?
+                  '(for [entry :in entries] body))])
+   :expected [true false]}])
+
+^{:refer lang.model.v1.spec-python.python-rewrite/python-rewrite-list}
+(Test/check
+ [{:name "rewrites direct dot assignment to setitem"
+   :test (fn [] (subject/python-rewrite-list
+                 '( := (. obj [key]) value)))
+   :expected '( := (. obj (setitem key)) value)}])
+
+^{:refer lang.model.v1.spec-python.python-rewrite/python-rewrite-stage}
+(Test/check
+ [{:name "keeps nested let branches intact"
+   :test (fn []
+           (let [form '(defn hsl->rgb [hsl]
+                         (var [hi si li] hsl)
+                         (var h (/ hi 360))
+                         (var s (/ si 100))
+                         (var l (/ li 100))
+                         (if (== s 0)
+                           (return [(round (* 255 l))
+                                    (round (* 255 l))
+                                    (round (* 255 l))])
+                           (let [t2 (:? (< l (double 0.5))
+                                        (* l (+ s 1))
+                                        (- (+ l s) (* s l)))
+                                 t1 (- (* 2 l) t2)]
+                             (return [(round (* 255 t2))
+                                      (round (* 255 t1))
+                                      (round (* 255 l))]))))]
+             (= (subject/python-rewrite-stage form {:grammar {}})
+                form)))
+   :expected true}])

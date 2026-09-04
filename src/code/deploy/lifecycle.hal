@@ -1,0 +1,238 @@
+(ns code.deploy.lifecycle
+  (:config {:role :internal})
+  (:require [code.deploy.catalog :as catalog]
+            [code.deploy.dependency :as dependency]
+            [code.deploy.registry :as registry]
+            [code.deploy.stage :as stage]
+            [code.deploy.task :as task]
+            [std.package.project :as package]))
+
+(def ^{:public true} +phases+
+  [:validate
+   :initialize
+   :generate-sources
+   :process-sources
+   :generate-resources
+   :process-resources
+   :compile
+   :test-compile
+   :test
+   :package
+   :verify
+   :install
+   :deploy])
+
+(defn ^{:public true} phase?
+  "Returns true for a supported Maven-shaped Hara lifecycle phase."
+  [value]
+  (has? (set +phases+) (if (keyword? value) value (keyword (str value)))))
+
+(defn ^{:public true} phase-key
+  [value]
+  (let [phase (if (keyword? value) value (keyword (str value)))]
+    (if (phase? phase)
+      phase
+      (throw
+       (ex :code.deploy/invalid-phase
+           {:phase value :phases +phases+}
+           :ex/message "Hara lifecycle phase is not supported")))))
+
+(defn ^{:public true} phases-through
+  "Returns lifecycle phases from validate through the requested phase."
+  [value]
+  (let [phase (phase-key value)]
+    (loop [remaining +phases+
+           output []]
+      (let [current (first remaining)
+            output (conj output current)]
+        (cond
+          (= current phase) output
+          (empty? (rest remaining))
+          (throw
+           (ex :code.deploy/invalid-phase
+               {:phase phase}
+               :ex/message "Hara lifecycle phase could not be ordered"))
+          :else (recur (rest remaining) output))))))
+
+(defn build-state
+  [root]
+  (let [plan (catalog/plan root)]
+    {:lifecycle/root root
+     :lifecycle/plan plan
+     :lifecycle/status {}}))
+
+(defn ^{:public true} state-for-phase
+  "Builds only the project metadata needed by pre-compile lifecycle phases."
+  [root phase]
+  (let [phase (phase-key phase)]
+    (if (has? #{:compile :test-compile :test :package :verify :install :deploy}
+              phase)
+      (build-state root)
+      {:lifecycle/root root
+       :lifecycle/plan {:deploy/project (catalog/read-project root)}
+       :lifecycle/status {}})))
+
+(defn mark
+  [state phase value]
+  (assoc-in state [:lifecycle/status phase] value))
+
+(defn verify-build
+  [state]
+  (let [built (:lifecycle/build state)
+        missing (vec
+                 (keep
+                  (fn [package]
+                    (let [archive (:package/archive package)]
+                      (if (and archive (deref (File/exists? archive)))
+                        nil
+                        (:package/name package))))
+                  (:deploy/packages built)))]
+    (if (empty? missing)
+      state
+      (throw
+       (ex :code.deploy/missing-archive
+           {:packages missing}
+           :ex/message "Hara verify requires every lifecycle package archive")))))
+
+(defn install-build
+  [state]
+  (let [built (:lifecycle/build state)]
+    (doseq [package (:deploy/packages built)]
+      (package/project-install (:package/archive package)))
+    state))
+
+(defn built-in
+  [state phase]
+  (let [root (:lifecycle/root state)
+        phase (phase-key phase)]
+    (cond
+      (= phase :validate)
+      (mark (assoc state :lifecycle/dependencies (registry/check root))
+            phase
+            :passed)
+
+      (= phase :compile)
+      (let [staged (stage/stage-plan (:lifecycle/plan state))
+            built (task/build-staged staged)]
+        (mark (assoc state :lifecycle/build built) phase :passed))
+
+      (= phase :package)
+      (if (:lifecycle/build state)
+        (mark state phase :passed)
+        (let [staged (stage/stage-plan (:lifecycle/plan state))
+              built (task/build-staged staged)]
+          (mark (assoc state :lifecycle/build built) phase :passed)))
+
+      (= phase :verify)
+      (mark (verify-build state) phase :passed)
+
+      (= phase :install)
+      (mark (install-build state) phase :passed)
+
+      (= phase :deploy)
+      (throw
+       (ex :code.deploy/publication-boundary
+           {:root root}
+           :ex/message "Hara deploy publication is owned by the reviewed registry workflow"))
+
+      (= phase :initialize)
+      (mark state phase :passed)
+
+      (= phase :test-compile)
+      (mark state phase :passed)
+
+      (= phase :test)
+      (mark state phase :passed)
+
+      :else
+      (mark state phase :passed))))
+
+(defn entry-symbol
+  [value]
+  (cond
+    (symbol? value) value
+    (string? value) (symbol value)
+    :else
+    (throw
+     (ex :code.deploy/invalid-goal
+         {:entry value}
+         :ex/message "Hara goal entry must be a qualified namespace/symbol"))))
+
+(defn invoke-entry
+  [entry input]
+  (let [entry (entry-symbol entry)
+        namespace-symbol (symbol (namespace entry))]
+    (eval (list 'require (list 'quote namespace-symbol)))
+    (let [resolved (resolve entry)]
+      (if (and resolved (fn? (deref resolved)))
+        ((deref resolved) input)
+        (throw
+         (ex :code.deploy/missing-goal
+             {:entry entry}
+             :ex/message "Hara goal entry is not a loaded function"))))))
+
+(defn locked-plugin?
+  [project plugin]
+  (let [lock (registry/read-lock (:lifecycle/root project))]
+    (if (and lock
+             (map? (get-in lock [:packages (str plugin)])))
+      true
+      false)))
+
+(defn run-binding
+  [state binding]
+  (let [plugin (:plugin binding)
+        entry (:entry binding)]
+    (if (not (locked-plugin? {:lifecycle/root (:lifecycle/root state)} plugin))
+      (throw
+       (ex :code.deploy/unlocked-goal
+           {:plugin plugin :entry entry}
+           :ex/message "Hara goal packages must be present in project.lock.edn"))
+      (invoke-entry entry state))))
+
+(defn run-bindings
+  [state phase]
+  (let [project (:deploy/project (:lifecycle/plan state))
+        bindings (or (get-in project [:project/build :bindings phase]) [])]
+    (reduce run-binding state bindings)))
+
+(defn ^{:public true} run-phase
+  "Runs one lifecycle phase, including project-declared locked goal bindings."
+  [root phase]
+  (let [phase (phase-key phase)
+        state (built-in (state-for-phase root phase) phase)]
+    (run-bindings state phase)))
+
+(defn ^{:public true} run
+  "Runs the lifecycle through a selected phase and returns its state summary."
+  [root phase]
+  (let [state
+        (reduce
+         (fn [state phase]
+           (run-bindings (built-in state phase) phase))
+         (state-for-phase root phase)
+         (phases-through phase))]
+    {:root root
+     :phase (phase-key phase)
+     :status (:lifecycle/status state)
+     :build (:lifecycle/build state)}))
+
+(defn ^{:public true} goal
+  "Runs a locked Hara goal directly from a project build declaration."
+  [root plugin entry]
+  (let [state {:lifecycle/root root
+               :lifecycle/project (catalog/read-project root)
+               :lifecycle/lock (registry/read-lock root)
+               :lifecycle/status {}}]
+    (if (not (locked-plugin? state plugin))
+      (throw
+       (ex :code.deploy/unlocked-goal
+           {:plugin plugin :entry entry}
+           :ex/message "Direct Hara goals must be present in project.lock.edn"))
+      (invoke-entry entry state))))
+
+(defn ^{:public true} clean
+  "Idempotently removes generated Foundation deploy output."
+  [root]
+  (let [project (catalog/read-project root)]
+    (stage/reset-stage root project)))

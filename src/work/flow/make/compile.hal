@@ -1,0 +1,220 @@
+(ns work.flow.make.compile
+  (:config {:role :internal})
+  (:require [work.core :as work]))
+
+(defn target-spec
+  "Normalises a target value to a map containing ordered entries."
+  [value]
+  (if (and (map? value)
+           (or (has? value :entries)
+               (has? value :pre)
+               (has? value :post)))
+    (assoc value :entries (vec (or (:entries value) [])))
+    {:entries
+     (cond
+       (nil? value) []
+       (vector? value) value
+       :else [value])}))
+
+(defn target-specs
+  "Returns the default and named target specifications from a definition."
+  [definition]
+  (let [sections (or (:sections definition) {})
+        targets (merge sections (or (:targets definition) {}))
+        targets (if (has? definition :default)
+                  (assoc targets :default (:default definition))
+                  targets)]
+    (reduce
+     (fn [output entry]
+       (assoc output (nth entry 0) (target-spec (nth entry 1))))
+     {}
+     targets)))
+
+(defn entry-id
+  "Returns a stable identifier for a target entry."
+  [entry index]
+  (if (map? entry)
+    (or (:id entry) (:name entry) (:file entry) index)
+    index))
+
+(defn entry-compiler
+  "Resolves the compiler function for one target entry."
+  [definition entry]
+  (cond
+    (function? entry) entry
+    (not (map? entry)) (:compile-entry definition)
+    :else (or (:compile entry)
+              (get (or (:types definition) {}) (:type entry))
+              (get (or (:formats definition) {}) (:format entry))
+              (:compile-entry definition)
+              (if (function? (:main entry)) (:main entry) nil))))
+
+(defn assert-entry-compiler
+  [definition target entry index]
+  (let [function (entry-compiler definition entry)]
+    (if (not (function? function))
+      (throw (ex :generic
+                 {:make/id (:make/id definition)
+                  :make/target target
+                  :make/index index
+                  :make/entry entry}
+                 :ex/message "Make entry has no compiler")))
+    function))
+
+(defn assert-hook
+  [definition target id function]
+  (if (and function (not (function? function)))
+    (throw (ex :argument
+               {:make/id (:make/id definition)
+                :make/target target
+                :make/hook id
+                :make/value function}
+               :ex/message "Make target hook must be a function")))
+  function)
+
+(defn pure-work
+  [id function]
+  (work/bundle (Work/pure id) {id function}))
+
+(defn step-work
+  [id function]
+  (work/bundle (Work/step id) {id function}))
+
+(defn prepare-work
+  [target]
+  (pure-work
+   (str "work.flow.make/" (str/tag target) "/prepare")
+   (fn [input]
+     {:make/input input :make/results []})))
+
+(defn hook-work
+  [definition target id function]
+  (let [function (assert-hook definition target id function)
+        work-id (str "work.flow.make/" (str/tag target) "/" (str/tag id))]
+    (step-work
+     work-id
+     (fn [state]
+       (if function
+         (function definition target (:make/input state) {})
+         nil)
+       state))))
+
+(defn entry-work
+  [definition target entry index]
+  (let [function (assert-entry-compiler definition target entry index)
+        work-id (str "work.flow.make/" (str/tag target) "/entry/" index)]
+    (step-work
+     work-id
+     (fn [state]
+       (let [value (function definition entry (:make/input state) {})
+             result {:make/target target
+                     :make/index index
+                     :make/entry-id (entry-id entry index)
+                     :make/entry entry
+                     :make/value value}]
+         (assoc state :make/results (conj (:make/results state) result)))))))
+
+(defn complete-work
+  [target]
+  (pure-work
+   (str "work.flow.make/" (str/tag target) "/complete")
+   (fn [state]
+     {:make/target target
+      :make/input (:make/input state)
+      :make/results (:make/results state)
+      :make/count (count (:make/results state))})))
+
+(defn compile-target
+  "Compiles one make target into a normal Work bundle."
+  [definition target spec]
+  (let [spec (target-spec spec)
+        entries (:entries spec)
+        children
+        (reduce
+         (fn [output indexed]
+           (conj output
+                 (entry-work definition target (nth indexed 1) (nth indexed 0))))
+         [(prepare-work target)
+          (hook-work definition target :make/pre (:pre spec))]
+         (map-indexed vector entries))
+        children (conj children
+                       (hook-work definition target :make/post (:post spec))
+                       (complete-work target))]
+    (assoc
+     (work/chain children)
+     :make/id (:make/id definition)
+     :make/target target)))
+
+(defn compile-targets
+  [definition specs]
+  (reduce
+   (fn [output entry]
+     (assoc output
+            (nth entry 0)
+            (compile-target definition (nth entry 0) (nth entry 1))))
+   {}
+   specs))
+
+(defn compile-plan
+  "Compiles a complete immutable make plan before a host is changed."
+  [definition]
+  (let [specs (target-specs definition)]
+    {:make/id (:make/id definition)
+     :make/definition definition
+     :make/target-specs specs
+     :make/targets (compile-targets definition specs)
+     :make/triggers (vec (or (:triggers definition) []))
+     :make/trigger-policy (or (:trigger-policy definition) :on-define)}))
+
+(def compile compile-plan)
+
+(defn matches-selector?
+  [selector entry index]
+  (cond
+    (nil? selector) true
+    (function? selector) (selector entry)
+    (map? selector)
+    (reduce-kv (fn [matched key value]
+                 (and matched (= (get entry key) value)))
+               true
+               selector)
+    :else (= selector (entry-id entry index))))
+
+(defn select-spec
+  [spec selector]
+  (let [spec (target-spec spec)]
+    (assoc spec
+           :entries
+           (vec
+            (map second
+                 (filter (fn [indexed]
+                           (matches-selector? selector
+                                              (second indexed)
+                                              (first indexed)))
+                         (map-indexed vector (:entries spec))))))))
+
+(defn directive-parts
+  [directive]
+  (if (vector? directive)
+    [(first directive) (if (> (count directive) 1) (second directive) nil)]
+    [directive nil]))
+
+(defn target-work
+  "Returns a target bundle or a filtered target bundle."
+  [plan directive]
+  (let [parts (directive-parts directive)
+        target (first parts)
+        selector (second parts)
+        specs (:make/target-specs plan)
+        spec (get specs target)]
+    (if (nil? spec)
+      (throw (ex :generic
+                 {:make/id (:make/id plan)
+                  :make/target target
+                  :make/available (vec (keys specs))}
+                 :ex/message "Make target is not defined")))
+    (if (nil? selector)
+      (get (:make/targets plan) target)
+      (compile-target (:make/definition plan)
+                      target
+                      (select-spec spec selector)))))

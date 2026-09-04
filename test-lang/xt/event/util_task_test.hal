@@ -1,0 +1,206 @@
+(ns xt.event.util-task-test
+  (:require [lang.core :as l]
+            [xt.lang.common-notify :as notify]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-task :as loader]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-task :as loader]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-task :as loader]]})
+
+(Test/check
+ [^{:refer xt.event.util-task/new-task}
+  {:name "creates a task declaration"
+   :test (fn []
+           (!.js
+            (var task (loader/new-task "A" ["B"] [1] {:tag true}))
+            [(. task ["::"]) (. task ["id"]) (. task ["deps"])
+             (. task ["args"]) (. task ["tag"])]))
+   :expected ["loader.task" "A" ["B"] [1] true]}
+
+  ^{:refer xt.event.util-task/task-load}
+  {:name "reuses a currently valid task value"
+   :test (fn []
+           (notify/wait-on :js
+             (spec-promise/x:promise-then
+              (loader/task-load
+               (loader/new-task "A" [] []
+                                {:get-fn (fn [] (return "cached"))
+                                 :check-fn (fn [value]
+                                             (return (== value "cached")))
+                                 :load-fn (fn [] (return "loaded"))}))
+              (fn [value] (repl/notify value)))))
+   :expected "cached"}
+
+  ^{:refer xt.event.util-task/task-unload}
+  {:name "unloads only a valid task"
+   :test (fn []
+           (notify/wait-on :js
+             (spec-promise/x:promise-then
+              (loader/task-unload
+               (loader/new-task "A" [] []
+                                {:get-fn (fn [] (return "loaded"))
+                                 :check-fn (fn [value]
+                                             (return (== value "loaded")))
+                                 :unload-fn (fn [] (return "gone"))}))
+              (fn [value] (repl/notify value)))))
+   :expected true}
+
+  ^{:refer xt.event.util-task/unload-tasks-loop}
+  {:name "unloads completed tasks in supplied order"
+   :test (fn []
+           (notify/wait-on :js
+             (var tasks {"A" (loader/new-task "A" [] []
+                                                {:unload-no-check true
+                                                 :unload-fn (fn [] (return nil))})
+                         "B" (loader/new-task "B" [] []
+                                                {:unload-no-check true
+                                                 :unload-fn (fn [] (return nil))})})
+             (var completed {"A" true "B" true})
+             (spec-promise/x:promise-then
+              (loader/unload-tasks-loop tasks completed ["B" "A"] [] nil)
+              (fn [value] (repl/notify [value completed])))))
+   :expected [["B" true] ["A" true]]}
+
+  ^{:refer xt.event.util-task/new-loader-blank}
+  {:name "creates empty loader state"
+   :test (fn []
+           (!.js
+            (var value (loader/new-loader-blank))
+            [(. value ["::"]) (. value ["order"])
+             (. value ["completed"]) (. value ["loading"])]))
+   :expected ["loader" [] {} {}]}
+
+  ^{:refer xt.event.util-task/add-tasks}
+  {:name "adds tasks and computes dependency order"
+   :test (fn []
+           (!.js
+            (var value
+                 (loader/add-tasks
+                  (loader/new-loader-blank)
+                  [(loader/new-task "B" ["A"] [] {})
+                   (loader/new-task "A" [] [] {})]))
+            [(. value ["order"])
+             (xt/x:get-key (. value ["tasks"]) "A")]))
+   :expected [["A" "B"] {"::" "loader.task" "id" "A" "deps" [] "args" []}]}
+
+  ^{:refer xt.event.util-task/new-loader}
+  {:name "creates a loader from initial tasks"
+   :test (fn []
+           (!.js
+            (var value (loader/new-loader
+                        [(loader/new-task "A" [] [] {})]))
+            [(. value ["::"]) (. value ["order"])
+             (xt/x:has-key? (. value ["tasks"]) "A")]))
+   :expected ["loader" ["A"] true]}
+
+  ^{:refer xt.event.util-task/list-loading}
+  {:name "lists tasks currently loading"
+   :test (fn [] (!.js (loader/list-loading {:loading {"A" true}})))
+   :expected ["A"]}
+
+  ^{:refer xt.event.util-task/list-completed}
+  {:name "lists completed tasks"
+   :test (fn [] (!.js (loader/list-completed {:completed {"A" true}})))
+   :expected ["A"]}
+
+  ^{:refer xt.event.util-task/list-incomplete}
+  {:name "lists declared tasks that are not completed"
+   :test (fn []
+           (!.js
+            (loader/list-incomplete
+             {:tasks {"A" {} "B" {}}
+              :completed {"A" true}
+              :order ["A" "B"]})))
+   :expected ["B"]}
+
+  ^{:refer xt.event.util-task/list-waiting}
+  {:name "lists tasks whose dependencies are ready"
+   :test (fn []
+           (!.js
+            (loader/list-waiting
+             {:tasks {"A" {:deps []} "B" {:deps ["A"]}
+                      "C" {:deps ["B"]}}
+              :loading {"C" true}
+              :completed {"A" true}
+              :order ["A" "B" "C"]})))
+   :expected ["B"]}
+
+  ^{:refer xt.event.util-task/load-tasks-single}
+  {:name "loads one task and updates loader state"
+   :test (fn []
+           (notify/wait-on :js
+             (var value (loader/new-loader
+                         [(loader/new-task "A" [] []
+                                           {:load-fn (fn [] (return "ok"))})]))
+             (spec-promise/x:promise-then
+              (loader/load-tasks-single value "A" nil nil nil)
+              (fn [result]
+                (repl/notify [result (loader/list-completed value)
+                              (loader/list-loading value)])))))
+   :expected ["ok" ["A"] []]}
+
+  ^{:refer xt.event.util-task/load-tasks}
+  {:name "loads dependency-ready tasks to completion"
+   :test (fn []
+           (notify/wait-on :js
+             (var value (loader/new-loader
+                         [(loader/new-task "B" ["A"] []
+                                           {:load-fn (fn [] (return "B"))})
+                          (loader/new-task "A" [] []
+                                           {:load-fn (fn [] (return "A"))})]))
+             (spec-promise/x:promise-then
+              (loader/load-tasks value nil nil)
+              (fn [result]
+                (repl/notify [(loader/list-completed value)
+                              (loader/list-incomplete value)])))))
+   :expected [["A" "B"] []]}
+
+  ^{:refer xt.event.util-task/unload-tasks}
+  {:name "unloads completed tasks in reverse order"
+   :test (fn []
+           (notify/wait-on :js
+             (var value (loader/new-loader
+                         [(loader/new-task "A" [] []
+                                           {:unload-no-check true
+                                            :unload-fn (fn [] (return nil))})
+                          (loader/new-task "B" ["A"] []
+                                           {:unload-no-check true
+                                            :unload-fn (fn [] (return nil))})]))
+             (xt/x:set-key value "completed" {"A" true "B" true})
+             (spec-promise/x:promise-then
+              (loader/unload-tasks value nil)
+              (fn [result] (repl/notify result)))))
+   :expected [["B" true] ["A" true]]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})
+
+(Test/check
+ [^{:refer xt.event.util-task/new-task}
+  {:name "creates tasks in every basic target"
+   :test (fn []
+           [(!.js (xt/x:get-key (loader/new-task "A" [] [] {}) "id"))
+            (!.lua (xt/x:get-key (loader/new-task "A" [] [] {}) "id"))
+            (!.py (xt/x:get-key (loader/new-task "A" [] [] {}) "id"))])
+   :expected ["A" "A" "A"]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

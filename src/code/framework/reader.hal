@@ -235,13 +235,16 @@
                (= :require (first (:form clause))))
           (map-indexed
            (fn [entry-index entry]
-             (let [requirement (require-entry (:form entry))]
-               {:kind :namespace/require
-                :from {:path (conj (:path clause) (+ entry-index 1))
-                       :start (:start entry)
-                       :end (:end entry)}
-                :to (:namespace requirement)
-                :resolution :resolved}))
+             (let [requirement (require-entry (:form entry))
+                   link {:kind :namespace/require
+                         :from {:path (conj (:path clause) (+ entry-index 1))
+                                :start (:start entry)
+                                :end (:end entry)}
+                         :to (:namespace requirement)
+                         :resolution :resolved}]
+               (if (has? (set (rest (:form entry))) :lazy)
+                 (assoc link :lazy true)
+                 link)))
            (rest (:children clause)))
 
           :else []))
@@ -270,8 +273,13 @@
   [record]
   (let [children (:children record)
         language (second children)
-        options (assoc (first (drop 2 children)) :path (conj (:path record) 2))
-        requirements (map-value-record options :require)]
+        options (first (drop 2 children))
+        options (if options
+                  (assoc options :path (conj (:path record) 2))
+                  nil)
+        requirements (if options
+                      (map-value-record options :require)
+                      nil)]
     (cond
       (nil? requirements)
       []

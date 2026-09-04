@@ -1,0 +1,321 @@
+(ns xt.event.base-route-test
+  (:require [lang.core :as l]))
+
+^{:seedgen/root {:all true :langs [:js :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-route :as route]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-route :as route]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.base-route/interim-from-url}
+  {:name "parses a URL into path and scoped parameters"
+   :test (fn [] (get (deref +results+) "from-url"))
+   :expected {"path" ["hello" "world"]
+              "params" {"[\"hello\",\"world\"]" {"id" "1" "type" "name"}}}}
+
+  ^{:refer xt.event.base-route/interim-to-url}
+  {:name "serializes a path interim and its query parameters"
+   :test (fn [] (get (deref +results+) "to-url"))
+   :expected "hello?id=1"}
+
+  ^{:refer xt.event.base-route/path-to-tree}
+  {:name "builds a terminated path tree"
+   :test (fn [] (get (deref +results+) "path-tree"))
+   :expected {"[]" "hello" "[\"hello\"]" "world" "[\"hello\",\"world\"]" nil}}
+
+  ^{:refer xt.event.base-route/interim-to-tree}
+  {:name "adds scoped parameters to a path tree"
+   :test (fn [] (get (deref +results+) "interim-tree"))
+   :expected {"[]" "hello" "[\"hello\"]" nil
+              "params" {"[\"hello\"]" {"id" "1"}}}}
+
+  ^{:refer xt.event.base-route/path-from-tree}
+  {:name "recovers a path from its tree prefixes"
+   :test (fn [] (get (deref +results+) "from-tree"))
+   :expected ["hello" "world"]}
+
+  ^{:refer xt.event.base-route/path-params-from-tree}
+  {:name "reads parameters scoped to a tree path"
+   :test (fn [] (get (deref +results+) "path-params"))
+   :expected {"id" "1"}}
+
+  ^{:refer xt.event.base-route/interim-from-tree}
+  {:name "converts a tree back to an interim"
+   :test (fn [] (get (deref +results+) "from-tree-interim"))
+   :expected {"path" ["hello"] "params" {"[\"hello\"]" {"id" "1"}}}}
+
+  ^{:refer xt.event.base-route/changed-params-raw}
+  {:name "reports changed and removed parameter keys"
+   :test (fn [] (get (deref +results+) "params-raw"))
+   :expected {"id" true "type" true}}
+
+  ^{:refer xt.event.base-route/changed-params}
+  {:name "reports changed parameters at a tree path"
+   :test (fn [] (get (deref +results+) "params"))
+   :expected {"id" true}}
+
+  ^{:refer xt.event.base-route/changed-path-raw}
+  {:name "reports changed path prefixes"
+   :test (fn [] (get (deref +results+) "path-raw"))
+   :expected {"[\"hello\"]" true}}
+
+  ^{:refer xt.event.base-route/changed-path}
+  {:name "reports changed prefixes between route trees"
+   :test (fn [] (get (deref +results+) "path"))
+   :expected {"[\"hello\"]" true}}
+
+  ^{:refer xt.event.base-route/get-url}
+  {:name "returns a route URL"
+   :test (fn [] (get (deref +results+) "get-url"))
+   :expected "hello/world?id=1"}
+
+  ^{:refer xt.event.base-route/get-segment}
+  {:name "reads route segments"
+   :test (fn [] (get (deref +results+) "segment"))
+   :expected ["hello" "world"]}
+
+  ^{:refer xt.event.base-route/get-param}
+  {:name "reads a parameter from the current route"
+   :test (fn [] (get (deref +results+) "param"))
+   :expected "sign_in"}
+
+  ^{:refer xt.event.base-route/get-all-params}
+  {:name "reads all parameters at the current route"
+   :test (fn [] (get (deref +results+) "all-params"))
+   :expected {"auth" "sign_in"}}
+
+  ^{:refer xt.event.base-route/make-route}
+  {:name "creates a route container from a URL"
+   :test (fn [] (get (deref +results+) "make"))
+   :expected ["event.route" "hello?auth=sign_in" "hello" "sign_in"]}
+
+  ^{:refer xt.event.base-route/add-url-listener}
+  {:name "adds URL listeners with route metadata"
+   :test (fn [] (get (deref +results+) "url-entry"))
+   :expected {"label" "hello" "listener/id" "a1" "listener/type" "route.url"}}
+
+  ^{:refer xt.event.base-route/add-path-listener}
+  {:name "adds path listeners with route metadata"
+   :test (fn [] (get (deref +results+) "path-entry"))
+   :expected {"label" "hello" "listener/id" "a1" "listener/type" "route.path"
+              "route/path" ["hello"]}}
+
+  ^{:refer xt.event.base-route/add-param-listener}
+  {:name "adds parameter listeners with route metadata"
+   :test (fn [] (get (deref +results+) "param-entry"))
+   :expected {"label" "hello" "listener/id" "a1" "listener/type" "route.param"
+              "route/param" "auth"}}
+
+  ^{:refer xt.event.base-route/add-full-listener}
+  {:name "adds full path-and-parameter listeners"
+   :test (fn [] (get (deref +results+) "full-entry"))
+   :expected {"label" "hello" "listener/id" "a1" "listener/type" "route.full"
+              "route/path" ["hello"] "route/param" "auth"}}
+
+  ^{:refer xt.event.base-route/remove-listener}
+  {:name "removes route listeners and reports missing ids"
+   :test (fn [] (get (deref +results+) "remove"))
+   :expected ["a1" nil nil]}
+
+  ^{:refer xt.event.base-route/list-listeners}
+  {:name "lists route listener ids before and after removal"
+   :test (fn [] (get (deref +results+) "list"))
+   :expected [["a1" "a2" "a3"] ["a1" "a3"]]}
+
+  ^{:refer xt.event.base-route/set-url}
+  {:name "updates URL and listener notifications"
+   :test (fn [] (get (deref +results+) "set-url"))
+   :expected [["url" "path" "param" "full"] "hello/world?auth=sign_out"
+              ["url" "path" "param" "full"]]}
+
+  ^{:refer xt.event.base-route/set-path}
+  {:name "updates path and scoped parameters"
+   :test (fn [] (get (deref +results+) "set-path"))
+   :expected [["url" "path" "param" "full"] "world?auth=sign_out"
+              ["url" "path" "param" "full"]]}
+
+  ^{:refer xt.event.base-route/set-segment}
+  {:name "replaces one path segment"
+   :test (fn [] (get (deref +results+) "set-segment"))
+   :expected [["path"] "hello/there" ["path"]]}
+
+  ^{:refer xt.event.base-route/set-param}
+  {:name "sets and removes a route parameter"
+   :test (fn [] (get (deref +results+) "set-param"))
+   :expected [["param"] "hello?auth=sign_out" [] "hello" ["param"]]}
+
+  ^{:refer xt.event.base-route/reset-route}
+  {:name "clears history and resets the route URL"
+   :test (fn [] (get (deref +results+) "reset"))
+   :expected ["world?auth=reset" [] "world?auth=reset"]}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var from-url (route/interim-from-url "hello/world?id=1&type=name"))
+             (var to-url (route/interim-to-url {"params" {"[]" {"id" "1"}}
+                                                "path" []}))
+             (var path-tree (route/path-to-tree ["hello" "world"] true))
+             (var interim-tree (route/interim-to-tree
+                                {"params" {"[\"hello\"]" {"id" "1"}}
+                                 "path" ["hello"]}
+                                true))
+             (var from-tree (route/path-from-tree {"[]" "hello"
+                                                   "[\"hello\"]" "world"}))
+             (var path-params (route/path-params-from-tree
+                               {"params" {"[\"hello\"]" {"id" "1"}}}
+                               ["hello"]))
+             (var from-tree-interim (route/interim-from-tree
+                                     {"[]" "hello"
+                                      "[\"hello\"]" nil
+                                      "params" {"[\"hello\"]" {"id" "1"}}}))
+             (var params-raw (route/changed-params-raw {"id" "1" "type" "name"}
+                                                        {"type" "hello"}))
+             (var params (route/changed-params
+                          {"params" {"[\"hello\"]" {"id" "1"}}}
+                          {"params" {"[\"hello\"]" {"id" "2"}}}
+                          ["hello"]))
+             (var path-raw (route/changed-path-raw ["hello"] ["hello" "world"]))
+             (var path (route/changed-path {"[]" "hello"}
+                                           {"[]" "hello" "[\"hello\"]" "world"}))
+             (var url-route (route/make-route "hello/world?id=1"))
+             (var get-url (route/get-url url-route))
+             (var segment-route (route/make-route "hello/world"))
+             (var segment [(route/get-segment segment-route [])
+                           (route/get-segment segment-route ["hello"])])
+             (var param (route/get-param (route/make-route "hello?auth=sign_in")
+                                         "auth" nil))
+             (var all-params (route/get-all-params
+                              (route/make-route "hello?auth=sign_in") nil))
+             (var make-route (route/make-route "hello?auth=sign_in"))
+             (var make [(. make-route ["::"])
+                        (route/get-url make-route)
+                        (route/get-segment make-route [])
+                        (route/get-param make-route "auth" nil)])
+             (var url-entry (. (route/add-url-listener
+                                (route/make-route "hello") "a1"
+                                (fn [id data time meta] (return nil))
+                                {:label "hello"}) ["meta"]))
+             (var path-entry (. (route/add-path-listener
+                                 (route/make-route "hello") ["hello"] "a1"
+                                 (fn [id data time meta] (return nil))
+                                 {:label "hello"}) ["meta"]))
+             (var param-entry (. (route/add-param-listener
+                                  (route/make-route "hello") "auth" "a1"
+                                  (fn [id data time meta] (return nil))
+                                  {:label "hello"}) ["meta"]))
+             (var full-entry (. (route/add-full-listener
+                                 (route/make-route "hello") ["hello"] "auth" "a1"
+                                 (fn [id data time meta] (return nil))
+                                 {:label "hello"}) ["meta"]))
+             (var remove-route (route/make-route "hello"))
+             (route/add-url-listener remove-route "a1" (fn [id data time meta] (return nil)) nil)
+             (var removed-entry (route/remove-listener remove-route "a1"))
+             (var remove [(get (get removed-entry "meta") "listener/id")
+                          (xt/x:get-key (xt/x:get-key remove-route "listeners") "a1")
+                          (route/remove-listener remove-route "missing")])
+             (var list-route (route/make-route "hello"))
+             (route/add-url-listener list-route "a1" (fn [id data time meta] (return nil)) nil)
+             (route/add-path-listener list-route ["hello"] "a2" (fn [id data time meta] (return nil)) nil)
+             (route/add-param-listener list-route "auth" "a3" (fn [id data time meta] (return nil)) nil)
+             (var before (route/list-listeners list-route))
+             (route/remove-listener list-route "a2")
+             (var after (route/list-listeners list-route))
+             (var set-url-route (route/make-route "hello?auth=sign_in"))
+             (var set-url-calls [])
+             (route/add-url-listener set-url-route "url"
+                                     (fn [id data time meta]
+                                       (xt/x:arr-push set-url-calls id)) nil)
+             (route/add-path-listener set-url-route ["hello"] "path"
+                                      (fn [id data time meta]
+                                        (xt/x:arr-push set-url-calls id)) nil)
+             (route/add-param-listener set-url-route "auth" "param"
+                                       (fn [id data time meta]
+                                         (xt/x:arr-push set-url-calls id)) nil)
+             (route/add-full-listener set-url-route ["hello"] "auth" "full"
+                                      (fn [id data time meta]
+                                        (xt/x:arr-push set-url-calls id)) nil)
+             (var set-url [(route/set-url set-url-route "hello/world?auth=sign_out" nil)
+                           (route/get-url set-url-route)
+                           set-url-calls])
+             (var set-path-route (route/make-route "hello?auth=sign_in"))
+             (var set-path-calls [])
+             (route/add-url-listener set-path-route "url"
+                                     (fn [id data time meta]
+                                       (xt/x:arr-push set-path-calls id)) nil)
+             (route/add-path-listener set-path-route [] "path"
+                                      (fn [id data time meta]
+                                        (xt/x:arr-push set-path-calls id)) nil)
+             (route/add-param-listener set-path-route "auth" "param"
+                                       (fn [id data time meta]
+                                         (xt/x:arr-push set-path-calls id)) nil)
+             (route/add-full-listener set-path-route [] "auth" "full"
+                                      (fn [id data time meta]
+                                        (xt/x:arr-push set-path-calls id)) nil)
+             (var set-path [(route/set-path set-path-route ["world"] {"auth" "sign_out"})
+                            (route/get-url set-path-route)
+                            set-path-calls])
+             (var segment-route-2 (route/make-route "hello/world"))
+             (var segment-calls [])
+             (route/add-path-listener segment-route-2 ["hello"] "path"
+                                      (fn [id data time meta]
+                                        (xt/x:arr-push segment-calls id)) nil)
+             (var set-segment [(route/set-segment segment-route-2 ["hello"] "there")
+                               (route/get-url segment-route-2)
+                               segment-calls])
+             (var param-route (route/make-route "hello?auth=sign_in"))
+             (var param-calls [])
+             (route/add-param-listener param-route "auth" "param"
+                                       (fn [id data time meta]
+                                         (xt/x:arr-push param-calls id)) nil)
+             (var set-param [(route/set-param param-route "auth" "sign_out" nil)
+                             (route/get-url param-route)
+                             (route/set-param param-route "auth" nil nil)
+                             (route/get-url param-route)
+                             param-calls])
+             (var reset-route-value (route/make-route "world?auth=old"))
+             (route/set-path reset-route-value ["changed"] {"auth" "changed"})
+             (var reset [(route/get-url reset-route-value)
+                         (route/reset-route reset-route-value "world?auth=reset")
+                         (. reset-route-value ["history"])
+                         (route/get-url reset-route-value)])
+             {"from-url" from-url "to-url" to-url "path-tree" path-tree
+              "interim-tree" interim-tree "from-tree" from-tree
+              "path-params" path-params "from-tree-interim" from-tree-interim
+              "params-raw" params-raw "params" params "path-raw" path-raw
+              "path" path "get-url" get-url "segment" segment "param" param
+              "all-params" all-params "make" make "url-entry" url-entry
+              "path-entry" path-entry "param-entry" param-entry
+              "full-entry" full-entry "remove" remove "list" [before after]
+              "set-url" set-url "set-path" set-path "set-segment" set-segment
+              "set-param" set-param "reset" reset})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.base-route/interim-from-url}
+  {:name "parses route paths in every basic target"
+   :test (fn []
+           [(!.js (xt/x:len (xt/x:get-key
+                              (route/interim-from-url "hello?id=1")
+                              "path")))
+            (!.py (xt/x:len (xt/x:get-key
+                              (route/interim-from-url "hello?id=1")
+                              "path")))])
+   :expected [1 1]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

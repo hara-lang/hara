@@ -1,0 +1,65 @@
+;; ============================================================================
+;; lang.runtime.basic.impl.process-dart — local Dart compiler runtime registration.
+;; ============================================================================
+(ns lang.runtime.basic.impl.process-dart
+  (:config {:role :internal})
+  (:require [lang.core.runtime :as runtime]
+            [lang.runtime.basic.type-common :as common]
+            [lang.runtime.basic.type-twostep :as twostep]))
+
+(defn dart-source-transform
+  "Wraps one emitted Dart expression in an executable main function."
+  [body]
+  (str "void main() {\n"
+       "  print(" body ");\n"
+       "}\n"))
+
+(def +dart-program-init+
+  (common/put-program-options
+   :dart
+   {:default {:twostep :dart
+              :verify :dart}
+    :env {:dart {:exec "dart"
+                 :extension "dart"
+                 :stderr true
+                 :flags {:twostep ["compile" "exe"]
+                         :verify ["compile" "kernel"]}
+                 :output-flag "-o"}}}))
+
+(def +dart-twostep-config+
+  (common/set-context-options
+   [:dart :twostep :default]
+   {:main {}
+    :emit {}
+    :json :string
+    :source-transform dart-source-transform}))
+
+(def +dart-verify-config+
+  (common/set-context-options
+   [:dart :verify :default]
+   {:main {}
+    :emit {}
+    :json false
+    :source-transform dart-source-transform
+    :compile-only true
+    :return-source true}))
+
+(def +dart-twostep+
+  (runtime/install-type
+   :dart :twostep
+   {:type :lang/rt.twostep
+    :instance {:create twostep/rt-twostep:create
+               :raw-eval twostep/raw-eval-twostep}}))
+
+(def +dart-verify+
+  (runtime/install-type
+   :dart :verify
+   {:type :lang/rt.twostep
+    :instance {:create twostep/rt-twostep:create
+               :raw-eval twostep/raw-eval-twostep}}))
+
+(def +init+
+  {:lang :dart
+   :program +dart-program-init+
+   :twostep +dart-twostep+
+   :verify +dart-verify+})

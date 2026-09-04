@@ -3,6 +3,7 @@
 ;; ============================================================================
 (ns lang.core.compile
   (:require [lang.common.compiler :as compiler]
+            [lang.core.library :as library]
             [lang.core.registry :as registry]
             [lang.core.script :as script]))
 
@@ -23,40 +24,129 @@
         (list? spec) (first spec)
         :else nil))
 
+(defn module-native-imports
+  "Collects declared, bundled, and entry-derived native imports for one module."
+  [module]
+  (let [native (merge (or (:native module) {})
+                      (reduce
+                       (fn [output entry]
+                         (merge output
+                                (or (:deps-native entry)
+                                    (get-in entry [:dependencies :native])
+                                    {})))
+                       {}
+                       (vals (or (:code module) {}))))]
+    (merge native
+           (reduce-kv (fn [output _ options]
+                        (merge output (or (:bundle options) {})))
+                      {}
+                      native))))
+
+(defn module-compile-context
+  "Builds the immutable context shared by module lifecycle hooks and emission."
+  [book modules module options]
+  {:book (assoc book :modules modules)
+   :modules modules
+   :module module
+   :lang (:lang options)
+   :layout (or (:layout options) :module)
+   :emit (or (:emit options) {})})
+
+(defn module-lifecycle-output
+  "Emits target setup, native imports, and exports around a module graph body."
+  [book modules module-order options]
+  (reduce
+   (fn [output module-id]
+     (let [module (get modules module-id)
+           context (module-compile-context book modules module options)
+           setup-hook (get-in book [:meta :setup-module])
+           import-hook (get-in book [:meta :module-import])
+           export-hook (get-in book [:meta :module-export])
+           emit-form (fn [form]
+                       (if form
+                         (compiler/emit-direct form (:selection book) context)))
+           setup (if setup-hook (emit-form (setup-hook module)))
+           imports (keep (fn [name]
+                           (if import-hook
+                             (emit-form
+                              (import-hook name
+                                           (get (module-native-imports module) name)
+                                           context))))
+                         (sort-by str (keys (module-native-imports module))))
+           export (if export-hook (emit-form (export-hook module context)))]
+       {:setup (vec (concat (:setup output)
+                            (filter not-empty (concat [setup] imports))))
+        :export (vec (concat (:export output)
+                             (filter not-empty [export])))}))
+   {:setup [] :export []}
+   module-order))
+
 (defn module-dependency-ids
   [module]
-  (stable-values (filter symbol? (map require-module-id (or (:require module) [])))))
+  (let [code-dependencies
+        (reduce
+         (fn [output entry]
+           (reduce
+            (fn [dependencies dependency]
+              (let [dependency-module (if (namespace dependency)
+                                        (symbol (namespace dependency))
+                                        nil)]
+                (if (and dependency-module
+                         (not= dependency-module (:id module)))
+                  (conj dependencies dependency-module)
+                  dependencies)))
+            output
+            (or (:deps entry)
+                (get-in entry [:dependencies :code])
+                #{})))
+         #{}
+         (vals (or (:code module) {})))]
+    (stable-values
+     (filter (fn [dependency]
+               (and (symbol? dependency)
+                    (not= dependency (:id module))))
+             (concat
+              (map require-module-id (or (:require module) []))
+              code-dependencies
+              (vals (or (:link module) {}))
+              (or (:includes module) []))))))
 
 (defn load-module-graph
   "Loads a root module and all declared script dependencies exactly once."
-  [main]
-  (loop [pending [main] seen #{} modules {} diagnostics []]
-    (if (empty? pending)
-      {:modules modules :diagnostics diagnostics}
-      (let [module-id (first pending)
-            remaining (vec (rest pending))]
-        (if (has? seen module-id)
-          (recur remaining seen modules diagnostics)
-          (try
-            (script/load-module module-id)
-            (let [module (get (deref script/+modules+) module-id)]
-              (if module
-                (recur (into remaining (module-dependency-ids module))
-                       (conj seen module-id)
-                       (assoc modules module-id module)
-                       diagnostics)
-                (recur remaining (conj seen module-id) modules
-                       (conj diagnostics
-                             (diagnostic :lang/missing-module
-                                         "Loaded namespace did not register a script module"
-                                         {:module module-id})))))
-            (catch error
-              (recur remaining (conj seen module-id) modules
-                     (conj diagnostics
-                           (diagnostic :lang/module-load-failed
-                                       "Script module could not be loaded"
-                                       {:module module-id
-                                        :message (ex-message error)}))))))))))
+  ([main]
+   (load-module-graph :xtalk main))
+  ([language main]
+   (loop [pending [main] seen #{} modules {} diagnostics []]
+     (if (empty? pending)
+       {:modules modules :diagnostics diagnostics}
+       (let [module-id (first pending)
+             remaining (vec (rest pending))]
+         (if (has? seen module-id)
+           (recur remaining seen modules diagnostics)
+           (try
+             (script/load-module language module-id)
+             (let [module (or (get (library/library-book-modules
+                                    (library/runtime-library) language)
+                                   module-id)
+                              (library/library-get-source-module
+                               (library/runtime-library) language module-id))]
+               (if module
+                 (recur (into remaining (module-dependency-ids module))
+                        (conj seen module-id)
+                        (assoc modules module-id module)
+                        diagnostics)
+                 (recur remaining (conj seen module-id) modules
+                        (conj diagnostics
+                              (diagnostic :lang/missing-module
+                                          "Loaded namespace did not register a script module"
+                                          {:language language :module module-id})))))
+             (catch error
+               (recur remaining (conj seen module-id) modules
+                      (conj diagnostics
+                            (diagnostic :lang/module-load-failed
+                                        "Script module could not be loaded"
+                                        {:language language :module module-id
+                                         :message (ex-message error)})))))))))))
 
 (defn module-ready?
   [modules remaining module-id]
@@ -81,7 +171,7 @@
                                 (diagnostic :lang/module-cycle
                                             "Module dependency cycle"
                                             {:modules cycle}))})
-          (recur (reduce disj remaining ready)
+          (recur (reduce dissoc remaining ready)
                  (into ordered ready)
                  diagnostics))))))
 
@@ -153,7 +243,8 @@
   "Uses the common compiler for one registered module entry."
   [options modules module entry]
   (let [lang (:lang options)
-        book (or (:book options) (registry/registry-book lang :default nil))]
+        book (or (:book options)
+                 (library/library-get-book (library/runtime-library) lang))]
     (if (nil? book)
       (throw (ex :not-found {:lang lang} :ex/message "Language book is not registered"))
       (compiler/compile-entry
@@ -183,8 +274,12 @@
 
 (defn module-entry-transforms
   "Returns the source-configured code entry transforms for one module."
-  [module]
-  (vec (or (get-in module [:emit :code :transforms :entry]) [])))
+  ([module]
+   (module-entry-transforms module {}))
+  ([module options]
+   (vec (or (get-in module [:emit :code :transforms :entry])
+            (get-in options [:emit :code :transforms :entry])
+            []))))
 
 (defn resolve-entry-transform
   "Resolves a configured entry transform or rejects an invalid transform value."
@@ -215,7 +310,7 @@
     (reduce (fn [output transform]
               ((resolve-entry-transform module transform) output environment))
             body
-            (module-entry-transforms module))))
+            (module-entry-transforms module options))))
 
 (defn failed-entry
   [entry qualified problem]
@@ -324,7 +419,7 @@
                :diagnostics (conj diagnostics
                                   (diagnostic :lang/entry-cycle "Entry dependency cycle"
                                               {:entries (vec (map :symbol cycle))}))})
-            (recur (reduce disj remaining (map :symbol ready))
+            (recur (reduce dissoc remaining (map :symbol ready))
                    (into ordered ready) diagnostics)))))))
 
 (defn label-prefix
@@ -353,10 +448,15 @@
                                  "compile-module requires :lang and symbolic :main"
                                  {:lang lang :main main})]
        :provenance {:lang lang :main main :module-order [] :entry-order []}}
-      (let [graph (load-module-graph main)
+      (let [graph (load-module-graph lang main)
             modules (:modules graph)
             module-result (order-modules modules)
             module-order (:order module-result)
+            book (or (:book options)
+                     (library/library-get-book-selection (library/runtime-library) lang))
+            lifecycle (if book
+                        (module-lifecycle-output book modules module-order options)
+                        {:setup [] :export []})
             compiled (compile-entries options modules module-order)
             missing (missing-entry-diagnostics (:entries compiled))
             entry-result (order-entries (:entries compiled) module-order)
@@ -365,7 +465,11 @@
                                      (schema-diagnostics modules module-order)
                                      (:diagnostics compiled) missing
                                      (:diagnostics entry-result)))]
-        {:output (render-output lang (or (:emit options) {}) ordered)
+        {:output (str/join "\n\n"
+                           (filter not-empty
+                                   (concat (:setup lifecycle)
+                                           [(render-output lang (or (:emit options) {}) ordered)]
+                                           (:export lifecycle))))
          :modules (vec (map (fn [module-id] (get modules module-id)) module-order))
          :entries ordered :diagnostics diagnostics
          :provenance {:lang lang :main main :layout (or (:layout options) :module)

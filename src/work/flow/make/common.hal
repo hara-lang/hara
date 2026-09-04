@@ -1,0 +1,171 @@
+(ns work.flow.make.common
+  (:config {:role :internal})
+  (:require [std.fs :as fs]
+            [tool.sh :as sh]))
+
+(def ^:dynamic *triggers* (atom {}))
+
+(defmacro with:triggers [[triggers] & body]
+  `(binding [work.flow.make.common/*triggers* ~triggers] ~@body))
+
+(defn triggers-snapshot
+  "Captures registered make triggers."
+  []
+  (deref *triggers*))
+
+(defn triggers-restore!
+  "Restores registered make triggers to a captured baseline."
+  [state]
+  (reset! *triggers* (or state {}))
+  (triggers-snapshot))
+
+(defn triggers-purge [] (reset! *triggers* {}))
+(defn triggers-set [config triggers] (swap! *triggers* assoc config triggers))
+(defn triggers-clear [config] (swap! *triggers* dissoc config))
+(defn triggers-get [config] (get (deref *triggers*) config))
+
+(defstruct MakeConfig [instance])
+
+(defn make-config? [value] (instance? MakeConfig value))
+
+(defn config-value
+  "Returns the definition map carried by an old config or a live make host."
+  [config]
+  (cond
+    (make-config? config) (deref (:instance config))
+    (and (map? config) (has? config :instance)) (deref (:instance config))
+    (and (map? config) (= true (:make/host config)))
+    (:make/definition (:make/plan (deref (:make/state config))))
+    :else config))
+
+(defn triggers-list []
+  (reduce-kv
+   (fn [output config triggers]
+     (assoc output (:tag (config-value config)) triggers))
+   {}
+   (deref *triggers*)))
+
+(defn get-triggered
+  ([] (get-triggered nil))
+  ([namespace]
+   (let [entries (deref *triggers*)]
+     (filter
+      (fn [config]
+        (first
+         (filter (fn [trigger]
+                   (if (string? trigger)
+                     (str/starts-with? (str namespace) trigger)
+                     (= trigger namespace)))
+                 (get entries config))))
+      (keys entries)))))
+
+(def ^:dynamic *tmux* true)
+(def ^:dynamic *internal-shell* nil)
+
+(defmacro with:internal-shell [& body]
+  `(binding [work.flow.make.common/*internal-shell* true] ~@body))
+
+(defn get-config-tag [config]
+  (:tag (config-value config)))
+
+(defn make-config-defaults []
+  {:ns 'work.flow.make.common
+   :build ".build"
+   :orgfile "Main.org"})
+
+(defn make-config-map-fn [config]
+  (let [_ (if (:default config)
+            true
+            (throw (ex :dependency {:input config} :ex/message "Requires a default entry.")))
+        merged (merge (make-config-defaults) config)
+        root (or (:root merged) ".")]
+    (assoc merged :root root)))
+
+(defmacro make-config-map [config]
+  `(work.flow.make.common/make-config-map-fn
+    (merge {:ns (quote ~(:ns &env))} ~config)))
+
+(defn make-config-fn [config]
+  (MakeConfig (atom (make-config-map-fn config))))
+
+(defmacro make-config [config]
+  `(work.flow.make.common/make-config-fn
+    (merge {:ns (quote ~(:ns &env))} ~config)))
+
+(defn make-config-update [config new-config]
+  (let [current (deref (:instance config))]
+    (reset! (:instance config)
+            (make-config-map-fn
+             (merge {:ns (:ns current)} new-config)))))
+
+(defn make-dir [config]
+  (let [value (deref (:instance config))]
+    (str (:root value) "/" (:build value))))
+
+(defn command-name [command tag]
+  (str/replace
+   (str (str/upper-case (str/tag command))
+        (if tag (str "-" tag) ""))
+   "."
+   "-"))
+
+(defn run-command [config command]
+  (let [directory (make-dir config)
+        started (OS/time-ms)
+        _ (sh/run ["make" (str/tag command)] {:cwd directory})
+        elapsed (- (OS/time-ms) started)]
+    [elapsed true]))
+
+(defn make-run
+  ([config] (make-run config :build))
+  ([config command]
+   (let [command (or command :build)
+         value (deref (:instance config))
+         tag (:tag value)
+         directory (make-dir config)
+         argv ["make" (str/tag command)]]
+     (cond
+       *internal-shell* (run-command config command)
+       (not *tmux*) (sh/run argv {:cwd directory})
+       :else
+       (let [window (command-name command tag)]
+         (sh/run ["tmux" "new-session" "-d" "-s" "DEV"])
+         (sh/run ["tmux" "new-window" "-d" "-t" "DEV" "-n" window "-c" directory])
+         (sh/run ["tmux" "send-keys" "-t" (str "DEV:" window)
+                  (str/join " " argv) "Enter"]))))))
+
+(defn make-run-close
+  ([config] (make-run-close config :build))
+  ([config command]
+   (let [tag (:tag (deref (:instance config)))
+         window (command-name (or command :build) tag)]
+     (sh/run ["tmux" "kill-window" "-t" (str "DEV:" window)]))))
+
+(defn make-run-internal [config & commands]
+  (with:internal-shell
+    (mapv (partial make-run config) commands)))
+
+(defn make-shell [config]
+  (sh/run ["ls"] {:cwd (make-dir config)}))
+
+(defn make-run-init [config] (make-run config :init))
+(defn make-run-package [config] (make-run config :package))
+(defn make-run-release [config] (make-run config :release))
+(defn make-run-dev [config] (make-run config :dev))
+(defn make-run-test [config] (make-run config :test))
+(defn make-run-start [config] (make-run config :start))
+(defn make-run-stop [config] (make-run config :stop))
+
+(defn make-dir-setup [config]
+  (let [directory (make-dir config)
+        _ (fs/create-directory directory {:parents? true :exists-ok? true})]
+    directory))
+
+(defn make-dir-exists? [config]
+  (boolean (fs/exists? (make-dir config))))
+
+(defn make-dir-teardown [config]
+  (let [directory (make-dir config)]
+    (if (fs/exists? directory)
+      [true (fs/delete directory {:recursive? true})]
+      [false])))

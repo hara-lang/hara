@@ -14,19 +14,41 @@
                :ex/message "fact expects one actual => expected pair"))))
 
 (defmacro ^{:public true} fact
-  "Registers a native Test fact whose checker-aware execution evaluates its
-  actual form once per run."
+  "Registers a native Test fact for the Foundation loose assertion form."
   [description & body]
-  (let [pair (fact-pair body)
+  (let [entries
+        (loop [remaining (vec body)
+               output []]
+          (if (empty? remaining)
+            output
+            (if (and (>= (count remaining) 3)
+                     (= (nth remaining 1) =>))
+              (recur (vec (rest (rest (rest remaining))))
+                     (conj output {:type :check
+                                   :actual (nth remaining 0)
+                                   :expected (nth remaining 2)}))
+              (recur (vec (rest remaining))
+                     (conj output {:type :form
+                                   :form (first remaining)})))))
+        steps
+        (vec
+         (map (fn [entry]
+                (if (= :check (:type entry))
+                  `(swap! results conj
+                          (code.test.base.process/check
+                           (fn [] ~(:actual entry))
+                           ~(:expected entry)))
+                  (:form entry)))
+              entries))
         namespace (:ns &env)
-        metadata {}]
+        metadata (or (meta &form) {})]
     `(code.test.registry/register
       '~namespace
       {:desc ~description
        :function (fn [_]
-                   (code.test.base.process/check
-                    (fn [] ~(:actual pair))
-                    ~(:expected pair)))
+                   (let [results (atom [])]
+                     (do ~@steps)
+                     (deref results)))
        :meta ~metadata})))
 
 (defmacro ^{:public true} fact:template

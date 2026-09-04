@@ -1,0 +1,27 @@
+(ns lang.model.v1.spec-postgres.postgres-entity-util-test
+  (:require [lang.core.script :as script]
+            [lang.model.v1.spec-postgres.postgres-entity-util :as subject]))
+
+(defn isolated
+  [function]
+  (let [snapshot (script/script-snapshot)]
+    (try
+      (script/script-reset!)
+      (function)
+      (finally
+        (script/script-restore! snapshot)))))
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/default-application}
+(Test/check
+ [{:name "reads application metadata from the PostgreSQL Library overlay"
+   :test (fn [] (isolated (fn []
+                            (script/register-library-module!
+                             :postgres
+                             {:id 'fixture.pg
+                              :lang :postgres
+                              :static {:application [:fixture-app]}
+                              :code {}
+                              :fragment {}})
+                            (reset! script/+modules+ {})
+                            (subject/default-application 'fixture.pg))))
+   :expected :fixture-app}])

@@ -1,0 +1,49 @@
+(ns work.flow.make.makefile-test
+  (:require [work.flow.make.makefile :as makefile]))
+
+^{:refer work.flow.make.makefile/block?}
+(Test/check
+ [{:name "recognises maps and vectors of vectors"
+   :test (fn [] [(makefile/block? {:a 1})
+                 (makefile/block? [[:a 1]])
+                 (makefile/block? [:a 1])])
+   :expected [true true false]}])
+
+^{:refer work.flow.make.makefile/nested-block?}
+(Test/check
+ [{:name "recognises a nested block"
+   :test (fn [] [(makefile/nested-block? [[:a 1] [[:b 2]]])
+                 (makefile/nested-block? [[:a 1] :b])])
+   :expected [true false]}])
+
+^{:refer work.flow.make.makefile/write-line}
+(Test/check
+ [{:name "writes scalar, vector, and quoted lines"
+   :test (fn [] [(makefile/write-line :gcc)
+                 (makefile/write-line ["go" "build" "./..."])
+                 (makefile/write-line (with-meta ["a" "b"] {:quote true}))])
+   :expected ["gcc" "go build ./..." "'a b'"]}])
+
+^{:refer work.flow.make.makefile/emit-headers}
+(Test/check
+ [{:name "emits makefile headers"
+   :test (fn [] (makefile/emit-headers {:CC :gcc}))
+   :expected "CC = gcc"}])
+
+^{:refer work.flow.make.makefile/emit-target}
+(Test/check
+ [{:name "emits a target with dependencies and commands"
+   :test (fn [] [(makefile/emit-target [:build {:- [:compile]} ["go" "build" "./..."]])
+                 (makefile/emit-target ["out/%.o"
+                                        {:- ["src/%.c"]}
+                                        ["$(CC) -c -o $@ $< $(CFLAGS)"]])])
+   :expected ["build: compile\n\tgo build ./..."
+              "out/%.o: src/%.c\n\t$(CC) -c -o $@ $< $(CFLAGS)"]}])
+
+^{:refer work.flow.make.makefile/write}
+(Test/check
+ [{:name "renders headers and targets"
+   :test (fn [] (makefile/write [{:CC :gcc}
+                                  [:all {:- [:build]} ["echo" "ok"]]
+                                  [:build ["go" "build" "./..."]]]))
+   :expected "CC = gcc\n\nall: build\n\techo ok\n\nbuild:\n\tgo build ./..."}])

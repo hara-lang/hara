@@ -1,0 +1,26 @@
+(ns hara.command.lifecycle
+  (:config {:role :internal})
+  (:require [code.deploy.lifecycle :as lifecycle]))
+
+(defn root
+  [request]
+  (or (:root (:options request)) (OS/cwd)))
+
+(defn ^{:public true} response
+  "Runs a Maven-shaped Hara lifecycle through the requested phase."
+  [request]
+  (try
+    (let [arguments (:arguments request)
+          phase (or (first arguments) "test")
+          result (if (= phase "clean")
+                   {:root (root request)
+                    :phase :clean
+                    :clean (lifecycle/clean (root request))}
+                   (lifecycle/run (root request) phase))]
+      {:stdout (str (Edn/write result) "\n")
+       :stderr ""
+       :exit 0})
+    (catch error
+      {:stdout ""
+       :stderr (str error "\n")
+       :exit 2})))

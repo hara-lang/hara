@@ -1,0 +1,57 @@
+(ns lang.core.manage-test
+  (:require [lang.core.library :as library]
+            [lang.core.manage :as manage]))
+
+(defn fixture-library
+  []
+  (let [current (library/library-create {:id :fixture})]
+    (library/library-select-book! current :js)
+    current))
+
+(defn fixture-module
+  []
+  {:id 'demo.module
+   :lang :js
+   :link {'- 'demo.module}
+   :code {'run {:id 'run :module 'demo.module :lang :js :section :code}}
+   :fragment {'helper {:id 'helper :module 'demo.module :lang :js :section :fragment}}})
+
+^{:refer lang.core.manage/lib-overview}
+(Test/check [{:name "lists lazy selected Books without resolving their provider"
+              :test (fn [] (let [current (fixture-library)
+                                  overview (manage/lib-overview current)]
+                              [(get-in overview [:js :coordinate])
+                               (get-in overview [:js :book-loaded])
+                               (get-in overview [:js :modules])
+                               (get-in (library/library-raw-snapshot current)
+                                       [:books [:js :default 1] :book])]))
+              :expected [[:js :default 1] false [] nil]}])
+
+^{:refer lang.core.manage/lib-module}
+(Test/check [{:name "returns module metadata without its source entry sections"
+              :test (fn [] (let [current (fixture-library)]
+                              (library/library-add-module! current :js (fixture-module))
+                              (select-keys (manage/lib-module current :js 'demo.module)
+                                           [:id :lang :link :code :fragment])))
+              :expected {:id 'demo.module :lang :js :link {'- 'demo.module}}}])
+
+^{:refer lang.core.manage/lib-entries}
+(Test/check [{:name "returns code and fragment entries from the selected target Book"
+              :test (fn [] (let [current (fixture-library)]
+                              (library/library-add-module! current :js (fixture-module))
+                              (select-keys (manage/lib-entries current :js 'demo.module)
+                                           [:code :fragment])))
+              :expected {:code {'run {:id 'run :module 'demo.module :lang :js :section :code}}
+                         :fragment {'helper {:id 'helper :module 'demo.module :lang :js :section :fragment}}}}])
+
+^{:refer lang.core.manage/lib-purge}
+(Test/check [{:name "deletes only the local overlay and advances Library revision"
+              :test (fn [] (let [current (fixture-library)
+                                  _ (library/library-add-module! current :js (fixture-module))
+                                  before (:revision (library/library-raw-snapshot current))
+                                  result (manage/lib-purge current :js 'demo.module)]
+                              [(:module result)
+                               (:removed result)
+                               (> (:revision result) before)
+                               (library/library-raw-book-modules current :js)]))
+              :expected ['demo.module true true {}]}])

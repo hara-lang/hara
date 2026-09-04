@@ -3,6 +3,7 @@
   (:require [tool.sh :as sh]
             [lang.core.eval :as evaluation]
             [lang.protocol.runtime :as protocol]
+            [lang.runtime.basic.server-node :as server]
             [std.stream.frame :as frame]
             [std.stream.duplex :as duplex]
             [std.stream.relay :as relay]))
@@ -46,36 +47,17 @@
   [node]
   (= :started (get (state node) :status)))
 
-(defn await-event
+(defn port
+  "Returns the bound host port while a persistent transport is running."
   [node]
-  (evaluation/await
-   (Socket/next (get (state node) :stream))
-   (get node :timeout)))
-
-(defn await-open
-  [node]
-  (let [event (await-event node)
-        kind (get event :type)]
-    (cond
-      (= kind :open) event
-      (= kind :error)
-      (throw
-       (ex :io {:error/type :lang/transport
-                 :lang (get node :lang)
-                 :error (get event :error)} :ex/message "Process transport socket failed"))
-      :else
-      (await-open node))))
+  (get (state node) :port))
 
 (defn fail-start
   [node error]
   (let [current (state node)
         child (get current :process)
-        connection (get current :connection)
         request-connection (get current :request-connection)
         server (get current :server)]
-    (if connection
-      (try (Socket/close connection)
-           (catch ignored nil)))
     (if request-connection
       (try (Socket/close request-connection)
            (catch ignored nil)))
@@ -83,7 +65,7 @@
       (try (Process/kill child)
            (catch ignored nil)))
     (if server
-      (try (Socket/close server)
+      (try (server/stop-server server)
            (catch ignored nil)))
     (let [stderr
           (if child
@@ -102,10 +84,16 @@
               {:status :failed
                :error data})
       (throw
-       (ex :host data :ex/message (str "Failed to start "
-                     (name (get node :lang))
-                     " basic runtime: "
-                     (or (ex-message error) (str error))) :ex/cause error)))))
+       (if (ex? error)
+         (ex :host data :ex/message (str "Failed to start "
+                       (name (get node :lang))
+                       " basic runtime: "
+                       (or (ex-message error) (str error)))
+             :ex/cause error)
+         (ex :host data :ex/message (str "Failed to start "
+                       (name (get node :lang))
+                       " basic runtime: "
+                       (or (ex-message error) (str error)))))))))
 
 (defn start
   [node]
@@ -174,34 +162,25 @@
                  (fn [_]
                    (Socket/close connection)
                    (Socket/close request-connection))))]
-        (let [server (Socket/listen "127.0.0.1" 0 {} (fn [event] nil))
-              stream (Socket/events server {})
-              endpoint (Socket/endpoint server)
-              source (transport-source node (get endpoint :port))]
+        (let [server (server/create-basic-server
+                      "127.0.0.1"
+                      0
+                      (get node :timeout))]
           (reset! (get node :state)
                   {:status :starting
                    :server server
-                   :stream stream})
-          (let [argv (conj (get node :exec) source)
+                   :port (server/get-port server)})
+          (let [source (transport-source node (server/get-port server))
+                argv (conj (get node :exec) source)
                 child (sh/spawn argv (process-options node))]
             (swap! (get node :state) assoc :process child)
             (if (= :hara (get node :lang))
               (let [request-port (process-port child)
                     request-connection (connect-hara-request request-port)
-                    open (await-open node)
-                    connection (get open :connection)
+                    _ (server/wait-ready server)
+                    connection (server/get-connection server)
                     bridge (hara-duplex connection request-connection)
-                    channel (relay/relay
-                             bridge
-                             (frame/json-line)
-                             {:mode :correlated
-                              :timeout-ms (get node :timeout)
-                              :prepare-request
-                              (fn [id request]
-                                [id (assoc request "id" id)])
-                              :response-id
-                              (fn [response]
-                                (wire-get response :id))})]
+                    channel (server/attach-relay server bridge)]
                 (swap! (get node :state)
                        assoc
                        :status :started
@@ -209,24 +188,14 @@
                        :request-connection request-connection
                        :relay channel)
                 node)
-              (let [open (await-open node)
-                    connection (get open :connection)
-                    channel (relay/relay
-                             (duplex/from-socket connection)
-                             (frame/json-line)
-                             {:mode :correlated
-                              :timeout-ms (get node :timeout)
-                              :prepare-request
-                              (fn [id request]
-                                [id (assoc request "id" id)])
-                              :response-id
-                              (fn [response]
-                                (wire-get response :id))})]
+              (let [_ (server/wait-ready server)
+                    connection (server/get-connection server)
+                    _ (server/mark-started server)]
                 (swap! (get node :state)
                        assoc
                        :status :started
                        :connection connection
-                       :relay channel)
+                       :relay nil)
                 node)))))
       (catch error
         (fail-start node error)))))
@@ -234,22 +203,14 @@
 (defn stop
   [node]
   (let [current (state node)
-        channel (get current :relay)
-        connection (get current :connection)
         request-connection (get current :request-connection)
         server (get current :server)
         child (get current :process)]
-    (if channel
-      (try (relay/close channel)
-           (catch ignored nil)))
-    (if connection
-      (try (Socket/close connection)
-           (catch ignored nil)))
     (if request-connection
       (try (Socket/close request-connection)
            (catch ignored nil)))
     (if server
-      (try (Socket/close server)
+      (try (server/stop-server server)
            (catch ignored nil)))
     (if child
       (try (Process/kill child)
@@ -258,7 +219,6 @@
            (fn [value]
              (assoc (dissoc value
                             :server
-                            :stream
                             :process
                             :connection
                             :request-connection
@@ -276,18 +236,18 @@
     (let [timeout (or (get options :timeout) (get node :timeout))
           request {"source" source
                    "timeout" timeout}
-          response (evaluation/await
-                    (relay/exchange (get (state node) :relay)
-                                    request
-                                    {:timeout-ms timeout})
-                    timeout)]
+          response (server/request-response
+                    (get (state node) :server)
+                    request)]
       (lang.core.eval/EvalExchange
        (get node :lang) request response {:persistent true
                                           :process (get (state node) :process)}))))
 
 (extend-type ProcessTransport protocol/IEvalTransport
   (exchange [node request options]
-    (promise/run (fn [] (exchange node request options)))))
+    (promise/run
+     (fn []
+       (lang.runtime.basic.transport-node/exchange node request options)))))
 
 (defn wire-value
   [value]
@@ -320,24 +280,16 @@
             (throw
              (ex :io {:error/type :lang/target
                        :target (get-in frame [:context :lang])
-                 :target-source-tail (vec (take-last 4
-                                                (str/split-lines
-                                                 (get-in frame [:exchange :request "source"]))))
                        :target-error error}
                  :ex/message (or (wire-get error :message)
                                  "Target evaluation failed"))))
           (assoc frame
                  :result
-                 {:type (wire-get response :type)
-                  :return (wire-get response :return)
-                  :value (wire-value (wire-get response :value))})))
+                 (wire-value (wire-get response :value)))))
       (let [error (wire-get wire :error)]
         (throw
          (ex :io {:error/type :lang/target
                    :target (get-in frame [:context :lang])
-                   :target-source-tail (vec (take-last 4
-                                            (str/split-lines
-                                             (get-in frame [:exchange :request "source"]))))
                    :target-error error} :ex/message (or (wire-get error :message)
                       "Target evaluation failed")))))))
 

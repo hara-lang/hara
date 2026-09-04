@@ -1,5 +1,6 @@
 (ns code.deploy.stage-test
-  (:require [code.deploy.stage :as stage]))
+  (:require [code.deploy.catalog :as catalog]
+            [code.deploy.stage :as stage]))
 
 (def fixture-project
   {:hara/type :project
@@ -7,8 +8,9 @@
    :project/id 'fixture/root
    :project/version "1.2.3"
    :project/native {:version "0.1.17"}
+   :project/main 'fixture.main
    :project/source-paths ["src"]
-   :project/source-files ["src/demo/base.hal" "src/demo/app.hal"]
+   :project/source-files ["src/demo/app.hal" "src/demo/base.hal"]
    :project/test-paths ["test"]
    :project/extension-paths []
    :project/capabilities #{:file :kernel}
@@ -18,13 +20,16 @@
 (def fixture-base
   {:package/name "fixture/base"
    :package/coordinate "hara:fixture/base"
+   :package/source-files ["src/demo/base.hal"]
    :package/internal-dependencies []
    :package/external-dependencies []})
 
 (def fixture-app
   {:package/name "fixture/app"
    :package/coordinate "hara:fixture/app"
+   :package/source-files ["src/demo/app.hal"]
    :package/internal-dependencies ["fixture/base"]
+   :package/context-dependencies []
    :package/external-dependencies ["hara:external/http"]})
 
 (defn clean-root
@@ -98,9 +103,10 @@
 (Test/check
  [{:name "generates a standard selector project with deploy graph metadata"
    :test (fn [] (select-keys (stage/package-project fixture-project fixture-app)
-                              [:project/id :project/dependencies :project/test-paths :project/extension-paths
+                              [:project/id :project/main :project/dependencies :project/test-paths :project/extension-paths
                                :project/package :project/deploy]))
    :expected {:project/id "hara:fixture/app"
+              :project/main 'fixture.main
               :project/dependencies {"hara:fixture/base" {:version "=1.2.3"}}
               :project/test-paths []
               :project/extension-paths []
@@ -109,7 +115,41 @@
                                :package/name "fixture/app"
                                :package/coordinate "hara:fixture/app"
                                :package/internal-dependencies ["fixture/base"]
+                               :package/context-dependencies []
                                :package/external-dependencies ["hara:external/http"]}}}])
+
+^{:refer code.deploy.stage/package-context-files}
+(Test/check
+ [{:name "includes only owned and transitive internal dependency sources"
+   :test (fn [] (let [root (fixture-root)
+                      plan {:deploy/root root
+                            :deploy/project fixture-project
+                            :deploy/packages [fixture-base fixture-app]}]
+                  (try
+                    [(stage/package-context-files plan fixture-base)
+                     (stage/package-context-files plan fixture-app)]
+                    (finally
+                      (clean-root root [])))))
+   :expected [["src/demo/base.hal"]
+              ["src/demo/base.hal" "src/demo/app.hal"]]}
+  {:name "includes context-only sources without adding them to dependency order"
+   :test (fn [] (let [context {:package/name "fixture/context"
+                               :package/source-files ["src/demo/context.hal"]
+                               :package/internal-dependencies []
+                               :package/context-dependencies []}]
+                  (stage/package-context-files
+                   {:deploy/packages [(assoc fixture-app :package/context-dependencies ["fixture/context"])
+                                      fixture-base
+                                      context]}
+                   (assoc fixture-app :package/context-dependencies ["fixture/context"]))))
+   :expected ["src/demo/app.hal" "src/demo/base.hal" "src/demo/context.hal"]}
+  {:name "rejects an internal dependency absent from the deploy plan"
+   :test (fn [] (try
+                  (stage/package-context-files {:deploy/packages [fixture-app]} fixture-app)
+                  false
+                  (catch error
+                    (= :code.deploy/missing-package (:ex/code (ex-data error))))))
+   :expected true}])
 
 ^{:refer code.deploy.stage/write-edn}
 (Test/check
@@ -147,7 +187,7 @@
 
 ^{:refer code.deploy.stage/copy-source-files}
 (Test/check
- [{:name "copies the full explicit compiler source graph"
+ [{:name "copies the complete deploy source graph"
    :test (fn [] (let [root (fixture-root)
                       target (File/join root "target/all")]
                   (try
@@ -250,13 +290,18 @@
 (Test/check
  [{:name "materialises a self-contained child project and lockfile"
    :test (fn [] (let [root (fixture-root)
-                      plan {:deploy/root root :deploy/project fixture-project}
+                      plan {:deploy/root root
+                            :deploy/project fixture-project
+                            :deploy/packages [fixture-base fixture-app]}
                       output (stage/output-root root fixture-project)]
                   (try
                     (let [result (stage/stage-package plan fixture-base)]
                       [(:package/name result)
                        (deref (File/exists? (:package/project result)))
-                       (Edn/read (String/decode-utf8 (deref (File/read (:package/lock result)))))])
+                       (Edn/read (String/decode-utf8 (deref (File/read (:package/lock result)))))
+                       (:project/source-files
+                        (Edn/read (String/decode-utf8
+                                  (deref (File/read (:package/project result))))))])
                     (finally
                       (clean-root root ["target/slices/fixture/base/src/demo/base.hal"
                                         "target/slices/fixture/base/src/demo/app.hal"
@@ -276,7 +321,8 @@
                                         "src/demo/app.hal"
                                         "src/demo"
                                         "src"])))))
-   :expected ["fixture/base" true {:lock/format "0.0.1" :packages {}}]}])
+   :expected ["fixture/base" true {:lock/format "0.0.1" :packages {}}
+              ["src/demo/base.hal"]]}])
 
 ^{:refer code.deploy.stage/package-by-name}
 (Test/check

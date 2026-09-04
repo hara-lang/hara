@@ -1,5 +1,7 @@
 (ns lang.core.compile-test
   (:require [lang.core.compile :as compile]
+            [lang.core.library :as library]
+            [lang.core.registry :as registry]
             [lang.core.script :as script]))
 
 (defn isolated
@@ -20,6 +22,13 @@
   [id requires code schema]
   {:id id :lang :postgres :require requires :link {'- id}
    :code code :fragment {} :schema schema})
+
+(defn register-fixture-modules
+  [modules]
+  (reduce-kv (fn [_ _ module]
+               (script/register-library-module! :postgres module))
+             nil
+             modules))
 
 (defn fixture-compiler
   [options modules module entry]
@@ -60,17 +69,113 @@
               :test (fn [] (compile/module-dependency-ids {:require ['demo.b ['demo.a :as 'a]]}))
               :expected ['demo.a 'demo.b]}])
 
+^{:refer lang.core.compile/module-dependency-ids}
+(Test/check [{:name "includes declared code link and include module dependencies"
+              :test (fn []
+                      (compile/module-dependency-ids
+                       {:id 'demo.a
+                        :require ['demo.b]
+                        :includes #{'demo.c}
+                        :link {'- 'demo.a 'dependency 'demo.d}
+                        :code {'entry {:dependencies {:code #{'demo.e/value 'local}}}}}))
+              :expected ['demo.b 'demo.c 'demo.d 'demo.e]}])
+
+^{:refer lang.core.compile/module-native-imports}
+(Test/check
+ [{:name "collects declared bundled and entry-derived native imports"
+   :test (fn []
+           (compile/module-native-imports
+            {:native {"root" {:bundle {"child" {}}}}
+             :code {'entry {:dependencies {:native {"derived" {}}}}}}))
+   :expected {"root" {:bundle {"child" {}}}
+              "child" {}
+              "derived" {}}}])
+
+^{:refer lang.core.compile/module-compile-context}
+(Test/check
+ [{:name "builds a complete immutable context for lifecycle hooks"
+   :test (fn []
+           (let [module {:id 'demo.main}
+                 context (compile/module-compile-context
+                          {:version 1}
+                          {'demo.main module}
+                          module
+                          {:lang :postgres :layout :flat :emit {:code {:label true}}})]
+             [(:lang context) (:layout context) (:module context)
+              (keys (:modules context)) (:emit context)
+              (get-in context [:book :modules 'demo.main])]))
+   :expected [:postgres :flat {:id 'demo.main} ['demo.main]
+              {:code {:label true}} {:id 'demo.main}]}])
+
+^{:refer lang.core.compile/module-lifecycle-output}
+(Test/check
+ [{:name "emits setup and native imports before lifecycle exports"
+   :test (fn []
+           (let [book (assoc (registry/registry-book :postgres)
+                             :meta
+                             {:setup-module (fn [module]
+                                              (list ':- "--" (str "setup-" (:id module))))
+                              :module-import (fn [name _ _] (list ':- "--" name))
+                              :module-export (fn [module _]
+                                               (list ':- "--" (str "export-" (:id module))))})
+                 module {:id 'demo.main :native {"native-dependency" {}}}]
+             (compile/module-lifecycle-output
+              book {'demo.main module} ['demo.main] {:lang :postgres})))
+   :expected {:setup ["-- setup-demo.main" "-- native-dependency"]
+              :export ["-- export-demo.main"]}}])
+
+^{:refer lang.core.compile/module-lifecycle-output}
+(Test/check
+ [{:name "emits C native imports as translation-unit headers"
+   :test (fn []
+           (let [book (registry/registry-book :c)
+                 module {:id 'demo.main :native {"<stdio.h>" {}}}]
+             (compile/module-lifecycle-output
+              book {'demo.main module} ['demo.main] {:lang :c})))
+   :expected {:setup ["#include <stdio.h>"] :export []}}])
+
 ^{:refer lang.core.compile/load-module-graph}
 (Test/check [{:name "loads registered module graphs once"
               :test (fn [] (isolated (fn []
-                                       (reset! script/+modules+
-                                               {'demo.a (fixture-module 'demo.a ['demo.b] {} {})
-                                                'demo.b (fixture-module 'demo.b [] {} {})})
-                                       (select-keys (compile/load-module-graph 'demo.a)
+                                       (register-fixture-modules
+                                        {'demo.a (fixture-module 'demo.a ['demo.b] {} {})
+                                         'demo.b (fixture-module 'demo.b [] {} {})})
+                                       (select-keys (compile/load-module-graph :postgres 'demo.a)
                                                     [:modules :diagnostics]))))
               :expected {:modules {'demo.a (fixture-module 'demo.a ['demo.b] {} {})
                                    'demo.b (fixture-module 'demo.b [] {} {})}
                          :diagnostics []}}])
+
+^{:refer lang.core.compile/load-module-graph}
+(Test/check [{:name "reads a target source overlay before resolving its Book parent"
+              :test (fn [] (isolated (fn []
+                                       (script/register-library-module!
+                                        :js
+                                        {:id 'demo.js :lang :js :require [] :link {'- 'demo.js}
+                                         :code {} :fragment {}})
+                                       (let [graph (compile/load-module-graph :js 'demo.js)
+                                             snapshot (library/library-raw-snapshot
+                                                       (library/runtime-library))]
+                                         [(keys (:modules graph))
+                                          (get-in snapshot [:books [:xtalk :default 1] :book])]))))
+              :expected [['demo.js] nil]}])
+
+^{:refer lang.core.compile/load-module-graph}
+(Test/check [{:name "reads a generic source overlay through parent metadata without materializing its grammar"
+              :test (fn [] (isolated (fn []
+                                       (script/register-library-module!
+                                        :xtalk
+                                        {:id 'demo.xtalk :lang :xtalk :require []
+                                         :link {'- 'demo.xtalk} :code {} :fragment {}})
+                                       (swap! script/+loaded-modules+
+                                              assoc [:js 'demo.xtalk] true)
+                                       (let [graph (compile/load-module-graph :js 'demo.xtalk)
+                                             snapshot (library/library-raw-snapshot
+                                                       (library/runtime-library))]
+                                         [(keys (:modules graph))
+                                          (get-in snapshot [:books [:js :default 1] :book])
+                                          (get-in snapshot [:books [:xtalk :default 1] :book])]))))
+              :expected [['demo.xtalk] nil nil]}])
 
 ^{:refer lang.core.compile/order-modules}
 (Test/check [{:name "orders dependencies before their users and reports cycles"
@@ -139,13 +244,13 @@
 ^{:refer lang.core.compile/default-entry-compiler}
 (Test/check [{:name "compiles an entry through the common compiler"
               :test (fn [] (let [entry {:id 'entry :module 'demo.a :op 'def
-                                        :form-input '(def entry 1)}]
-                           (string? (:output (compile/default-entry-compiler
-                                              {:lang :postgres}
-                                              {'demo.a (fixture-module 'demo.a [] {'entry entry} {})}
-                                              (fixture-module 'demo.a [] {'entry entry} {})
-                                              entry)))))
-              :expected true}])
+                                        :form-input '(def entry [:table])}]
+                           (:output (compile/default-entry-compiler
+                                     {:lang :postgres}
+                                     {'demo.a (fixture-module 'demo.a [] {'entry entry} {})}
+                                     (fixture-module 'demo.a [] {'entry entry} {})
+                                     entry))))
+              :expected "CREATE JSONB jsonb_build_object().\"entry\" TABLE;"}])
 
 ^{:refer lang.core.compile/entry-transform-symbol}
 (Test/check [{:name "qualifies local and linked transform symbols"
@@ -158,6 +263,13 @@
 ^{:refer lang.core.compile/module-entry-transforms}
 (Test/check [{:name "reads only code-entry transforms from the owning module configuration"
               :test (fn [] (compile/module-entry-transforms
+                             {:emit {:code {:transforms {:entry ['fixture/append]}}}}))
+              :expected ['fixture/append]}])
+
+^{:refer lang.core.compile/module-entry-transforms}
+(Test/check [{:name "uses compile options when the module has no entry transforms"
+              :test (fn [] (compile/module-entry-transforms
+                             {}
                              {:emit {:code {:transforms {:entry ['fixture/append]}}}}))
               :expected ['fixture/append]}])
 
@@ -267,11 +379,11 @@
 ^{:refer lang.core.compile/compile-module}
 (Test/check [{:name "compiles a deterministic graph and retains failures"
               :test (fn [] (isolated (fn []
-                                       (reset! script/+modules+
-                                               {'demo.a (fixture-module 'demo.a ['demo.b]
-                                                                        {'a (fixture-entry 'a "A" ['demo.b/b] 1 2)} {})
-                                                'demo.b (fixture-module 'demo.b []
-                                                                        {'b (fixture-entry 'b "B" [] 0 1)} {})})
+                                       (register-fixture-modules
+                                        {'demo.a (fixture-module 'demo.a ['demo.b]
+                                                                         {'a (fixture-entry 'a "A" ['demo.b/b] 1 2)} {})
+                                         'demo.b (fixture-module 'demo.b []
+                                                                         {'b (fixture-entry 'b "B" [] 0 1)} {})})
                                        (binding [compile/*entry-compiler* fixture-compiler]
                                          (let [result (compile/compile-module
                                                        {:lang :postgres :main 'demo.a
@@ -282,3 +394,27 @@
               :expected ["-- demo.b/b\nB\n\n-- demo.a/a\nA"
                          ['demo.b/b 'demo.a/a]
                          []]}])
+
+^{:refer lang.core.compile/compile-module}
+(Test/check
+ [{:name "places lifecycle setup and imports around compiled module entries"
+   :test (fn []
+           (isolated
+            (fn []
+              (let [book (assoc (registry/registry-book :postgres)
+                                :meta
+                                {:setup-module (fn [module]
+                                                 (list ':- "--" (str "setup-" (:id module))))
+                                 :module-import (fn [name _ _] (list ':- "--" name))
+                                 :module-export (fn [module _]
+                                                  (list ':- "--" (str "export-" (:id module))))})
+                    module (assoc (fixture-module 'demo.main []
+                                                  {'main (fixture-entry 'main "BODY" [] 0 1)}
+                                                  {})
+                                  :native {"native-dependency" {}})]
+                (register-fixture-modules {'demo.main module})
+                (binding [compile/*entry-compiler* fixture-compiler]
+                  (:output
+                   (compile/compile-module
+                    {:lang :postgres :main 'demo.main :book book})))))))
+   :expected "-- setup-demo.main\n\n-- native-dependency\n\nBODY\n\n-- export-demo.main"}])

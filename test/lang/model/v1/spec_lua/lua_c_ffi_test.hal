@@ -1,0 +1,81 @@
+(ns lang.model.v1.spec-lua.lua-c-ffi-test
+  (:require [lang.model.v1.spec-lua.lua-c-ffi :as subject]))
+
+^{:refer lang.model.v1.spec-lua.lua-c-ffi/c-ffi-type}
+(Test/check
+ [{:name "coerces C type annotations"
+   :test (fn [] [(subject/c-ffi-type :int)
+                 (subject/c-ffi-type 'foo)
+                 (subject/c-ffi-type [:const :char '*])
+                 (subject/c-ffi-type "custom")
+                 (subject/c-ffi-type 5)])
+   :expected ["int" "foo" "const char *" "custom" "5"]}])
+
+^{:refer lang.model.v1.spec-lua.lua-c-ffi/c-ffi-sym}
+(Test/check
+ [{:name "sanitizes C symbols"
+   :test (fn [] [(subject/c-ffi-sym 'my-fn)
+                 (subject/c-ffi-sym 'a.b)
+                 (subject/c-ffi-sym 'a/b)
+                 (subject/c-ffi-sym "foo-bar")])
+   :expected ["my_fn" "a_b" "a____b" "foo_bar"]}])
+
+^{:refer lang.model.v1.spec-lua.lua-c-ffi/c-ffi-form?}
+(Test/check
+ [{:name "recognizes C FFI blocks"
+   :test (fn [] [(subject/c-ffi-form? '(%.c (fn add [x] nil)))
+                 (subject/c-ffi-form? '(clojure.core/deref .c (fn add [x] nil)))
+                 (subject/c-ffi-form? '(!:lang {:lang :c}))
+                 (subject/c-ffi-form? '(!:lang {:lang :lua}))
+                 (subject/c-ffi-form? '(fn add [x] nil))
+                 (subject/c-ffi-form? :not-a-form)])
+   :expected [true true true false false false]}])
+
+^{:refer lang.model.v1.spec-lua.lua-c-ffi/c-ffi-fn-form?}
+(Test/check
+ [{:name "recognizes C FFI function declarations"
+   :test (fn [] [(subject/c-ffi-fn-form? '(fn [x] x))
+                 (subject/c-ffi-fn-form? '(fn:> [x] x))
+                 (subject/c-ffi-fn-form? '(defn add [x] x))
+                 (subject/c-ffi-fn-form? '(%.c 1 2))])
+   :expected [true true false false]}])
+
+^{:refer lang.model.v1.spec-lua.lua-c-ffi/c-ffi-forms}
+(Test/check
+ [{:name "collects C FFI functions through do blocks"
+   :test (fn [] [(subject/c-ffi-forms '[(fn a [] nil) (fn:> b [] nil)])
+                 (subject/c-ffi-forms '[(do (fn a [] nil) (fn b [] nil))])
+                 (subject/c-ffi-forms '[(fn a [] nil) (other 1 2) (do (fn b [] nil))])])
+   :expected '[[(fn a [] nil) (fn:> b [] nil)]
+               [(fn a [] nil) (fn b [] nil)]
+               [(fn a [] nil) (fn b [] nil)]]}])
+
+^{:refer lang.model.v1.spec-lua.lua-c-ffi/c-ffi-args}
+(Test/check
+ [{:name "emits C arguments"
+   :test (fn [] [(subject/c-ffi-args '[:int x :char* y])
+                 (subject/c-ffi-args '[^{:tag :int} x])
+                 (subject/c-ffi-args '[^{:- :double} x])
+                 (subject/c-ffi-args '[x])
+                 (subject/c-ffi-args '[])])
+   :expected [["int x" "char* y"]
+              ["int x"]
+              ["double x"]
+              ["void* x"]
+              []]}])
+
+^{:refer lang.model.v1.spec-lua.lua-c-ffi/c-ffi-decl}
+(Test/check
+ [{:name "emits C forward declarations"
+   :test (fn [] [(subject/c-ffi-decl '(fn ^{:tag :int} add [^{:tag :int} x] nil))
+                 (subject/c-ffi-decl '(fn sub [:int x :double y] nil))
+                 (subject/c-ffi-decl '(fn nop [] nil))])
+   :expected ["int add(int x);"
+              "void sub(int x, double y);"
+              "void nop();"]}])
+
+^{:refer lang.model.v1.spec-lua.lua-c-ffi/c-ffi-body->string}
+(Test/check
+ [{:name "joins C forward declarations"
+   :test (fn [] (subject/c-ffi-body->string '[(fn a [x] nil) (fn b [y] nil)]))
+   :expected "void a(void* x);\nvoid b(void* y);"}])

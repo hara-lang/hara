@@ -22,6 +22,9 @@
 
 (def +lua-global+
   {
+    :x-global-has? {:macro native/lua-x-global-has :emit :macro}
+    :x-global-set {:macro native/lua-x-global-set :emit :macro}
+    :x-global-del {:macro native/lua-x-global-del :emit :macro}
 })
 
 (def +lua-custom+
@@ -52,16 +55,32 @@
     :x-m-tan {:raw "math.tan" :emit :invoke}
     :x-m-tanh {:raw "math.tanh" :emit :invoke}})
 
+(defn lua-tf-x-is-string?
+  [form]
+  (native/lua-type-predicate "string" form))
+
+(defn lua-tf-x-is-number?
+  [form]
+  (native/lua-type-predicate "number" form))
+
+(defn lua-tf-x-is-boolean?
+  [form]
+  (native/lua-type-predicate "boolean" form))
+
+(defn lua-tf-x-is-function?
+  [form]
+  (native/lua-type-predicate "function" form))
+
 (def +lua-type+
   {
     :x-type-native {:macro native/lua-type-native :emit :macro}
     :x-to-string {:raw "tostring" :emit :invoke}
     :x-to-number {:raw "tonumber" :emit :invoke}
-    :x-is-string? {:macro (fn [form] (native/lua-type-predicate "string" form)) :emit :macro}
-    :x-is-number? {:macro (fn [form] (native/lua-type-predicate "number" form)) :emit :macro}
+    :x-is-string? {:macro lua-tf-x-is-string? :emit :macro}
+    :x-is-number? {:macro lua-tf-x-is-number? :emit :macro}
     :x-is-integer? {:macro native/lua-is-integer :emit :macro}
-    :x-is-boolean? {:macro (fn [form] (native/lua-type-predicate "boolean" form)) :emit :macro}
-    :x-is-function? {:macro (fn [form] (native/lua-type-predicate "function" form)) :emit :macro}
+    :x-is-boolean? {:macro lua-tf-x-is-boolean? :emit :macro}
+    :x-is-function? {:macro lua-tf-x-is-function? :emit :macro}
     :x-is-object? {:macro native/lua-is-object :emit :macro}
     :x-is-array? {:macro native/lua-is-array :emit :macro}})
 
@@ -72,12 +91,24 @@
     :x-lu-set {:macro native/lua-x-lu-set :emit :macro}
     :x-lu-del {:macro native/lua-x-lu-del :emit :macro}})
 
+(defn lua-tf-x-bit-and
+  [form]
+  (native/lua-x-bit-binary :and form))
+
+(defn lua-tf-x-bit-or
+  [form]
+  (native/lua-x-bit-binary :or form))
+
+(defn lua-tf-x-bit-xor
+  [form]
+  (native/lua-x-bit-binary :xor form))
+
 (def +lua-bit+
   {
     :x-bit-not {:macro native/lua-x-bit-not :emit :macro}
-    :x-bit-and {:macro (fn [form] (native/lua-x-bit-binary :and form)) :emit :macro}
-    :x-bit-or {:macro (fn [form] (native/lua-x-bit-binary :or form)) :emit :macro}
-    :x-bit-xor {:macro (fn [form] (native/lua-x-bit-binary :xor form)) :emit :macro}
+    :x-bit-and {:macro lua-tf-x-bit-and :emit :macro}
+    :x-bit-or {:macro lua-tf-x-bit-or :emit :macro}
+    :x-bit-xor {:macro lua-tf-x-bit-xor :emit :macro}
     :x-bit-lshift {:macro native/lua-x-bit-lshift :emit :macro}
     :x-bit-rshift {:macro native/lua-x-bit-rshift :emit :macro}})
 
@@ -87,11 +118,14 @@
 
 (def +lua-arr+
   {
+    :x-arr-clone {:macro native/lua-x-arr-clone :emit :macro}
+    :x-arr-slice {:macro native/lua-x-arr-slice :emit :macro}
     :x-arr-push {:raw "table.insert" :emit :invoke}
     :x-arr-pop {:raw "table.remove" :emit :invoke}
     :x-arr-push-first {:macro native/lua-x-arr-push-first :emit :macro}
     :x-arr-pop-first {:macro native/lua-x-arr-pop-first :emit :macro}
     :x-arr-remove {:macro native/lua-x-arr-remove :emit :macro}
+    :x-arr-find {:macro native/lua-x-arr-find :emit :macro}
     :x-arr-insert {:macro native/lua-x-arr-insert :emit :macro}})
 
 (def +lua-str+
@@ -133,6 +167,48 @@
     :x-return-wrap {:macro native/lua-return-wrap :emit :macro}
     :x-return-eval {:macro native/lua-return-eval :emit :macro}})
 
+(defn lua-tf-x-socket-connect
+  [form]
+  (let [host (nth form 1)
+        port (nth form 2)
+        cb (nth form 4)]
+    (list 'do*
+          (list 'when (list '== host "host.docker.internal")
+                (list 'var 'handle
+                      (list '. 'io
+                            (list 'popen
+                                  (list 'cat
+                                        "ping host.docker.internal -c 1 -q 2>&1"
+                                        " | "
+                                        "grep -Po \"(\\d{1,3}\\.){3}\\d{1,3}\""))))
+                (list ':= host (list '. 'handle (list 'read "*a")))
+                (list ':= host
+                      (list 'string.sub host 1
+                            (list '- (list 'len host) 1)))
+                (list '. 'handle (list 'close)))
+          (list 'var 'socket (list 'require "socket"))
+          (list 'var (list 'quote ['conn 'err])
+                (list '. 'socket (list 'connect host port)))
+          (list 'if 'err
+                (list 'return (list cb 'err nil))
+                (list 'return (list cb nil 'conn))))))
+
+(defn lua-tf-x-socket-send
+  [form]
+  (list '. (nth form 1)
+        (list 'send (list 'x:str-decode (nth form 2)))))
+
+(defn lua-tf-x-socket-close
+  [form]
+  (list '. (nth form 1) (list 'close)))
+
+(def +lua-socket+
+  {
+    :x-socket-connect {:macro lua-tf-x-socket-connect :emit :macro
+                       :op-spec {:allow-blocks true}}
+    :x-socket-send {:macro lua-tf-x-socket-send :emit :macro}
+    :x-socket-close {:macro lua-tf-x-socket-close :emit :macro}})
+
 (def +lua-iter+
   {
     :x-iter-from-obj {:macro native/lua-x-iter-from-obj :emit :macro}
@@ -146,7 +222,9 @@
 
 (def +lua-promise+
   {
-    :x-async-run {:macro native/lua-async-run :emit :macro}})
+    :x-async-run {:macro native/lua-async-run :emit :macro}
+    :x-with-delay {:emit :hard-link
+                   :raw 'xt.lang.common-promise/with-delay}})
 
 (def +lua-file+
   {
@@ -173,6 +251,7 @@
          +lua-bytes+
          +lua-js+
          +lua-return+
+         +lua-socket+
          +lua-iter+
          +lua-promise+
          +lua-file+

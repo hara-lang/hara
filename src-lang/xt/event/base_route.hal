@@ -1,0 +1,423 @@
+(ns xt.event.base-route
+  (:require [lang.core :as l]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-data :as xtd]
+             [xt.event.base-listener :as event-common]]})
+
+(def ^{:schema [:xt/array :xt/str]} RoutePath nil)
+(def ^{:schema [:xt/dict :xt/str :xt/str]} RouteParamMap nil)
+(def ^{:schema [:xt/dict :xt/str RouteParamMap]} RouteParams nil)
+(def ^{:schema [:xt/record ["path" RoutePath] ["params" RouteParams]]}
+  RouteInterim nil)
+(def ^{:schema [:xt/dict :xt/str :xt/any]} RouteTree nil)
+(def ^{:schema [:xt/dict :xt/str :xt/bool]} RouteDiff nil)
+(def ^{:schema [:xt/record
+                ["type" :xt/str]
+                ["params" RouteDiff]
+                ["path" RouteDiff]
+                ["meta" [:xt/maybe xt.event.base-listener/EventListenerMeta]]]} 
+  RouteEvent nil)
+(def ^{:schema [:xt/record
+                ["::" :xt/str]
+                ["listeners" xt.event.base-listener/EventListenerMap]
+                ["tree" RouteTree]
+                ["history" [:xt/array :xt/str]]]} 
+  EventRoute nil)
+
+(defn.xt ^{:public true}
+  interim-from-url
+  "Parses a URL into a path and path-scoped query parameters."
+  {:added "4.0"}
+  [url]
+  (var parts (xt/x:str-split (xt/x:cat "/" url) "?"))
+  (var body (xt/x:first parts))
+  (var search nil)
+  (when (< 1 (xt/x:len parts))
+    (:= search (xt/x:second parts)))
+  (var path (xt/x:arr-filter (xt/x:str-split body "/")
+                             (fn [value]
+                               (return (< 0 (xt/x:len value))))))
+  (var params {})
+  (when (xt/x:not-nil? search)
+    (xt/for:array [pair (xt/x:str-split search "&")]
+      (when (< 0 (xt/x:len pair))
+        (var pair-parts (xt/x:str-split pair "="))
+        (xt/x:set-key params (xt/x:first pair-parts) (xt/x:second pair-parts)))))
+  (if (xtd/obj-empty? params)
+    (return {:path path :params {}})
+    (return {:path path :params {(xt/x:json-encode path) params}})))
+
+(defn.xt ^{:public true}
+  interim-to-url
+  "Serializes a path interim and its scoped parameters to a URL."
+  {:added "4.0"}
+  [interim]
+  (var #{path params} interim)
+  (var param-arr [])
+  (var scoped-params (xt/x:get-key params (xt/x:json-encode path)))
+  (when (xt/x:nil? scoped-params)
+    (:= scoped-params {}))
+  (xt/for:object [[key value] scoped-params]
+    (when (xt/x:not-nil? value)
+      (xt/x:arr-push param-arr (xt/x:cat key "=" value))))
+  (return
+   (xt/x:cat (xt/x:str-join "/" path)
+             (:? (xtd/arr-not-empty? param-arr)
+                 (xt/x:cat "?" (xt/x:str-join "&" param-arr))
+                 ""))))
+
+(defn.xt ^{:public true}
+  path-to-tree
+  "Builds a route tree from a path, optionally terminating its leaf."
+  {:added "4.0"}
+  [path terminate]
+  (var out {})
+  (var prefix [])
+  (xt/for:array [[_ value] path]
+    (xt/x:set-key out (xt/x:json-encode prefix) value)
+    (xt/x:arr-push prefix value))
+  (when terminate
+    (xt/x:set-key out (xt/x:json-encode prefix) nil))
+  (return out))
+
+(defn.xt ^{:public true}
+  interim-to-tree
+  "Converts a route interim into a route tree."
+  {:added "4.0"}
+  [interim terminate]
+  (var #{path params} interim)
+  (var tree (-/path-to-tree path terminate))
+  (xt/x:set-key tree "params" params)
+  (return tree))
+
+(defn.xt ^{:public true}
+  path-from-tree
+  "Reads the current path represented by a route tree."
+  {:added "4.0"}
+  [tree]
+  (var path [])
+  (var value (xt/x:get-key tree (xt/x:json-encode path)))
+  (while (xtd/arr-not-empty? value)
+    (xt/x:arr-push path value)
+    (:= value (xt/x:get-key tree (xt/x:json-encode path))))
+  (return path))
+
+(defn.xt ^{:public true}
+  path-params-from-tree
+  "Returns parameters scoped to a route-tree path."
+  {:added "4.0"}
+  [tree path]
+  (var params (xt/x:get-key (xt/x:get-key tree "params")
+                            (xt/x:json-encode path)))
+  (when (xt/x:nil? params)
+    (:= params {}))
+  (return params))
+
+(defn.xt ^{:public true}
+  interim-from-tree
+  "Converts a route tree back into an interim representation."
+  {:added "4.0"}
+  [tree]
+  (var #{params} tree)
+  (var path (-/path-from-tree tree))
+  (when (xt/x:nil? params)
+    (:= params {}))
+  (return {:path path :params params}))
+
+(defn.xt ^{:public true}
+  changed-params-raw
+  "Returns keys whose parameter values differ in either direction."
+  {:added "4.0"}
+  [previous next]
+  (when (xt/x:nil? previous)
+    (:= previous {}))
+  (when (xt/x:nil? next)
+    (:= next {}))
+  (var diff-fn
+       (fn [values other]
+         (var out {})
+         (xt/for:object [[key value] values]
+           (when (not= value (xt/x:get-key other key))
+             (xt/x:set-key out key true)))
+         (return out)))
+  (return (xt/x:obj-assign (diff-fn previous next)
+                           (diff-fn next previous))))
+
+(defn.xt ^{:public true}
+  changed-params
+  "Returns changed parameters at a route-tree path."
+  {:added "4.0"}
+  [previous-tree next-tree path]
+  (var path-arr path)
+  (when (xt/x:nil? path-arr)
+    (:= path-arr []))
+  (return
+   (-/changed-params-raw
+    (-/path-params-from-tree previous-tree path-arr)
+    (-/path-params-from-tree next-tree path-arr))))
+
+(defn.xt ^{:public true}
+  changed-path-raw
+  "Returns every path prefix at which two paths diverge."
+  {:added "4.0"}
+  [previous next]
+  (var all {})
+  (var prefix [])
+  (var index 0)
+  (var changed false)
+  (xt/for:array [value next]
+    (var previous-value nil)
+    (when (< index (xt/x:len previous))
+      (:= previous-value (xt/x:get-idx previous (xt/x:offset index))))
+    (when (not= previous-value value)
+      (:= changed true))
+    (when changed
+      (xt/x:set-key all (xt/x:json-encode prefix) true))
+    (xt/x:arr-push prefix value)
+    (:= index (+ index 1)))
+  (return all))
+
+(defn.xt ^{:public true}
+  changed-path
+  "Returns changed prefixes between two route trees."
+  {:added "4.0"}
+  [previous-tree next-tree]
+  (return (-/changed-path-raw (-/path-from-tree previous-tree)
+                              (-/path-from-tree next-tree))))
+
+(defn.xt ^{:public true}
+  get-url
+  "Returns the URL represented by a route."
+  {:added "4.0"}
+  [route]
+  (return (-/interim-to-url (-/interim-from-tree (. route ["tree"])))))
+
+(defn.xt ^{:public true}
+  get-segment
+  "Returns the route-tree value at a path."
+  {:added "4.0"}
+  [route path]
+  (:= path (event-common/arrayify-path path))
+  (return (xt/x:get-key (. route ["tree"]) (xt/x:json-encode path))))
+
+(defn.xt ^{:public true}
+  get-param
+  "Returns one parameter at a route path."
+  {:added "4.0"}
+  [route param path]
+  (var tree (. route ["tree"]))
+  (:= path (:? (xt/x:nil? path) (-/path-from-tree tree) path))
+  (:= path (event-common/arrayify-path path))
+  (return (xt/x:get-key (-/path-params-from-tree tree path) param)))
+
+(defn.xt ^{:public true}
+  get-all-params
+  "Returns all parameters at a route path."
+  {:added "4.0"}
+  [route path]
+  (var tree (. route ["tree"]))
+  (:= path (:? (xt/x:nil? path) (-/path-from-tree tree) path))
+  (:= path (event-common/arrayify-path path))
+  (return (-/path-params-from-tree tree path)))
+
+(defn.xt ^{:public true}
+  make-route
+  "Creates a route container from a URL or URL initializer."
+  {:added "4.0"}
+  [initial]
+  (var input (:? (xt/x:is-function? initial) (initial) initial))
+  (var interim (-/interim-from-url input))
+  (var tree (-/interim-to-tree interim false))
+  (return (event-common/blank-container "event.route"
+                                        {:tree tree :history []})))
+
+(defn.xt ^{:public true}
+  add-url-listener
+  "Adds a listener for every route URL change."
+  {:added "4.0"}
+  [route listener-id callback meta]
+  (return (event-common/add-listener route listener-id "route.url" callback meta
+                                     (fn [_] (return true)))))
+
+(defn.xt ^{:public true}
+  add-path-listener
+  "Adds a listener for changes at a route path."
+  {:added "4.0"}
+  [route path listener-id callback meta]
+  (:= path (event-common/arrayify-path path))
+  (var path-key (xt/x:json-encode path))
+  (return
+   (event-common/add-listener
+    route listener-id "route.path" callback
+    (xt/x:obj-assign {:route/path path} meta)
+    (fn [event]
+      (return (xt/x:get-key (. event ["path"]) path-key))))))
+
+(defn.xt ^{:public true}
+  add-param-listener
+  "Adds a listener for changes to one route parameter."
+  {:added "4.0"}
+  [route param listener-id callback meta]
+  (return
+   (event-common/add-listener
+    route listener-id "route.param" callback
+    (xt/x:obj-assign {:route/param param} meta)
+    (fn [event]
+      (return (xt/x:get-key (. event ["params"]) param))))))
+
+(defn.xt ^{:public true}
+  add-full-listener
+  "Adds a listener requiring both a path and parameter change."
+  {:added "4.0"}
+  [route path param listener-id callback meta]
+  (:= path (event-common/arrayify-path path))
+  (var path-key (xt/x:json-encode path))
+  (return
+   (event-common/add-listener
+    route listener-id "route.full" callback
+    (xt/x:obj-assign {:route/path path :route/param param} meta)
+    (fn [event]
+      (return (and (== true (xt/x:get-key (. event ["path"]) path-key))
+                   (xt/x:not-nil? (xt/x:get-key (. event ["params"]) param))))))))
+
+(defn.xt ^{:public true}
+  remove-listener
+  "Removes one route listener."
+  {:added "4.0"}
+  [route listener-id]
+  (return (event-common/remove-listener route listener-id)))
+
+(defn.xt ^{:public true}
+  list-listeners
+  "Lists route listener ids."
+  {:added "4.0"}
+  [route]
+  (return (event-common/list-listeners route)))
+
+(defn.xt ^{:public true}
+  set-url
+  "Sets a route URL, updates history, and emits a URL event."
+  {:added "4.0"}
+  [route url terminate]
+  (var #{tree} route)
+  (var interim (-/interim-from-url url))
+  (var interim-params (. interim ["params"]))
+  (var all-params (. tree ["params"]))
+  (var previous-path (-/path-from-tree tree))
+  (var next-path (. interim ["path"]))
+  (var path-key (xt/x:json-encode next-path))
+  (var previous-params (xt/x:get-key all-params path-key))
+  (var next-params (xt/x:get-key interim-params path-key))
+  (when (xt/x:nil? previous-params)
+    (:= previous-params {}))
+  (when (xt/x:nil? next-params)
+    (:= next-params {}))
+  (var path-diff (-/changed-path-raw previous-path next-path))
+  (var params-diff (-/changed-params-raw previous-params next-params))
+  (xt/x:obj-assign tree (-/path-to-tree next-path terminate))
+  (var updated-all-params (. tree ["params"]))
+  (cond (xtd/obj-empty? next-params)
+        (when (xt/x:has-key? updated-all-params path-key)
+          (xt/x:del-key updated-all-params path-key))
+        :else
+        (xt/x:set-key updated-all-params path-key next-params))
+  (var #{history} route)
+  (xtd/arr-pushl history url 50)
+  (return (event-common/trigger-listeners route
+                                          {:type "route.url"
+                                           :params params-diff
+                                           :path path-diff})))
+
+(defn.xt ^{:public true}
+  set-path
+  "Sets the route path and optional path-scoped parameters."
+  {:added "4.0"}
+  [route path params]
+  (var #{tree} route)
+  (var all-params (. tree ["params"]))
+  (var previous-path (-/path-from-tree tree))
+  (var next-path path)
+  (when (xt/x:nil? next-path)
+    (:= next-path previous-path))
+  (:= next-path (xtd/arrayify next-path))
+  (var path-key (xt/x:json-encode next-path))
+  (var previous-params (xt/x:get-key all-params path-key))
+  (var next-params params)
+  (when (xt/x:nil? next-params)
+    (:= next-params previous-params))
+  (when (xt/x:nil? next-params)
+    (:= next-params {}))
+  (var path-diff (-/changed-path-raw previous-path next-path))
+  (var params-diff (-/changed-params-raw previous-params next-params))
+  (xt/x:obj-assign tree (-/path-to-tree next-path true))
+  (cond (xtd/obj-empty? next-params)
+        (when (xt/x:has-key? all-params path-key)
+          (xt/x:del-key all-params path-key))
+        :else
+        (xt/x:set-key all-params path-key next-params))
+  (var #{history} route)
+  (xtd/arr-pushl history (-/get-url route) 50)
+  (return (event-common/trigger-listeners route
+                                          {:type "route.path"
+                                           :params params-diff
+                                           :path path-diff})))
+
+(defn.xt ^{:public true}
+  set-segment
+  "Replaces one route-tree segment and emits a path event."
+  {:added "4.0"}
+  [route path value]
+  (var #{tree} route)
+  (:= path (xtd/arrayify path))
+  (var path-key (xt/x:json-encode path))
+  (xt/x:set-key tree path-key value)
+  (var #{history} route)
+  (xtd/arr-pushl history (-/get-url route) 50)
+  (return (event-common/trigger-listeners route
+                                          {:type "route.path"
+                                           :params {}
+                                           :path {path-key true}})))
+
+(defn.xt ^{:public true}
+  set-param
+  "Sets or removes one parameter at a route path."
+  {:added "4.0"}
+  [route param value path]
+  (var #{tree} route)
+  (when (xt/x:nil? path)
+    (:= path (-/path-from-tree tree)))
+  (:= path (xtd/arrayify path))
+  (var path-key (xt/x:json-encode path))
+  (var all-params (. tree ["params"]))
+  (var params (xt/x:get-key all-params path-key))
+  (when (xt/x:nil? params)
+    (:= params {}))
+  (var previous (xt/x:get-key params param))
+  (if (not= previous value)
+    (do (if (xt/x:nil? value)
+          (xt/x:del-key params param)
+          (xt/x:set-key params param value))
+        (if (xtd/obj-empty? params)
+          (when (xt/x:has-key? all-params path-key)
+            (xt/x:del-key all-params path-key))
+          (xt/x:set-key all-params path-key params))
+        (var #{history} route)
+        (xtd/arr-pushl history (-/get-url route) 50)
+        (return (event-common/trigger-listeners route
+                                                {:type "route.params"
+                                                 :params {param true}
+                                                 :path {}})))
+    (return [])))
+
+(defn.xt ^{:public true}
+  reset-route
+  "Resets a route to a URL and clears its navigation history."
+  {:added "4.0"}
+  [route url]
+  (xt/x:set-key route "history" [])
+  (var route-url (:? (xt/x:nil? url) "" url))
+  (xt/x:set-key route "tree"
+                (-/interim-to-tree (-/interim-from-url route-url) true))
+  (-/set-url route route-url true))

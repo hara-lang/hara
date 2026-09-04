@@ -1,0 +1,63 @@
+(ns lang.runtime.basic.transport-node-test
+  (:require [lang.runtime.basic.impl.source-js :as js-source]
+            [lang.runtime.basic.server-node :as server]
+            [lang.runtime.basic.transport-node :as subject]))
+
+^{:refer lang.runtime.basic.transport-node/port}
+(Test/check
+ [{:name "returns the bound port from transport state"
+   :test (fn [] (let [node (subject/create
+                            :python
+                            ["python3" "-c"]
+                            {:bootstrap (fn [_] "pass")}
+                            2000)]
+                   (swap! (:state node) assoc :port 4123)
+                   (subject/port node)))
+   :expected 4123}])
+
+^{:refer lang.runtime.basic.transport-node/exchange}
+(Test/check
+ [{:name "rejects exchange before the process is started"
+   :test (fn [] (let [node (subject/create :js ["node"] {} 2000)]
+                  (try
+                    (subject/exchange node "1 + 1" {})
+                    :missing
+                    (catch error
+                      [(ex-message error)
+                       (get-in (ex-data error) [:state :status])]))))
+   :expected ["Process transport is not started" :created]}])
+
+^{:refer lang.runtime.basic.transport-node/start}
+(Test/check
+ [{:name "starts Node with the listener's open port and accepts its bootstrap connection"
+   :test (fn []
+           (let [node (subject/create :js
+                                      ["node" "-e"]
+                                      {:bootstrap js-source/transport-source}
+                                      2000)]
+             (try
+               (subject/start node)
+               (let [state (subject/state node)
+                     server-value (:server state)]
+                 [(subject/started? node)
+                  (= (:port state) (server/get-port server-value))
+                  (not (nil? (server/get-connection server-value)))
+                  (= :started (:status (server/state server-value)))])
+               (finally
+                 (subject/stop node)))))
+   :expected [true true true true]}])
+
+^{:refer lang.runtime.basic.transport-node/response-plugin}
+(Test/check
+ [{:name "returns the decoded target value from a successful response"
+   :test (fn []
+           (subject/response-plugin
+            {:response {"ok" true
+                        "response" {"type" "data"
+                                     "return" "number"
+                                     "value" 42}}}))
+   :expected {:response {"ok" true
+                         "response" {"type" "data"
+                                      "return" "number"
+                                      "value" 42}}
+               :result 42}}])

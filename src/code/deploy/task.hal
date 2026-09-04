@@ -1,6 +1,7 @@
 (ns code.deploy.task
   (:config {:role :internal})
   (:require [code.deploy.catalog :as catalog]
+            [code.deploy.dependency :as dependency]
             [code.deploy.stage :as stage]
             [std.package :as package]
             [work.flow.task :as task]))
@@ -10,20 +11,115 @@
   [staged-package]
   (File/join (:package/stage staged-package) "target/package.harp"))
 
+(defn archive-fingerprint
+  "Returns the content fingerprint for a completed local package archive."
+  [archive]
+  (str "sha256:" (Crypto/sha256 (deref (File/read archive)))))
+
+(defn build-marker
+  [staged-package]
+  (File/join (:package/stage staged-package) "target/package.build.edn"))
+
+(defn build-fingerprint
+  "Returns a content fingerprint for a staged project and its source closure."
+  [staged-package]
+  (let [stage (:package/stage staged-package)
+        project (catalog/read-edn (stage/project-path stage))
+        files (or (:project/source-files project)
+                  (catalog/project-source-files stage project))
+        value
+        (reduce
+         (fn [output relative-path]
+           (str output "\n" relative-path "\n"
+                (Crypto/sha256
+                 (deref (File/read (File/join stage relative-path))))))
+         (str (Edn/write project) "\n"
+              (Edn/write (catalog/read-edn (stage/lock-path stage))))
+         files)]
+    (str "sha256:" (Crypto/sha256 (String/encode-utf8 value)))))
+
 (defn ^{:public true} build-package
   "Builds one staged standard project through the supported std.package boundary."
   [staged-package]
-  (let [archive (package-archive staged-package)]
-    (assoc staged-package
-           :package/archive
-           (package/project-build (:package/stage staged-package) archive))))
+  (let [archive (package-archive staged-package)
+        marker (build-marker staged-package)
+        fingerprint (build-fingerprint staged-package)
+        cached
+        (try
+          (and (deref (File/exists? marker))
+               (deref (File/exists? archive))
+               (= fingerprint (:fingerprint (catalog/read-edn marker))))
+          (catch error false))]
+    (if cached
+      (assoc staged-package
+             :package/archive archive
+             :package/build-cached? true)
+      (let [result (package/project-build (:package/stage staged-package) archive)]
+        (stage/write-edn marker {:fingerprint fingerprint
+                                 :archive-fingerprint (archive-fingerprint archive)})
+        (assoc staged-package
+               :package/archive result
+               :package/build-cached? false)))))
+
+(defn package-index
+  "Builds the local, registry-neutral index for completed split packages."
+  [built]
+  (let [project (:deploy/project built)
+        version (:project/version project)]
+    {:index/format "0.0.1"
+     :project/id (:project/id project)
+     :project/version version
+     :packages
+     (reduce
+      (fn [output package]
+        (let [archive (:package/archive package)
+              descriptor
+              {:name (:package/name package)
+               :version (or (:package/version package) version)
+               :namespaces (:package/namespaces package)
+               :dependencies
+               (reduce
+                (fn [output name]
+                  (let [coordinate (catalog/coordinate name)]
+                    (assoc output
+                           coordinate
+                           (dependency/dependency
+                            coordinate
+                            {:version (str "=" (or (:package/version package)
+                                                    version))}))))
+                {}
+                (sort (:package/internal-dependencies package)))
+               :context-dependencies
+               (vec
+                (sort
+                 (map catalog/coordinate
+                      (:package/context-dependencies package))))
+               :external-dependencies (:package/external-dependencies package)
+               :archive archive}]
+          (assoc output
+                 (:package/coordinate package)
+                 (if archive
+                   (assoc descriptor :archive-sha256 (archive-fingerprint archive))
+                   descriptor))))
+      {}
+      (:deploy/packages built))}))
+
+(defn index-path
+  "Returns the deterministic local package index path below deploy output."
+  [built]
+  (File/join (:deploy/output built) "index.edn"))
 
 (defn ^{:public true} build-staged
   "Builds staged packages in the dependency-first order supplied by code.deploy.stage."
   [staged]
-  {:deploy/output (:deploy/output staged)
-   :deploy/order (:deploy/order staged)
-   :deploy/packages (vec (map build-package (:deploy/packages staged)))})
+  (let [built {:deploy/output (:deploy/output staged)
+               :deploy/project (:deploy/project staged)
+               :deploy/order (:deploy/order staged)
+               :deploy/packages (vec (map build-package (:deploy/packages staged)))}
+        index (package-index built)
+        path (index-path built)]
+    (stage/write-edn path index)
+    (assoc built :deploy/index index :deploy/index-path path)))
 
 (defn action
   "Selects the requested deploy operation without assigning command parsing policy."

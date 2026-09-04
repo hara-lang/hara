@@ -1,0 +1,195 @@
+(ns lang.model.v1.spec-python.python-native-test
+  (:require [lang.common.emit :as emit]
+            [lang.common.emit-common :as emit-common]
+            [lang.common.preprocess-base :as preprocess]
+            [lang.model.v1.spec-python :as python]
+            [lang.model.v1.spec-python.python-native :as subject]))
+
+^{:refer lang.model.v1.spec-python.python-native/python-token-boolean}
+(Test/check
+ [{:name "emits Python boolean tokens"
+   :test (fn [] [(subject/python-token-boolean true)
+                 (subject/python-token-boolean false)])
+   :expected ["True" "False"]}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-emit-input-rest}
+(Test/check
+ [{:name "emits a Python variadic parameter"
+   :test (fn []
+           (binding [emit-common/*emit-fn*
+                     (fn [value grammar mopts] (name value))]
+             (subject/python-emit-input-rest {:symbol 'args} nil nil)))
+   :expected "*args"}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-qualified-symbol}
+(Test/check
+ [{:name "qualifies symbols from the active module and preserves inner symbols"
+   :test (fn []
+           (binding [preprocess/*macro-opts* {:module {:id 'demo.core}}]
+             [(subject/python-qualified-symbol 'value)
+              (subject/python-qualified-symbol
+               (with-meta 'value {:inner true}))
+              (subject/python-qualified-symbol 'other/value)]))
+   :expected ['demo.core/value 'value 'other/value]}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-optional-input?}
+(Test/check
+ [{:name "recognizes maybe-typed inputs"
+   :test (fn [] [(subject/python-optional-input? {:type {:kind :maybe}})
+                 (subject/python-optional-input? {:type {:kind :primitive}})])
+   :expected [true false]}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-apply-optional-defaults}
+(Test/check
+ [{:name "leaves calls without an analyzable function definition unchanged"
+   :test (fn [] (subject/python-apply-optional-defaults 'missing '[view dest-key]))
+   :expected '[view dest-key]}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-emit-nonlocal}
+(Test/check
+ [{:name "emits comma-separated nonlocal names"
+   :test (fn []
+           (binding [emit-common/*emit-fn*
+                     (fn [value grammar mopts] (name value))]
+             (subject/python-emit-nonlocal
+              '(nonlocal first-name second-name) nil nil)))
+   :expected "nonlocal first-name, second-name"}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-binding-symbols}
+(Test/check
+ [{:name "collects plain binding symbols from nested data"
+   :test (fn [] (subject/python-binding-symbols '[value [other] {:key nested}]))
+   :expected #{'value 'other 'nested}}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-scope-form?}
+(Test/check
+ [{:name "identifies Python scope forms"
+   :test (fn [] [(subject/python-scope-form? '(fn [] 1))
+                 (subject/python-scope-form? '(do 1))])
+   :expected [true false]}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-local-symbols}
+(Test/check
+ [{:name "collects local vars without crossing nested scopes"
+   :test (fn [] (subject/python-local-symbols
+                 '(do (var local 1)
+                      (fn inner [] (var nested 2)))))
+   :expected #{'local}}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-assigned-symbols}
+(Test/check
+ [{:name "collects direct assignment targets without crossing nested scopes"
+   :test (fn [] (subject/python-assigned-symbols
+                 '(do (:= outer value)
+                      (fn inner [] (:= nested value)))))
+   :expected #{'outer}}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-prepend-nonlocals}
+(Test/check
+ [{:name "prepends assigned enclosing names to inner functions"
+   :test (fn []
+           (subject/python-prepend-nonlocals
+            (with-meta 'inner {:inner true})
+            '[argument]
+            '[(var local 1) (:= outer argument)]))
+   :expected '[(nonlocal outer) (var local 1) (:= outer argument)]}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-for}
+(Test/check
+ [{:name "emits Foundation numeric loops as Python range loops"
+   :test (fn [] (emit/emit
+                 '(for [(var i := 0)
+                        (< i limit)
+                        (:= i (+ i 1))]
+                    (return i))
+                 python/+selection+))
+   :expected "for i in range(0, limit, 1):\n    return i\n"}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-for-object}
+(Test/check
+ [{:name "lowers object loops to item iteration"
+   :test (fn [] (subject/python-for-object
+                 '(for:object [[k v] arr] [k v])))
+   :expected '(for [[k v] :in (. arr (items))] [k v])}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-for-array}
+(Test/check
+ [{:name "lowers indexed and direct array loops"
+   :test (fn [] [(subject/python-for-array
+                  '(for:array [[i e] arr] [i e]))
+                 (subject/python-for-array
+                  '(for:array [e arr] e))])
+   :expected ['(for [i :in (range (len arr))]
+                 (var e (. arr [i]))
+                 [i e])
+              '(for [e :in arr] e)]}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-for-iter}
+(Test/check
+ [{:name "lowers iterator loops to direct iteration"
+   :test (fn [] (subject/python-for-iter
+                 '(for:iter [e it] e)))
+   :expected '(for [e :in it] e)}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-for-index}
+(Test/check
+ [{:name "lowers index loops to Python range iteration"
+   :test (fn [] (subject/python-for-index
+                 '(for:index [i [0 2 10]] i)))
+   :expected '(for [i :in (range 0 2 10)] i)}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-for-return}
+(Test/check
+ [{:name "lowers return forms to a Python try/catch"
+   :test (fn [] (subject/python-for-return
+                 '(for:return [[ok err] (call)]
+                    {:success (return ok)
+                     :error (return err)})))
+   :expected '(try (var ok (call))
+                  (return ok)
+                  (catch [Exception :as err]
+                    (return err)))}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-fn}
+(Test/check
+ [{:name "lowers named functions to inner definitions"
+   :test (fn [] (subject/python-fn
+                 '(fn val-fn [x] (return x))))
+   :expected '(fn.inner val-fn [x] (return x))}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-defn}
+(Test/check
+ [{:name "lowers inner definitions to hidden definitions"
+   :test (fn [] (subject/python-defn
+                 '(fn.inner val-fn [x] (return x))))
+   :expected '(defn- val-fn [x] (return x))}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-x-del-key}
+(Test/check
+ [{:name "deletes a Python object key"
+   :test (fn [] (subject/python-x-del-key '(x:del-key obj key)))
+   :expected '(. obj (pop key nil))}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-x-obj-vals}
+(Test/check
+ [{:name "emits Python object values"
+   :test (fn [] (subject/python-x-obj-vals '(x:obj-vals obj)))
+   :expected '(list (. obj (values)))}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-x-obj-pairs}
+(Test/check
+ [{:name "emits Python object items"
+   :test (fn [] (subject/python-x-obj-pairs '(x:obj-pairs obj)))
+   :expected '(list (. obj (items)))}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-x-arr-slice}
+(Test/check
+ [{:name "emits a Python array slice"
+   :test (fn [] (subject/python-x-arr-slice '(x:arr-slice arr start end)))
+   :expected '(. arr [(slice start end)])}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-x-arr-reverse}
+(Test/check
+ [{:name "emits a reversed Python array copy"
+   :test (fn [] (subject/python-x-arr-reverse '(x:arr-reverse arr)))
+   :expected '(list (reversed arr))}])

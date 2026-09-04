@@ -1,0 +1,102 @@
+(ns xt.event.base-animate-mock-test
+  (:require [lang.core :as l]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-animate-mock :as mock]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-animate-mock :as mock]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-animate-mock :as mock]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.base-animate-mock/new-observed}
+  {:name "creates an observed value with empty listeners"
+   :test (fn [] (get (deref +results+) "new"))
+   :expected ["observed" 1 0]}
+
+  ^{:refer xt.event.base-animate-mock/is-observed}
+  {:name "recognizes only observed value records"
+   :test (fn [] (get (deref +results+) "observed?"))
+   :expected [true false]}
+
+  ^{:refer xt.event.base-animate-mock/add-listener}
+  {:name "adds a callback to an observed value"
+   :test (fn [] (get (deref +results+) "add"))
+   :expected 1}
+
+  ^{:refer xt.event.base-animate-mock/notify-listeners}
+  {:name "notifies callbacks with the current value"
+   :test (fn [] (get (deref +results+) "notify"))
+   :expected [1 2 2]}
+
+  ^{:refer xt.event.base-animate-mock/get-value}
+  {:name "returns the current observed value"
+   :test (fn [] (get (deref +results+) "get"))
+   :expected 2}
+
+  ^{:refer xt.event.base-animate-mock/set-value}
+  {:name "updates an observed value and notifies callbacks"
+   :test (fn [] (get (deref +results+) "set"))
+   :expected [nil 2]}
+
+  ^{:refer xt.event.base-animate-mock/mock-transition}
+  {:name "creates a synchronous transition callback"
+   :test (fn [] (get (deref +results+) "transition"))
+   :expected [5 nil]}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var observed (mock/new-observed 1))
+             (var seen [])
+             (mock/add-listener observed
+                                (fn [value] (xt/x:arr-push seen value)))
+             (var add (xt/x:len (. observed ["listeners"])))
+             (var is [(mock/is-observed observed)
+                      (mock/is-observed {})])
+             (mock/notify-listeners observed)
+             (var set-result (mock/set-value observed 2))
+             (var set [set-result (mock/get-value observed)])
+             (mock/notify-listeners observed)
+             (var transition-fn
+                  (mock/mock-transition observed {} [2 4]
+                                         (fn [value] (return (+ value 1)))))
+             (var transition-result (transition-fn nil))
+             {"new" [(. observed ["::"]) 1 0]
+              "observed?" is
+              "add" add
+              "notify" seen
+              "get" 2
+              "set" set
+              "transition" [(mock/get-value observed) transition-result]})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.base-animate-mock/new-observed}
+  {:name "executes the observed value contract in every basic target"
+   :test (fn []
+           [(!.js (mock/get-value (mock/new-observed 4)))
+            (!.lua (mock/get-value (mock/new-observed 4)))
+            (!.py (mock/get-value (mock/new-observed 4)))])
+   :expected [4 4 4]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

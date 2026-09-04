@@ -1,0 +1,53 @@
+;; ============================================================================
+;; lang.core.manage — lazy Library inspection and source-overlay management.
+;; ============================================================================
+(ns lang.core.manage
+  (:config {:role :internal})
+  (:require [lang.core.library :as library]))
+
+(defn ^{:public true} lib-overview
+  "Lists selected Books and local module overlays without materializing Books."
+  ([]
+   (lib-overview (library/default-library)))
+  ([current]
+   (let [snapshot (library/library-snapshot current)]
+     (reduce-kv
+      (fn [output language coordinate]
+        (let [record (get-in snapshot [:books coordinate])]
+          (assoc output language
+                 {:coordinate coordinate
+                  :info (:info record)
+                  :book-loaded (not (nil? (:book record)))
+                  :modules (vec (sort-by str (keys (or (:modules record) {}))))})))
+      {}
+      (:selected snapshot)))))
+
+(defn ^{:public true} lib-module
+  "Returns target-specific module metadata, materializing only its selected Book."
+  ([language module-id]
+   (lib-module (library/default-library) language module-id))
+  ([current language module-id]
+   (let [module (library/library-get-module current language module-id)]
+     (if module
+       (dissoc module :code :fragment)))))
+
+(defn ^{:public true} lib-entries
+  "Returns the code and fragment entries for one target-specific module."
+  ([language module-id]
+   (lib-entries (library/default-library) language module-id))
+  ([current language module-id]
+   (let [module (library/library-get-module current language module-id)]
+     (if module
+       {:code (or (:code module) {})
+        :fragment (or (:fragment module) {})}))))
+
+(defn ^{:public true} lib-purge
+  "Deletes one locally owned source module and returns its new Library revision."
+  ([language module-id]
+   (lib-purge (library/default-library) language module-id))
+  ([current language module-id]
+   (let [removed (library/library-delete-module! current language module-id)
+         snapshot (library/library-raw-snapshot current)]
+     {:module module-id
+      :removed (not (nil? removed))
+      :revision (:revision snapshot)})))

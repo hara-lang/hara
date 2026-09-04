@@ -1,0 +1,210 @@
+(ns code.deploy.lifecycle-test
+  (:require [code.deploy.lifecycle :as lifecycle]
+            [code.deploy.stage :as stage]))
+
+(defn fixture-root
+  []
+  (let [root (deref (File/temp-directory "." {:prefix "hara-lifecycle-test-"}))]
+    (deref (File/write (File/join root "project.edn")
+                       (String/encode-utf8 "{:project/id \"fixture/lifecycle\" :project/version \"1.0.0\" :project/source-paths [] :project/source-files [] :project/deploy {:catalog \"config/packages.edn\"}}")
+                       {:mode :replace :parents? true}))
+    (deref (File/write (File/join root "config/packages.edn")
+                       (String/encode-utf8 "{}")
+                       {:mode :replace :parents? true}))
+    root))
+
+(defn goal-echo
+  [state]
+  (:lifecycle/root state))
+
+^{:refer code.deploy.lifecycle/phase?}
+(Test/check
+ [{:name "recognises keyword and string lifecycle phases"
+   :test (fn [] [(lifecycle/phase? :compile)
+                 (lifecycle/phase? "test")
+                 (lifecycle/phase? "not-a-phase")])
+   :expected [true true false]}])
+
+^{:refer code.deploy.lifecycle/phase-key}
+(Test/check
+ [{:name "normalises supported phase names and rejects unknown phases"
+   :test (fn [] [(lifecycle/phase-key "verify")
+                 (try (lifecycle/phase-key "unknown") false (catch error true))])
+   :expected [:verify true]}])
+
+^{:refer code.deploy.lifecycle/phases-through}
+(Test/check
+ [{:name "returns the ordered lifecycle prefix through package"
+   :test (fn [] (lifecycle/phases-through :package))
+   :expected [:validate :initialize :generate-sources :process-sources
+              :generate-resources :process-resources :compile :test-compile
+              :test :package]}])
+
+^{:refer code.deploy.lifecycle/entry-symbol}
+(Test/check
+ [{:name "converts qualified goal names to symbols"
+   :test (fn [] [(lifecycle/entry-symbol "demo.build/run")
+                 (lifecycle/entry-symbol 'demo.build/check)])
+   :expected ['demo.build/run 'demo.build/check]}])
+
+^{:refer code.deploy.lifecycle/built-in}
+(Test/check
+ [{:name "marks no-op lifecycle phases as passed"
+   :test (fn [] (:lifecycle/status
+                 (lifecycle/built-in {:lifecycle/root "."
+                                      :lifecycle/status {}}
+                                     :initialize)))
+   :expected {:initialize :passed}}])
+
+^{:refer code.deploy.lifecycle/build-state}
+(Test/check
+ [{:name "builds a lifecycle state around an empty package plan"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (let [state (lifecycle/build-state root)]
+                      [(= root (:lifecycle/root state))
+                       (count (:deploy/packages (:lifecycle/plan state)))
+                       (:lifecycle/status state)])
+                    (finally (stage/delete-tree root)))))
+   :expected [true 0 {}]}])
+
+^{:refer code.deploy.lifecycle/state-for-phase}
+(Test/check
+ [{:name "keeps pre-compile phases independent of the full package graph"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (let [early (lifecycle/state-for-phase root :initialize)
+                          later (lifecycle/state-for-phase root :compile)]
+                      [(get-in early [:lifecycle/plan :deploy/project :project/id])
+                       (nil? (:deploy/analyses (:lifecycle/plan early)))
+                       (vector? (:deploy/analyses (:lifecycle/plan later)))])
+                    (finally (stage/delete-tree root)))))
+   :expected ["fixture/lifecycle" true true]}])
+
+^{:refer code.deploy.lifecycle/mark}
+(Test/check
+ [{:name "records one phase result without changing other state"
+   :test (fn [] (lifecycle/mark {:lifecycle/status {:validate :passed}}
+                                :compile
+                                :passed))
+   :expected {:lifecycle/status {:validate :passed :compile :passed}}}])
+
+^{:refer code.deploy.lifecycle/verify-build}
+(Test/check
+ [{:name "accepts an empty verified package build"
+   :test (fn [] (let [state {:lifecycle/build {:deploy/packages []}}]
+                  (= state (lifecycle/verify-build state))))
+   :expected true}
+  {:name "rejects a package build without its archive"
+   :test (fn [] (try
+                  (lifecycle/verify-build {:lifecycle/build
+                                           {:deploy/packages [{:package/name "demo/base"}]}})
+                  false
+                  (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.lifecycle/install-build}
+(Test/check
+ [{:name "accepts an empty package build without invoking installation"
+   :test (fn [] (let [state {:lifecycle/build {:deploy/packages []}}]
+                  (= state (lifecycle/install-build state))))
+   :expected true}])
+
+^{:refer code.deploy.lifecycle/invoke-entry}
+(Test/check
+ [{:name "invokes a loaded one-argument Hara goal entry"
+   :test (fn [] (lifecycle/invoke-entry "code.deploy.lifecycle/phase?" :compile))
+   :expected true}])
+
+^{:refer code.deploy.lifecycle/locked-plugin?}
+(Test/check
+ [{:name "requires a project lock entry for a goal package"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    [(lifecycle/locked-plugin? {:lifecycle/root root} "hara:goal/plugin")
+                     (lifecycle/locked-plugin? {:lifecycle/root root} "hara:goal/plugin")]
+                    (finally (stage/delete-tree root)))))
+   :expected [false false]}])
+
+^{:refer code.deploy.lifecycle/run-binding}
+(Test/check
+ [{:name "rejects an unlocked goal binding"
+   :test (fn [] (try
+                  (lifecycle/run-binding {:lifecycle/root "/fixture"}
+                                         {:plugin "hara:goal/plugin"
+                                          :entry "code.deploy.lifecycle/phase?"})
+                  false
+                  (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.lifecycle/run-bindings}
+(Test/check
+ [{:name "preserves state when a phase has no goal bindings"
+   :test (fn [] (let [state {:lifecycle/plan {:deploy/project {}}}]
+                  (= state (lifecycle/run-bindings state :test))))
+   :expected true}])
+
+^{:refer code.deploy.lifecycle/run-phase}
+(Test/check
+ [{:name "runs one no-op lifecycle phase from a project root"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (:lifecycle/status (lifecycle/run-phase root :initialize))
+                    (finally (stage/delete-tree root)))))
+   :expected {:initialize :passed}}])
+
+^{:refer code.deploy.lifecycle/run}
+(Test/check
+ [{:name "runs the lifecycle prefix through initialize"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (select-keys (lifecycle/run root :initialize) [:phase :status])
+                    (finally (stage/delete-tree root)))))
+   :expected {:phase :initialize :status {:validate :passed :initialize :passed}}}])
+
+^{:refer code.deploy.lifecycle/goal}
+(Test/check
+ [{:name "rejects direct goals absent from the project lock"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (try
+                      (lifecycle/goal root "hara:goal/plugin" "code.deploy.lifecycle/phase?")
+                      false
+                      (catch error true))
+                    (finally (stage/delete-tree root)))))
+   :expected true}
+  {:name "runs a locked goal without planning the full source graph"
+   :test (fn [] (let [root (fixture-root)
+                      lock (File/join root "project.lock.edn")]
+                  (try
+                    (deref (File/write
+                            (File/join root "project.edn")
+                            (String/encode-utf8
+                             "{:project/id \"fixture/lifecycle\" :project/version \"1.0.0\" :project/deploy {:catalog \"missing.edn\"}}")
+                            {:mode :replace :parents? true}))
+                    (deref (File/write
+                            lock
+                            (String/encode-utf8
+                             "{:lock/format \"0.1.0\" :project/id \"fixture/lifecycle\" :project/version \"1.0.0\" :lock/registry {:url \"file:///registry\" :digest \"sha256:fixture\"} :packages {\"hara:goal/plugin\" {:version \"1.0.0\"}}}")
+                            {:mode :replace :parents? true}))
+                    (= root
+                       (lifecycle/goal root
+                                       "hara:goal/plugin"
+                                       "code.deploy.lifecycle-test/goal-echo"))
+                    (finally (stage/delete-tree root)))))
+   :expected true}])
+
+^{:refer code.deploy.lifecycle/clean}
+(Test/check
+ [{:name "cleans generated output idempotently"
+   :test (fn [] (let [root (fixture-root)
+                      target (File/join root "target/deploy/leftover.txt")]
+                  (try
+                    (deref (File/write target
+                                        (String/encode-utf8 "stale")
+                                        {:mode :replace :parents? true}))
+                    (lifecycle/clean root)
+                    (lifecycle/clean root)
+                    (deref (File/exists? (File/join root "target/deploy")))
+                    (finally (stage/delete-tree root)))))
+   :expected false}])

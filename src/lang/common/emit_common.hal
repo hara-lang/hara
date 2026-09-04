@@ -131,7 +131,7 @@
   "checks whether a form must be wrapped when nested"
   {:added "4.0"}
   [form grammar]
-  (if (list? form)
+  (if (std.foundation/form? form)
     (let [entry (get-in grammar [:reserved (first form)])
           mode (:emit entry)]
       (boolean
@@ -465,6 +465,12 @@
     (cond (and (= token-key :string) *emit-internal*) form
           (and (= token-key :string) (= :single (:quote options)))
           (helper/pr-single form)
+          (= token-key :number)
+          (let [output (pr-str form)]
+            (if (and (str/starts-with? output "(double ")
+                     (str/ends-with? output ")"))
+              (str/slice output 8 (- (str/length output) 1))
+              output))
           (= token-key :symbol) (emit-symbol form grammar mopts)
           custom (custom form)
           as (if (and (fn? as) (not (keyword? as))) (as form) as)
@@ -748,17 +754,22 @@
   ([form grammar mopts]
    (emit-common-loop form grammar mopts +emit-lookup+ emit-op))
   ([form grammar mopts fn-lookup fn-default]
-   (let [classification (form-key form grammar)
-         key (first classification)
-         type (second classification)
-         checked (if (> (count classification) 2)
-                   (nth classification 2)
-                   nil)
-         output-fn (or (get fn-lookup type) fn-default)]
-     (if checked
-       (or (emit-reserved-value form grammar mopts)
-           (output-fn key form grammar mopts))
-       (output-fn key form grammar mopts)))))
+   (if (and (list? form)
+            (= 'double (first form))
+            (= 2 (count form))
+            (number? (second form)))
+     (emit-token :number (second form) grammar mopts)
+     (let [classification (form-key form grammar)
+           key (first classification)
+           type (second classification)
+           checked (if (> (count classification) 2)
+                     (nth classification 2)
+                     nil)
+           output-fn (or (get fn-lookup type) fn-default)]
+       (if checked
+         (or (emit-reserved-value form grammar mopts)
+             (output-fn key form grammar mopts))
+         (output-fn key form grammar mopts))))))
 
 (defn emit-common-loop-bound
   "Emits through a supplied top-level dispatch table and recursive emitter.

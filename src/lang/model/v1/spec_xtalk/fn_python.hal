@@ -2,23 +2,32 @@
   (:config {:role :internal})
   (:require [lang.model.v1.spec-python.python-native :as native]))
 
+(defn python-tf-x-err
+  [form]
+  (list (quote throw) (list (quote Exception) (nth form 1))))
+
+(defn python-tf-x-random
+  [_]
+  (list (quote .) (list (quote __import__) "random") (list (quote random))))
+
 (def +python-core+
   {
     :x-print {:raw "print" :emit :invoke}
     :x-del {:macro native/python-x-del :emit :macro}
+    :x-del-key {:macro native/python-x-del-key :emit :macro}
     :x-unpack {:macro native/python-x-unpack :emit :macro}
     :x-bit-not {:macro native/python-x-bit-not :emit :macro}
     :x-eval {:macro native/python-x-eval :emit :macro}
     :x-construct {:macro native/python-x-construct :emit :macro}
     :x-len {:raw "len" :emit :invoke}
     :x-cat {:macro native/python-x-cat :emit :macro}
-    :x-err {:macro (fn [form] (list (quote throw) (list (quote Exception) (nth form 1)))) :emit :macro}
+    :x-err {:macro python-tf-x-err :emit :macro}
     :x-ex-native? {:macro native/python-ex-native :emit :macro}
     :x-ex-new {:macro native/python-ex-new :emit :macro}
     :x-ex-message {:macro native/python-ex-message :emit :macro}
     :x-ex-data {:macro native/python-ex-data :emit :macro}
     :x-now-ms {:default (quote (round (* 1000 (. (__import__ "time") (time))))) :emit :unit}
-    :x-random {:macro (fn [form] (list (quote .) (list (quote __import__) "random") (list (quote random)))) :emit :macro}})
+    :x-random {:macro python-tf-x-random :emit :macro}})
 
 (def +python-global+
   {
@@ -54,18 +63,48 @@
     :x-m-tan {:raw "math.tan" :emit :invoke}
     :x-m-tanh {:raw "math.tanh" :emit :invoke}})
 
+(defn python-tf-x-is-string?
+  [form]
+  (native/python-type-predicate (quote str) form))
+
+(defn python-tf-x-is-number?
+  [form]
+  (native/python-type-predicate
+   (list (quote quote) (list (quote int) (quote float))) form))
+
+(defn python-tf-x-is-integer?
+  [form]
+  (native/python-type-predicate
+   (list (quote quote) (list (quote int))) form))
+
+(defn python-tf-x-is-boolean?
+  [form]
+  (native/python-type-predicate (quote bool) form))
+
+(defn python-tf-x-is-function?
+  [form]
+  (list (quote callable) (nth form 1)))
+
+(defn python-tf-x-is-object?
+  [form]
+  (native/python-type-predicate (quote dict) form))
+
+(defn python-tf-x-is-array?
+  [form]
+  (native/python-type-predicate (quote list) form))
+
 (def +python-type+
   {
     :x-type-native {:macro native/python-type-native :emit :macro}
     :x-to-string {:raw "str" :emit :invoke}
     :x-to-number {:raw "float" :emit :invoke}
-    :x-is-string? {:macro (fn [form] (native/python-type-predicate 'str form)) :emit :macro}
-    :x-is-number? {:macro (fn [form] (native/python-type-predicate (list 'quote (list 'int 'float)) form)) :emit :macro}
-    :x-is-integer? {:macro (fn [form] (native/python-type-predicate (list 'quote (list 'int)) form)) :emit :macro}
-    :x-is-boolean? {:macro (fn [form] (native/python-type-predicate 'bool form)) :emit :macro}
-    :x-is-function? {:macro (fn [form] (list 'callable (nth form 1))) :emit :macro}
-    :x-is-object? {:macro (fn [form] (native/python-type-predicate 'dict form)) :emit :macro}
-    :x-is-array? {:macro (fn [form] (native/python-type-predicate 'list form)) :emit :macro}})
+    :x-is-string? {:macro python-tf-x-is-string? :emit :macro}
+    :x-is-number? {:macro python-tf-x-is-number? :emit :macro}
+    :x-is-integer? {:macro python-tf-x-is-integer? :emit :macro}
+    :x-is-boolean? {:macro python-tf-x-is-boolean? :emit :macro}
+    :x-is-function? {:macro python-tf-x-is-function? :emit :macro}
+    :x-is-object? {:macro python-tf-x-is-object? :emit :macro}
+    :x-is-array? {:macro python-tf-x-is-array? :emit :macro}})
 
 (def +python-lu+
   {
@@ -78,15 +117,36 @@
 (def +python-obj+
   {
     :x-obj-keys {:macro native/python-x-obj-keys :emit :macro}
+    :x-obj-vals {:macro native/python-x-obj-vals :emit :macro}
+    :x-obj-pairs {:macro native/python-x-obj-pairs :emit :macro}
     :x-obj-clone {:macro native/python-x-obj-clone :emit :macro}})
+
+(defn python-tf-x-arr-push
+  [form]
+  (native/python-x-arr-method (quote append) form))
+
+(defn python-tf-x-arr-pop
+  [form]
+  (native/python-x-arr-method (quote pop) form))
+
+(defn python-tf-x-arr-push-first
+  [form]
+  (list (quote .) (nth form 1)
+        (list (quote insert) 0 (nth form 2))))
+
+(defn python-tf-x-arr-pop-first
+  [form]
+  (list (quote .) (nth form 1) (list (quote pop) 0)))
 
 (def +python-arr+
   {
     :x-arr-clone {:macro native/python-x-arr-clone :emit :macro}
-    :x-arr-push {:macro (fn [form] (native/python-x-arr-method (quote append) form)) :emit :macro}
-    :x-arr-pop {:macro (fn [form] (native/python-x-arr-method (quote pop) form)) :emit :macro}
-    :x-arr-push-first {:macro (fn [form] (list (quote .) (nth form 1) (list (quote insert) 0 (nth form 2)))) :emit :macro}
-    :x-arr-pop-first {:macro (fn [form] (list (quote .) (nth form 1) (list (quote pop) 0))) :emit :macro}
+    :x-arr-slice {:macro native/python-x-arr-slice :emit :macro}
+    :x-arr-reverse {:macro native/python-x-arr-reverse :emit :macro}
+    :x-arr-push {:macro python-tf-x-arr-push :emit :macro}
+    :x-arr-pop {:macro python-tf-x-arr-pop :emit :macro}
+    :x-arr-push-first {:macro python-tf-x-arr-push-first :emit :macro}
+    :x-arr-pop-first {:macro python-tf-x-arr-pop-first :emit :macro}
     :x-arr-remove {:macro native/python-x-arr-remove :emit :macro}
     :x-arr-insert {:macro native/python-x-arr-insert :emit :macro}})
 
@@ -134,6 +194,40 @@
     :x-return-wrap {:macro native/python-return-wrap :emit :macro}
     :x-return-eval {:macro native/python-return-eval :emit :macro}})
 
+(defn python-tf-x-socket-connect
+  [form]
+  (let [host (nth form 1)
+        port (nth form 2)
+        cb (nth form 4)]
+    (list 'do
+          (list ':- :import 'socket)
+          (list 'try
+                (list 'var 'conn (list '. 'socket (list 'socket)))
+                (list '. 'conn (list 'connect
+                                      (list 'quote (list host port))))
+                (list 'catch ['Exception :as 'error]
+                      (list 'return (list cb 'error nil))))
+          (list 'return (list cb nil 'conn)))))
+
+(defn python-tf-x-socket-send
+  [form]
+  (list 'x:get-idx
+        [(list '. (nth form 1)
+               (list 'sendall (list 'bytes (nth form 2))))
+         (list 'len (nth form 2))]
+        1))
+
+(defn python-tf-x-socket-close
+  [form]
+  (list '. (nth form 1) (list 'close)))
+
+(def +python-socket+
+  {
+    :x-socket-connect {:macro python-tf-x-socket-connect :emit :macro
+                       :op-spec {:allow-blocks true}}
+    :x-socket-send {:macro python-tf-x-socket-send :emit :macro}
+    :x-socket-close {:macro python-tf-x-socket-close :emit :macro}})
+
 (def +python-iter+
   {
     :x-iter-from-obj {:macro native/python-x-iter-from-obj :emit :macro}
@@ -147,7 +241,9 @@
 
 (def +python-promise+
   {
-    :x-async-run {:macro native/python-async-run :emit :macro}})
+    :x-async-run {:macro native/python-async-run :emit :macro}
+    :x-with-delay {:emit :hard-link
+                   :raw 'xt.lang.common-promise/with-delay}})
 
 (def +python-shell+
   {
@@ -174,6 +270,7 @@
          +python-bytes+
          +python-js+
          +python-return+
+         +python-socket+
          +python-iter+
          +python-promise+
          +python-shell+

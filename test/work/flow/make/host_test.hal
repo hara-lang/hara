@@ -1,0 +1,107 @@
+(ns work.flow.make.host-test
+  (:require [work.flow.make.host :as host]))
+
+(defn fixture-plan [] {:make/id :fixture :make/trigger-policy :manual :make/targets {}})
+
+^{:refer work.flow.make.host/create}
+(Test/check
+ [{:name "creates a stopped host with an initial revision"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  [(host/host? value) (host/plan value) (host/revision value)
+                   (host/status value) (host/installed-triggers value)]))
+   :expected [true {:make/id :fixture :make/trigger-policy :manual :make/targets {}}
+              1 :stopped []]}])
+
+^{:refer work.flow.make.host/host?}
+(Test/check
+ [{:name "recognises only live make host values"
+   :test (fn [] [(host/host? {}) (host/host? (host/create (fixture-plan)))])
+   :expected [false true]}])
+
+^{:refer work.flow.make.host/assert-host}
+(Test/check
+ [{:name "rejects values without a host state boundary"
+   :test (fn [] (try (host/assert-host {}) false (catch error true)))
+   :expected true}])
+
+^{:refer work.flow.make.host/state}
+(Test/check
+ [{:name "returns the current mutable host state"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  (map? (host/state value))))
+   :expected true}])
+
+^{:refer work.flow.make.host/plan}
+(Test/check
+ [{:name "returns the installed plan"
+   :test (fn [] (host/plan (host/create (fixture-plan))))
+   :expected {:make/id :fixture :make/trigger-policy :manual :make/targets {}}}])
+
+^{:refer work.flow.make.host/revision}
+(Test/check
+ [{:name "increments when a plan is installed"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  (host/install-plan value {:make/id :next} :running [:receipt])
+                  (host/revision value)))
+   :expected 2}])
+
+^{:refer work.flow.make.host/status}
+(Test/check
+ [{:name "tracks stopped and installed status"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  [(host/status value)
+                   (host/status (host/install-plan value {:make/id :next} :running []))]))
+   :expected [:stopped :running]}])
+
+^{:refer work.flow.make.host/installed-triggers}
+(Test/check
+ [{:name "returns installed trigger receipts"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  (host/installed-triggers
+                   (host/install-plan value {:make/id :next} :running [:a :b]))))
+   :expected [:a :b]}])
+
+^{:refer work.flow.make.host/running?}
+(Test/check
+ [{:name "identifies running hosts"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  [(host/running? value)
+                   (host/running? (host/mark-running value [:a]))]))
+   :expected [false true]}])
+
+^{:refer work.flow.make.host/install-plan}
+(Test/check
+ [{:name "replaces plan status and receipts atomically"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  (host/install-plan value {:make/id :next} :running [:a])
+                  [(host/plan value) (host/status value)
+                   (host/installed-triggers value)]))
+   :expected [{:make/id :next} :running [:a]]}])
+
+^{:refer work.flow.make.host/replace-plan}
+(Test/check
+ [{:name "replaces only the plan while retaining live state"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  (host/mark-running value [:a])
+                  (host/replace-plan value {:make/id :next})
+                  [(host/plan value) (host/status value)
+                   (host/installed-triggers value) (host/revision value)]))
+   :expected [{:make/id :next} :running [:a] 2]}])
+
+^{:refer work.flow.make.host/mark-running}
+(Test/check
+ [{:name "marks a host running and replaces receipts"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  (host/mark-running value [:receipt])
+                  [(host/status value) (host/installed-triggers value)]))
+   :expected [:running [:receipt]]}])
+
+^{:refer work.flow.make.host/mark-stopped}
+(Test/check
+ [{:name "stops a host and clears receipts idempotently"
+   :test (fn [] (let [value (host/create (fixture-plan))]
+                  (host/mark-running value [:receipt])
+                  (host/mark-stopped value)
+                  (host/mark-stopped value)
+                  [(host/status value) (host/installed-triggers value)]))
+   :expected [:stopped []]}])

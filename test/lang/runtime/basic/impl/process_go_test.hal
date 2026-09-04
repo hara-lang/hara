@@ -1,0 +1,63 @@
+(ns lang.runtime.basic.impl.process-go-test
+  (:require [lang.core.registry :as registry]
+            [lang.core.runtime :as runtime]
+            [lang.runtime.basic.impl.process-go :as subject]
+            [lang.runtime.basic.type-common :as common]))
+
+^{:refer lang.runtime.basic.impl.process-go/go-source-transform}
+(Test/check
+ [{:name "wraps a Go expression in a standalone main package"
+   :test (fn [] (let [source (subject/go-source-transform "1 + 2")]
+                  [(str/includes? source "package main")
+                   (str/includes? source "import \"fmt\"")
+                   (str/includes? source "func main()")
+                   (str/includes? source "fmt.Println(1 + 2)")]))
+   :expected [true true true true]}])
+
+^{:refer lang.runtime.basic.impl.process-go/+go-program-init+}
+(Test/check
+ [{:name "declares Go build as the default two-step and verifier program"
+   :test (fn [] [(get-in subject/+go-program-init+ [:default :twostep])
+                 (get-in subject/+go-program-init+ [:default :verify])
+                 (get-in subject/+go-program-init+ [:env :go :flags :twostep])
+                 (get-in (common/get-program-options :go) [:env :go :extension])])
+   :expected [:go :go ["build"] "go"]}])
+
+^{:refer lang.runtime.basic.impl.process-go/+go-twostep-config+}
+(Test/check
+ [{:name "configures Go expressions for standalone compiler execution"
+   :test (fn [] [(select-keys subject/+go-twostep-config+ [:main :emit :json])
+                 (fn? (:source-transform subject/+go-twostep-config+))])
+   :expected [{:main {} :emit {} :json :string} true]}])
+
+^{:refer lang.runtime.basic.impl.process-go/+go-verify-config+}
+(Test/check
+ [{:name "configures Go verification as a compile-only source round trip"
+   :test (fn [] (select-keys subject/+go-verify-config+
+                              [:json :compile-only :return-source]))
+   :expected {:json false :compile-only true :return-source true}}])
+
+^{:refer lang.runtime.basic.impl.process-go/+go-twostep+}
+(Test/check
+ [{:name "installs the Go compiler runtime type"
+   :test (fn [] [(select-keys subject/+go-twostep+ [:lang :runtime :type])
+                 (set (keys (:instance subject/+go-twostep+)))
+                 (registry/registry-runtime-ns :go :twostep)])
+   :expected [{:lang :go :runtime :twostep :type :lang/rt.twostep}
+              #{:create :raw-eval}
+              'lang.runtime.basic.impl.process-go]}])
+
+^{:refer lang.runtime.basic.impl.process-go/+go-verify+}
+(Test/check
+ [{:name "installs the Go compile-only verification coordinate"
+   :test (fn [] [(select-keys subject/+go-verify+ [:lang :runtime :type])
+                 (:type (runtime/runtime-spec :go :verify))])
+   :expected [{:lang :go :runtime :verify :type :lang/rt.twostep}
+              :lang/rt.twostep]}])
+
+^{:refer lang.runtime.basic.impl.process-go/+init+}
+(Test/check
+ [{:name "publishes the complete Go process runtime family"
+   :test (fn [] [(get subject/+init+ :lang)
+                 (set (keys (dissoc subject/+init+ :lang)))])
+   :expected [:go #{:program :twostep :verify}]}])

@@ -53,17 +53,31 @@
 
 (defn start-basic
   [runtime]
-  (if (get runtime :transport)
-    (node/start (get runtime :transport)))
-  (reset! (get runtime :state)
-          {:status :started
-           :transport (get-in runtime [:process :transport])})
-  runtime)
+  (try
+    (do
+      (if (get runtime :transport)
+        (node/start (get runtime :transport)))
+      (reset! (get runtime :state)
+              {:status :started
+               :transport (get-in runtime [:process :transport])})
+      runtime)
+    (catch error
+      (do
+        (if (get runtime :transport)
+          (node/stop (get runtime :transport)))
+        (reset! (get runtime :state)
+                {:status :failed
+                 :transport (get-in runtime [:process :transport])
+                 :error (ex-data error)})
+        (throw error)))))
 
 (defn rt-basic-port
-  "Returns the configured port for a persistent basic runtime." 
+  "Returns the bound port for a persistent basic runtime."
   [runtime]
-  (get-in runtime [:process :port]))
+  (or (if (get runtime :transport)
+        (node/port (get runtime :transport))
+        nil)
+      (get-in runtime [:process :port])))
 
 (defn stop-basic
   [runtime]

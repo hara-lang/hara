@@ -1,0 +1,388 @@
+(ns js.react.compile-components
+  (:config {:role :internal}))
+
+(defn postwalk-form
+  "Applies f after recursively rebuilding a Hara form."
+  [form f]
+  (let [walked (cond (list? form)
+                     (apply list (map (fn [entry]
+                                        (postwalk-form entry f))
+                                      form))
+
+                     (vector? form)
+                     (mapv (fn [entry]
+                             (postwalk-form entry f))
+                           form)
+
+                     (map? form)
+                     (reduce-kv (fn [out key value]
+                                  (assoc out
+                                         (postwalk-form key f)
+                                         (postwalk-form value f)))
+                                {}
+                                form)
+
+                     (set? form)
+                     (set (map (fn [entry]
+                                 (postwalk-form entry f))
+                               form))
+
+                     :else form)]
+    (f walked)))
+
+(defn prewalk-form
+  "Applies f before recursively rebuilding a Hara form."
+  [form f]
+  (let [walked (f form)]
+    (cond (list? walked)
+          (apply list (map (fn [entry]
+                             (prewalk-form entry f))
+                           walked))
+
+          (vector? walked)
+          (mapv (fn [entry]
+                  (prewalk-form entry f))
+                walked)
+
+          (map? walked)
+          (reduce-kv (fn [out key value]
+                       (assoc out
+                              (prewalk-form key f)
+                              (prewalk-form value f)))
+                     {}
+                     walked)
+
+          (set? walked)
+          (set (map (fn [entry]
+                      (prewalk-form entry f))
+                    walked))
+
+          :else walked)))
+
+(defn classify-tagged
+  "Normalises a Hiccup-like element into tag, props, and children."
+  {:added "4.0"}
+  [element & [is-template]]
+  (let [[tag props? & children] element
+        [tag props? children] (if (= tag :%)
+                                [props? (first children) (rest children)]
+                                [tag props? children])
+        [props children] (if (map? props?)
+                           [props? (vec children)]
+                           [{} (vec (filter identity (cons props? children)))])
+        children (if (and is-template (empty? children))
+                   [:props/children]
+                   children)]
+    {:tag tag :props props :children children}))
+
+(defn components-resolve
+  "Resolves a component map, a sequence of component maps, or a Var symbol."
+  [inputs]
+  (cond (symbol? inputs)
+        (let [variable (Base/resolve inputs)]
+          (or (and variable (deref variable)) inputs))
+
+        (vector? inputs)
+        (apply merge (map components-resolve inputs))
+
+        :else inputs))
+
+(defn components-find-deps
+  "Finds references from each expanded component to sibling components."
+  [inputs]
+  (let [known (set (keys inputs))]
+    (map-vals
+     (fn [{:keys [tag props children]}]
+       (let [deps (atom #{})]
+         (postwalk-form
+          [tag props children]
+          (fn [entry]
+            (when (and (keyword? entry)
+                       (let [namespace (namespace entry)]
+                         (and namespace
+                              (not (has? #{"props" "*" "%" "var"}
+                                         namespace))))
+                       (has? known entry))
+              (swap! deps conj entry))
+            entry))
+         {:deps (deref deps)}))
+     inputs)))
+
+(defn components-expand
+  "Normalises component templates and attaches their dependency sets."
+  [inputs]
+  (let [normalised
+        (map-vals
+         (fn [template]
+           (cond (vector? template)
+                 (classify-tagged template true)
+
+                 (map? template)
+                 (merge {:props {}
+                         :children [:props/children]}
+                        template)
+
+                 :else template))
+         inputs)
+        dependencies (components-find-deps normalised)]
+    (merge-nested normalised dependencies)))
+
+(defn compile-replace
+  "Replaces namespaced template props and children in a component form."
+  [template props children]
+  (postwalk-form
+   template
+   (fn [entry]
+     (cond (= entry :props/children)
+           (case (count children)
+             0 nil
+             1 (first children)
+             (apply vector :<> children))
+
+           (and (keyword? entry)
+                (= "props" (namespace entry)))
+           (get props entry)
+
+           :else entry))))
+
+(defn find-namespaced-props
+  "Returns every :props/* keyword used by form."
+  [form]
+  (let [dependencies (atom #{})]
+    (postwalk-form
+     form
+     (fn [entry]
+       (when (and (keyword? entry)
+                  (= "props" (namespace entry)))
+         (swap! dependencies conj entry))
+       entry))
+    (deref dependencies)))
+
+(defn get-tmpl-props
+  "Splits input props into template-owned and body-owned maps."
+  [input-props namespace-props]
+  (let [output
+        (reduce (fn [{:keys [tmpl body] :as state} template-key]
+                  (let [body-key (keyword (name template-key))]
+                    (if (has? body body-key)
+                      {:tmpl (assoc tmpl template-key (get body body-key))
+                       :body (dissoc body body-key)}
+                      state)))
+                {:tmpl {} :body input-props}
+                namespace-props)]
+    [(:tmpl output) (:body output)]))
+
+(defn getter-symbol
+  "Creates the React getter symbol for a :var/* state key."
+  {:added "4.0"}
+  [keyword-value]
+  (symbol (str/camel-case (name keyword-value))))
+
+(defn setter-symbol
+  "Creates the React setter symbol for a :var/* state key."
+  {:added "4.0"}
+  [keyword-value]
+  (symbol (str/camel-case (str "set-" (name keyword-value)))))
+
+(defn compile-walk-variables
+  "Replaces :var/* data references with generated React state symbols."
+  {:added "4.0"}
+  [form]
+  (let [state-key? (fn [entry]
+                     (and (keyword? entry)
+                          (= "var" (namespace entry))))]
+    (prewalk-form
+     form
+     (fn [entry]
+       (cond (and (list? entry) (state-key? (first entry)))
+             (cons (setter-symbol (first entry)) (rest entry))
+
+             (state-key? entry)
+             (getter-symbol entry)
+
+             :else entry)))))
+
+(defn compile-element-action-do
+  "Compiles a raw action block by replacing state variables."
+  [form _options]
+  (compile-walk-variables form))
+
+(defn compile-element-action-set
+  "Compiles a :%/set action."
+  [state {:keys [to transform]}]
+  (list (setter-symbol state)
+        (if transform
+          (list transform (compile-walk-variables to))
+          (compile-walk-variables to))))
+
+(defn compile-element-action-inc
+  "Compiles a :%/inc action, including optional modular arithmetic."
+  [state {:keys [val mod]}]
+  (let [value (or val 1)
+        next-value (list '+ (getter-symbol state) value)
+        transform (if mod
+                    (list 'fn ['value]
+                          (list 'return
+                                (list ':?
+                                      (list '<= 0 'value)
+                                      (list 'mod 'value mod)
+                                      (list '+ (list 'mod 'value mod) mod))))
+                    identity)]
+    (list (setter-symbol state)
+          (if mod (list transform next-value) next-value))))
+
+(defn compile-element-action-dec
+  "Compiles a :%/dec action, including optional modular arithmetic."
+  [state {:keys [val mod]}]
+  (let [value (or val 1)
+        next-value (list '- (getter-symbol state) value)
+        transform (if mod
+                    (list 'fn ['value]
+                          (list 'return
+                                (list ':?
+                                      (list '<= 0 'value)
+                                      (list 'mod 'value mod)
+                                      (list '+ (list 'mod 'value mod) mod))))
+                    identity)]
+    (list (setter-symbol state)
+          (if mod (list transform next-value) next-value))))
+
+(defn compile-element-action-set-async
+  "Compiles a :%/set-async promise pipeline."
+  [state {:keys [to error pending transform]}]
+  (let [value (compile-walk-variables to)
+        pending-start (when pending (list (setter-symbol pending) true))
+        pending-end (when pending
+                      (list 'finally
+                            (list 'fn []
+                                  (list (setter-symbol pending) false))))
+        error-handler (when error
+                        (list 'catch
+                              (list 'fn ['err]
+                                    (list (setter-symbol error) 'err))))
+        transformer (when transform
+                      (list 'then
+                            (list 'fn ['result]
+                                  (list 'return (list transform 'result)))))
+        setter (list 'then
+                     (list 'fn ['result]
+                           (list 'return
+                                 (list (setter-symbol state) 'result))))]
+    (apply list 'do
+           (concat (if pending-start [pending-start] [])
+                   [(apply list '. value
+                           (concat (if transformer [transformer] [])
+                                   [setter]
+                                   (if error-handler [error-handler] [])
+                                   (if pending-end [pending-end] [])))]))))
+
+(defn compile-element-actions
+  "Compiles a raw action or a vector of declarative actions."
+  [actions]
+  (cond (list? actions)
+        (compile-walk-variables actions)
+
+        (vector? actions)
+        (apply list 'fn []
+               (keep (fn [action]
+                       (cond (:%/set action)
+                             (compile-element-action-set (:%/set action) action)
+
+                             (:%/set-async action)
+                             (compile-element-action-set-async
+                              (:%/set-async action) action)
+
+                             (:%/inc action)
+                             (compile-element-action-inc (:%/inc action) action)
+
+                             (:%/dec action)
+                             (compile-element-action-dec (:%/dec action) action)
+
+                             (:%/do action)
+                             (compile-element-action-do (:%/do action) action)))
+                     actions))
+
+        :else nil))
+
+(defn compile-element-directives
+  "Compiles input and action view directives into component props."
+  [view props]
+  (case (:type view)
+    :input
+    (let [{:keys [get set key]} view
+          value-state (:%/value props)
+          action (:%/action props)
+          without-value (dissoc props :%/value)
+          with-value (if value-state
+                       (assoc without-value
+                              (:key get)
+                              (if (:transform get)
+                                (list (compile-walk-variables (:transform get))
+                                      (getter-symbol value-state))
+                                (getter-symbol value-state))
+                              (:key set)
+                              (if (:transform set)
+                                (let [setter (setter-symbol value-state)]
+                                  (list 'fn ['input]
+                                        (list setter
+                                              (list (:transform set) 'input))))
+                                (setter-symbol value-state)))
+                       without-value)]
+      (if action
+        (assoc (dissoc with-value :%/action)
+               key
+               (compile-element-actions action))
+        with-value))
+
+    :action
+    (let [action (:%/action props)]
+      (if action
+        (assoc (dissoc props :%/action)
+               (:key view)
+               (compile-element-actions action))
+        props))
+
+    props))
+
+(defn compile-element
+  "Expands one component invocation using a resolved template map."
+  [element components]
+  (let [{:keys [tag props children]} (classify-tagged element false)
+        template (get components tag)
+        namespace-props (find-namespaced-props [(:props template)
+                                                (:children template)])
+        [template-props body-props] (get-tmpl-props props namespace-props)
+        body-props (if (:view template)
+                     (compile-element-directives (:view template) body-props)
+                     body-props)
+        body (cons (compile-replace (merge (:props template) body-props)
+                                    template-props
+                                    [])
+                   (compile-replace (:children template)
+                                    template-props
+                                    children))]
+    (cond (pointer? (:tag template))
+          (apply vector :%
+                 (symbol (name (:module (:tag template)))
+                         (name (:id (:tag template))))
+                 body)
+
+          (symbol? (:tag template))
+          (apply vector :% (:tag template) body)
+
+          :else
+          (apply vector (:tag template) body))))
+
+(defn compile-element-loop
+  "Expands a component repeatedly until all component dependencies are resolved."
+  [element components layout-fn]
+  (let [[tag] element
+        template (or (get components tag)
+                     (throw (ex :not-found
+                                {:tag tag :element element
+                                 :components (sort (keys components))}
+                                :ex/message "React component tag not found")))
+        output (compile-element element components)]
+    (if (not-empty (:deps template))
+      (layout-fn output components)
+      output)))

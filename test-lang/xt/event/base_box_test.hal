@@ -1,0 +1,194 @@
+(ns xt.event.base-box-test
+  (:require [lang.core :as l]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-box :as box]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-box :as box]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-box :as box]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.base-box/make-box}
+  {:name "creates an event box with initial data"
+   :test (fn [] (get (deref +results+) "make"))
+   :expected ["event.box" {} {"a" {"b" 2} "items" [1 2]}]}
+
+  ^{:refer xt.event.base-box/check-event}
+  {:name "matches empty, prefix, divergent, and overlong paths"
+   :test (fn [] (get (deref +results+) "check"))
+   :expected [true true false false]}
+
+  ^{:refer xt.event.base-box/add-listener}
+  {:name "filters listener callbacks by path"
+   :test (fn [] (get (deref +results+) "add"))
+   :expected [["abc"] ["abc"]]}
+
+  ^{:refer xt.event.base-box/remove-listener}
+  {:name "removes a registered box listener"
+   :test (fn [] (get (deref +results+) "remove"))
+   :expected ["abc" nil []]}
+
+  ^{:refer xt.event.base-box/list-listeners}
+  {:name "lists registered box listeners"
+   :test (fn [] (get (deref +results+) "list"))
+   :expected ["a" "b"]}
+
+  ^{:refer xt.event.base-box/get-data}
+  {:name "reads root and nested box values"
+   :test (fn [] (get (deref +results+) "get"))
+   :expected [{"a" {"b" 2} "items" [1 2]} 2 [1 2]]}
+
+  ^{:refer xt.event.base-box/set-data-raw}
+  {:name "writes nested values without notifying"
+   :test (fn [] (get (deref +results+) "set-raw"))
+   :expected {"a" {"b" 3} "items" [1 2]}}
+
+  ^{:refer xt.event.base-box/set-data}
+  {:name "writes data and emits matching listener ids"
+   :test (fn [] (get (deref +results+) "set"))
+   :expected [["all" "a"] {"a" {"b" 3} "items" [1 2] "c" 4}]}
+
+  ^{:refer xt.event.base-box/del-data-raw}
+  {:name "deletes nested values without notifying"
+   :test (fn [] (get (deref +results+) "del-raw"))
+   :expected [true {"a" {} "items" [1 2]}]}
+
+  ^{:refer xt.event.base-box/del-data}
+  {:name "deletes data and emits matching listener ids"
+   :test (fn [] (get (deref +results+) "del"))
+   :expected [["all" "a"] {"a" {} "items" [1 2]}]}
+
+  ^{:refer xt.event.base-box/reset-data}
+  {:name "restores the initial data"
+   :test (fn [] (get (deref +results+) "reset"))
+   :expected [{"a" {"b" 2} "items" [1 2] "c" 4}
+              ["all"]
+              {"a" {"b" 2} "items" [1 2]}]}
+
+  ^{:refer xt.event.base-box/merge-data}
+  {:name "merges object data at a nested path"
+   :test (fn [] (get (deref +results+) "merge"))
+   :expected [["all"] {"a" {"b" 2 "c" 3} "items" [1 2]}]}
+
+  ^{:refer xt.event.base-box/append-data}
+  {:name "appends data to an array path"
+   :test (fn [] (get (deref +results+) "append"))
+   :expected [["all"] {"a" {"b" 2} "items" [1 2 3]}]}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var make-box (box/make-box (fn [] (return {:a {:b 2} :items [1 2]}))))
+             (var make [(xt/x:get-key make-box "::")
+                        (xt/x:get-key make-box "listeners")
+                        (box/get-data make-box nil)])
+
+             (var check [(box/check-event {:path ["a" "b"]} [])
+                         (box/check-event {:path ["a" "b"]} ["a"])
+                         (box/check-event {:path ["a" "b"]} ["a" "c"])
+                         (box/check-event {:path ["a" "b"]} ["a" "b" "c"])])
+
+             (var add-box (box/make-box (fn [] (return {:a {:b 2}}))))
+             (var add-calls [])
+             (box/add-listener add-box "abc" ["a"]
+                               (fn [id data time meta]
+                                 (xt/x:arr-push add-calls id)) nil)
+             (var add [(box/set-data add-box ["a" "b"] 3) add-calls])
+
+             (var remove-box (box/make-box (fn [] (return {}))))
+             (box/add-listener remove-box "abc" []
+                               (fn [id data time meta] (return id)) nil)
+             (var remove [(. (box/remove-listener remove-box "abc") ["meta"])
+                          (box/remove-listener remove-box "abc")
+                          (box/list-listeners remove-box)])
+
+             (var list-box (box/make-box (fn [] (return {}))))
+             (box/add-listener list-box "a" [] (fn [id data time meta] (return id)) nil)
+             (box/add-listener list-box "b" [] (fn [id data time meta] (return id)) nil)
+             (var list (box/list-listeners list-box))
+
+             (var get-box (box/make-box (fn [] (return {:a {:b 2} :items [1 2]}))))
+             (var get-values [(box/get-data get-box nil)
+                              (box/get-data get-box ["a" "b"])
+                              (box/get-data get-box "items")])
+
+             (var set-raw-box (box/make-box (fn [] (return {:a {:b 2} :items [1 2]}))))
+             (box/set-data-raw set-raw-box ["a" "b"] 3)
+             (var set-raw (box/get-data set-raw-box nil))
+
+             (var set-box (box/make-box (fn [] (return {:a {:b 2} :items [1 2]}))))
+             (var set-calls [])
+             (box/add-listener set-box "all" [] (fn [id data time meta] (xt/x:arr-push set-calls id)) nil)
+             (box/add-listener set-box "a" ["a"] (fn [id data time meta] (xt/x:arr-push set-calls id)) nil)
+             (var set [(box/set-data set-box "c" 4) (box/get-data set-box nil) set-calls])
+
+             (var del-raw-box (box/make-box (fn [] (return {:a {:b 2} :items [1 2]}))))
+             (var del-raw [(box/del-data-raw del-raw-box ["a" "b"])
+                           (box/get-data del-raw-box nil)])
+
+             (var del-box (box/make-box (fn [] (return {:a {:b 2} :items [1 2]}))))
+             (var del-calls [])
+             (box/add-listener del-box "all" [] (fn [id data time meta] (xt/x:arr-push del-calls id)) nil)
+             (box/add-listener del-box "a" ["a"] (fn [id data time meta] (xt/x:arr-push del-calls id)) nil)
+             (var del [(box/del-data del-box ["a" "b"])
+                       (box/get-data del-box nil)
+                       del-calls])
+
+             (var reset-box (box/make-box (fn [] (return {:a {:b 2} :items [1 2]}))))
+             (var reset-calls [])
+             (box/add-listener reset-box "all" [] (fn [id data time meta] (xt/x:arr-push reset-calls id)) nil)
+             (box/set-data reset-box "c" 4)
+             (var reset [(box/get-data reset-box nil)
+                         (box/reset-data reset-box)
+                         reset-calls
+                         (box/get-data reset-box nil)])
+
+             (var merge-box (box/make-box (fn [] (return {:a {:b 2} :items [1 2]}))))
+             (var merge-calls [])
+             (box/add-listener merge-box "all" [] (fn [id data time meta] (xt/x:arr-push merge-calls id)) nil)
+             (var merge [(box/merge-data merge-box ["a"] {:c 3})
+                         merge-calls
+                         (box/get-data merge-box nil)])
+
+             (var append-box (box/make-box (fn [] (return {:a {:b 2} :items [1 2]}))))
+             (var append-calls [])
+             (box/add-listener append-box "all" [] (fn [id data time meta] (xt/x:arr-push append-calls id)) nil)
+             (var append [(box/append-data append-box "items" 3)
+                          append-calls
+                          (box/get-data append-box nil)])
+
+             {"make" make "check" check "add" add "remove" remove "list" list
+              "get" get-values "set-raw" set-raw "set" set "del-raw" del-raw
+              "del" del "reset" reset "merge" merge "append" append})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.base-box/make-box}
+  {:name "reads box data in every basic target"
+   :test (fn []
+           [(!.js (box/get-data (box/make-box {:value 1}) nil))
+            (!.lua (box/get-data (box/make-box {:value 1}) nil))
+            (!.py (box/get-data (box/make-box {:value 1}) nil))])
+   :expected [{"value" 1} {"value" 1} {"value" 1}]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

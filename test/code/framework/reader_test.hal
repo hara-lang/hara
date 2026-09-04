@@ -1,5 +1,6 @@
 (ns code.framework.reader-test
-  (:require [code.framework.reader :as reader]))
+  (:require [code.framework :as framework]
+            [code.framework.reader :as reader]))
 
 (def sample-source
   "(ns demo.test (:require [demo.subject :as subject :refer [stop]]))\n\n^{:refer demo.subject/run}\n(Test/check [])\n\n(defn answer [] (subject/run 42))\n\n(def value (stop))")
@@ -12,6 +13,10 @@
 
 (def declaration-analysis
   (reader/analyse-source declaration-source))
+
+(def lazy-analysis
+  (reader/analyse-source
+   "(ns demo.lazy (:require [demo.later :lazy true]))"))
 
 ^{:refer code.framework.reader/form-head}
 (Test/check
@@ -126,7 +131,17 @@
                       :start {:offset 24 :line 1 :column 25}
                       :end {:offset 64 :line 1 :column 65}}
                :to 'demo.subject
-               :resolution :resolved}]}])
+               :resolution :resolved}]}
+  {:name "retains lazy namespace imports as explicit reader facts"
+   :test (fn [] (reader/require-links
+                 (reader/namespace-record (:forms lazy-analysis))))
+   :expected [{:kind :namespace/require
+               :from {:path [0 2 1]
+                      :start {:offset 24 :line 1 :column 25}
+                      :end {:offset 47 :line 1 :column 48}}
+               :to 'demo.later
+               :resolution :resolved
+               :lazy true}]}])
 
 ^{:refer code.framework.reader/map-value-record}
 (Test/check
@@ -158,6 +173,41 @@
                       :end {:offset 116 :line 2 :column 68}}
                :to 'xt.util
                :resolution :resolved}]}])
+
+^{:refer code.framework.reader/script-require-links}
+(Test/check
+ [{:name "accepts a target declaration without an options map"
+   :test (fn [] (select-keys
+                 (reader/analyse-linkage-source
+                  "(ns demo.core)\n(l/script :xtalk)")
+                 [:namespace :links]))
+   :expected {:namespace 'demo.core
+              :links []}}
+  {:name "accepts target declarations with an aliased namespace require"
+   :test (fn [] (let [analysis
+                      (reader/analyse-linkage-source
+                       "(ns xt.lang.spec-base\n  (:require [lang.core :as l]))\n\n(l/script :xtalk)\n")]
+                 {:namespace (:namespace analysis)
+                  :links (mapv #(select-keys % [:kind :to :resolution])
+                               (:links analysis))}))
+   :expected {:namespace 'xt.lang.spec-base
+              :links [{:kind :namespace/require
+                       :to 'lang.core
+                       :resolution :resolved}]}}])
+
+^{:refer code.framework.reader/script-require-links}
+(Test/check
+ [{:name "keeps the facade linkage entrypoint on the same nil-safe reader path"
+   :test (fn [] (let [analysis
+                      (framework/analyse-linkage-source
+                       "(ns xt.lang.spec-base\n  (:require [lang.core :as l]))\n\n(l/script :xtalk)\n")]
+                 {:namespace (:namespace analysis)
+                  :links (mapv #(select-keys % [:kind :to :resolution])
+                               (:links analysis))}))
+   :expected {:namespace 'xt.lang.spec-base
+              :links [{:kind :namespace/require
+                       :to 'lang.core
+                       :resolution :resolved}]}}])
 
 ^{:refer code.framework.reader/intern-in-links}
 (Test/check

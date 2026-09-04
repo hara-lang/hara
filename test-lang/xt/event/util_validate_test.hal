@@ -1,0 +1,133 @@
+(ns xt.event.util-validate-test
+  (:require [lang.core :as l]
+            [xt.lang.common-notify :as notify]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-validate :as validate]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-validate :as validate]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-validate :as validate]]})
+
+(Test/check
+ [^{:refer xt.event.util-validate/create-result}
+  {:name "creates pending entries for each validator field"
+   :test (fn []
+           (notify/wait-on :js
+             (var result (validate/create-result {:first [] :last []}))
+             (repl/notify result)))
+   :expected {"::" "validation.result"
+              "status" "pending"
+              "fields" {"first" {"status" "pending"}
+                        "last" {"status" "pending"}}}}
+
+  ^{:refer xt.event.util-validate/validate-step}
+  {:name "records the first failed guard and does not run its successor"
+   :test (fn []
+           (notify/wait-on :js
+             (var calls [])
+             (var form {:first ""})
+             (var result {:status "pending" :fields {:first {:status "pending"}}})
+             (var guards [["required" {:message "Required"
+                                        :check (fn [value _]
+                                                 (xt/x:arr-push calls "required")
+                                                 (return false))}]
+                          ["later" {:message "Later"
+                                    :check (fn [value _]
+                                             (xt/x:arr-push calls "later")
+                                             (return true))}]])
+             (validate/validate-step form "first" guards 0 result nil
+                                     (fn [_ out]
+                                       (repl/notify [out calls])))))
+   :expected [{"status" "pending"
+               "fields" {"first" {"status" "errored"
+                                    "id" "required"
+                                    "data" ""
+                                    "message" "Required"}}}
+              ["required"]]}
+
+  ^{:refer xt.event.util-validate/validate-field}
+  {:name "moves the shared result status to errored for a failed field"
+   :test (fn []
+           (notify/wait-on :js
+             (var validators {:first [["required" {:message "Required"
+                                                    :check (fn [_ _] (return false))}]]})
+             (var result (validate/create-result validators))
+             (validate/validate-field {:first ""} "first" validators result nil
+                                      (fn [_ out]
+                                        (repl/notify out)))))
+   :expected {"::" "validation.result"
+              "status" "errored"
+              "fields" {"first" {"status" "errored"
+                                   "id" "required"
+                                   "data" ""
+                                   "message" "Required"}}}}
+
+  ^{:refer xt.event.util-validate/validate-fields-loop}
+  {:name "short-circuits later fields after an errored field"
+   :test (fn []
+           (notify/wait-on :js
+             (var validators {:first [["first" {:message "First"
+                                                 :check (fn [_ _] (return false))}]]
+                              :last [["last" {:message "Last"
+                                               :check (fn [_ _] (return true))}]]})
+             (var result (validate/create-result validators))
+             (validate/validate-fields-loop {:first "" :last "world"}
+                                            validators result ["first" "last"] 0 nil
+                                            (fn [_ out]
+                                              (repl/notify out)))))
+   :expected {"::" "validation.result"
+              "status" "errored"
+              "fields" {"first" {"status" "errored"
+                                   "id" "first"
+                                   "data" ""
+                                   "message" "First"}
+                        "last" {"status" "pending"}}}}
+
+  ^{:refer xt.event.util-validate/validate-all}
+  {:name "marks every field and the complete result as ok"
+   :test (fn []
+           (notify/wait-on :js
+             (var validators {:first [["first" {:message "First"
+                                                 :check (fn [value _]
+                                                          (return (== value "hello")))}]]
+                              :last [["last" {:message "Last"
+                                               :check (fn [value _]
+                                                        (return (== value "world")))}]]})
+             (var result (validate/create-result validators))
+             (validate/validate-all {:first "hello" :last "world"}
+                                    validators result nil
+                                    (fn [_ out]
+                                      (repl/notify out)))))
+   :expected {"::" "validation.result"
+              "status" "ok"
+              "fields" {"first" {"status" "ok"}
+                        "last" {"status" "ok"}}}}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})
+
+(Test/check
+ [^{:refer xt.event.util-validate/create-result}
+  {:name "creates validation state in every basic target"
+   :test (fn []
+           [(!.js (xt/x:get-key (validate/create-result {:first []}) "status"))
+            (!.lua (xt/x:get-key (validate/create-result {:first []}) "status"))
+            (!.py (xt/x:get-key (validate/create-result {:first []}) "status"))])
+   :expected ["pending" "pending" "pending"]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

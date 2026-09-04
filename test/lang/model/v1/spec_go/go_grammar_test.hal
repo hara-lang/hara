@@ -1,0 +1,109 @@
+(ns lang.model.v1.spec-go.go-grammar-test
+  (:require [lang.common.compiler :as compiler]
+            [lang.core.script :as script]
+            [lang.model.v1.spec-go :as spec]
+            [lang.model.v1.spec-go.go-grammar :as subject]))
+
+^{:refer lang.model.v1.spec-go.go-grammar/go-typesystem}
+(Test/check
+ [{:name "emits Go slice, map, and generic type forms"
+   :test (fn [] [(subject/go-typesystem ['x 'slice 'int]
+                                      subject/+template+ {})
+                 (subject/go-typesystem ['x 'map 'string 'int]
+                                      subject/+template+ {})
+                 (subject/go-typesystem ['x 'Box 'left 'right]
+                                      subject/+template+ {})])
+   :expected ["[]int" "map[string]int" "Box[left, right]"]}])
+
+^{:refer lang.model.v1.spec-go.go-grammar/go-vector}
+(Test/check
+ [{:name "emits ordinary Go vectors and type-system vectors"
+   :test (fn [] [(subject/go-vector ['left 'right] subject/+template+ {})
+                 (subject/go-vector [:> 'slice 'int] subject/+template+ {})])
+   :expected ["[]any{left, right}" "[]int"]}])
+
+^{:refer lang.model.v1.spec-go.go-grammar/go-tf-arrow}
+(Test/check
+ [{:name "emits one-way and typed Go arrows"
+   :test (fn [] [(subject/go-tf-arrow ['arrow 'value])
+                 (subject/go-tf-arrow ['arrow 'left 'right])])
+   :expected [(list :% (list :- "<-") 'value)
+              (list :% 'left (list :- " <- ") 'right)]}])
+
+^{:refer lang.model.v1.spec-go.go-grammar/go-defstruct}
+(Test/check
+ [{:name "emits a Go struct body"
+   :test (fn [] (subject/go-defstruct
+                 ['defstruct 'Person [['name 'string] 'age]]
+                 subject/+template+
+                 {}))
+   :expected "type Person struct {\n  name string\n  age\n}"}])
+
+^{:refer lang.model.v1.spec-go.go-grammar/go-definterface}
+(Test/check
+ [{:name "emits a Go interface body"
+   :test (fn [] (subject/go-definterface
+                 ['definterface 'Worker ['run 'stop]]
+                 subject/+template+
+                 {}))
+   :expected "type Worker interface {\n  run\n  stop\n}"}])
+
+^{:refer lang.common.compiler/compile-entry}
+(Test/check
+ [{:name "emits registered Go declarations with their persisted return metadata"
+   :test (fn []
+           (:output
+            (compiler/compile-entry
+             (compiler/compiler)
+             {:id 'hello
+              :module 'demo.go
+              :op 'defn
+              :form (list 'defn 'hello [:int 'a] '(return (+ a 1)))
+              :declaration-meta {:- [:int]}}
+             spec/+selection+
+             {:lang :go})))
+   :expected "func hello(a int)  int {\n  return a + 1\n}"}])
+
+^{:refer lang.core.script/compile-form}
+(Test/check
+ [{:name "ports the Foundation Go grammar through the compiler"
+   :test (fn [] [(script/compile-form :go 'demo.go '(var a 1))
+                 (script/compile-form :go 'demo.go
+                                      '(defn ^{:- [:int]} hello [:int a]
+                                         (return (+ a 1))))
+                 (script/compile-form :go 'demo.go
+                                      '(defstruct Person [[name string] [age int]]))
+                 (script/compile-form :go 'demo.go '(go (hello 1)))
+                 (script/compile-form :go 'demo.go '(defer (hello 1)))
+                 (script/compile-form :go 'demo.go '(:& x))
+                 (script/compile-form :go 'demo.go '(:* x))
+                 (script/compile-form :go 'demo.go '(<- ch))
+                 (script/compile-form :go 'demo.go '(<- ch 1))
+                 (script/compile-form :go 'demo.go '(make (chan int)))
+                 (script/compile-form :go 'demo.go '[:> slice int])
+                 (script/compile-form :go 'demo.go '[:> map string int])
+                 (script/compile-form :go 'demo.go '(x:print "hello"))
+                 (script/compile-form :go 'demo.go '(x:len [1 2 3]))
+                 (script/compile-form :go 'demo.go '(x:cat "a" "b"))
+                 (script/compile-form :go 'demo.go '(x:m-abs -1))
+                 (script/compile-form :go 'demo.go '(x:arr-push arr 1))
+                 (script/compile-form :go 'demo.go
+                                      '(x:str-join "," ["a" "b"]))])
+   :expected ["var a = 1"
+              "func hello(a int)  int {\n  return a + 1\n}"
+              "type Person struct {\n  name string\n  age int\n}"
+              "go hello(1)"
+              "defer hello(1)"
+              "&x"
+              "*x"
+              "<-ch"
+              "ch <- 1"
+              "make(chan int)"
+              "[]int"
+              "map[string]int"
+              "fmt.Println(\"hello\")"
+              "len([]any{1, 2, 3})"
+              "\"a\" + \"b\""
+              "math.Abs(-1)"
+              "arr = append(arr,1)"
+              "strings.Join([]any{\"a\", \"b\"},\",\")"]}])

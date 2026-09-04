@@ -2,7 +2,8 @@
   (:config {:role :internal})
   (:require
             [lang.common.emit-common :as common]
-            [lang.common.emit-data :as data]))
+            [lang.common.emit-data :as data]
+            [lang.model.v1.spec-lua.lua-c-ffi :as c-ffi]))
 
 (defn lua-string
   [value _grammar]
@@ -35,6 +36,11 @@
 (defn lua-throw
   [form]
   (list (quote error) (nth form 1) 0))
+
+(defn lua-tf-c-ffi
+  "Transforms a C FFI block into a C declaration string."
+  [form]
+  (c-ffi/c-ffi-body->string (rest form)))
 
 (defn lua-async-run
   [form]
@@ -312,6 +318,35 @@
         (list (quote .) (nth form 1)
               [(list (quote tostring) (nth form 2))])
         nil))
+
+(defn lua-x-global-has [form]
+  (let [sym (nth form 1)
+        sym (if (symbol? sym) sym (symbol sym))]
+    (list (quote not=) sym nil)))
+
+(defn lua-x-global-set [form]
+  (let [sym (nth form 1)
+        sym (if (symbol? sym) sym (symbol sym))]
+    (list := sym (nth form 2))))
+
+(defn lua-x-global-del [form]
+  (let [sym (nth form 1)
+        sym (if (symbol? sym) sym (symbol sym))]
+    (list := sym nil)))
+
+(defn lua-x-arr-clone [form]
+  [(list (quote unpack) (nth form 1))])
+
+(defn lua-x-arr-slice [form]
+  (let [arr (nth form 1)
+        start (list (quote x:offset) (nth form 2))
+        args (if (> (count form) 3)
+               [arr start (nth form 3)]
+               [arr start])]
+    [(apply list (concat [(quote unpack)] args))]))
+
+(defn lua-x-arr-find [form]
+  (lua-x-arr-remove form))
 
 (defn lua-x-arr-push-first [form]
   (list (quote table.insert) (nth form 1) 1 (nth form 2)))
@@ -614,10 +649,22 @@
    :throw {:macro lua-throw :emit :macro}
    :index {:emit :index :wrap-object true}})
 
+(defn lua-tf-incby
+  [form]
+  (lua-assign-by (quote +) form))
+
+(defn lua-tf-decby
+  [form]
+  (lua-assign-by (quote -) form))
+
+(defn lua-tf-mulby
+  [form]
+  (lua-assign-by (quote *) form))
+
 (def +lua-native-counter+
-  {:incby {:macro (fn [form] (lua-assign-by (quote +) form)) :emit :macro}
-   :decby {:macro (fn [form] (lua-assign-by (quote -) form)) :emit :macro}
-   :mulby {:macro (fn [form] (lua-assign-by (quote *) form)) :emit :macro}})
+  {:incby {:macro lua-tf-incby :emit :macro}
+   :decby {:macro lua-tf-decby :emit :macro}
+   :mulby {:macro lua-tf-mulby :emit :macro}})
 
 (def +lua-native-vars+ {:var {:symbol #{'var*} :raw ""}})
 
@@ -628,9 +675,10 @@
    :for-index {:macro lua-for-index :emit :macro}})
 
 (def +lua-native-prototype+
-  {:prototype-get {:raw "getmetatable" :emit :invoke}
-   :prototype-set {:raw "setmetatable" :emit :invoke}
-   :prototype-create {:macro lua-prototype-create :emit :macro}
+  {:prototype-get {:raw "getmetatable" :emit :alias}
+   :prototype-set {:raw "setmetatable" :emit :alias}
+   :prototype-create {:macro lua-prototype-create :emit :macro
+                      :op-spec {:allow-blocks true}}
    :prototype-method {:macro lua-prototype-method :emit :macro}
    :prototype-tostring {:default "__tostring" :emit :unit}})
 
@@ -642,7 +690,13 @@
   {:local {:op :local :symbol #{'local 'var} :macro lua-var :emit :macro}
    :native-type {:op :native-type :symbol #{'type} :raw "type" :emit :invoke}
    :cat {:op :cat :symbol #{'cat} :raw ".." :emit :infix}
-   :len {:op :len :symbol #{'len} :raw "#" :emit :prefix}})
+   :len {:op :len :symbol #{'len} :raw "#" :emit :prefix}
+   :c-ffi {:op :c-ffi :symbol #{'%.c} :macro lua-tf-c-ffi :emit :macro}
+   :repeat {:op :repeat :symbol #{'repeat} :type :block
+            :block {:raw "repeat"
+                    :main #{:body}
+                    :control [[:until {:required true
+                                       :input #{:parameter}}]]}}})
 
 (def +lua-native+
   (merge +lua-native-core+ +lua-native-counter+ +lua-native-vars+

@@ -1,0 +1,187 @@
+(ns lang.runtime.basic.server-node
+  (:config {:role :internal})
+  (:require [lang.core.eval :as evaluation]
+            [std.stream.frame :as frame]
+            [std.stream.relay :as relay]))
+
+(defstruct BasicServer [host port socket stream timeout state])
+
+(defn state
+  [server]
+  (deref (:state server)))
+
+(defn get-port
+  "Returns the bound port of a basic runtime server."
+  [server]
+  (:port server))
+
+(defn create-basic-server
+  "Creates and starts the host listener before the target process is spawned."
+  [host port timeout]
+  (let [socket (Socket/listen host port {} (fn [_] nil))
+        endpoint (Socket/endpoint socket)]
+    (lang.runtime.basic.server-node/BasicServer
+     host
+     (:port endpoint)
+     socket
+     (Socket/events socket {})
+     timeout
+     (atom {:status :listening}))))
+
+(defn wait-ready
+  "Waits until the target client has connected to the host listener."
+  [server]
+  (if (= :ready (:status (state server)))
+    server
+    (loop []
+      (let [event (evaluation/await
+                   (Socket/next (:stream server))
+                   (:timeout server))
+            kind (:type event)]
+        (cond
+          (= kind :open)
+          (do
+            (swap! (:state server)
+                   assoc
+                   :status :ready
+                   :connection (:connection event))
+            server)
+
+          (= kind :error)
+          (throw
+           (ex :io {:error/type :lang/runtime-server
+                    :error (:error event)}
+               :ex/message "Basic runtime server failed while waiting for a client"))
+
+          (= kind :close)
+          (throw
+           (ex :io {:error/type :lang/runtime-server
+                    :event event}
+               :ex/message "Basic runtime server closed before a client connected"))
+
+          :else
+          (recur))))))
+
+(defn get-connection
+  [server]
+  (:connection (state server)))
+
+(defn mark-started
+  "Marks a ready listener as started without introducing a relay task graph."
+  [server]
+  (swap! (:state server) assoc :status :started :next-id 0 :raw [])
+  server)
+
+(defn next-event
+  "Reads the next event for the accepted client from the shared server stream."
+  [server]
+  (let [event (evaluation/await
+               (Socket/next (:stream server))
+               (:timeout server))
+        connection (get-connection server)]
+    (if (or (nil? connection)
+            (= connection (:connection event)))
+      event
+      (next-event server))))
+
+(defn line-index
+  [values]
+  (loop [index 0]
+    (cond
+      (= index (count values)) nil
+      (= 10 (nth values index)) index
+      :else (recur (inc index)))))
+
+(defn read-response
+  "Reads one newline-delimited JSON response from the accepted client."
+  [server]
+  (loop [raw (or (:raw (state server)) [])]
+    (let [index (line-index raw)]
+      (if (nil? index)
+        (let [event (next-event server)
+              kind (:type event)]
+          (cond
+            (= kind :data)
+            (recur (frame/append-bytes raw (:bytes event)))
+
+            (= kind :error)
+            (throw
+             (ex :io {:error/type :lang/runtime-server
+                      :error (:error event)}
+                 :ex/message "Basic runtime server connection failed"))
+
+            (= kind :close)
+            (throw
+             (ex :io {:error/type :lang/runtime-server
+                      :event event}
+                 :ex/message "Basic runtime server closed before a response"))
+
+            :else
+            (recur raw)))
+        (let [line (vec (take index raw))
+              remaining (vec (drop (inc index) raw))
+              value (Json/read
+                     (str/decode-utf8 (apply Bytes/new line)))]
+          (swap! (:state server) assoc :raw remaining)
+          value)))))
+
+(defn request-response
+  "Writes one correlated request and synchronously reads its JSON response."
+  [server request]
+  (let [current (state server)
+        id (or (:next-id current) 0)
+        request (assoc request "id" id)
+        bytes (frame/encode-frame (frame/json-line) request)]
+    (swap! (:state server) assoc :next-id (inc id))
+    (Socket/send (get-connection server) bytes)
+    (read-response server)))
+
+(defn get-relay
+  "Returns the correlated JSON-line relay attached to the ready client."
+  [server]
+  (:relay (state server)))
+
+(defn response-id
+  [response]
+  (or (get response :id)
+      (get response "id")))
+
+(defn attach-relay
+  "Attaches a correlated JSON-line relay to the ready client transport."
+  [server transport]
+  (let [channel (relay/relay
+                 transport
+                 (frame/json-line)
+                 {:mode :correlated
+                  :timeout-ms (:timeout server)
+                  :prepare-request
+                  (fn [id request]
+                    [id (assoc request "id" id)])
+                  :response-id response-id})]
+    (swap! (:state server)
+           assoc
+           :status :started
+           :relay channel)
+    channel))
+
+(defn stop-server
+  "Stops a basic runtime server and restores its stopped baseline."
+  [server]
+  (let [current (state server)
+        channel (:relay current)
+        connection (:connection current)
+        socket (:socket server)]
+    (if channel
+      (try (relay/close channel)
+           (catch ignored nil)))
+    (if connection
+      (try (Socket/close connection)
+           (catch ignored nil)))
+    (if socket
+      (try (Socket/close socket)
+           (catch ignored nil)))
+    (swap! (:state server)
+           (fn [value]
+             (assoc (dissoc value :connection :relay :next-id :raw)
+                    :status :stopped)))
+    server))

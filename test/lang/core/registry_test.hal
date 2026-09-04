@@ -33,12 +33,13 @@
                  (count (:runtime snapshot))
                  (set (keys (:books snapshot)))
                  (count (registry/registry-grammar-list))]))))
-   :expected [#{:runtime :books :grammars}
-              14
+   :expected [#{:runtime :books :book-macros :book-images :grammars}
+              22
               #{[:xtalk :default] [:postgres :default]
                 [:hara :default] [:js :default]
-                [:python :default] [:lua :default]}
-              16]}])
+                [:python :default] [:lua :default]
+                [:go :default] [:c :default]}
+              20]}])
 
 ^{:refer lang.core.registry/registry-restore!}
 (Test/check
@@ -57,9 +58,10 @@
                    (set (keys (:books baseline))) ]])
                (finally (registry/registry-restore! before)))))
    :expected [[1 true]
-              [14 #{[:xtalk :default] [:postgres :default]
+              [22 #{[:xtalk :default] [:postgres :default]
                     [:hara :default] [:js :default]
-                    [:python :default] [:lua :default]}]]}])
+                    [:python :default] [:lua :default]
+                    [:go :default] [:c :default]}]]}])
 
 ^{:refer lang.core.registry/registry-reset!}
 (Test/check
@@ -70,7 +72,7 @@
               (registry/registry-add :fixture :host 'fixture.host)
               [(count (:runtime (registry/registry-reset!)))
                (count (:runtime (registry/registry-reset!)))])))
-   :expected [14 14]}])
+   :expected [22 22]}])
 
 ^{:refer lang.core.registry/registry-namespace-loaded?}
 (Test/check
@@ -86,6 +88,10 @@
    :expected #{[:js :oneshot] [:js :verify] [:js :basic]
                [:python :oneshot] [:python :verify] [:python :basic]
                [:lua :oneshot] [:lua :verify] [:lua :basic]
+               [:c :twostep] [:c :verify]
+               [:go :twostep] [:go :verify]
+               [:rust :twostep] [:rust :verify]
+               [:dart :twostep] [:dart :verify]
                [:xtalk :host] [:hara :host]
                [:xtalk :basic] [:hara :basic]
                [:postgres :client]}}])
@@ -123,7 +129,8 @@
    :test (fn [] (set (registry/registry-book-list)))
    :expected #{[:xtalk :default] [:postgres :default]
                [:hara :default] [:js :default]
-               [:python :default] [:lua :default]}}])
+               [:python :default] [:lua :default]
+               [:go :default] [:c :default]}}])
 
 ^{:refer lang.core.registry/registry-grammar-load}
 (Test/check
@@ -271,3 +278,64 @@
              (catch error
                (throw error))))
    :expected [true :xtalk true :postgres nil :postgres]}])
+
+^{:refer lang.core.registry/registry-book}
+(Test/check
+ [{:name "returns a hydrated image book without invoking its source loader"
+   :test (fn []
+           (isolated
+            (fn []
+              (registry/registry-book-add
+               :fixture 1
+               {:ns 'lang.model.v1.spec-xtalk
+                :load (fn [] (throw (ex :state {} :ex/message "source loader invoked")))})
+              (reset! registry/+book-image-registry+
+                      {[:fixture :default 1] {:lang :fixture :version 1}})
+              (registry/registry-book :fixture))))
+   :expected {:lang :fixture :version 1}}])
+
+^{:refer lang.core.registry/registry-book-macro-info}
+(Test/check
+ [{:name "provides Basic declaration macros without selecting a Book loader"
+   :test (fn []
+           (isolated
+            (fn []
+              (reset! registry/+book-registry+
+                      {[:js :default]
+                       {:default-version 1
+                        :versions {1 {:ns 'fixture.js
+                                      :load (fn []
+                                              (throw
+                                               (ex :state {}
+                                                   :ex/message "Book loader invoked")))}}}})
+              [(registry/registry-book-macro-info :js)
+               (registry/registry-book-macro-info :python)
+               (registry/registry-book-macro-info :lua)])))
+   :expected [{:tag :js
+               :definitions '[def defabstract defclass defgen defglobal defn defn- defrun deftemp]
+               :highlights ['br 'break 'return 'set=]
+               :highlight-meta {'br {} 'break {} 'return {} 'set= {}}}
+              {:tag :py
+               :definitions '[def defabstract defclass defgen defglobal defn defn- defrun deftemp]
+               :highlights ['await 'break 'pass 'raise 'return 'tup 'with 'yield]
+               :highlight-meta {'await {} 'break {} 'pass {} 'raise {}
+                                'return {} 'tup {} 'with {} 'yield {}}}
+              {:tag :lua
+               :definitions '[def defabstract defclass defgen defglobal defn defn- defrun deftemp]
+               :highlights ['br 'break 'return 'set=]
+               :highlight-meta {'br {} 'break {} 'return {} 'set= {}}}]}
+  {:name "uses a precompiled macro index without invoking a Book loader"
+   :test (fn []
+           (isolated
+            (fn []
+              (reset! registry/+book-macro-registry+
+                      {:fixture {:tag :fixture
+                                 :definitions ['defn]
+                                 :highlights ['return]
+                                 :highlight-meta
+                                 {'return {:style/indent 2}}}})
+              (registry/registry-book-macro-info :fixture))))
+   :expected {:tag :fixture
+              :definitions ['defn]
+              :highlights ['return]
+              :highlight-meta {'return {:style/indent 2}}}}])

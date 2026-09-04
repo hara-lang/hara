@@ -1,0 +1,327 @@
+(ns work.flow.make.artifact-test
+  (:require [std.fs :as fs]
+            [work.flow.make.artifact :as artifact]))
+
+(defn mock
+  [function]
+  (binding [artifact/*mock-compile* true]
+    (function)))
+
+^{:refer work.flow.make.artifact/with:mock-compile}
+(Test/check
+ [{:name "binds the mock compiler boundary"
+   :test (fn [] (mock (fn [] artifact/*mock-compile*)))
+   :expected true}])
+
+^{:refer work.flow.make.artifact/with:compile-filter}
+(Test/check
+ [{:name "binds the compile filter boundary"
+   :test (fn [] (binding [artifact/*compile-filter* nil]
+                  (binding [artifact/*compile-filter* #{'demo}]
+                    artifact/*compile-filter*)))
+   :expected #{'demo}}])
+
+^{:refer work.flow.make.artifact/compile-fullbody}
+(Test/check
+ [{:name "joins optional header and footer around the body"
+   :test (fn [] (artifact/compile-fullbody "BODY" {:header "HEAD" :footer "TAIL"}))
+   :expected "HEAD\n\nBODY\n\nTAIL"}])
+
+^{:refer work.flow.make.artifact/compile-out-path}
+(Test/check
+ [{:name "creates a target-relative output path"
+   :test (fn [] (artifact/compile-out-path {:root ".build" :target "src" :file "main.js"}))
+   :expected ".build/src/main.js"}])
+
+^{:refer work.flow.make.artifact/compile-write}
+(Test/check
+ [{:name "returns the mocked output without changing the filesystem"
+   :test (fn [] (mock (fn [] (artifact/compile-write "main.js" "BODY"))))
+   :expected ["main.js" "BODY"]}])
+
+^{:refer work.flow.make.artifact/compile-result-seq}
+(Test/check
+ [{:name "flattens nested compile receipts"
+   :test (fn [] (artifact/compile-result-seq [[:unchanged "a"] [[:written "b"]]]))
+   :expected [[:unchanged "a"] [:written "b"]]}])
+
+^{:refer work.flow.make.artifact/compile-write-artifacts}
+(Test/check
+ [{:name "writes every artifact body"
+   :test (fn [] (mock (fn [] (artifact/compile-write-artifacts
+                               [{:output "a.js" :body "A"}
+                                {:output "a.d.ts" :body "B"}]))))
+   :expected [["a.js" "A"] ["a.d.ts" "B"]]}])
+
+^{:refer work.flow.make.artifact/compile-summarise}
+(Test/check
+ [{:name "summarises changed and unchanged files"
+   :test (fn [] (artifact/compile-summarise [[:unchanged "a"] [:written "b"]]))
+   :expected {:files 2 :status :changed :written [[:written "b"]]}}])
+
+^{:refer work.flow.make.artifact/compile-resource}
+(Test/check
+ [{:name "returns mocked resource copy pairs"
+   :test (fn [] (mock (fn [] (artifact/compile-resource
+                               {:root ".build" :target "src"
+                                :main [["source.txt" "copy.txt"]]}))))
+   :expected [["source.txt" ".build/src/copy.txt"]]}])
+
+^{:refer work.flow.make.artifact/compile-directory}
+(Test/check
+ [{:name "returns mocked directory destinations"
+   :test (fn [] (mock (fn [] (artifact/compile-directory
+                               {:root ".build" :target "src"
+                                :main [["source" "copy"]]}))))
+   :expected [".build/src/copy"]}])
+
+^{:refer work.flow.make.artifact/compile-custom}
+(Test/check
+ [{:name "renders a custom body through the write boundary"
+   :test (fn [] (mock (fn [] (artifact/compile-custom
+                               {:root ".build" :target "src" :file "x.txt"
+                                :header "HEAD" :footer "TAIL"
+                                :body "BODY"
+                                :fn (fn [{:keys [body]}] body)}))))
+   :expected [".build/src/x.txt" "HEAD\n\nBODY\n\nTAIL"]}])
+
+^{:refer work.flow.make.artifact/module-file}
+(Test/check
+ [{:name "derives a language extension from a module symbol"
+   :test (fn [] (artifact/module-file {:main 'demo.sample :lang :go}))
+   :expected "sample.go"}])
+
+^{:refer work.flow.make.artifact/module-output}
+(Test/check
+ [{:name "retains a compiler boundary for module output"
+   :test (fn [] (fn? artifact/module-output))
+   :expected true}])
+
+^{:refer work.flow.make.artifact/module-single}
+(Test/check
+ [{:name "retains a compiler boundary for single modules"
+   :test (fn [] (fn? artifact/module-single))
+   :expected true}])
+
+(Test/check
+ [{:name "refuses to write an artifact when module compilation has errors"
+   :test (fn []
+           (mock
+            (fn []
+              (let [result
+                    (artifact/module-single
+                     {:lang :c
+                      :main nil
+                      :file "invalid.c"
+                      :output ".build/invalid.c"
+                      :header "HEADER"})]
+                [(:status result)
+                 (:files result)
+                 (:runtime-output result)
+                 (vec (map :severity (:diagnostics result)))]))))
+   :expected [:failed [] ".build/invalid.c" [:error]]}])
+
+^{:refer work.flow.make.artifact/module-directory}
+(Test/check
+ [{:name "uses the single-module compiler for directory entries"
+   :test (fn [] (= artifact/module-single
+                  (deref (resolve 'work.flow.make.artifact/module-directory))))
+   :expected false}])
+
+^{:refer work.flow.make.artifact/types-list}
+(Test/check
+ [{:name "lists the registered artifact types"
+   :test (fn [] (has? (set (artifact/types-list)) :module.single))
+   :expected true}])
+
+^{:refer work.flow.make.artifact/types-add}
+(Test/check
+ [{:name "adds and restores an artifact type"
+   :test (fn [] (let [before (artifact/types-snapshot)]
+                  (try
+                    (artifact/types-add :fixture identity)
+                    (has? (set (artifact/types-list)) :fixture)
+                    (finally (artifact/types-restore! before)))))
+   :expected true}])
+
+^{:refer work.flow.make.artifact/types-remove}
+(Test/check
+ [{:name "removes an artifact type"
+   :test (fn [] (let [before (artifact/types-snapshot)]
+                  (try
+                    (artifact/types-add :fixture identity)
+                    (artifact/types-remove :fixture identity)
+                    (not (has? (set (artifact/types-list)) :fixture))
+                    (finally (artifact/types-restore! before)))))
+   :expected true}])
+
+^{:refer work.flow.make.artifact/types-snapshot}
+(Test/check
+ [{:name "returns a copyable type registry value"
+   :test (fn [] (map? (artifact/types-snapshot)))
+   :expected true}])
+
+^{:refer work.flow.make.artifact/types-restore!}
+(Test/check
+ [{:name "restores a captured type registry"
+   :test (fn [] (let [before (artifact/types-snapshot)]
+                  (try
+                    (artifact/types-add :fixture identity)
+                    (= before (artifact/types-restore! before))
+                    (finally (artifact/types-restore! before)))))
+   :expected true}])
+
+^{:refer work.flow.make.artifact/types-reset!}
+(Test/check
+ [{:name "restores the default type registry idempotently"
+   :test (fn [] (= (artifact/types-reset!) (artifact/types-reset!)))
+   :expected true}])
+
+^{:refer work.flow.make.artifact/compile-ext-fn}
+(Test/check
+ [{:name "selects raw and makefile format renderers"
+   :test (fn [] [(fn? (:fn (artifact/compile-ext-fn :raw)))
+                 (:file (artifact/compile-ext-fn :makefile))])
+   :expected [true "Makefile"]}])
+
+^{:refer work.flow.make.artifact/compile-resolve}
+(Test/check
+ [{:name "leaves literal values unchanged"
+   :test (fn [] (artifact/compile-resolve {:value 1}))
+   :expected {:value 1}}])
+
+^{:refer work.flow.make.artifact/compile-ext}
+(Test/check
+ [{:name "renders an extension through the mock write boundary"
+   :test (fn [] (mock (fn [] (artifact/compile-ext
+                               {:root ".build" :format :raw
+                                :file "x.txt" :main ["a" "b"]}))))
+   :expected [".build/x.txt" "a\nb"]}])
+
+^{:refer work.flow.make.artifact/compile-single}
+(Test/check
+ [{:name "dispatches a registered raw type"
+   :test (fn [] (mock (fn [] (artifact/compile-single
+                               ".build" nil
+                               {:type :raw :file "x.txt" :main ["a"]}))))
+   :expected [".build/x.txt" "a"]}])
+
+^{:refer work.flow.make.artifact/compile-section}
+(Test/check
+ [{:name "compiles every entry in a section"
+   :test (fn [] (mock (fn [] (artifact/compile-section
+                               {:root ".build"}
+                               :default
+                               [{:type :raw :file "x.txt" :main ["a"]}]))))
+   :expected [{:files 1 :status :changed :written [[".build/x.txt" "a"]]}]}])
+
+^{:refer work.flow.make.artifact/compile-directive}
+(Test/check
+ [{:name "selects a named section"
+   :test (fn [] (mock (fn [] (artifact/compile-directive
+                               {:root ".build"}
+                               {:default [{:type :raw :file "x.txt" :main ["a"]}]}
+                               :default))))
+   :expected [{:files 1 :status :changed :written [[".build/x.txt" "a"]]}]}])
+
+^{:refer work.flow.make.artifact/compile}
+(Test/check
+ [{:name "compiles the default project section"
+   :test (fn [] (mock (fn [] (artifact/compile
+                               {:root ".build"
+                                :default [{:type :raw :file "x.txt" :main ["a"]}]}))))
+   :expected [{:files 1 :status :changed :written [[".build/x.txt" "a"]]}]}])
+
+^{:refer work.flow.make.artifact/read-text}
+(Test/check
+ [{:name "reads text through the artifact filesystem boundary"
+   :test (fn [] (let [file "test-temp/artifact/read.txt"]
+                  (try
+                    (artifact/write-text file "hello")
+                    (artifact/read-text file)
+                    (finally (if (fs/exists? file) (fs/delete file) nil)))))
+   :expected "hello"}])
+
+^{:refer work.flow.make.artifact/write-text}
+(Test/check
+ [{:name "creates parents and replaces an artifact text file"
+   :test (fn [] (let [file "test-temp/artifact/nested/write.txt"]
+                  (try
+                    (artifact/write-text file "one")
+                    (artifact/write-text file "two")
+                    (artifact/read-text file)
+                    (finally (if (fs/exists? file) (fs/delete file) nil)))))
+   :expected "two"}])
+
+^{:refer work.flow.make.artifact/prose-line}
+(Test/check
+ [{:name "renders nested prose values"
+   :test (fn [] (artifact/prose-line [:one :two "three"]))
+   :expected "one two three"}])
+
+^{:refer work.flow.make.artifact/prose-lines}
+(Test/check
+ [{:name "joins prose lines"
+   :test (fn [] (artifact/prose-lines [[:one :two] "three"]))
+   :expected "one two\nthree"}])
+
+^{:refer work.flow.make.artifact/json-value}
+(Test/check
+ [{:name "renders a JSON string value"
+   :test (fn [] (artifact/json-value "hello" 0))
+   :expected "\"hello\""}])
+
+^{:refer work.flow.make.artifact/json-pretty}
+(Test/check
+ [{:name "renders a JSON object"
+   :test (fn [] (artifact/json-pretty {:a "x"}))
+   :expected "{\n  \"a\" : \"x\"\n}"}])
+
+^{:refer work.flow.make.artifact/yaml-write}
+(Test/check
+ [{:name "renders YAML scalar and vector fields"
+   :test (fn [] (artifact/yaml-write {:name "demo" :items [:a :b]}))
+   :expected "name: demo\nitems: [a, b]\n"}])
+
+^{:refer work.flow.make.artifact/html-node}
+(Test/check
+ [{:name "renders a nested HTML node"
+   :test (fn [] (artifact/html-node [:main [:p "hello"]] 0))
+   :expected "<main>\n  <p>hello</p>\n</main>"}])
+
+^{:refer work.flow.make.artifact/html-write}
+(Test/check
+ [{:name "renders HTML from a node tree"
+   :test (fn [] (artifact/html-write [:p "hello"]))
+   :expected "<p>hello</p>"}])
+
+^{:refer work.flow.make.artifact/matches-option?}
+(Test/check
+ [{:name "matches string keyword and map filters"
+   :test (fn [] [(artifact/matches-option? "demo" {:name "demo"})
+                 (artifact/matches-option? :raw {:type :raw})
+                 (artifact/matches-option? {:type #{:raw :json}} {:type :raw})
+                 (artifact/matches-option? {:name #"dem"} {:name "demo"})])
+   :expected [true true true true]}
+  {:name "rejects invalid filters"
+   :test (fn [] (try (artifact/matches-option? [] {}) false (catch error true)))
+   :expected true}])
+
+^{:refer work.flow.make.artifact/compile-resolve}
+(Test/check
+ [{:name "retains unresolved symbols"
+   :test (fn [] (artifact/compile-resolve 'artifact/not-defined))
+   :expected 'artifact/not-defined}])
+
+^{:refer work.flow.make.artifact/compile-ext-fn}
+(Test/check
+ [{:name "selects JSON and README extension metadata"
+   :test (fn [] [(:file (artifact/compile-ext-fn :readme.md))
+                 (function? (:fn (artifact/compile-ext-fn :json)))])
+   :expected ["README.md" true]}])
+
+^{:refer work.flow.make.artifact/compile-directive}
+(Test/check
+ [{:name "reports a missing section without writing"
+   :test (fn [] (artifact/compile-directive {} {} :missing))
+   :expected :not-found}])

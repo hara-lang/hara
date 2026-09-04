@@ -6,12 +6,14 @@
 ;; selected language book and the current IContext lifecycle.
 ;; ============================================================================
 (ns lang.core.script-annex
-  (:require [lang.core.runtime :as runtime]
+  (:require [lang.core.library :as library]
+            [lang.core.runtime :as runtime]
             [lang.core.script :as script]
             [std.lib.component :as component]))
 
 (def +registry+ (atom {}))
 (def +runtimes+ (atom {}))
+(def +libraries+ (atom {}))
 
 (defn current-namespace-symbol
   []
@@ -21,11 +23,37 @@
   [namespace tag]
   [namespace tag])
 
+(defn annex-library-in
+  "Returns the namespace-owned child Library, inheriting the default Library."
+  [namespace]
+  (let [current (get (deref +libraries+) namespace)]
+    (if current
+      current
+      (let [created (library/library-create
+                     {:id [:annex namespace]
+                      :parent (library/default-library)})]
+        (swap! +libraries+
+               (fn [libraries]
+                 (if (get libraries namespace)
+                   libraries
+                   (assoc libraries namespace created))))
+        (get (deref +libraries+) namespace)))))
+
+(defn annex-library
+  "Returns the child Library owned by the current source namespace."
+  []
+  (annex-library-in (current-namespace-symbol)))
+
 (defn annex-snapshot
   "Captures tagged runtime registration and live-runtime state."
   []
   {:registry (deref +registry+)
    :runtimes (deref +runtimes+)
+   :libraries (reduce-kv (fn [output namespace current]
+                           (assoc output namespace
+                                  (library/library-raw-snapshot current)))
+                         {}
+                         (deref +libraries+))
    :active
    (reduce-kv (fn [out key instance]
                 (if (component/started? instance) (conj out key) out))
@@ -37,13 +65,30 @@
   [snapshot]
   (let [snapshot (or snapshot {})
         desired (or (:runtimes snapshot) {})
-        active (or (:active snapshot) #{})]
+        active (or (:active snapshot) #{})
+        library-snapshots (or (:libraries snapshot) {})
+        libraries (deref +libraries+)]
     (reduce-kv (fn [_ key instance]
                  (if (= instance (get desired key))
                    nil
                    (runtime/rt-stop instance)))
                nil
                (deref +runtimes+))
+    (reduce-kv (fn [_ _ current]
+                 (library/library-reset! current))
+               nil
+               libraries)
+    (reset! +libraries+
+            (reduce-kv
+             (fn [output namespace raw-snapshot]
+               (let [current (or (get libraries namespace)
+                                 (library/library-create
+                                  {:id [:annex namespace]
+                                   :parent (library/default-library)}))]
+                 (library/library-restore! current raw-snapshot)
+                 (assoc output namespace current)))
+             {}
+             library-snapshots))
     (reset! +registry+ (or (:registry snapshot) {}))
     (reset! +runtimes+ desired)
     (reduce (fn [_ key]
@@ -145,9 +190,11 @@
                                 (assoc config :module module)))
           [previous previous]
           (let [_ (if previous (runtime/rt-stop previous))
-                _ (script/configure-module lang module config)
-                started (start-runtime lang runtime-id
-                                       (assoc config :module module))]
+                current (annex-library-in namespace)
+                started (library/with:library [current]
+                          (script/configure-module lang module config)
+                          (start-runtime lang runtime-id
+                                         (assoc config :module module)))]
             (swap! +runtimes+ assoc (coordinate namespace tag) started)
             [previous started]))))))
 
@@ -237,6 +284,9 @@
                   (assoc out key value)))
               {}
               entries)))
+    (let [current (get (deref +libraries+) namespace)]
+      (if current (library/library-reset! current)))
+    (swap! +libraries+ dissoc namespace)
     (status-in namespace)))
 
 (defn clear
@@ -255,7 +305,8 @@
                    :ex/message "Script annex tag is not started"))
         (let [config (:config record)
               module (or (:module config) namespace)
-              source (script/compile-form (:lang record) module form)]
+              source (library/with:library [(annex-library-in namespace)]
+                       (script/compile-form (:lang record) module form))]
           (runtime/rt-raw-eval instance source))))))
 
 (defn eval-tag

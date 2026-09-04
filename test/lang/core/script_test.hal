@@ -1,5 +1,8 @@
 (ns lang.core.script-test
-  (:require [lang.core.script :as script]))
+  (:require [lang.core.library :as library]
+            [lang.core.registry :as registry]
+            [lang.core.runtime :as runtime]
+            [lang.core.script :as script]))
 
 (defn isolated
   [function]
@@ -13,22 +16,30 @@
 
 ^{:refer lang.core.script/script-snapshot}
 (Test/check [{:name "captures empty script state"
-              :test (fn [] (isolated script/script-snapshot))
-              :expected {:modules {} :scripts {} :loaded-modules {}
-                         :module-contexts {} :compile-cache {}}}])
+              :test (fn [] (let [value (isolated script/script-snapshot)]
+                             [(dissoc value :library)
+                              (select-keys (:library value) [:revision :books :selected])]))
+              :expected [{:modules {} :scripts {} :loaded-modules {}
+                          :module-contexts {} :compile-cache {}}
+                         {:revision 0 :books {} :selected {}}]}])
 
 ^{:refer lang.core.script/script-restore!}
 (Test/check [{:name "restores script registries"
-              :test (fn [] (isolated (fn []
-                                       (script/script-restore! {:modules {'demo {:id 'demo}}
-                                                                :scripts {} :loaded-modules {}
-                                                                :module-contexts {} :compile-cache {}}))))
-              :expected {:modules {'demo {:id 'demo}}
-                         :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}}])
+              :test (fn [] (let [value (isolated (fn []
+                                                    (script/script-restore! {:modules {'demo {:id 'demo}}
+                                                                             :scripts {} :loaded-modules {}
+                                                                             :module-contexts {} :compile-cache {}})))]
+                             [(dissoc value :library)
+                              (select-keys (:library value) [:revision :books :selected])]))
+              :expected [{:modules {'demo {:id 'demo}}
+                          :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}
+                         {:revision 0 :books {} :selected {}}]}])
 
 ^{:refer lang.core.script/script-reset!}
 (Test/check [{:name "clears script state idempotently"
-              :test (fn [] (isolated (fn [] [(script/script-reset!) (script/script-reset!)])))
+              :test (fn [] (isolated (fn [] (mapv (fn [value]
+                                                    (dissoc value :library))
+                                                  [(script/script-reset!) (script/script-reset!)]))))
               :expected [{:modules {} :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}
                          {:modules {} :scripts {} :loaded-modules {} :module-contexts {} :compile-cache {}}]}])
 
@@ -106,14 +117,18 @@
                                        (select-keys (script/configure-module :postgres 'demo.a {:static {:mode :test}})
                                                     [:id :lang :static]))))
               :expected {:id 'demo.a :lang :postgres :static {:mode :test}}}
-             {:name "preserves source metadata across a second language setup"
+             {:name "keeps source module configuration local to its target language"
               :test (fn [] (isolated (fn []
                                        (script/configure-module :postgres 'demo.a
                                                                  {:static {:application ["scratch"]}})
-                                       (select-keys (script/configure-module :xtalk 'demo.a {})
-                                                    [:id :lang :static]))))
-              :expected {:id 'demo.a :lang :xtalk
-                         :static {:application ["scratch"]}}}])
+                                       [(select-keys (script/configure-module :xtalk 'demo.a {})
+                                                     [:id :lang :static])
+                                        (select-keys (library/library-get-module
+                                                      (library/default-library) :postgres 'demo.a)
+                                                     [:id :lang :static])])))
+              :expected [{:id 'demo.a :lang :xtalk}
+                         {:id 'demo.a :lang :postgres
+                          :static {:application ["scratch"]}}]}])
 
 ^{:refer lang.core.script/portable-schema-form}
 (Test/check [{:name "recursively retains portable schema data"
@@ -131,6 +146,11 @@
               :test (fn [] (isolated (fn []
                                        (script/configure-module :postgres 'demo.a {})
                                        (script/module-source-symbol 'demo.a))))
+              :expected 'lang.core.script}
+             {:name "resolves a generic source module through a target Book parent"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :xtalk 'demo.a {})
+                                       (script/module-source-symbol :js 'demo.a))))
               :expected 'lang.core.script}])
 
 ^{:refer lang.core.script/module-schema-values}
@@ -145,7 +165,13 @@
               :test (fn [] (isolated (fn []
                                        (script/configure-module :postgres 'demo.a {})
                                        (select-keys (script/refresh-module-schemas 'demo.a) [:id :schema]))))
-              :expected {:id 'demo.a :schema {}}}])
+              :expected {:id 'demo.a :schema {}}}
+             {:name "updates a generic module when it is requested by a target Book"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :xtalk 'demo.a {})
+                                       (select-keys (script/refresh-module-schemas :js 'demo.a)
+                                                    [:id :lang :schema]))))
+              :expected {:id 'demo.a :lang :xtalk :schema {}}}])
 
 ^{:refer lang.core.script/register-code}
 (Test/check [{:name "builds registered code symbols"
@@ -176,13 +202,28 @@
               :test (fn [] (isolated (fn []
                                        (script/configure-module :postgres 'demo.a {})
                                        (script/register-code
-                                        '(defn ^{:static/public true
-                                                :api/meta {:kind :test}}
-                                           exposed [] 1))
+                                        :postgres
+                                        '(defn exposed [] 1)
+                                        {:static/public true
+                                         :api/meta {:kind :test}})
                                        (select-keys
-                                        (get-in (deref script/+modules+) ['demo.a :code 'exposed])
+                                        (library/library-get-entry (library/default-library)
+                                                                   :postgres 'demo.a :code 'exposed)
                                         [:static/public :api/meta]))))
               :expected {:static/public true :api/meta {:kind :test}}}])
+
+^{:refer lang.core.script/register-code}
+(Test/check [{:name "merges generated declaration metadata into the registered source form"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :go 'demo.a {})
+                                       (let [entry (script/register-code
+                                                    :go
+                                                    '(defn generated [] 1)
+                                                    {:- [:int]})]
+                                         [(get entry :-)
+                                          (:declaration-meta entry)
+                                          (get (meta (second (:form entry))) :-)]))))
+              :expected [[:int] {:- [:int]} [:int]]}])
 
 ^{:refer lang.core.script/register-fragment}
 (Test/check [{:name "associates fragment data into an atom"
@@ -205,10 +246,13 @@
               :test (fn [] (isolated (fn []
                                        (script/configure-module :postgres 'demo.a {})
                                        (script/register-fragment
-                                        '(defmacro ^{:static/return [:text]} hidden [] 1)
-                                        nil)
+                                        :postgres
+                                        '(defmacro hidden [] 1)
+                                        nil
+                                        {:static/return [:text]})
                                        (select-keys
-                                        (get-in (deref script/+modules+) ['demo.a :fragment 'hidden])
+                                        (library/library-get-entry (library/default-library)
+                                                                   :postgres 'demo.a :fragment 'hidden)
                                         [:static/return]))))
               :expected {:static/return [:text]}}])
 
@@ -254,19 +298,36 @@
                                        (script/configure-module :postgres 'demo.a {})
                                        (let [value (script/register-code-pointer
                                                     :postgres
-                                                    '(deftype ^{:public true} Log []))]
+                                                    '(deftype Log [])
+                                                    {:public true})]
                                          [(pointer? value)
                                          (IPointer/ptr-context value)
                                          (get-in value [:entry :id])
                                          (get-in value [:entry :op-key])
-                                         (get-in (deref script/+modules+)
-                                                  ['demo.a :code 'Log :static/public])]))))
+                                         (:static/public
+                                          (library/library-get-entry (library/default-library)
+                                                                     :postgres 'demo.a :code 'Log))]))))
               :expected [true :lang/postgres 'Log :deftype true]}])
 
 ^{:refer lang.core.script/script-tags}
-(Test/check [{:name "includes Foundation and canonical PostgreSQL grammar tags"
-              :test (fn [] (script/script-tags :postgres))
-              :expected [:pg :postgres]}])
+(Test/check
+ [{:name "includes Foundation and canonical PostgreSQL grammar tags"
+   :test (fn [] (script/script-tags :postgres))
+   :expected [:pg :postgres]}
+  {:name "uses a precompiled grammar index without materializing a Book"
+   :test (fn []
+           (let [before (registry/registry-snapshot)]
+             (try
+               (reset! registry/+book-macro-registry+
+                       {:fixture {:tag :fixture
+                                  :definitions ['defn]
+                                  :highlights ['return]
+                                  :highlight-meta {}}})
+               [(script/script-tags :fixture)
+                (script/script-definition-symbols :fixture)
+                (script/script-highlight-symbols :fixture)]
+               (finally (registry/registry-restore! before)))))
+   :expected [[:fixture] ['defn] ['return]]}])
 
 ^{:refer lang.core.script/script-definition-symbols}
 (Test/check [{:name "finds PostgreSQL code declaration operations from the grammar"
@@ -299,9 +360,14 @@
 
 ^{:refer lang.core.script/script-defmacro-expansion}
 (Test/check [{:name "builds host macro and fragment registration expansion"
-              :test (fn [] (first (script/script-defmacro-expansion
-                                   :postgres 'auth-uid ['[] '(auth.uid)] 'demo.pg)))
-              :expected 'do}])
+              :test (fn [] (let [form (script/script-defmacro-expansion
+                                    :postgres
+                                    (with-meta 'auth-uid {:static/return [:text]})
+                                    ['[] '(auth.uid)]
+                                    'demo.pg)]
+                           [(first form)
+                            (str/includes? (pr-str form) ":static/return")]))
+              :expected ['do true]}])
 
 ^{:refer lang.core.script/script-eval-macro-form}
 (Test/check [{:name "builds caller-local PostgreSQL evaluators"
@@ -313,8 +379,10 @@
 (Test/check [{:name "builds a declaration macro that registers a code pointer"
               :test (fn [] (let [form (script/script-definition-macro-form
                                     :postgres :pg 'deftype)]
-                           [(first form) (second form)]))
-              :expected ['defmacro 'deftype.pg]}])
+                            [(first form)
+                            (second form)
+                            (str/includes? (pr-str form) "(second &form)")]))
+              :expected ['defmacro 'deftype.pg true]}])
 
 ^{:refer lang.core.script/script-fragment-macro-form}
 (Test/check [{:name "builds portable PostgreSQL fragment declaration macros"
@@ -342,8 +410,9 @@
 ^{:refer lang.core.script/script-macro-language}
 (Test/check [{:name "maps short generated tags to canonical language names"
               :test (fn [] [(script/script-macro-language '(deftype.pg ScriptLog))
-                            (script/script-macro-language '(deftype.xt ScriptLog))])
-              :expected [:postgres :xtalk]}])
+                            (script/script-macro-language '(deftype.xt ScriptLog))
+                            (script/script-macro-language '(!.py (+ 1 2)))])
+              :expected [:postgres :xtalk :python]}])
 
 ^{:refer lang.core.script/script-generated-macro-source}
 (Test/check [{:name "selects the stable macro source for a generated alias"
@@ -362,6 +431,38 @@
                             (has? symbols '!.pg)]))
               :expected [true true true true true true]}])
 
+^{:refer lang.core.script/script-macro-bindings}
+(Test/check [{:name "maps each grammar's aliases to generic macro implementation Vars"
+              :test (fn [] (let [bindings (set (script/script-macro-bindings :postgres))
+                                 xtalk-bindings (set (script/script-macro-bindings :xtalk))]
+                             [(has? bindings ['!.pg
+                                              'lang.core.script/script-generated-eval])
+                              (has? bindings ['def$.pg
+                                              'lang.core.script/script-generated-fragment])
+                              (has? bindings ['defmacro.pg
+                                              'lang.core.script/script-generated-defmacro])
+                              (has? bindings ['deftype.pg
+                                              'lang.core.script/script-generated-definition])
+                              (has? xtalk-bindings ['defn.xt
+                                              'lang.core.script/script-generated-definition])
+                              (has? xtalk-bindings ['defmacro.xt
+                                              'lang.core.script/script-generated-defmacro])]))
+              :expected [true true true true true true]}])
+
+^{:refer lang.core.script/script-intern-macros!}
+(Test/check [{:name "interns generated aliases through the stable Runtime API"
+              :test (fn []
+                      (script/script-intern-macros! 'lang.core.script-test :xtalk)
+                      [(not (nil? (Base/resolve 'lang.core.script-test/!.xt)))
+                       (not (nil? (Base/resolve 'lang.core.script-test/def$.xt)))
+                       (not (nil? (Base/resolve 'lang.core.script-test/defmacro.xt)))
+                       (not (nil? (Base/resolve 'lang.core.script-test/defn.xt)))
+                       (= 'def
+                          (first
+                           (macroexpand-1
+                            '(lang.core.script-test/defn.xt generated [] 1))))])
+              :expected [true true true true true]}])
+
 ^{:refer lang.core.script/script-install-macro-form}
 (Test/check [{:name "guards generated macros against replacing caller-owned symbols"
               :test (fn [] (let [form (script/script-install-macro-form
@@ -371,12 +472,12 @@
 
 ^{:refer lang.core.script/defn.xt}
 (Test/check [{:name "expands into code registration and a native definition"
-              :test (fn [] (first (macroexpand-1 '(script/defn.xt demo [] 1))))
+              :test (fn [] (first (macroexpand-1 '(lang.core.script/defn.xt demo [] 1))))
               :expected 'do}])
 
 ^{:refer lang.core.script/defmacro.xt}
 (Test/check [{:name "expands into fragment registration and a native macro"
-              :test (fn [] (first (macroexpand-1 '(script/defmacro.xt demo [] 1))))
+              :test (fn [] (first (macroexpand-1 '(lang.core.script/defmacro.xt demo [] 1))))
               :expected 'do}])
 
 ^{:refer lang.core.script/module-loaded?}
@@ -391,6 +492,12 @@
               :test (fn [] (isolated (fn []
                                        (script/configure-module :postgres 'demo.a {})
                                        (script/load-module 'demo.a))))
+              :expected 'demo.a}
+             {:name "loads a generic module through a target Book parent"
+              :test (fn [] (isolated (fn []
+                                       (script/configure-module :xtalk 'demo.a {})
+                                       (swap! script/+loaded-modules+ assoc [:js 'demo.a] true)
+                                       (script/load-module :js 'demo.a))))
               :expected 'demo.a}])
 
 ^{:refer lang.core.script/script-options}
@@ -415,6 +522,110 @@
                                                     [:lang :module :runtime]))))
               :expected {:lang :postgres :module 'demo.a :runtime nil}}])
 
+^{:refer lang.core.script/setup}
+(Test/check
+ [{:name "prepares only the explicit basic target Book during script setup"
+   :test (fn [] (isolated (fn []
+                            (script/setup :js 'demo.a {:runtime :basic} true)
+                            [(:lang (:book (library/library-book-record
+                                            (library/runtime-library) :js)))
+                             (library/library-book-record
+                              (library/runtime-library) :python)])))
+   :expected [:js nil]}])
+
+^{:refer lang.core.script/compile-script-module}
+(Test/check
+ [{:name "compiles one selected module against its active Library Book"
+   :test (fn [] (isolated (fn []
+                            (script/configure-module :postgres 'demo.a {})
+                            (binding [script/*module-compiler*
+                                      (fn [options]
+                                        [(:lang options)
+                                         (:main options)
+                                         (:layout options)
+                                         (:emit options)
+                                         (get-in options [:book :lang])])]
+                              (script/compile-script-module
+                               :postgres 'demo.a {:emit {:dialect :fixture}})))))
+   :expected [:postgres 'demo.a :flat {:dialect :fixture} :postgres]}])
+
+^{:refer lang.core.script/script-module-source?}
+(Test/check
+ [{:name "avoids materializing a Book for an empty selected script module"
+   :test (fn [] (isolated (fn []
+                            (script/configure-module :postgres 'demo.a {})
+                            [(script/script-module-source? :postgres 'demo.a)
+                             (do
+                               (script/register-library-module!
+                                :postgres
+                                {:id 'demo.a :lang :postgres
+                                 :code {:ready {}} :fragment {}})
+                               (script/script-module-source? :postgres 'demo.a))])))
+   :expected [false true]}])
+
+^{:refer lang.core.script/initialize-script!}
+(Test/check
+ [{:name "injects compiled selected script source through runtime evaluation"
+   :test (fn [] (isolated (fn []
+                            (let [calls (atom [])
+                                  instance (runtime/rt-default {:lang :postgres})]
+                              (script/register-library-module!
+                               :postgres
+                               {:id 'demo.a :lang :postgres
+                                :code {:ready {}} :fragment {}})
+                              (binding [script/*module-compiler*
+                                        (fn [_] {:output "select 1" :diagnostics []})
+                                        script/*module-evaluator*
+                                        (fn [runtime source options]
+                                          (swap! calls conj [runtime source options]))]
+                                (script/initialize-script!
+                                 instance :postgres 'demo.a {:timeout 41})
+                                (mapv (fn [[runtime source options]]
+                                        [(= instance runtime) source options])
+                                      (deref calls)))))))
+   :expected [[true "select 1" {:timeout 41}]]}
+  {:name "fails before evaluating a diagnostic module result"
+   :test (fn [] (isolated (fn []
+                            (let [calls (atom [])
+                                  instance (runtime/rt-default {:lang :postgres})
+                                  result
+                                  (do
+                                    (script/register-library-module!
+                                     :postgres
+                                     {:id 'demo.a :lang :postgres
+                                      :code {:ready {}} :fragment {}})
+                                    (try
+                                      (binding [script/*module-compiler*
+                                                (fn [_] {:output "never"
+                                                         :diagnostics [{:code :fixture/missing}]})
+                                                script/*module-evaluator*
+                                                (fn [_ source _]
+                                                  (swap! calls conj source))]
+                                        (script/initialize-script! instance :postgres 'demo.a {}))
+                                      :no-error
+                                      (catch error
+                                        [(:ex/code (ex-data error))
+                                         (:module (ex-data error))
+                                         (:diagnostics (ex-data error))])))]
+                              [result (deref calls)]))))
+   :expected [[:hara/dependency 'demo.a [{:code :fixture/missing}]] []]}
+  {:name "loads only the selected Book while skipping empty-module compilation"
+   :test (fn [] (isolated (fn []
+                            (script/configure-module :postgres 'demo.a {})
+                            (let [result
+                                  (binding [script/*module-compiler*
+                                            (fn [_]
+                                              (throw (ex :generic {}
+                                                         :ex/message "compiler should not run")))]
+                                    (script/initialize-script!
+                                     (runtime/rt-default {:lang :postgres})
+                                     :postgres 'demo.a {}))]
+                              [(:lang result)
+                               (not (nil? (:book
+                                            (library/library-book-record
+                                             (library/runtime-library) :postgres))))]))))
+   :expected [:postgres true]}])
+
 ^{:refer lang.core.script/start-script}
 (Test/check [{:name "starts, replaces, and records one selected script runtime"
               :test (fn [] (isolated (fn []
@@ -434,7 +645,7 @@
 
 ^{:refer lang.core.script/script}
 (Test/check [{:name "expands ordinary script declarations"
-              :test (fn [] (first (macroexpand-1 '(script/script :postgres))))
+              :test (fn [] (first (macroexpand-1 '(lang.core.script/script :postgres))))
               :expected 'do}])
 
 ^{:refer lang.core.script/script-test-form}
@@ -450,13 +661,20 @@
 
 ^{:refer lang.core.script/script-}
 (Test/check [{:name "expands test script declarations"
-              :test (fn [] (first (macroexpand-1 '(script/script- :postgres))))
+              :test (fn [] (first (macroexpand-1 '(lang.core.script/script- :postgres))))
               :expected 'do}])
 
 ^{:refer lang.core.script/selected-book}
-(Test/check [{:name "selects a materialized PostgreSQL book"
-              :test (fn [] (:lang (script/selected-book :postgres)))
-              :expected :postgres}])
+(Test/check [{:name "selects target grammar without eagerly merging XTalk modules"
+              :test (fn [] (isolated (fn []
+                                       (script/register-library-module!
+                                        :xtalk
+                                        {:id 'demo.xtalk :lang :xtalk :code {} :fragment {}})
+                                       (let [selected (script/selected-book :js)]
+                                         [(:lang selected)
+                                          (:parent selected)
+                                          (get-in selected [:modules 'demo.xtalk])]))))
+              :expected [:js :xtalk nil]}])
 
 ^{:refer lang.core.script/compile-cache-key}
 (Test/check [{:name "keys cache entries by language module source and registry snapshot"
@@ -499,10 +717,11 @@
               :expected nil}])
 
 ^{:refer lang.core.script/eval-form}
-(Test/check [{:name "reports an unstarted script as a dependency error"
-              :test (fn [] (try (script/eval-form :postgres '(+ 1 2))
-                                (catch error (:ex/code (ex-data error)))))
-              :expected :hara/dependency}])
+(Test/check [{:name "reports the explicitly selected module in a dependency error"
+              :test (fn [] (try (script/eval-form :postgres 'demo.a '(+ 1 2))
+                                (catch error [(:ex/code (ex-data error))
+                                              (:module (ex-data error))])))
+              :expected [:hara/dependency 'demo.a]}])
 
 ^{:refer lang.core.script/eval-forms}
 (Test/check [{:name "delegates every form to the configured evaluator"

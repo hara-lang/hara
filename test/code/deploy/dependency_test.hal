@@ -1,0 +1,142 @@
+(ns code.deploy.dependency-test
+  (:require [code.deploy.dependency :as dependency]))
+
+^{:refer code.deploy.dependency/dependency}
+(Test/check
+ [{:name "normalises compact and scoped dependency declarations"
+   :test (fn [] [(dependency/dependency "hara:hara/base" "^0.1.0")
+                 (dependency/dependency "hara:hara/test"
+                                         {:version "=0.1.0"
+                                          :scope :test
+                                          :optional true
+                                          :exclusions ["hara:hara/base"]})])
+   :expected [{:version "^0.1.0" :scope :compile :optional false :exclusions []}
+              {:version "=0.1.0" :scope :test :optional true
+               :exclusions ["hara:hara/base"]}]}])
+
+^{:refer code.deploy.dependency/dependencies}
+(Test/check
+ [{:name "orders and normalises project dependency declarations"
+   :test (fn [] (let [result (dependency/dependencies {"hara:hara/z" "^0.1.0"
+                                                       "hara:hara/a" {:version "~0.2.0"}})]
+                   [(sort (keys result))
+                   (get-in result ["hara:hara/a" :scope])
+                   (get-in result ["hara:hara/z" :version])]))
+   :expected [["hara:hara/a" "hara:hara/z"] :compile "^0.1.0"]}])
+
+^{:refer code.deploy.dependency/satisfies?}
+(Test/check
+ [{:name "accepts caret lower bound"
+   :test (fn [] (dependency/satisfies? "0.1.5" "^0.1.0"))
+   :expected true}
+  {:name "accepts nonzero-major caret"
+   :test (fn [] (dependency/satisfies? "1.0.0" "^1.0.0"))
+   :expected true}
+  {:name "rejects caret upper bound"
+   :test (fn [] (dependency/satisfies? "0.2.0" "^0.1.0"))
+   :expected false}
+  {:name "accepts tilde range"
+   :test (fn [] (dependency/satisfies? "1.4.2" "~1.4.0"))
+   :expected true}
+  {:name "accepts ordered range"
+   :test (fn [] (dependency/satisfies? "1.5.0" ">=1.0.0,<2.0.0"))
+   :expected true}
+  {:name "accepts exact range"
+   :test (fn [] (dependency/satisfies? "1.5.0" "=1.5.0"))
+   :expected true}])
+
+^{:refer code.deploy.dependency/release-candidates}
+(Test/check
+ [{:name "normalises versioned registry entries"
+   :test (fn [] (dependency/release-candidates
+                 {:packages {"hara:hara/base"
+                             {"0.1.0" {:archive-sha256 "sha256:a"}
+                              "0.2.0" {:archive-sha256 "sha256:b"}}}}
+                 "hara:hara/base"))
+   :expected [{:version "0.1.0" :archive-sha256 "sha256:a"}
+              {:version "0.2.0" :archive-sha256 "sha256:b"}]}])
+
+^{:refer code.deploy.dependency/candidate-dependencies}
+(Test/check
+ [{:name "reads typed dependency declarations from a release descriptor"
+   :test (fn [] (dependency/candidate-dependencies
+                 {:version "1.0.0"
+                  :dependencies {"hara:demo/core" {:version "^1.0.0"
+                                                     :scope :runtime}}}))
+   :expected {"hara:demo/core" {:version "^1.0.0"
+                                  :scope :runtime
+                                  :optional false
+                                  :exclusions []}}}])
+
+^{:refer code.deploy.dependency/resolve}
+(Test/check
+ [{:name "selects the highest stable release across a transitive Hara graph"
+   :test (fn [] (let [result (dependency/resolve
+                              {:project/id 'demo/app
+                               :project/dependencies {"hara:demo/base" "^1.0.0"}}
+                              {:packages {"hara:demo/base"
+                                          {"1.0.0" {:dependencies {"hara:demo/core" "^1.0.0"}}
+                                           "1.1.0" {:dependencies {"hara:demo/core" "^1.0.0"}}}
+                                          "hara:demo/core"
+                                          {"1.0.0" {}}}})]
+                 [(get-in result [:constraints "hara:demo/base"])
+                  (get-in result [:constraints "hara:demo/core"])
+                  (get-in result [:selected "hara:demo/base" :version])
+                  (get-in result [:selected "hara:demo/core" :version])]))
+   :expected [["^1.0.0"] ["^1.0.0"] "1.1.0" "1.0.0"]}
+  {:name "rejects a transitive dependency cycle"
+   :test (fn [] (try
+                 (dependency/resolve
+                  {:project/id 'demo/app
+                   :project/dependencies {"hara:demo/a" "1.0.0"}}
+                  {:packages {"hara:demo/a"
+                              {"1.0.0" {:dependencies {"hara:demo/b" "1.0.0"}}}
+                              "hara:demo/b"
+                              {"1.0.0" {:dependencies {"hara:demo/a" "1.0.0"}}}}})
+                 false
+                 (catch error true)))
+   :expected true}
+  {:name "does not propagate test-scoped transitive dependencies"
+   :test (fn [] (let [result (dependency/resolve
+                              {:project/id 'demo/app
+                               :project/dependencies {"hara:demo/base" "1.0.0"}}
+                              {:packages {"hara:demo/base"
+                                          {"1.0.0"
+                                           {:dependencies
+                                            {"hara:demo/test" {:version "1.0.0"
+                                                                :scope :test}}}}
+                                          "hara:demo/test"
+                                          {"1.0.0" {}}}})]
+                 (sort (keys (:selected result)))))
+   :expected ["hara:demo/base"]}])
+
+^{:refer code.deploy.dependency/lock-document}
+(Test/check
+ [{:name "records project registry and selected package provenance"
+   :test (fn [] (let [lock (dependency/lock-document
+                            {:project/id 'demo/app :project/version "1.0.0"
+                             :project/dependencies {}}
+                            {:registry/url "file:///registry" :packages {}}
+                            {:selected {}})]
+                  [(:lock/format lock)
+                   (select-keys (:lock/project lock) [:id :version])
+                   (select-keys (:lock/registry lock) [:url])
+                   (:packages lock)]))
+   :expected ["0.1.0"
+              {:id 'demo/app :version "1.0.0"}
+              {:url "file:///registry"}
+              {}]}])
+
+^{:refer code.deploy.dependency/lock-valid?}
+(Test/check
+ [{:name "accepts only locks generated for the exact project declaration"
+   :test (fn [] (let [project {:project/id 'demo/app :project/version "1.0.0"
+                               :project/dependencies {}}
+                     lock (dependency/lock-document project
+                                                     {:registry/url "file:///registry"
+                                                      :packages {}}
+                                                     {:selected {}})]
+                 [(dependency/lock-valid? project lock)
+                  (dependency/lock-valid? (assoc project :project/version "1.0.1") lock)
+                  (dependency/lock-valid? project (dissoc lock :lock/registry))]))
+   :expected [true false false]}])

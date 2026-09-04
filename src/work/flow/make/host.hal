@@ -1,0 +1,92 @@
+(ns work.flow.make.host
+  (:config {:role :internal}))
+
+(defn create
+  "Creates one identity-bearing live make host around an immutable plan."
+  [plan]
+  {:make/host true
+   :make/id (:make/id plan)
+   :make/state
+   (atom {:make/plan plan
+          :make/revision 1
+          :make/status :stopped
+          :make/installed-triggers []})})
+
+(defn host?
+  [value]
+  (and (map? value)
+       (= true (:make/host value))
+       (not (nil? (:make/state value)))))
+
+(defn assert-host
+  [value]
+  (if (not (host? value))
+    (throw
+     (ex :argument {:make/value value} :ex/message "Expected a live make host")))
+  value)
+
+(defn state
+  [host]
+  (deref (:make/state (assert-host host))))
+
+(defn plan
+  [host]
+  (:make/plan (state host)))
+
+(defn revision
+  [host]
+  (:make/revision (state host)))
+
+(defn status
+  [host]
+  (:make/status (state host)))
+
+(defn installed-triggers
+  [host]
+  (:make/installed-triggers (state host)))
+
+(defn running?
+  [host]
+  (= :running (status host)))
+
+(defn install-plan
+  "Atomically installs a plan and its complete live-host state."
+  [host candidate status receipts]
+  (let [host (assert-host host)]
+    (swap! (:make/state host)
+           (fn [current]
+             (assoc current
+                    :make/plan candidate
+                    :make/revision (inc (:make/revision current))
+                    :make/status status
+                    :make/installed-triggers (vec receipts))))
+    host))
+
+(defn replace-plan
+  "Atomically replaces a plan while retaining current live-host state."
+  [host candidate]
+  (let [current (state host)]
+    (install-plan host
+                   candidate
+                   (:make/status current)
+                   (:make/installed-triggers current))))
+
+(defn mark-running
+  [host receipts]
+  (let [host (assert-host host)]
+    (swap! (:make/state host)
+           (fn [current]
+             (assoc current
+                    :make/status :running
+                    :make/installed-triggers (vec receipts))))
+    host))
+
+(defn mark-stopped
+  [host]
+  (let [host (assert-host host)]
+    (swap! (:make/state host)
+           (fn [current]
+             (assoc current
+                    :make/status :stopped
+                    :make/installed-triggers [])))
+    host))

@@ -1,0 +1,63 @@
+(ns xt.event.base-log-latest
+  (:require [lang.core :as l]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-data :as xtd]
+             [xt.event.base-listener :as event-common]]})
+
+(defn.xt ^{:public true}
+  new-log-latest
+  "Creates a latest-value log with a time-bounded cache."
+  {:added "4.0"}
+  [opts]
+  (return
+   (event-common/blank-container
+    "event.log-latest"
+    (xt/x:obj-assign
+     {:last nil
+      :cache {}
+      :interval 30000
+      :callback nil}
+     opts))))
+
+(defn.xt ^{:public true}
+  clear-cache
+  "Evicts latest entries older than the configured interval."
+  {:added "4.0"}
+  [log time]
+  (when (xt/x:nil? time)
+    (:= time (xt/x:now-ms)))
+  (var #{last interval cache} log)
+  (var out [])
+  (when (and (xt/x:not-nil? last)
+             (>= interval (- time last)))
+    (return out))
+  (xt/x:set-key log "last" time)
+  (xt/for:array [key (xt/x:obj-keys cache)]
+    (var entry (xt/x:get-key cache key))
+    (when (< interval (- time (. entry ["t"])))
+      (xt/x:del-key cache key)
+      (xt/x:arr-push out key)))
+  (return out))
+
+(defn.xt ^{:public true}
+  queue-latest
+  "Stores a value only when it is newer than the one already queued for its key."
+  {:added "4.0"}
+  [log key latest]
+  (var #{cache} log)
+  (var entry (xt/x:get-key cache key))
+  (var time (xt/x:now-ms))
+  (cond (xt/x:nil? entry)
+        (do (xt/x:set-key cache key {:t time :latest latest})
+            (-/clear-cache log time)
+            (return true))
+
+        (< (. entry ["latest"]) latest)
+        (do (xt/x:set-key cache key {:t time :latest latest})
+            (-/clear-cache log time)
+            (return true))
+
+        :else
+        (return false)))

@@ -1,0 +1,53 @@
+(ns lang.typed.xtalk-parse-test
+  (:require [lang.core.script :as script]
+            [lang.typed.xtalk-parse :as subject]))
+
+^{:refer lang.typed.xtalk-parse/parse-decl-preamble}
+(Test/check
+ [{:name "retains a scalar declaration value after inspecting its preamble"
+   :test (fn [] (let [preamble (subject/parse-decl-preamble [20] 'DEFAULT_PAGE_SIZE)]
+                  [(vec (:items preamble)) (:binding-meta preamble)]))
+   :expected [[20] {}]}])
+
+^{:refer lang.typed.xtalk-parse/parse-defvalue}
+(Test/check
+ [{:name "parses a schema-annotated scalar value instead of treating it as schema-only"
+   :test (fn [] (select-keys
+                 (subject/parse-defvalue
+                  (list 'def
+                        (with-meta 'DEFAULT_PAGE_SIZE {:schema :xt/int})
+                        20)
+                  'play.fixture
+                  {})
+                 [:name :raw-value :type :spec]))
+   :expected {:name "DEFAULT_PAGE_SIZE"
+              :raw-value 20
+              :type {:kind :primitive :name :xt/int}
+              :spec {:ns "play.fixture"
+                     :name "DEFAULT_PAGE_SIZE"
+                     :type {:kind :primitive :name :xt/int}
+                     :spec-meta {:schema :xt/int}}}}])
+
+^{:refer lang.typed.xtalk-parse/analyze-module-raw}
+(Test/check
+ [{:name "reads the XTalk source module from Library instead of the legacy flat index"
+   :test (fn []
+           (let [snapshot (script/script-snapshot)]
+             (try
+               (script/register-library-module!
+                :xtalk {:id 'fixture.xtalk
+                        :lang :xtalk
+                        :code {}
+                        :fragment {}
+                        :schema {}})
+               (reset! script/+modules+ {})
+               (select-keys (subject/analyze-module-raw 'fixture.xtalk)
+                            [:ns :aliases :specs :functions :macros :values])
+               (finally
+                 (script/script-restore! snapshot)))))
+   :expected {:ns 'fixture.xtalk
+              :aliases {}
+              :specs []
+              :functions []
+              :macros []
+              :values []}}])

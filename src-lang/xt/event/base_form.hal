@@ -1,0 +1,292 @@
+(ns xt.event.base-form
+  (:require [lang.core :as l]))
+
+(l/script :xtalk
+  {:require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-data :as xtd]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.event.base-listener :as event-common]
+             [xt.event.util-validate :as validate]]})
+
+(def ^{:schema [:xt/record ["status" :xt/str]]} ValidationFieldResult nil)
+
+(def ^{:schema [:xt/record
+                ["::" :xt/str]
+                ["status" :xt/str]
+                ["fields" [:xt/dict :xt/str ValidationFieldResult]]]} 
+  ValidationResult
+  nil)
+
+(def ^{:schema [:xt/record
+                ["type" :xt/str]
+                ["fields" [:xt/array :xt/str]]
+                ["meta" [:xt/maybe xt.event.base-listener/EventListenerMeta]]]} 
+  FormEvent
+  nil)
+
+(def ^{:schema [:xt/record
+                ["::" :xt/str]
+                ["listeners" xt.event.base-listener/EventListenerMap]
+                ["data" [:xt/dict :xt/str :xt/any]]
+                ["validators" [:xt/dict :xt/str :xt/any]]
+                ["result" ValidationResult]]}
+  EventForm
+  nil)
+
+(defn.xt ^{:public true
+            :schema [:fn [[:or [:xt/dict :xt/str :xt/any]
+                          [:fn [] [:xt/dict :xt/str :xt/any]]]
+                         [:xt/dict :xt/str :xt/any]]
+                        EventForm]}
+  make-form
+  "Creates a form with initial data, validators, and a pending result."
+  {:added "4.0"}
+  [initial validators]
+  (var result (validate/create-result validators))
+  (return (event-common/make-container initial "event.form"
+                                       {:result result :validators validators})))
+
+(defn.xt ^{:public true :schema [:fn [:xt/any [:xt/array :xt/str]] :xt/bool]}
+  check-event
+  "Checks whether a form event mentions at least one requested field."
+  {:added "4.0"}
+  [event fields]
+  (xt/for:array [field fields]
+    (xt/for:array [event-field (. event ["fields"])]
+      (when (== event-field field)
+        (return true))))
+  (return false))
+
+(defn.xt ^{:public true
+            :schema [:fn [EventForm :xt/str [:or :xt/str [:xt/array :xt/str]]
+                          xt.event.base-listener/EventListenerCallback
+                          [:xt/maybe xt.event.base-listener/EventListenerMeta]]
+                         xt.event.base-listener/EventListenerEntry]}
+  add-listener
+  "Adds a form listener filtered by one or more fields."
+  {:added "4.0"}
+  [form listener-id fields callback meta]
+  (:= fields (event-common/arrayify-path fields))
+  (return
+   (event-common/add-listener
+    form listener-id "form" callback
+    (xt/x:obj-assign {:form/fields fields} meta)
+    (fn [event]
+      (return (-/check-event event fields))))))
+
+(def.xt ^{:public true :arglists '([form listener-id])}
+  remove-listener
+  event-common/remove-listener)
+
+(def.xt ^{:public true :arglists '([form])}
+  list-listeners
+  event-common/list-listeners)
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str] [:xt/array :xt/str]]}
+  trigger-all
+  "Triggers listeners for all validator fields."
+  {:added "4.0"}
+  [form event-type]
+  (var #{validators} form)
+  (var fields (xt/x:obj-keys validators))
+  (return (event-common/trigger-listeners form {:type event-type :fields fields})))
+
+(defn.xt ^{:public true
+            :schema [:fn [EventForm [:or :xt/str [:xt/array :xt/str]] :xt/str]
+                         [:xt/array :xt/str]]}
+  trigger-field
+  "Triggers listeners for selected form fields."
+  {:added "4.0"}
+  [form fields event-type]
+  (return
+   (event-common/trigger-listeners
+    form
+    {:type event-type :fields (event-common/arrayify-path fields)})))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str :xt/any] [:xt/array :xt/str]]}
+  set-field
+  "Writes one field and emits a form-data event."
+  {:added "4.0"}
+  [form field value]
+  (var #{data} form)
+  (xt/x:set-key data field value)
+  (return (-/trigger-field form field "form.data")))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str] [:xt/maybe :xt/any]]}
+  get-field
+  "Returns one field value."
+  {:added "4.0"}
+  [form field]
+  (var #{data} form)
+  (return (xt/x:get-key data field)))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str] [:xt/array :xt/str]]}
+  toggle-field
+  "Toggles a boolean field and emits a form-data event."
+  {:added "4.0"}
+  [form field]
+  (return (-/set-field form field (not (-/get-field form field)))))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str] [:fn [:xt/any] [:xt/array :xt/str]]]}
+  field-fn
+  "Returns a setter function for one field."
+  {:added "4.0"}
+  [form field]
+  (return (fn [value]
+            (return (-/set-field form field value)))))
+
+(defn.xt ^{:public true :schema [:fn [EventForm] ValidationResult]}
+  get-result
+  "Returns the mutable validation result."
+  {:added "4.0"}
+  [form]
+  (return (. form ["result"])))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str] [:xt/maybe ValidationFieldResult]]}
+  get-field-result
+  "Returns one field validation result."
+  {:added "4.0"}
+  [form field]
+  (var #{result} form)
+  (var #{fields} result)
+  (return (xt/x:get-key fields field)))
+
+(defn.xt ^{:public true :schema [:fn [EventForm] [:xt/dict :xt/str :xt/any]]}
+  get-data
+  "Returns mutable form data."
+  {:added "4.0"}
+  [form]
+  (return (. form ["data"])))
+
+(defn.xt ^{:public true
+            :schema [:fn [EventForm [:xt/dict :xt/str :xt/any]] [:xt/array :xt/str]]}
+  set-data
+  "Merges data fields and emits one form-data event."
+  {:added "4.0"}
+  [form values]
+  (var #{data} form)
+  (xt/x:obj-assign data values)
+  (var fields (xt/x:obj-keys values))
+  (return (-/trigger-field form fields "form.data")))
+
+(defn.xt ^{:public true :schema [:fn [EventForm] [:xt/array :xt/str]]}
+  reset-all-data
+  "Replaces data with a fresh initial value and emits a form-data event."
+  {:added "4.0"}
+  [form]
+  (var #{initial} form)
+  (var data (initial))
+  (xt/x:set-key form "data" data)
+  (return (-/trigger-all form "form.data")))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str] [:xt/array :xt/str]]}
+  reset-field-data
+  "Resets one field from a fresh initial data value."
+  {:added "4.0"}
+  [form field]
+  (var #{initial data} form)
+  (var value (xt/x:get-key (initial) field))
+  (xt/x:set-key data field value)
+  (return (-/trigger-field form field "form.data")))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/any :xt/any] :xt/any]}
+  validate-all
+  "Validates every form field, then emits a form-validation event."
+  {:added "4.0"}
+  [form hook-fn complete-fn]
+  (var #{validators data result} form)
+  (return
+   (spec-promise/x:promise-then
+    (validate/validate-all data validators result hook-fn nil)
+    (fn [validated]
+      (-/trigger-all form "form.validation")
+      (when complete-fn
+        (complete-fn (== "ok" (. validated ["status"])) validated))
+      (return validated)))))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str :xt/any :xt/any] :xt/any]}
+  validate-field
+  "Validates one form field, then emits a form-validation event."
+  {:added "4.0"}
+  [form field hook-fn complete-fn]
+  (var #{validators data result} form)
+  (return
+   (spec-promise/x:promise-then
+    (validate/validate-field data field validators result hook-fn nil)
+    (fn [validated]
+      (-/trigger-field form field "form.validation")
+      (when complete-fn
+        (complete-fn (== "ok" (xtd/get-in (. validated ["fields"])
+                                            [field "status"]))
+                     validated))
+      (return validated)))))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str] ValidationResult]}
+  reset-field-validator
+  "Resets one form validation entry and emits a validation event."
+  {:added "4.0"}
+  [form field]
+  (var #{result} form)
+  (xt/x:set-key result field {:status "pending"})
+  (-/trigger-field form field "form.validation")
+  (return result))
+
+(defn.xt ^{:public true :schema [:fn [EventForm] ValidationResult]}
+  reset-all-validators
+  "Replaces the validation result with fresh pending field entries."
+  {:added "4.0"}
+  [form]
+  (var #{validators result} form)
+  (xt/x:set-key form "result" (validate/create-result validators))
+  (-/trigger-all form "form.validation")
+  (return result))
+
+(defn.xt ^{:public true :schema [:fn [EventForm] ValidationResult]}
+  reset-all
+  "Resets form data and validation state."
+  {:added "4.0"}
+  [form]
+  (-/reset-all-data form)
+  (-/reset-all-validators form))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str] :xt/bool]}
+  check-field-passed
+  "Returns true when one field status is ok."
+  {:added "4.0"}
+  [form field]
+  (var #{result} form)
+  (var #{fields} result)
+  (return (== "ok" (xtd/get-in fields [field "status"]))))
+
+(defn.xt ^{:public true :schema [:fn [EventForm :xt/str] :xt/bool]}
+  check-field-errored
+  "Returns true when one field status is errored."
+  {:added "4.0"}
+  [form field]
+  (var #{result} form)
+  (var #{fields} result)
+  (return (== "errored" (xtd/get-in fields [field "status"]))))
+
+(defn.xt ^{:public true :schema [:fn [EventForm] :xt/bool]}
+  check-all-passed
+  "Returns true when every field validation status is ok."
+  {:added "4.0"}
+  [form]
+  (var #{result} form)
+  (var #{fields} result)
+  (xt/for:object [[_ value] fields]
+    (when (not= "ok" (. value ["status"]))
+      (return false)))
+  (return true))
+
+(defn.xt ^{:public true :schema [:fn [EventForm] :xt/bool]}
+  check-any-errored
+  "Returns true when any field validation status is errored."
+  {:added "4.0"}
+  [form]
+  (var #{result} form)
+  (var #{fields} result)
+  (xt/for:object [[_ value] fields]
+    (when (== "errored" (. value ["status"]))
+      (return true)))
+  (return false))

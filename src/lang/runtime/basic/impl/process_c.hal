@@ -1,0 +1,67 @@
+;; ============================================================================
+;; lang.runtime.basic.impl.process-c — local C compiler runtime registration.
+;; ============================================================================
+(ns lang.runtime.basic.impl.process-c
+  (:config {:role :internal})
+  (:require [lang.core.runtime :as runtime]
+            [lang.runtime.basic.type-common :as common]
+            [lang.runtime.basic.type-twostep :as twostep]))
+
+(defn c-source-transform
+  "Wraps one emitted C expression in the minimal executable program boundary."
+  [body]
+  (str "#include <stdio.h>\n\n"
+       "int main(void) {\n"
+       "  printf(\"%d\\n\", (int) (" body "));\n"
+       "  return 0;\n"
+       "}\n"))
+
+(def +c-program-init+
+  (common/put-program-options
+   :c
+   {:default {:twostep :gcc
+              :verify :gcc}
+    :env {:gcc {:exec "gcc"
+                :extension "c"
+                :stderr true
+                :flags {:twostep []
+                        :verify ["-fsyntax-only"]}
+                :output-flag "-o"}}}))
+
+(def +c-twostep-config+
+  (common/set-context-options
+   [:c :twostep :default]
+   {:main {}
+    :emit {}
+    :json :string
+    :source-transform c-source-transform}))
+
+(def +c-verify-config+
+  (common/set-context-options
+   [:c :verify :default]
+   {:main {}
+    :emit {}
+    :json false
+    :source-transform c-source-transform
+    :compile-only true
+    :return-source true}))
+
+(def +c-twostep+
+  (runtime/install-type
+   :c :twostep
+   {:type :lang/rt.twostep
+    :instance {:create twostep/rt-twostep:create
+               :raw-eval twostep/raw-eval-twostep}}))
+
+(def +c-verify+
+  (runtime/install-type
+   :c :verify
+   {:type :lang/rt.twostep
+    :instance {:create twostep/rt-twostep:create
+               :raw-eval twostep/raw-eval-twostep}}))
+
+(def +init+
+  {:lang :c
+   :program +c-program-init+
+   :twostep +c-twostep+
+   :verify +c-verify+})

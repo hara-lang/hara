@@ -1,0 +1,124 @@
+(ns lang.model.v1.spec-c-test
+  (:require [lang.common.grammar-api :as grammar]
+            [lang.common.registry :as registry]
+            [lang.model.v1.spec-c :as subject]))
+
+^{:refer lang.model.v1.spec-c/tf-define}
+(Test/check
+ [{:name "emits object-like and function-like C defines"
+   :test (fn [] [(subject/tf-define ['define 'ANSWER 1])
+                 (subject/tf-define ['define 'MAX ['x] '(+ x 1)])])
+   :expected [(list :- "#define" 'ANSWER 1)
+              (list :- "#define"
+                    (list :% 'MAX (list 'quote (list 'x)))
+                    '(+ x 1))]}])
+
+^{:refer lang.model.v1.spec-c/tf-struct}
+(Test/check
+ [{:name "transforms C struct fields into declaration fragments"
+   :test (fn [] (subject/tf-struct
+                 ['struct 'Point ['int 'x 'int 'y]]))
+   :expected '(:- "struct" Point
+                (:- "{"
+                    (\\ \\ (\| (do (:- int "x;") (:- int "y;"))))
+                    (:- "\n};")))}])
+
+^{:refer lang.model.v1.spec-c/tf-enum}
+(Test/check
+ [{:name "transforms C enum values into a quoted body"
+   :test (fn [] (subject/tf-enum ['enum 'Status ['ready 'done]]))
+   :expected (list :- "enum" 'Status
+                   (list :- "{")
+                   (list 'quote ['ready 'done])
+                   (list :- "};"))}])
+
+^{:refer lang.model.v1.spec-c/tf-typedef}
+(Test/check
+ [{:name "terminates a C typedef alias"
+   :test (fn [] (subject/tf-typedef ['typedef 'uint 'size]))
+   :expected (list :- "typedef" 'uint "size;")}])
+
+^{:refer lang.model.v1.spec-c/to-c-type}
+(Test/check
+ [{:name "renders C type keywords symbols vectors and literals"
+   :test (fn [] [(subject/to-c-type :int)
+                 (subject/to-c-type 'size_t)
+                 (subject/to-c-type ['unsigned 'long])
+                 (subject/to-c-type 7)])
+   :expected ["int" "size_t" "unsigned long" "7"]}])
+
+^{:refer lang.model.v1.spec-c/c-sanitize}
+(Test/check
+ [{:name "sanitizes C namespace and punctuation separators"
+   :test (fn [] [(subject/c-sanitize 'user-id)
+                 (subject/c-sanitize 'demo.value)
+                 (subject/c-sanitize 'demo/value)])
+   :expected ["user_id" "demo_value" "demo____value"]}])
+
+^{:refer lang.model.v1.spec-c/c-fn-args}
+(Test/check
+ [{:name "emits typed C function arguments"
+   :test (fn [] (subject/c-fn-args
+                 [:c-args [['int 'left] ['char 'right]]]
+                 subject/+template+
+                 {}))
+   :expected "(int left, char right)"}])
+
+^{:refer lang.model.v1.spec-c/emit-defn}
+(Test/check
+ [{:name "emits a C function definition"
+   :test (fn [] (subject/emit-defn
+                 ['defn 'hello [] 1]
+                 (:grammar subject/+selection+)
+                 {}))
+   :expected "void hello() {\n\n  1;\n}"}])
+
+^{:refer lang.model.v1.spec-c/tf-arrow}
+(Test/check
+ [{:name "transforms the C pointer arrow"
+   :test (fn [] (subject/tf-arrow ['-> 'left 'right]))
+   :expected (list :% 'left (list :- "->" 'right))}])
+
+^{:refer lang.model.v1.spec-c/tf-sizeof}
+(Test/check
+ [{:name "transforms sizeof into a C prefix form"
+   :test (fn [] (subject/tf-sizeof ['sizeof 'value]))
+   :expected (list :- "sizeof" 'value)}])
+
+^{:refer lang.model.v1.spec-c/install}
+(Test/check
+ [{:name "installs XTalk prerequisites and the C grammar"
+   :test (fn [] (let [catalog (subject/install (registry/registry))]
+                  [(registry/versions catalog :xtalk)
+                   (registry/versions catalog :c)
+                   (not (nil? (registry/find catalog
+                                             (grammar/source-coordinate subject/+grammar+))))]))
+   :expected [[1] [1] true]}])
+
+^{:refer lang.model.v1.spec-c/catalog}
+(Test/check
+ [{:name "creates a catalog containing the C sources"
+   :test (fn [] (let [catalog (subject/catalog)]
+                  [(try (= 4 (count (registry/list catalog)))
+                   true
+                   (catch error false))
+                   (try (= [1] (registry/versions catalog :c))
+                   true
+                   (catch error false))
+                   (try (not (nil? (registry/find catalog
+                                             (grammar/source-coordinate subject/+grammar+))))
+                   true
+                   (catch error false))]))
+   :expected [true true true]}])
+
+^{:refer lang.model.v1.spec-c/select}
+(Test/check
+ [{:name "resolves the pinned C grammar selection"
+   :test (fn [] (let [selection (subject/select)]
+                  [(:grammar/id (:coordinate selection))
+                   (:grammar/version (:coordinate selection))
+                   (= (:coordinate selection)
+                      {:grammar/id :c :grammar/version 1
+                       :grammar/release "foundation-v1"
+                       :grammar/facets []})]))
+   :expected [:c 1 true]}])

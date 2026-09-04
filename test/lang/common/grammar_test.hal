@@ -75,6 +75,22 @@
                'new {:op :new :symbol #{'new} :emit :free}}
               true true]}])
 
+^{:refer lang.common.grammar/nested-merge-entry}
+(Test/check
+ [{:name "refreshes derived lowering when a macro is overridden"
+   :test (fn []
+           (let [default (grammar/nested-merge-entry
+                          {:op :for-index
+                           :emit :macro
+                           :macro (fn [form] (list 'default (nth form 1)))}
+                          {})
+                 updated (grammar/nested-merge-entry
+                          default
+                          {:emit :macro
+                           :macro (fn [form] (list 'python (nth form 1)))})]
+             ((:lower updated) '(for:index [i [0 2 10]] i))))
+   :expected '(python [i [0 2 10]])}])
+
 ^{:refer lang.common.grammar/ops-of-type}
 (Test/check
  [{:name "archive grammar derives emission metadata from the reserved table"
@@ -97,3 +113,21 @@
                           'call {:op :call :type :fn}}
                :sections #{:code} :macros #{:defn}
                :structure {:block #{:loop} :def #{:defn} :fn #{:call}}}]}])
+
+^{:refer lang.common.grammar/grammar-structure}
+(Test/check
+ [{:name "derives all large grammar structure sets in one bounded pass"
+   :test (fn []
+           (let [reserved (grammar/to-reserved (grammar/build-xtalk))
+                 started (time-ms)
+                 structure (grammar/grammar-structure reserved)
+                 elapsed (- (time-ms) started)]
+             [(set (keys structure))
+              (= (count (:block structure))
+                 (count (grammar/ops-of-type reserved :block)))
+              (= (count (:def structure))
+                 (count (grammar/ops-of-type reserved :def)))
+              (= (count (:fn structure))
+                 (count (grammar/ops-of-type reserved :fn)))
+              (< elapsed 1000)]))
+   :expected [#{:block :def :fn} true true true true]}])

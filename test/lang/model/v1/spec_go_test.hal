@@ -1,0 +1,45 @@
+(ns lang.model.v1.spec-go-test
+  (:require [lang.common.grammar-api :as grammar]
+            [lang.common.registry :as registry]
+            [lang.model.v1.spec-go :as subject]))
+
+^{:refer lang.model.v1.spec-go/install-source}
+(Test/check
+ [{:name "installs one source and keeps repeated installation idempotent"
+   :test (fn [] (let [catalog (registry/registry)
+                      once (subject/install-source catalog subject/+template+)
+                      twice (subject/install-source once subject/+template+)
+                      coordinate (grammar/source-coordinate subject/+template+)]
+                  [(not (nil? (registry/find once coordinate)))
+                   (count (registry/list once))
+                   (count (registry/list twice))]))
+   :expected [true 1 1]}])
+
+^{:refer lang.model.v1.spec-go/install}
+(Test/check
+ [{:name "installs XTalk prerequisites and all Go sources"
+   :test (fn [] (let [catalog (subject/install (registry/registry))]
+                  [(registry/versions catalog :xtalk)
+                   (registry/versions catalog :go)
+                   (not (nil? (registry/find catalog
+                                             (grammar/source-coordinate subject/+grammar+))))]))
+   :expected [[1] [1] true]}])
+
+^{:refer lang.model.v1.spec-go/catalog}
+(Test/check
+ [{:name "creates a catalog containing the current Go grammar"
+   :test (fn [] (let [catalog (subject/catalog)]
+                  [(count (registry/list catalog))
+                   (registry/versions catalog :go)
+                   (not (nil? (registry/find catalog
+                                             (grammar/source-coordinate subject/+profile+))))]))
+   :expected [6 [1] true]}])
+
+^{:refer lang.model.v1.spec-go/select}
+(Test/check
+ [{:name "resolves the pinned Go grammar selection"
+   :test (fn [] (let [selection (subject/select)]
+                  [(:grammar/id (:coordinate selection))
+                   (:grammar/version (:coordinate selection))
+                   (= (:coordinate selection) subject/+coordinate+)]))
+   :expected [:go 1 true]}])

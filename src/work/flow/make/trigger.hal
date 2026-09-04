@@ -1,0 +1,77 @@
+(ns work.flow.make.trigger
+  (:config {:role :internal})
+  (:require [work.flow.make.host :as host]))
+
+(defn trigger-install-function
+  [plan]
+  (let [definition (:make/definition plan)]
+    (or (get-in definition [:trigger :install])
+        (:trigger/install definition))))
+
+(defn trigger-remove-function
+  [plan]
+  (let [definition (:make/definition plan)]
+    (or (get-in definition [:trigger :remove])
+        (:trigger/remove definition))))
+
+(defn install-one
+  [make-host plan trigger]
+  (let [function (trigger-install-function plan)]
+    (if function
+      (function make-host trigger)
+      trigger)))
+
+(defn remove-one
+  [make-host plan receipt]
+  (let [function (trigger-remove-function plan)]
+    (if function
+      (function make-host receipt)
+      receipt)))
+
+(defn install-all
+  [make-host plan]
+  (vec
+   (map
+    (fn [trigger]
+      (install-one make-host plan trigger))
+    (:make/triggers plan))))
+
+(defn remove-all
+  [make-host plan receipts]
+  (vec
+   (map
+    (fn [receipt]
+      (remove-one make-host plan receipt))
+    receipts)))
+
+(defn start
+  "Installs configured triggers and marks a make host running."
+  [make-host]
+  (if (host/running? make-host)
+    make-host
+    (let [plan (host/plan make-host)
+          receipts (install-all make-host plan)]
+      (host/mark-running make-host receipts))))
+
+(defn stop
+  "Removes installed triggers and marks a make host stopped."
+  [make-host]
+  (if (host/running? make-host)
+    (let [plan (host/plan make-host)
+          receipts (host/installed-triggers make-host)]
+      (remove-all make-host plan receipts)
+      (host/mark-stopped make-host))
+    make-host))
+
+(defn transition-running
+  "Prepares trigger receipts for a running host without changing host state.
+
+   Candidate registrations are installed before existing registrations are
+   removed. If candidate installation fails, the old plan and registrations
+   remain authoritative."
+  [make-host previous-plan candidate-plan]
+  (let [previous-receipts (host/installed-triggers make-host)
+        candidate-receipts (install-all make-host candidate-plan)]
+    (remove-all make-host previous-plan previous-receipts)
+    candidate-receipts))
+

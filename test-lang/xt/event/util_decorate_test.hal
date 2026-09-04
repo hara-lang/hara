@@ -1,0 +1,137 @@
+(ns xt.event.util-decorate-test
+  (:require [lang.core :as l]
+            [xt.lang.common-notify :as notify]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-decorate :as decorate]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-decorate :as decorate]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.util-decorate :as decorate]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.util-decorate/incr-fn}
+  {:name "creates a deterministic incrementing id function"
+   :test (fn [] (get (deref +results+) "ids"))
+   :expected ["id-0" "id-1" "id-2"]}
+
+  ^{:refer xt.event.util-decorate/plugin-timing}
+  {:name "records timing around one plugin lifecycle"
+   :test (fn [] (get (deref +results+) "timing"))
+   :expected ["timing" true true true]}
+
+  ^{:refer xt.event.util-decorate/plugin-counts}
+  {:name "counts successful and failed plugin calls"
+   :test (fn [] (get (deref +results+) "counts"))
+   :expected ["counts" 2 1]}
+
+  ^{:refer xt.event.util-decorate/to-handle-callback}
+  {:name "maps legacy callback names to handle callback names"
+   :test (fn [] (get (deref +results+) "callbacks"))
+   :expected ["A" "B" "C"]}
+
+  ^{:refer xt.event.util-decorate/new-handle}
+  {:name "creates a handle with plugins and caller options"
+   :test (fn [] (get (deref +results+) "handle"))
+   :expected ["demo" 25 1 "fixed"]}
+
+  ^{:refer xt.event.util-decorate/run-handle}
+  {:name "runs a handle and returns plugin output"
+   :test (fn [] (get (deref +results+) "run"))
+   :expected ["success" 1 1 0 true]}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var id-fn (decorate/incr-fn))
+             (var ids [(id-fn) (id-fn) (id-fn)])
+             (var timing (decorate/plugin-timing {}))
+             ((. timing ["on-setup"]) [])
+             ((. timing ["on-teardown"]))
+             (var timing-output (. timing ["output"]))
+             (var counts (decorate/plugin-counts {}))
+             ((. counts ["on-success"]) 1)
+             ((. counts ["on-error"]) "boom")
+             ((. counts ["on-success"]) 2)
+             (var count-output (. counts ["output"]))
+             (var callbacks (decorate/to-handle-callback
+                             {:success "A" :error "B" :finally "C"}))
+             (var handle (decorate/new-handle
+                          (fn [] (return 1))
+                          [decorate/plugin-counts]
+                          {:name "demo"
+                           :delay 25
+                           :id-fn (fn [] (return "fixed"))}))
+             (var handle-summary [(. handle ["name"])
+                                 (. handle ["delay"])
+                                 (xt/x:len (. handle ["plugins"]))
+                                 ((. handle ["id_fn"]))])
+             {"ids" ids
+              "timing" [(. timing ["name"])
+                        (xt/x:is-number? (xt/x:get-key timing-output "start"))
+                        (xt/x:is-number? (xt/x:get-key timing-output "end"))
+                        (>= (xt/x:get-key timing-output "elapsed") 0)]
+              "counts" [(. counts ["name"])
+                        (. count-output ["success"])
+                        (. count-output ["error"])]
+              "callbacks" [(xt/x:get-key callbacks "on-success")
+                           (xt/x:get-key callbacks "on-error")
+                           (xt/x:get-key callbacks "on-teardown")]
+              "handle" handle-summary
+              "run" nil})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.util-decorate/run-handle}
+  {:name "resolves a successful handle receipt through the live runtime"
+   :test (fn []
+           (notify/wait-on :js
+             (var handle (decorate/new-handle
+                          (fn [] (return 1))
+                          [decorate/plugin-counts]
+                          nil))
+             (spec-promise/x:promise-then
+              (decorate/run-handle handle [] nil)
+              (fn [receipt]
+                (repl/notify [(. receipt ["status"])
+                              (. receipt ["value"])
+                              (xt/x:get-key receipt "counts")])))))
+   :expected ["success" 1 {"success" 1 "error" 0}]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})
+
+(Test/check
+ [^{:refer xt.event.util-decorate/incr-fn}
+  {:name "generates ids in every basic target"
+   :test (fn []
+           [(!.js ((decorate/incr-fn)))
+            (!.lua ((decorate/incr-fn)))
+            (!.py ((decorate/incr-fn)))])
+   :expected ["id-0" "id-0" "id-0"]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

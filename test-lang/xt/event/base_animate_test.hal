@@ -1,0 +1,312 @@
+(ns xt.event.base-animate-test
+  (:require [lang.core :as l]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-animate :as animate]
+             [xt.event.base-animate-mock :as mock]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-animate :as animate]
+             [xt.event.base-animate-mock :as mock]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-animate :as animate]
+             [xt.event.base-animate-mock :as mock]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.base-animate/new-derived}
+  {:name "derives and updates a value from observed inputs"
+   :test (fn [] (get (deref +results+) "derived"))
+   :expected [3 6]}
+
+  ^{:refer xt.event.base-animate/listen-single}
+  {:name "maps one observed value into ref props"
+   :test (fn [] (get (deref +results+) "single"))
+   :expected [{"opacity" 0.7} {"opacity" 0.6}]}
+
+  ^{:refer xt.event.base-animate/listen-array}
+  {:name "maps an observed array into ref props"
+   :test (fn [] (get (deref +results+) "array"))
+   :expected [{"opacity" 0.4} {"opacity" 0.7}]}
+
+  ^{:refer xt.event.base-animate/get-map-paths-inner}
+  {:name "collects nested animated and branch paths"
+   :test (fn [] (get (deref +results+) "paths-inner"))
+   :expected [3 "a" "b" "c"]}
+
+  ^{:refer xt.event.base-animate/get-map-paths}
+  {:name "collects paths from a nested indicator map"
+   :test (fn [] (get (deref +results+) "paths"))
+   :expected 3}
+
+  ^{:refer xt.event.base-animate/get-map-input}
+  {:name "reconstructs nested values from indicator paths"
+   :test (fn [] (get (deref +results+) "input"))
+   :expected {"a" 1 "b" {"c" 2}}}
+
+  ^{:refer xt.event.base-animate/listen-map}
+  {:name "listens to nested indicators and updates props"
+   :test (fn [] (get (deref +results+) "map"))
+   :expected [{"a" 1 "b" {"c" 2}} {"a" 3 "b" {"c" 2}}]}
+
+  ^{:refer xt.event.base-animate/listen-transformations}
+  {:name "selects the single-indicator transformation path"
+   :test (fn [] (get (deref +results+) "transform"))
+   :expected {"value" 1 "chord" "x"}}
+
+  ^{:refer xt.event.base-animate/new-progressing}
+  {:name "creates empty animation progress state"
+   :test (fn [] (get (deref +results+) "progressing"))
+   :expected [false nil 0]}
+
+  ^{:refer xt.event.base-animate/run-with-cancel}
+  {:name "starts a cancel-mode animation and reports running"
+   :test (fn [] (get (deref +results+) "cancel"))
+   :expected [false "cancel-animation" ["running"]]}
+
+  ^{:refer xt.event.base-animate/animate-chained-cleanup}
+  {:name "cleans running and queued animation state"
+   :test (fn [] (get (deref +results+) "cleanup"))
+   :expected [false nil 0 "cleanup"]}
+
+  ^{:refer xt.event.base-animate/animate-chained-one}
+  {:name "starts one queued animation"
+   :test (fn [] (get (deref +results+) "chained-one"))
+   :expected [true "one-animation" 1 "running"]}
+
+  ^{:refer xt.event.base-animate/animate-chained-all}
+  {:name "consumes one animation from an all-chain"
+   :test (fn [] (get (deref +results+) "chained-all"))
+   :expected [true "all-animation" 0]}
+
+  ^{:refer xt.event.base-animate/run-with-chained}
+  {:name "starts a chained animation when idle"
+   :test (fn [] (get (deref +results+) "run-chained"))
+   :expected [true "chain-animation" 0]}
+
+  ^{:refer xt.event.base-animate/run-with}
+  {:name "dispatches the cancel animation mode"
+   :test (fn [] (get (deref +results+) "run"))
+   :expected [false "run-animation"]}
+
+  ^{:refer xt.event.base-animate/make-binary-transitions}
+  {:name "creates zero and one transitions"
+   :test (fn [] (get (deref +results+) "binary-transitions"))
+   :expected [0 true]}
+
+  ^{:refer xt.event.base-animate/make-binary-indicator}
+  {:name "creates a binary indicator trigger"
+   :test (fn [] (get (deref +results+) "binary"))
+   :expected [1 false]}
+
+  ^{:refer xt.event.base-animate/make-linear-indicator-inner}
+  {:name "creates a linear indicator trigger"
+   :test (fn [] (get (deref +results+) "linear-inner"))
+   :expected [3 3]}
+
+  ^{:refer xt.event.base-animate/make-linear-indicator}
+  {:name "creates a linear indicator without a guard"
+   :test (fn [] (get (deref +results+) "linear"))
+   :expected [4 4]}
+
+  ^{:refer xt.event.base-animate/make-circular-indicator-inner}
+  {:name "creates a modulo-aware circular indicator"
+   :test (fn [] (get (deref +results+) "circular-inner"))
+   :expected [370 10]}
+
+  ^{:refer xt.event.base-animate/make-circular-indicator}
+  {:name "creates a circular indicator without a guard"
+   :test (fn [] (get (deref +results+) "circular"))
+   :expected [20 20]}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var a (mock/new-observed 1))
+             (var b (mock/new-observed 2))
+             (var derived (animate/new-derived mock/MOCK
+                                               (fn [x y] (return (+ x y))) [a b]))
+             (var derived-before (mock/get-value derived))
+             (mock/set-value a 4)
+             (var derived-after (mock/get-value derived))
+             (var single-obs (mock/new-observed 0.5))
+             (var single-ref-2 {:current {}})
+             (animate/listen-single mock/MOCK single-ref-2 single-obs
+                                    (fn [value]
+                                      (return {:opacity (+ 0.2 value)})))
+             (var single-first (xt/x:get-key single-ref-2 "current"))
+             (mock/set-value single-obs 0.4)
+             (var single-second (xt/x:get-key single-ref-2 "current"))
+             (var o1 (mock/new-observed 0.1))
+             (var o2 (mock/new-observed 0.2))
+             (var array-ref {:current {}})
+             (animate/listen-array mock/MOCK array-ref [o1 o2]
+                                   (fn [x y]
+                                     (return {:opacity (+ 0.1 x y)})))
+             (var array-first (xt/x:get-key array-ref "current"))
+             (mock/set-value o1 0.4)
+             (var array-second (xt/x:get-key array-ref "current"))
+             (var indicators {:a (mock/new-observed 1)
+                              :b {:c (mock/new-observed 2)}})
+             (var paths (animate/get-map-paths mock/MOCK indicators))
+             (var paths-inner (animate/get-map-paths-inner mock/MOCK indicators [] []))
+             (var path-summary [(xt/x:len paths)
+                                (xt/x:get-idx (xt/x:get-idx paths 0) (xt/x:offset 1))
+                                (xt/x:get-idx (xt/x:get-idx paths 1) (xt/x:offset 1))
+                                (xt/x:get-idx (xt/x:get-idx paths 2) (xt/x:offset 1))])
+             (var input (animate/get-map-input mock/MOCK paths))
+             (var map-ref {:current {}})
+             (animate/listen-map mock/MOCK map-ref indicators
+                                 (fn [value] (return value)))
+             (var map-first (xt/x:get-key map-ref "current"))
+             (mock/set-value (. indicators ["a"]) 3)
+             (var map-second (xt/x:get-key map-ref "current"))
+             (var trans-ref {:current {}})
+             (var trans (animate/listen-transformations
+                         mock/MOCK trans-ref (mock/new-observed 1)
+                         (fn [value chord]
+                           (return {:value value :chord chord}))
+                         (fn [] (return "x"))))
+             (var transform (xt/x:get-key trans-ref "current"))
+             (var progressing (animate/new-progressing))
+             (var cancel-progress (animate/new-progressing))
+             (var cancel-status [])
+             (animate/run-with-cancel
+              mock/MOCK
+              (fn [finish] (return "cancel-animation"))
+              cancel-progress
+              (fn [value] (xt/x:arr-push cancel-status
+                                         (xt/x:get-key value "status"))))
+             (var cleanup-progress {:running true :animation "old" :queued [1 2]})
+             (animate/animate-chained-cleanup
+              mock/MOCK cleanup-progress
+              (fn [value] (xt/x:get-key value "status")))
+             (var one-progress {:running false :animation nil
+                                :queued [(fn [finish] (return "one-animation"))]})
+             (animate/animate-chained-one mock/MOCK one-progress
+                                          (fn [value]
+                                            (xt/x:set-key one-progress "status"
+                                                          (xt/x:get-key value "status"))))
+             (var all-progress {:running false :animation nil
+                                :queued [(fn [finish] (return "all-animation"))]})
+             (animate/animate-chained-all mock/MOCK all-progress nil)
+             (var chain-progress (animate/new-progressing))
+             (animate/run-with-chained mock/MOCK "chained-all"
+                                       (fn [finish] (return "chain-animation"))
+                                       chain-progress nil)
+             (var run-progress (animate/new-progressing))
+             (animate/run-with mock/MOCK "cancel"
+                              (fn [finish] (return "run-animation"))
+                              run-progress nil)
+             (var binary-transitions
+                  (animate/make-binary-transitions mock/MOCK false nil))
+             (var binary-progress (animate/new-progressing))
+             (var binary (animate/make-binary-indicator
+                          mock/MOCK false nil "cancel" binary-progress nil))
+             ((xt/x:get-key binary "trigger-fn") true)
+             (var linear-prev 0)
+             (var linear-progress (animate/new-progressing))
+             (var linear-inner
+                  (animate/make-linear-indicator-inner
+                   mock/MOCK 1 (fn [] (return linear-prev))
+                   (fn [value] (:= linear-prev value)) nil "cancel"
+                   linear-progress nil nil))
+             ((xt/x:get-key linear-inner "trigger-fn") 3)
+             (var linear-prev-2 1)
+             (var linear-progress-2 (animate/new-progressing))
+             (var linear
+                  (animate/make-linear-indicator
+                   mock/MOCK 1 (fn [] (return linear-prev-2))
+                   (fn [value] (:= linear-prev-2 value)) nil "cancel"
+                   linear-progress-2 nil))
+             ((xt/x:get-key linear "trigger-fn") 4)
+             (var circular-prev 350)
+             (var circular-progress (animate/new-progressing))
+             (var circular-inner
+                  (animate/make-circular-indicator-inner
+                   mock/MOCK 350 (fn [] (return circular-prev))
+                   (fn [value] (:= circular-prev value)) nil "cancel" 360
+                   circular-progress nil nil))
+             ((xt/x:get-key circular-inner "trigger-fn") 10)
+             (var circular-prev-2 10)
+             (var circular-progress-2 (animate/new-progressing))
+             (var circular
+                  (animate/make-circular-indicator
+                   mock/MOCK 10 (fn [] (return circular-prev-2))
+                   (fn [value] (:= circular-prev-2 value)) nil "cancel" 360
+                   circular-progress-2 nil))
+             ((xt/x:get-key circular "trigger-fn") 20)
+             {"derived" [derived-before derived-after]
+              "single" [single-first single-second]
+              "array" [array-first array-second]
+              "paths-inner" [ (xt/x:len paths-inner)
+                              (xt/x:get-idx (xt/x:get-idx paths-inner 0) (xt/x:offset 1))
+                              (xt/x:get-idx (xt/x:get-idx paths-inner 1) (xt/x:offset 1))
+                              (xt/x:get-idx (xt/x:get-idx paths-inner 2) (xt/x:offset 1))]
+              "paths" (xt/x:len paths)
+              "input" input "map" [map-first map-second]
+              "transform" transform
+              "progressing" [(xt/x:get-key progressing "running")
+                              (xt/x:get-key progressing "animation")
+                              (xt/x:len (xt/x:get-key progressing "queued"))]
+              "cancel" [(xt/x:get-key cancel-progress "running")
+                        (xt/x:get-key cancel-progress "animation") cancel-status]
+              "cleanup" [(xt/x:get-key cleanup-progress "running")
+                         (xt/x:get-key cleanup-progress "animation")
+                         (xt/x:len (xt/x:get-key cleanup-progress "queued"))
+                         (xt/x:get-key cleanup-progress "status")]
+              "chained-one" [(xt/x:get-key one-progress "running")
+                             (xt/x:get-key one-progress "animation")
+                             (xt/x:len (xt/x:get-key one-progress "queued"))
+                             (xt/x:get-key one-progress "status")]
+              "chained-all" [(xt/x:get-key all-progress "running")
+                             (xt/x:get-key all-progress "animation")
+                             (xt/x:len (xt/x:get-key all-progress "queued"))]
+              "run-chained" [(xt/x:get-key chain-progress "running")
+                             (xt/x:get-key chain-progress "animation")
+                             (xt/x:len (xt/x:get-key chain-progress "queued"))]
+              "run" [(xt/x:get-key run-progress "running")
+                     (xt/x:get-key run-progress "animation")]
+              "binary-transitions" [(mock/get-value
+                                      (xt/x:get-key binary-transitions "indicator"))
+                                     (xt/x:is-function?
+                                      (xt/x:get-key binary-transitions "check-fn"))]
+              "binary" [(mock/get-value (xt/x:get-key binary "indicator"))
+                        (xt/x:get-key binary-progress "running")]
+              "linear-inner" [linear-prev
+                              (mock/get-value (xt/x:get-key linear-inner "indicator"))]
+              "linear" [linear-prev-2
+                         (mock/get-value (xt/x:get-key linear "indicator"))]
+              "circular-inner" [circular-prev
+                                (mock/get-value (xt/x:get-key circular-inner "indicator"))]
+              "circular" [circular-prev-2
+                          (mock/get-value (xt/x:get-key circular "indicator"))]})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.base-animate/new-progressing}
+  {:name "creates progress state in every basic target"
+   :test (fn []
+           [(!.js (xt/x:get-key (animate/new-progressing) "queued"))
+            (!.lua (xt/x:get-key (animate/new-progressing) "queued"))
+            (!.py (xt/x:get-key (animate/new-progressing) "queued"))])
+   :expected [[] [] []]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

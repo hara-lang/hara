@@ -1,5 +1,174 @@
 (ns lang.model.v1.spec-python.python-native
-  (:config {:role :internal}))
+  (:config {:role :internal})
+  (:require [lang.common.emit-block :as block]
+            [lang.common.emit-common :as common]
+            [lang.common.emit-helper :as helper]
+            [lang.common.emit-top-level :as top]
+            [lang.common.preprocess-base :as preprocess]
+            [lang.typed.xtalk-parse :as xtalk-parse]))
+
+(defn python-symbol-global
+  [fsym grammar mopts]
+  (list '. '(globals)
+        [(helper/emit-symbol-full fsym (namespace fsym) grammar)]))
+
+(defn python-token-boolean
+  [value]
+  (if value "True" "False"))
+
+(defn python-emit-input-rest
+  [{:keys [symbol]} grammar mopts]
+  (str "*" (common/*emit-fn* symbol grammar mopts)))
+
+(defn python-qualified-symbol
+  [sym]
+  (let [module-id (get-in (preprocess/macro-opts) [:module :id])]
+    (if (or (nil? sym)
+            (namespace sym)
+            (:inner (meta sym))
+            (nil? module-id))
+      sym
+      (symbol (name module-id) (name sym)))))
+
+(defn python-optional-input?
+  [input]
+  (= :maybe (get-in input [:type :kind])))
+
+(defn python-apply-optional-defaults
+  [sym args]
+  (if-not (and sym (vector? args))
+    args
+    (try
+      (let [qualified (python-qualified-symbol sym)
+            module-ns (namespace qualified)
+            analysis (when module-ns
+                       (xtalk-parse/analyze-module (symbol module-ns)))
+            fn-def (first (filter (fn [entry]
+                                    (= (name qualified) (:name entry)))
+                                  (or (:functions analysis) [])))
+            optional-count (count (take-while python-optional-input?
+                                               (reverse (or (:inputs fn-def) []))))]
+        (if (and fn-def
+                 (pos? optional-count)
+                 (neg? (helper/index-of-value args :=)))
+          (let [required-count (- (count args) optional-count)
+                optional-args (drop required-count args)]
+            (vec (concat (take required-count args)
+                         (mapcat (fn [arg] [arg := nil]) optional-args))))
+          args))
+      (catch error
+        args))))
+
+(defn python-emit-nonlocal
+  [[_ & symbols] grammar mopts]
+  (str "nonlocal "
+       (str/join ", " (map (fn [sym]
+                              (common/*emit-fn* sym grammar mopts))
+                            symbols))))
+
+(defn python-plain-symbol?
+  [value]
+  (and (symbol? value)
+       (nil? (namespace value))))
+
+(defn python-binding-symbols
+  [form]
+  (cond
+    (python-plain-symbol? form)
+    #{form}
+
+    (vector? form)
+    (into #{} (mapcat python-binding-symbols form))
+
+    (set? form)
+    (into #{} (mapcat python-binding-symbols form))
+
+    (map? form)
+    (into #{} (mapcat python-binding-symbols (vals form)))
+
+    :else
+    #{}))
+
+(defn python-scope-form?
+  [form]
+  (and (std.foundation/form? form)
+       (has? #{'fn 'fn.inner 'defn 'defn- 'defgen}
+             (first form))))
+
+(defn python-local-symbols
+  [form]
+  (cond
+    (python-scope-form? form)
+    #{}
+
+    (and (std.foundation/form? form)
+         (= 'quote (first form)))
+    #{}
+
+    (and (std.foundation/form? form)
+         (has? #{'var 'var*} (first form)))
+    (python-binding-symbols (second form))
+
+    (std.foundation/form? form)
+    (into #{} (mapcat python-local-symbols form))
+
+    (vector? form)
+    (into #{} (mapcat python-local-symbols form))
+
+    (set? form)
+    (into #{} (mapcat python-local-symbols form))
+
+    (map? form)
+    (into #{} (mapcat python-local-symbols
+                      (concat (keys form) (vals form))))
+
+    :else
+    #{}))
+
+(defn python-assigned-symbols
+  [form]
+  (cond
+    (python-scope-form? form)
+    #{}
+
+    (and (std.foundation/form? form)
+         (= 'quote (first form)))
+    #{}
+
+    (and (std.foundation/form? form)
+         (= ':= (first form)))
+    (python-binding-symbols (second form))
+
+    (std.foundation/form? form)
+    (into #{} (mapcat python-assigned-symbols form))
+
+    (vector? form)
+    (into #{} (mapcat python-assigned-symbols form))
+
+    (set? form)
+    (into #{} (mapcat python-assigned-symbols form))
+
+    (map? form)
+    (into #{} (mapcat python-assigned-symbols
+                      (concat (keys form) (vals form))))
+
+    :else
+    #{}))
+
+(defn python-prepend-nonlocals
+  [name args body]
+  (if-not (:inner (meta name))
+    body
+    (let [arg-symbols (python-binding-symbols args)
+          local-symbols (into arg-symbols
+                              (mapcat python-local-symbols body))
+          assigned-symbols (into #{}
+                                 (mapcat python-assigned-symbols body))
+          nonlocals (sort-by str
+                             (remove local-symbols assigned-symbols))]
+      (if (empty? nonlocals)
+        body
+        (cons (apply list 'nonlocal nonlocals) body)))))
 
 (defn python-async-run
   [form]
@@ -75,24 +244,73 @@
 (defn python-fn
   [form]
   (let [args (vec (drop 1 form))
-        args (if (symbol? (first args)) (vec (rest args)) args)
-        fargs (first args)
-        body (vec (rest args))
-        body (if (and (= 1 (count body))
-                      (list? (first body))
-                      (= (quote do) (first (first body))))
-               (vec (rest (first body)))
-               body)
-        expressions (vec (map python-lambda-body body))
-        expression (if (= 1 (count expressions))
-                     (first expressions)
-                     (list (quote .) expressions [-1]))
-        fargs (if (= 0 (count fargs))
-                [(list :* (quote __args))]
-                fargs)]
-    (apply list (quote :-) (quote lambda)
-           (concat [(list (quote quote) fargs) (symbol ":")]
-                   [expression]))))
+        named (first args)]
+    (if (symbol? named)
+      (apply list
+             (concat [(quote fn.inner)
+                      (with-meta named {:inner true})]
+                     (rest args)))
+      (let [fargs (first args)
+            body (vec (rest args))
+            body (if (and (= 1 (count body))
+                          (list? (first body))
+                          (= (quote do) (first (first body))))
+                   (vec (rest (first body)))
+                   body)
+            expressions (vec (map python-lambda-body body))
+            expression (if (= 1 (count expressions))
+                         (first expressions)
+                         (list (quote .) expressions [-1]))
+            fargs (if (= 0 (count fargs))
+                    [(list :* (quote __args))]
+                    fargs)]
+        (apply list (quote :-) (quote lambda)
+               (concat [(list (quote quote) fargs) (symbol ":")]
+                       [expression]))))))
+
+(defn python-defn-
+  "Emits a hidden Python function without decorators."
+  [form grammar mopts]
+  (let [tag (first form)
+        name (nth form 1)
+        args (nth form 2)
+        body (python-prepend-nonlocals name args (drop 3 form))]
+    (top/emit-top-level
+     :defn
+     (apply list (concat [tag name (python-apply-optional-defaults name args)]
+                         body))
+     grammar
+     mopts)))
+
+(defn python-defn
+  [form]
+  (if (= 'fn.inner (first form))
+    (let [name (nth form 1)
+          args (nth form 2)]
+      (apply list
+             (concat [(quote defn-) name args]
+                     (drop 3 form))))
+    (let [name (nth form 1)
+          args (nth form 2)
+          decorators (get (meta name) :decorators)
+          body (apply list
+                      (concat [(quote defn-) name
+                               (python-apply-optional-defaults name args)]
+                              (drop 3 form)))]
+      (if (empty? decorators)
+        body
+        (list \newline
+              (apply list
+                     (mapcat (fn [decorator]
+                               (list \newline
+                                     (list :%
+                                           (list :- "@")
+                                           (if (keyword? decorator)
+                                             (list :- (name decorator))
+                                             decorator)))
+                             decorators)))
+              \newline
+              body)))))
 
 (defn python-var
   [form]
@@ -100,7 +318,10 @@
         args (vec (drop 2 form))
         bound (last args)]
     (cond (and (std.foundation/form? bound) (= (quote fn) (first bound)))
-          (apply list (concat [(quote fn.inner) sym] (rest bound)))
+          (apply list
+                 (concat [(quote fn.inner)
+                          (with-meta sym {:inner true})]
+                         (rest bound)))
 
           (vector? sym)
           (list (quote var.inner) (list (quote quote) sym) := bound)
@@ -119,12 +340,61 @@
 
 (defn python-dot [form]
   (let [obj (nth form 1)
-        props (vec (drop 2 form))]
-    (if (and (= 1 (count props))
-             (vector? (first props))
-             (= 1 (count (first props))))
-      (list (quote index*) obj (first props))
-      (apply list (concat [(quote index*) obj] props)))))
+        props (vec (drop 2 form))
+        grammar preprocess/*macro-grammar*
+        mopts preprocess/*macro-opts*
+        target (let [emitted (common/*emit-fn* obj grammar mopts)]
+                 (if (std.foundation/form? obj)
+                   (str "(" emitted ")")
+                   emitted))
+        first-prop (first props)]
+    (cond
+      (and (= 1 (count props))
+           (vector? first-prop)
+           (= 1 (count first-prop))
+           (= "length" (first first-prop)))
+      (list 'len obj)
+
+      (and (= 1 (count props))
+           (std.foundation/form? first-prop)
+           (= 'setitem (first first-prop))
+           (= 2 (count first-prop)))
+      (list :-
+            (str target
+                 "["
+                 (common/*emit-fn* (second first-prop) grammar mopts)
+                 "]"))
+
+      (and (= 1 (count props))
+           (vector? first-prop)
+           (= 1 (count first-prop))
+           (string? (first first-prop)))
+      (list '. obj (list 'get (first first-prop)))
+
+      :else
+      (list :-
+            (str target
+                 (apply str
+                        (map (fn [entry]
+                               (common/emit-index-entry entry grammar mopts))
+                             props)))))))
+
+(defn python-defclass
+  [form]
+  (let [sym (nth form 1)
+        inherit (nth form 2)
+        body (top/transform-defclass-inner (drop 3 form))
+        module-id (get-in preprocess/*macro-opts* [:module :id])
+        name (symbol (name module-id) (name sym))
+        supers (list 'quote (remove keyword? inherit))]
+    (list :-
+          :class
+          (list :% name supers)
+          \:
+          (list \\
+                \\
+                (list \| (apply list 'do body))
+                \\))))
 
 (defn python-get-key
   [form]
@@ -319,6 +589,74 @@
            [i :in (apply list (quote range) range-args)]
            (python-loop-body form))))
 
+(defn python-for-return
+  "Transforms a Foundation return form into a Python try/catch form."
+  [form]
+  (let [binding-form (second form)
+        result (first binding-form)
+        result-sym (first result)
+        error-sym (second result)
+        statement (second binding-form)
+        options (nth form 2)]
+    (list (quote try)
+          (list (quote var) result-sym statement)
+          (:success options)
+          (list (quote catch)
+                [(quote Exception) :as error-sym]
+                (:error options)))))
+
+(defn python-for
+  "Emits the generic Foundation numeric loop as a Python range loop."
+  [form grammar context]
+  (let [params (second form)
+        init (if (vector? params) (first params) nil)
+        check (if (vector? params) (second params) nil)
+        update (if (and (vector? params) (> (count params) 2))
+                 (nth params 2)
+                 nil)
+        step-form (if (and (list? update) (> (count update) 2))
+                   (nth update 2)
+                   nil)
+        numeric? (and (list? init)
+                      (= 'var (first init))
+                      (list? check)
+                      (or (= '< (first check)) (= '> (first check)))
+                      (list? update)
+                      (= := (first update))
+                      (= (second init) (second update))
+                      (list? step-form)
+                      (= (second init) (second step-form))
+                      (or (= '+ (first step-form))
+                          (= '- (first step-form))))
+        block-options (get-in grammar [:reserved 'for :block])]
+    (if numeric?
+      (let [index (second init)
+            start (if (= := (nth init 2)) (nth init 3) (nth init 2))
+            stop (nth check 2)
+            step (if (= '+ (first step-form))
+                   (nth step-form 2)
+                   (if (= '- (first step-form))
+                     (list '- 0 (nth step-form 2))
+                     1))
+            range-form (list 'range start stop step)
+            python-form (apply list 'for
+                               (concat [[index :in range-form]]
+                                       (drop 2 form)))]
+        (block/emit-block-standard
+         :for block-options python-form grammar context))
+      (block/emit-block-standard
+       :for block-options form grammar context))))
+
+(def tf-for-object python-for-object)
+(def tf-for-array python-for-array)
+(def tf-for-iter python-for-iter)
+(def tf-for-index python-for-index)
+(def tf-for-return python-for-return)
+(def python-tf-prototype-create python-prototype-create)
+(def python-tf-prototype-get python-prototype-get)
+(def python-tf-prototype-set python-prototype-set)
+(def python-tf-prototype-method python-prototype-method)
+
 (defn python-x-del [form]
   (let [target (nth form 1)]
     (if (and (list? target)
@@ -327,6 +665,10 @@
       (list (quote index*) (nth target 1)
             (list (quote pop) (first (nth target 2)) nil))
       (list (quote del) target))))
+
+(defn python-x-del-key [form]
+  (list (quote .) (nth form 1)
+        (list (quote pop) (nth form 2) nil)))
 
 (defn python-x-set-key [form]
   (let [obj (nth form 1)
@@ -377,6 +719,14 @@
   (list (quote list)
         (list (quote .) (nth form 1) (list (quote keys)))))
 
+(defn python-x-obj-vals [form]
+  (list (quote list)
+        (list (quote .) (nth form 1) (list (quote values)))))
+
+(defn python-x-obj-pairs [form]
+  (list (quote list)
+        (list (quote .) (nth form 1) (list (quote items)))))
+
 (defn python-x-obj-clone [form]
   (list (quote .) (nth form 1) (list (quote copy))))
 
@@ -386,6 +736,16 @@
 
 (defn python-x-arr-clone [form]
   (list (quote list) (nth form 1)))
+
+(defn python-x-arr-slice [form]
+  (let [arr (nth form 1)
+        start (nth form 2)
+        end (if (> (count form) 3) (nth form 3) nil)
+        index (list (quote slice) start end)]
+    (list (quote .) arr [index])))
+
+(defn python-x-arr-reverse [form]
+  (list (quote list) (list (quote reversed) (nth form 1))))
 
 (defn python-x-arr-insert [form]
   (list (quote .) (nth form 1)
@@ -615,23 +975,39 @@
    :index {:macro python-dot :emit :macro}})
 
 (def +python-native-vars+ {:var {:macro python-var :emit :macro}})
-(def +python-native-fn+ {:fn {:macro python-fn :emit :macro}})
+(def +python-native-fn+
+  {:fn {:macro python-fn :emit :macro}
+   :defn {:symbol #{'defn} :macro python-defn :emit :macro}
+   :defgen {:symbol #{'defgen} :macro python-defn :emit :macro}
+   :fn.inner {:macro python-defn :emit :macro}
+   :defclass {:macro python-defclass :emit :macro}})
 
 (def +python-native-for+
-  {:for-object {:macro python-for-object :emit :macro}
-   :for-array {:macro python-for-array :emit :macro}
-   :for-iter {:macro python-for-iter :emit :macro}
-   :for-index {:macro python-for-index :emit :macro}})
+  {:for-object {:macro tf-for-object :emit :macro}
+   :for-array {:macro tf-for-array :emit :macro}
+   :for-iter {:macro tf-for-iter :emit :macro}
+   :for-index {:macro tf-for-index :emit :macro}
+   :for {:emit python-for}})
 
 (def +python-native-prototype+
-  {:prototype-get {:macro python-prototype-get :emit :macro}
-   :prototype-set {:macro python-prototype-set :emit :macro}
-   :prototype-create {:macro python-prototype-create :emit :macro}
-   :prototype-method {:macro python-prototype-method :emit :macro}
+  {:prototype-get {:macro python-tf-prototype-get :emit :macro}
+   :prototype-set {:macro python-tf-prototype-set :emit :macro}
+   :prototype-create {:macro python-tf-prototype-create :emit :macro
+                      :op-spec {:allow-blocks true}}
+   :prototype-method {:macro python-tf-prototype-method :emit :macro}
    :prototype-tostring {:default "__str__" :emit :unit}})
 
 (def +python-native-definitions+
-  {:delete {:op :delete :symbol #{'del} :raw "del" :emit :prefix}
+  {:defn- {:op :defn- :symbol #{'defn-} :type :block :emit python-defn-}
+   :var-let {:op :var-let :symbol #{'var} :macro python-var :emit :macro}
+   :unarr {:op :unarr :symbol #{:*} :raw "*" :emit :pre}
+   :undict {:op :undict :symbol #{:**} :raw "**" :emit :pre}
+   :delete {:op :delete :symbol #{'del} :raw "del" :emit :prefix}
+   :pass {:op :pass :symbol #{'pass} :raw "pass" :emit :return :type :special}
+   :nan {:op :nan :symbol #{'NaN} :raw "NaN" :value true :emit :throw}
+   :nonlocal {:op :nonlocal :symbol #{'nonlocal} :emit python-emit-nonlocal}
+   :with {:op :with :symbol #{'with} :type :block
+          :block {:main #{:parameter :body}}}
    :native-type {:op :native-type :symbol #{'type} :raw "type" :emit :invoke}
    :index-native {:op :index-native :symbol #{'index*} :raw "." :emit :index}})
 

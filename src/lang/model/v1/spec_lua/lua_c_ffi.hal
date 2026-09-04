@@ -1,0 +1,90 @@
+(ns lang.model.v1.spec-lua.lua-c-ffi
+  (:config {:role :internal}))
+
+(defn c-ffi-type
+  "Coerces a C type annotation to a string."
+  [value]
+  (cond (keyword? value) (name value)
+        (symbol? value) (name value)
+        (vector? value) (str/join " " (map c-ffi-type value))
+        :else (str value)))
+
+(defn c-ffi-sym
+  "Sanitizes a symbol for use in C."
+  [value]
+  (-> (str value)
+      (str/replace "-" "_")
+      (str/replace "." "_")
+      (str/replace "/" "____")))
+
+(defn c-ffi-form?
+  "Identifies forms that contain C FFI declarations."
+  [form]
+  (and (std.foundation/form? form)
+       (or (= '%.c (first form))
+           (and (= 'clojure.core/deref (first form))
+                (= '.c (second form)))
+           (and (= '!:lang (first form))
+                (= :c (:lang (second form)))))))
+
+(defn c-ffi-fn-form?
+  "Checks if a form is a C FFI function declaration."
+  [form]
+  (and (std.foundation/form? form)
+       (or (= 'fn (first form))
+           (= 'fn:> (first form)))))
+
+(defn c-ffi-forms
+  "Collects fn/fn:> forms, descending into do blocks."
+  [forms]
+  (mapcat (fn [form]
+            (cond (c-ffi-fn-form? form)
+                  [form]
+
+                  (and (std.foundation/form? form)
+                       (= 'do (first form)))
+                  (c-ffi-forms (rest form))
+
+                  :else
+                  []))
+          forms))
+
+(defn c-ffi-args
+  "Emits C arguments from a function argument vector."
+  [args]
+  (let [args (vec args)
+        typed? (and (pos? (count args))
+                    (not (symbol? (first args))))]
+    (vec
+     (if typed?
+       (map (fn [pair]
+              (let [type (nth pair 0)
+                    name (nth pair 1)]
+                (str (c-ffi-type type) " " (c-ffi-sym name))))
+            (partition 2 args))
+       (map (fn [name]
+              (let [type (or (:tag (meta name))
+                             (:- (meta name))
+                             "void*")]
+                (str (c-ffi-type type) " " (c-ffi-sym name))))
+            args)))))
+
+(defn c-ffi-decl
+  "Emits one C forward declaration from a fn/fn:> form."
+  [form]
+  (let [name (nth form 1)
+        args (nth form 2)
+        ret-type (or (:tag (meta name))
+                     (:- (meta name))
+                     "void")]
+    (str (c-ffi-type ret-type)
+         " "
+         (c-ffi-sym name)
+         "("
+         (str/join ", " (c-ffi-args args))
+         ");")))
+
+(defn c-ffi-body->string
+  "Emits C forward declarations from function forms."
+  [forms]
+  (str/join "\n" (map c-ffi-decl (c-ffi-forms forms))))

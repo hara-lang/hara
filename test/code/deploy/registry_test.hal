@@ -1,0 +1,234 @@
+(ns code.deploy.registry-test
+  (:require [code.deploy.catalog :as catalog]
+            [code.deploy.dependency :as dependency]
+            [code.deploy.registry :as registry]
+            [code.deploy.stage :as stage]))
+
+(def project-text
+  "{:project/id \"fixture/app\" :project/version \"1.0.0\" :project/dependencies {}}")
+
+(defn fixture-root
+  []
+  (let [root (deref (File/temp-directory "." {:prefix "hara-registry-test-"}))]
+    (deref (File/write (File/join root "project.edn")
+                       (String/encode-utf8 project-text)
+                       {:mode :replace :parents? true}))
+    root))
+
+^{:refer code.deploy.registry/lock-path}
+(Test/check
+ [{:name "returns the project lock location"
+   :test (fn [] (registry/lock-path "/fixture/app"))
+   :expected "/fixture/app/project.lock.edn"}])
+
+^{:refer code.deploy.registry/read-lock}
+(Test/check
+ [{:name "returns nil for an absent project lock"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (registry/read-lock root)
+                    (finally (stage/delete-tree root)))))
+   :expected nil}])
+
+^{:refer code.deploy.registry/write-lock}
+(Test/check
+ [{:name "writes a canonical lock through an atomic replacement"
+   :test (fn [] (let [root (fixture-root)
+                      value (dependency/lock-document
+                             (catalog/read-project root)
+                             {:registry/url "file:///registry" :packages {}}
+                             {:selected {}})]
+                  (try
+                    (let [path (registry/write-lock root value)]
+                      [(= path (registry/lock-path root))
+                       (= value (registry/read-lock root))])
+                    (finally (stage/delete-tree root)))))
+   :expected [true true]}])
+
+^{:refer code.deploy.registry/registry-value}
+(Test/check
+ [{:name "loads a configured local registry document"
+   :test (fn [] (let [root (fixture-root)
+                      path (File/join root "registry.edn")]
+                  (try
+                    (deref (File/write path
+                                        (String/encode-utf8 "{:packages {\"hara:test/pkg\" {\"1.0.0\" {}}}}")
+                                        {:mode :replace :parents? true}))
+                    (let [value (registry/registry-value root
+                                                          {:project/dependency-registry path})]
+                      [(str/ends-with? (:registry/url value) "/registry.edn")
+                       (:packages value)])
+                    (finally (stage/delete-tree root)))))
+   :expected [true {"hara:test/pkg" {"1.0.0" {}}}]}])
+
+^{:refer code.deploy.registry/archive-path}
+(Test/check
+ [{:name "selects the local archive field"
+   :test (fn [] [(registry/archive-path {:archive "a.harp"})
+                 (registry/archive-path {:archive/path "b.harp"})
+                 (registry/archive-path {})])
+   :expected ["a.harp" "b.harp" nil]}])
+
+^{:refer code.deploy.registry/archive-url}
+(Test/check
+ [{:name "maps a verified digest to the public object endpoint"
+   :test (fn [] [(registry/archive-url
+                  {:registry/url "https://packages.hara-lang.org"}
+                  {:archive-sha256 "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})
+                 (registry/archive-url
+                 {:registry/url "https://packages.hara-lang.org"}
+                  {:archive-sha256 "sha256:not-a-digest"})
+                 (registry/archive-url
+                  {:registry/url "https://packages.hara-lang.org/v1/registry?ref=main"}
+                  {:archive-sha256 "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"})
+                 (registry/archive-url
+                  {:registry/url "https://packages.hara-lang.org"}
+                  {:archive-url "https://untrusted.invalid/package.harp"})])
+   :expected ["https://packages.hara-lang.org/objects/sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+              nil
+              "https://packages.hara-lang.org/objects/sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+              nil]}])
+
+^{:refer code.deploy.registry/archive-cache-path}
+(Test/check
+ [{:name "keeps downloaded archives in a digest-addressed project cache"
+   :test (fn [] (registry/archive-cache-path
+                 "/fixture/app"
+                 {:archive-sha256 "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}))
+   :expected "/fixture/app/target/hara-packages/archives/sha256/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.harp"}])
+
+^{:refer code.deploy.registry/fetch-archive}
+(Test/check
+ [{:name "reuses a supplied local archive without starting a process"
+   :test (fn []
+           (registry/fetch-archive
+            "/fixture/app"
+            {:registry/url "https://packages.hara-lang.org"}
+            "hara:test/pkg"
+            {:archive "/fixture/package.harp"}))
+   :expected {:archive "/fixture/package.harp"}}])
+
+^{:refer code.deploy.registry/verify-archive}
+(Test/check
+ [{:name "verifies a selected archive digest"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-registry-digest-"}))
+                      path (File/join root "package.harp")]
+                  (try
+                    (deref (File/write path
+                                        (String/encode-utf8 "hello")
+                                        {:mode :replace :parents? true}))
+                    (:archive-sha256
+                     (registry/verify-archive
+                      "hara:test/pkg"
+                      {:archive path
+                       :archive-sha256 "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}))
+                    (finally (stage/delete-tree root)))))
+   :expected "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}
+  {:name "rejects a missing selected archive"
+   :test (fn [] (try
+                  (registry/verify-archive "hara:test/pkg" {:archive "/missing/package.harp"})
+                  false
+                  (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.registry/install-selected}
+(Test/check
+ [{:name "rejects a selected package without a verified archive"
+   :test (fn [] (try
+                  (registry/install-selected {:selected {"hara:test/pkg" {:version "1.0.0"}}})
+                  false
+                  (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.registry/materialize-selected}
+(Test/check
+ [{:name "materializes and verifies a selected local archive"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-registry-materialize-"}))
+                      path (File/join root "package.harp")
+                      candidate {:version "1.0.0"
+                                 :archive path
+                                 :archive-sha256 "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}]
+                  (try
+                    (deref (File/write path
+                                        (String/encode-utf8 "hello")
+                                        {:mode :replace :parents? true}))
+                    (str/ends-with?
+                     (get-in (registry/materialize-selected
+                              root
+                              {:registry/url "https://packages.hara-lang.org"}
+                              {:selected {"hara:test/pkg" candidate}})
+                             [:selected "hara:test/pkg" :archive])
+                     "/package.harp")
+                    (finally (stage/delete-tree root)))))
+   :expected true}])
+
+^{:refer code.deploy.registry/pull}
+(Test/check
+ [{:name "pulls and verifies the declared graph without changing project state"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-registry-pull-"}))
+                      archive (File/join root "package.harp")
+                      registry-path (File/join root "registry.edn")
+                      project-path (File/join root "project.edn")
+                      project-text (str "{:project/id \"fixture/pull\" :project/version \"1.0.0\" :project/dependencies {\"hara:test/pkg\" \"=1.0.0\"} :project/dependency-registry \"" registry-path "\"}")]
+                  (try
+                    (deref (File/write project-path
+                                       (String/encode-utf8 project-text)
+                                       {:mode :replace :parents? true}))
+                    (deref (File/write archive
+                                       (String/encode-utf8 "hello")
+                                       {:mode :replace :parents? true}))
+                    (deref (File/write registry-path
+                                       (String/encode-utf8
+                                        (str "{:packages {\"hara:test/pkg\" {\"1.0.0\" {:archive \"" archive "\" :archive-sha256 \"sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824\"}}}}"))
+                                       {:mode :replace :parents? true}))
+                    (let [before (catalog/read-project root)
+                          result (registry/pull root {})
+                          after (catalog/read-project root)]
+                      [(str/ends-with? (get-in result [:selected "hara:test/pkg" :archive]) "/package.harp")
+                       (= before after)
+                       (nil? (registry/read-lock root))])
+                    (finally (stage/delete-tree root)))))
+   :expected [true true true]}])
+
+^{:refer code.deploy.registry/sync}
+(Test/check
+ [{:name "syncs an empty Hara graph into an exact lock"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (let [lock (registry/sync root {})]
+                      [(:lock/format lock)
+                       (:packages lock)
+                       (= lock (registry/read-lock root))])
+                    (finally (stage/delete-tree root)))))
+   :expected ["0.1.0" {} true]}])
+
+^{:refer code.deploy.registry/check}
+(Test/check
+ [{:name "reports dependency and lock validity"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (registry/sync root {})
+                    (select-keys (registry/check root) [:project/id :locked? :lock/valid?])
+                    (finally (stage/delete-tree root)))))
+   :expected {:project/id "fixture/app" :locked? true :lock/valid? true}}])
+
+^{:refer code.deploy.registry/add}
+(Test/check
+ [{:name "adds a normalized Hara dependency to project.edn"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (registry/add root "hara:test/pkg" "^1.0.0")
+                    (get-in (catalog/read-project root) [:project/dependencies "hara:test/pkg"])
+                    (finally (stage/delete-tree root)))))
+   :expected {:version "^1.0.0" :scope :compile :optional false :exclusions []}}])
+
+^{:refer code.deploy.registry/remove}
+(Test/check
+ [{:name "removes a Hara dependency from project.edn"
+   :test (fn [] (let [root (fixture-root)]
+                  (try
+                    (registry/add root "hara:test/pkg" "^1.0.0")
+                    (registry/remove root "hara:test/pkg")
+                    (:project/dependencies (catalog/read-project root))
+                    (finally (stage/delete-tree root)))))
+   :expected {}}])

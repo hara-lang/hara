@@ -1,0 +1,220 @@
+(ns work.flow.make.common-test
+  (:require [work.flow.make.common :as common]))
+
+(defn config-fixture []
+  (common/make-config-fn {:root "test-temp/make-common"
+                          :build "build"
+                          :tag "fixture"
+                          :default []}))
+
+^{:refer work.flow.make.common/with:triggers}
+(Test/check
+ [{:name "binds a temporary trigger registry"
+   :test (fn [] (let [before (common/triggers-snapshot)]
+                  (try
+                    (common/with:triggers [ (atom {:temporary [:x]})]
+                      (common/triggers-get :temporary))
+                    (finally (common/triggers-restore! before)))))
+   :expected [:x]}])
+
+^{:refer work.flow.make.common/triggers-snapshot}
+(Test/check
+ [{:name "captures the trigger registry"
+   :test (fn [] (let [before (common/triggers-snapshot)]
+                  (try
+                    (common/triggers-set :fixture [:a])
+                    (get (common/triggers-snapshot) :fixture)
+                    (finally (common/triggers-restore! before)))))
+   :expected [:a]}])
+
+^{:refer work.flow.make.common/triggers-restore!}
+(Test/check
+ [{:name "restores a captured trigger registry"
+   :test (fn [] (let [before (common/triggers-snapshot)]
+                  (try
+                    (= {:fixture [:a]}
+                       (common/triggers-restore! {:fixture [:a]}))
+                    (finally (common/triggers-restore! before)))))
+   :expected true}])
+
+^{:refer work.flow.make.common/triggers-purge}
+(Test/check
+ [{:name "clears all trigger registrations"
+   :test (fn [] (let [before (common/triggers-snapshot)]
+                  (try
+                    (common/triggers-set :fixture [:a])
+                    (common/triggers-purge)
+                    (common/triggers-snapshot)
+                    (finally (common/triggers-restore! before)))))
+   :expected {}}])
+
+^{:refer work.flow.make.common/triggers-set}
+(Test/check
+ [{:name "sets one trigger registration"
+   :test (fn [] (let [before (common/triggers-snapshot)]
+                  (try
+                    (common/triggers-set :fixture [:a])
+                    (common/triggers-get :fixture)
+                    (finally (common/triggers-restore! before)))))
+   :expected [:a]}])
+
+^{:refer work.flow.make.common/triggers-clear}
+(Test/check
+ [{:name "clears one trigger registration"
+   :test (fn [] (let [before (common/triggers-snapshot)]
+                  (try
+                    (common/triggers-set :fixture [:a])
+                    (common/triggers-clear :fixture)
+                    (common/triggers-get :fixture)
+                    (finally (common/triggers-restore! before)))))
+   :expected nil}])
+
+^{:refer work.flow.make.common/triggers-get}
+(Test/check
+ [{:name "gets one trigger registration"
+   :test (fn [] (let [before (common/triggers-snapshot)]
+                  (try
+                    (common/triggers-set :fixture [:a])
+                    (common/triggers-get :fixture)
+                    (finally (common/triggers-restore! before)))))
+   :expected [:a]}])
+
+^{:refer work.flow.make.common/triggers-list}
+(Test/check
+ [{:name "lists registrations by config tag"
+   :test (fn [] (let [before (common/triggers-snapshot)
+                      config (config-fixture)]
+                  (try
+                    (common/triggers-set config [:a])
+                    (common/triggers-list)
+                    (finally (common/triggers-restore! before)))))
+   :expected {"fixture" [:a]} }])
+
+^{:refer work.flow.make.common/get-triggered}
+(Test/check
+ [{:name "selects configs by string trigger prefix"
+   :test (fn [] (let [before (common/triggers-snapshot)
+                      config (config-fixture)]
+                  (try
+                    (common/triggers-set config ["demo.sample"])
+                    (= [config] (vec (common/get-triggered 'demo.sample/item)))
+                    (finally (common/triggers-restore! before)))))
+   :expected true}])
+
+^{:refer work.flow.make.common/with:internal-shell}
+(Test/check
+ [{:name "enables internal shell execution within its body"
+   :test (fn [] (binding [common/*internal-shell* nil]
+                  (common/with:internal-shell common/*internal-shell*)))
+   :expected true}])
+
+^{:refer work.flow.make.common/make-config?}
+(Test/check
+ [{:name "recognises MakeConfig records"
+   :test (fn [] [(common/make-config? (config-fixture))
+                 (common/make-config? {})])
+   :expected [true false]}])
+
+^{:refer work.flow.make.common/config-value}
+(Test/check
+ [{:name "reads old configs and live host definition values"
+   :test (fn [] [(select-keys (common/config-value (config-fixture)) [:tag])
+                 (select-keys
+                  (common/config-value
+                   {:make/host true
+                    :make/state (atom {:make/plan
+                                       {:make/definition {:tag "host"}}})})
+                  [:tag])])
+   :expected [{:tag "fixture"} {:tag "host"}]}])
+
+^{:refer work.flow.make.common/get-config-tag}
+(Test/check
+ [{:name "reads the configured tag"
+   :test (fn [] (common/get-config-tag (config-fixture)))
+   :expected "fixture"}])
+
+^{:refer work.flow.make.common/make-config-defaults}
+(Test/check
+ [{:name "provides stable config defaults"
+   :test (fn [] (common/make-config-defaults))
+   :expected {:ns 'work.flow.make.common :build ".build" :orgfile "Main.org"}}])
+
+^{:refer work.flow.make.common/make-config-map-fn}
+(Test/check
+ [{:name "merges defaults and supplies a root"
+   :test (fn [] (common/make-config-map-fn {:default [] :tag "fixture"}))
+   :expected {:ns 'work.flow.make.common :build ".build" :orgfile "Main.org"
+              :default [] :tag "fixture" :root "."}}])
+
+^{:refer work.flow.make.common/make-config-map}
+(Test/check
+ [{:name "constructs a config map using the caller namespace"
+   :test (fn [] (:default (common/make-config-map {:default [:a]})))
+   :expected [:a]}])
+
+^{:refer work.flow.make.common/make-config-fn}
+(Test/check
+ [{:name "constructs a live MakeConfig"
+   :test (fn [] (common/make-config? (common/make-config-fn {:default []})))
+   :expected true}])
+
+^{:refer work.flow.make.common/make-config}
+(Test/check
+ [{:name "constructs a config through the macro"
+   :test (fn [] (common/make-config? (common/make-config {:default []})))
+   :expected true}])
+
+^{:refer work.flow.make.common/make-config-update}
+(Test/check
+ [{:name "updates a config while preserving its namespace"
+   :test (fn [] (let [config (common/make-config-fn {:default [] :tag "old"})]
+                  (common/make-config-update config {:default [:new] :tag "new"})
+                  (select-keys (deref (:instance config)) [:ns :default :tag])))
+   :expected {:ns 'work.flow.make.common :default [:new] :tag "new"}}])
+
+^{:refer work.flow.make.common/make-dir}
+(Test/check
+ [{:name "joins root and build directory"
+   :test (fn [] (common/make-dir (config-fixture)))
+   :expected "test-temp/make-common/build"}])
+
+^{:refer work.flow.make.common/command-name}
+(Test/check
+ [{:name "normalises command names for tmux"
+   :test (fn [] [(common/command-name :build "demo")
+                 (common/command-name :test nil)])
+   :expected ["BUILD-demo" "TEST"]}])
+
+^{:refer work.flow.make.common/make-dir-setup}
+(Test/check
+ [{:name "creates a build directory"
+   :test (fn [] (let [config (config-fixture)]
+                  (try
+                    [(common/make-dir-setup config)
+                     (common/make-dir-exists? config)]
+                    (finally (common/make-dir-teardown config)))))
+   :expected ["test-temp/make-common/build" true]}])
+
+^{:refer work.flow.make.common/make-dir-exists?}
+(Test/check
+ [{:name "reports whether the build directory exists"
+   :test (fn [] (let [config (config-fixture)]
+                  (try
+                    [(common/make-dir-exists? config)
+                     (common/make-dir-setup config)
+                     (common/make-dir-exists? config)]
+                    (finally (common/make-dir-teardown config)))))
+   :expected [false "test-temp/make-common/build" true]}])
+
+^{:refer work.flow.make.common/make-dir-teardown}
+(Test/check
+ [{:name "removes a build directory and is repeatable"
+   :test (fn [] (let [config (config-fixture)]
+                  (try
+                    (common/make-dir-setup config)
+                    (let [receipts [(common/make-dir-teardown config)
+                                    (common/make-dir-teardown config)]]
+                      [(first (first receipts))
+                       (first (second receipts))])
+                    (finally (common/make-dir-teardown config)))))
+   :expected [true false]}])

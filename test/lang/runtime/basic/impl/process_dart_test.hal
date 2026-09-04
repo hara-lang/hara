@@ -1,0 +1,70 @@
+(ns lang.runtime.basic.impl.process-dart-test
+  (:require [lang.core.registry :as registry]
+            [lang.core.runtime :as runtime]
+            [lang.runtime.basic.impl.process-dart :as subject]
+            [lang.runtime.basic.type-common :as common]))
+
+^{:refer lang.runtime.basic.impl.process-dart/dart-source-transform}
+(Test/check
+ [{:name "wraps a Dart expression in an executable main function"
+   :test (fn [] (let [source (subject/dart-source-transform "1 + 2")]
+                  [(str/includes? source "void main()")
+                   (str/includes? source "print(1 + 2)")]))
+   :expected [true true]}])
+
+^{:refer lang.runtime.basic.impl.process-dart/+dart-program-init+}
+(Test/check
+ [{:name "declares Dart executable and kernel compiler commands"
+   :test (fn [] [(get-in subject/+dart-program-init+ [:default :twostep])
+                 (get-in subject/+dart-program-init+ [:default :verify])
+                 (get-in subject/+dart-program-init+ [:env :dart :flags :twostep])
+                 (get-in (common/get-program-options :dart) [:env :dart :extension])])
+   :expected [:dart :dart ["compile" "exe"] "dart"]}])
+
+^{:refer lang.runtime.basic.impl.process-dart/+dart-twostep-config+}
+(Test/check
+ [{:name "configures Dart expressions for standalone compiler execution"
+   :test (fn [] [(select-keys subject/+dart-twostep-config+ [:main :emit :json])
+                 (fn? (:source-transform subject/+dart-twostep-config+))])
+   :expected [{:main {} :emit {} :json :string} true]}])
+
+^{:refer lang.runtime.basic.impl.process-dart/+dart-verify-config+}
+(Test/check
+ [{:name "configures Dart verification as a compile-only source round trip"
+   :test (fn [] (select-keys subject/+dart-verify-config+
+                              [:json :compile-only :return-source]))
+   :expected {:json false :compile-only true :return-source true}}])
+
+^{:refer lang.runtime.basic.impl.process-dart/+dart-twostep+}
+(Test/check
+ [{:name "installs the Dart compiler runtime type"
+   :test (fn [] [(select-keys subject/+dart-twostep+ [:lang :runtime :type])
+                 (set (keys (:instance subject/+dart-twostep+)))
+                 (registry/registry-runtime-ns :dart :twostep)])
+   :expected [{:lang :dart :runtime :twostep :type :lang/rt.twostep}
+              #{:create :raw-eval}
+              'lang.runtime.basic.impl.process-dart]}])
+
+^{:refer lang.runtime.basic.impl.process-dart/+dart-verify+}
+(Test/check
+ [{:name "installs the Dart compile-only verification coordinate"
+   :test (fn [] [(select-keys subject/+dart-verify+ [:lang :runtime :type])
+                 (:type (runtime/runtime-spec :dart :verify))])
+   :expected [{:lang :dart :runtime :verify :type :lang/rt.twostep}
+              :lang/rt.twostep]}])
+
+^{:refer lang.runtime.basic.impl.process-dart/+init+}
+(Test/check
+ [{:name "publishes the complete Dart process runtime family"
+   :test (fn [] [(get subject/+init+ :lang)
+                 (set (keys (dissoc subject/+init+ :lang)))])
+   :expected [:dart #{:program :twostep :verify}]}])
+
+^{:refer lang.runtime.basic.impl.process-dart/dart-source-transform}
+(Test/check
+ [{:name "runs and verifies emitted Dart expressions"
+   :test (fn [] (let [twostep (runtime/rt-start (runtime/rt-create :dart :twostep))
+                       verify (runtime/rt-start (runtime/rt-create :dart :verify))]
+                  [(runtime/rt-raw-eval twostep "1 + 2")
+                   (runtime/rt-raw-eval verify "1 + 2")]))
+   :expected ["3" "1 + 2"]}])

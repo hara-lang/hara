@@ -1,0 +1,94 @@
+(ns work.flow.make.readme-test
+  (:require [std.fs :as fs]
+            [work.flow.make.common :as common]
+            [work.flow.make.readme :as readme]))
+
+(defn config-fixture []
+  (common/make-config-fn {:root "test-temp/readme"
+                          :orgfile "Main.org"
+                          :default []}))
+
+^{:refer work.flow.make.readme/read-text}
+(Test/check
+ [{:name "reads text written through the filesystem boundary"
+   :test (fn [] (let [config (config-fixture)
+                      file "test-temp/readme/value.txt"]
+                  (try
+                    (readme/write-text file "hello")
+                    (readme/read-text file)
+                    (finally (if (fs/exists? file) (fs/delete file) nil)))))
+   :expected "hello"}])
+
+^{:refer work.flow.make.readme/write-text}
+(Test/check
+ [{:name "writes UTF-8 text and creates its parent"
+   :test (fn [] (let [file "test-temp/readme/nested/value.txt"]
+                  (try
+                    (readme/write-text file "hello")
+                    (fs/exists? file)
+                    (finally (if (fs/exists? file) (fs/delete file) nil)))))
+   :expected true}])
+
+^{:refer work.flow.make.readme/has-orgfile?}
+(Test/check
+ [{:name "recognises configured org files"
+   :test (fn [] [(readme/has-orgfile? (config-fixture))
+                 (readme/has-orgfile? (common/make-config-fn {:default [] :orgfile nil}))])
+   :expected [true false]}])
+
+^{:refer work.flow.make.readme/tangle-params}
+(Test/check
+ [{:name "extracts org header parameters"
+   :test (fn [] (let [config (config-fixture)
+                      file "test-temp/readme/Main.org"]
+                  (try
+                    (readme/write-text file "#+TITLE: Demo\n#+AUTHOR: User\n")
+                    (readme/tangle-params config)
+                    (finally (if (fs/exists? file) (fs/delete file) nil)))))
+   :expected {:title "Demo" :author "User"}}])
+
+^{:refer work.flow.make.readme/tangle-output}
+(Test/check
+ [{:name "finds a tangle output in a source header"
+   :test (fn [] [(readme/tangle-output "#+BEGIN_SRC hara :tangle src/main.hal")
+                 (readme/tangle-output "#+BEGIN_SRC hara")])
+   :expected ["src/main.hal" nil]}])
+
+^{:refer work.flow.make.readme/tangle-parse}
+(Test/check
+ [{:name "parses source blocks and their output names"
+   :test (fn [] (let [config (config-fixture)
+                      file "test-temp/readme/Main.org"]
+                  (try
+                    (readme/write-text file "#+BEGIN_SRC hara :tangle generated.hal\n(+ 1 1)\n#+END_SRC\n")
+                    (let [parsed (readme/tangle-parse config)]
+                      [(first parsed) (count (second parsed))
+                       (:out (first (first (second parsed))))])
+                    (finally (if (fs/exists? file) (fs/delete file) nil)))))
+   :expected ["test-temp/readme" 1 "generated.hal"]}])
+
+^{:refer work.flow.make.readme/tangle}
+(Test/check
+ [{:name "writes tangled source blocks"
+   :test (fn [] (let [config (config-fixture)
+                      file "test-temp/readme/Main.org"
+                      output "test-temp/readme/generated.hal"]
+                  (try
+                    (readme/write-text file "#+BEGIN_SRC hara :tangle generated.hal\n(+ 1 1)\n#+END_SRC\n")
+                    [(readme/tangle config) (readme/read-text output)]
+                    (finally (if (fs/exists? (str "test-temp/readme"))
+                               (fs/delete "test-temp/readme" {:recursive? true})
+                               nil)))))
+   :expected [["test-temp/readme/generated.hal"] "(+ 1 1)"]}])
+
+^{:refer work.flow.make.readme/make-readme-raw}
+(Test/check
+ [{:name "removes the generated Build section from org content"
+   :test (fn [] (readme/make-readme-raw "* Intro\nIntro text\n* Build\nBuild text\n* Usage\nUsage text"))
+   :expected "* Intro\nIntro text\n* Usage\nUsage text"}])
+
+^{:refer work.flow.make.readme/make-readme}
+(Test/check
+ [{:name "exposes README generation as a function boundary"
+   :test (fn [] (function? readme/make-readme))
+   :expected true}])

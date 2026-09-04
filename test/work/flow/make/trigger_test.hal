@@ -1,0 +1,105 @@
+(ns work.flow.make.trigger-test
+  (:require [work.flow.make.host :as host]
+            [work.flow.make.trigger :as trigger]))
+
+(defn plan-with-events [events]
+  {:make/id :fixture
+   :make/triggers [:a :b]
+   :make/trigger-policy :manual
+   :make/definition
+   {:trigger
+    {:install (fn [_ trigger]
+                (swap! events conj [:install trigger])
+                [:installed trigger])
+     :remove (fn [_ receipt]
+               (swap! events conj [:remove receipt])
+               [:removed receipt])}}})
+
+^{:refer work.flow.make.trigger/trigger-install-function}
+(Test/check
+ [{:name "finds the nested install hook"
+   :test (fn [] (let [events (atom [])
+                      plan (plan-with-events events)]
+                  (function? (trigger/trigger-install-function plan))))
+   :expected true}])
+
+^{:refer work.flow.make.trigger/trigger-remove-function}
+(Test/check
+ [{:name "finds the nested remove hook"
+   :test (fn [] (let [events (atom [])
+                      plan (plan-with-events events)]
+                  (function? (trigger/trigger-remove-function plan))))
+   :expected true}])
+
+^{:refer work.flow.make.trigger/install-one}
+(Test/check
+ [{:name "installs one trigger through the hook"
+   :test (fn [] (let [events (atom [])
+                      plan (plan-with-events events)
+                      value (host/create plan)]
+                  (trigger/install-one value plan :a)))
+   :expected [:installed :a]}])
+
+^{:refer work.flow.make.trigger/remove-one}
+(Test/check
+ [{:name "removes one receipt through the hook"
+   :test (fn [] (let [events (atom [])
+                      plan (plan-with-events events)
+                      value (host/create plan)]
+                  (trigger/remove-one value plan [:installed :a])))
+   :expected [:removed [:installed :a]]}])
+
+^{:refer work.flow.make.trigger/install-all}
+(Test/check
+ [{:name "installs all plan triggers in order"
+   :test (fn [] (let [events (atom [])
+                      plan (plan-with-events events)
+                      value (host/create plan)]
+                  (trigger/install-all value plan)))
+   :expected [[:installed :a] [:installed :b]]}])
+
+^{:refer work.flow.make.trigger/remove-all}
+(Test/check
+ [{:name "removes all receipts in order"
+   :test (fn [] (let [events (atom [])
+                      plan (plan-with-events events)
+                      value (host/create plan)]
+                  (trigger/remove-all value plan [[:installed :a] [:installed :b]])))
+   :expected [[:removed [:installed :a]] [:removed [:installed :b]]]}])
+
+^{:refer work.flow.make.trigger/start}
+(Test/check
+ [{:name "starts once and keeps the host running"
+   :test (fn [] (let [events (atom [])
+                      plan (plan-with-events events)
+                      value (host/create plan)]
+                  (trigger/start value)
+                  (trigger/start value)
+                  [(host/status value) (host/installed-triggers value) (count (deref events))]))
+   :expected [:running [[:installed :a] [:installed :b]] 2]}])
+
+^{:refer work.flow.make.trigger/stop}
+(Test/check
+ [{:name "stops once and removes installed receipts"
+   :test (fn [] (let [events (atom [])
+                      plan (plan-with-events events)
+                      value (host/create plan)]
+                  (trigger/start value)
+                  (trigger/stop value)
+                  (trigger/stop value)
+                  [(host/status value) (host/installed-triggers value)
+                   (deref events)]))
+   :expected [:stopped []
+              [[:install :a] [:install :b]
+               [:remove [:installed :a]] [:remove [:installed :b]]]]}])
+
+^{:refer work.flow.make.trigger/transition-running}
+(Test/check
+ [{:name "replaces old receipts after candidate installation"
+   :test (fn [] (let [events (atom [])
+                      previous (plan-with-events events)
+                      candidate (assoc (plan-with-events events) :make/id :next)
+                      value (host/create previous)]
+                  (host/mark-running value [[:installed :old]])
+                  (trigger/transition-running value previous candidate)))
+   :expected [[:installed :a] [:installed :b]]}])

@@ -1,0 +1,133 @@
+(ns lang.model.v1.spec-go.go-grammar
+  (:config {:role :internal})
+  (:require [lang.base.v1.grammar-spec :as spec]
+            [lang.common.emit :as emit]
+            [lang.common.grammar :as grammar]
+            [lang.common.grammar-api :as grammar-api]
+            [lang.model.v1.spec-xtalk.fn-go :as xtalk-ops]))
+
+(def +language+ :go)
+(def +tag+ :go)
+(def +grammar-version+ spec/+version+)
+
+(def +baseline+
+  (merge (grammar/build) (grammar/build-xtalk)))
+
+(defn go-typesystem
+  [[_ type & args] grammar-value mopts]
+  (let [args (vec args)]
+    (cond
+      (= 'slice type)
+      (str "[]" (emit/emit-main (first args) grammar-value mopts))
+
+      (= 'map type)
+      (str "map[" (emit/emit-main (first args) grammar-value mopts) "]"
+           (emit/emit-main (second args) grammar-value mopts))
+
+      :else
+      (str (emit/emit-main type grammar-value mopts)
+           "["
+           (str/join ", " (map (fn [item]
+                                 (emit/emit-main item grammar-value mopts))
+                               args))
+           "]"))))
+
+(defn go-vector
+  [arr grammar-value mopts]
+  (if (= :> (first arr))
+    (go-typesystem arr grammar-value mopts)
+    (str "[]any{" (str/join ", "
+                              (map (fn [item]
+                                     (emit/emit-main item grammar-value mopts))
+                                   arr))
+         "}")))
+
+(defn go-tf-arrow
+  [[_ & args]]
+  (let [args (vec args)]
+    (if (= 1 (count args))
+      (list :% (list :- "<-") (first args))
+      (list :% (first args) (list :- " <- ") (second args)))))
+
+(defn go-defstruct
+  [[_ sym fields] grammar-value mopts]
+  (str "type " (emit/emit-main sym grammar-value mopts) " struct {\n"
+       (str/join "\n"
+                 (map (fn [field]
+                        (if (vector? field)
+                          (let [[n t & tags] field]
+                            (str "  " (emit/emit-main n grammar-value mopts)
+                                 " " (emit/emit-main t grammar-value mopts)
+                                 (if (seq tags)
+                                   (str " `" (str/join " " tags) "`")
+                                   "")))
+                          (str "  " (emit/emit-main field grammar-value mopts))))
+                      fields))
+       "\n}"))
+
+(defn go-definterface
+  [[_ sym methods] grammar-value mopts]
+  (str "type " (emit/emit-main sym grammar-value mopts) " interface {\n"
+       (str/join "\n"
+                 (map (fn [method]
+                        (str "  " (emit/emit-main method grammar-value mopts)))
+                      methods))
+       "\n}"))
+
+(def +features+
+  (-> +baseline+
+      (grammar/build:override xtalk-ops/+go+)
+      (grammar/build:override
+       {:var {:symbol #{'var} :raw "var"}
+        :new {:symbol #{'new} :raw "new" :emit :call}})
+      (grammar/build:extend
+       {:go-chan {:op :go-chan :symbol #{'chan} :raw "chan " :emit :pre}
+        :go-arrow {:op :go-arrow :symbol #{'<-} :macro go-tf-arrow
+                   :emit :macro}
+        :go {:op :go :symbol #{'go} :raw "go " :emit :pre}
+        :defer {:op :defer :symbol #{'defer} :raw "defer " :emit :pre}
+        :make {:op :make :symbol #{'make} :raw "make" :emit :invoke}
+        :defstruct {:op :defstruct :symbol #{'defstruct}
+                    :type :def :section :code :emit go-defstruct}
+        :definterface {:op :definterface :symbol #{'definterface}
+                       :type :def :section :code :emit go-definterface}})))
+
+(def +template+
+  (-> (emit/default-grammar)
+      (merge-nested
+       {:banned #{:set :regex}
+        :highlight #{'return 'break 'continue 'fallthrough}
+        :default {:common {:statement ""}
+                  :function {:prefix "func" :raw "" :args {:sep ", " :reversed true}}
+                  :typehint {:enabled true :assign "" :space " " :after true}
+                  :invoke {:reversed true :hint ""}
+                  :block {:start " {" :end "}"}}
+        :token {:symbol {:replace {"-" "_"}}}
+        :data {:vector {:custom go-vector}
+               :map {:start "map[string]any{" :end "}" :space ""}}
+        :xtalk {:notify {:custom true}}})))
+
+(def +template-source+
+  (grammar-api/emit-template
+   {:template/id +tag+
+    :template/version +grammar-version+
+    :template/value +template+}))
+
+(def +profile+
+  (grammar-api/profile
+   {:profile/id +tag+
+    :profile/version +grammar-version+
+    :profile/operators +features+}))
+
+(def +grammar+
+  (grammar-api/definition
+   {:grammar/id +tag+
+    :grammar/version +grammar-version+
+    :grammar/release "alpha"
+    :grammar/language +language+
+    :grammar/tag +tag+
+    :grammar/engine {:minimum 1 :maximum 1}
+    :grammar/emit-template {:template/id +tag+
+                            :template/version +grammar-version+}
+    :grammar/profiles [{:profile/id +tag+
+                        :profile/version +grammar-version+}]}))

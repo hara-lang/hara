@@ -3,6 +3,7 @@
             [lang.runtime.basic :as basic]
             [lang.runtime.basic.type-oneshot :as oneshot]
             [lang.runtime.basic.type-verify :as verify]
+            [lang.runtime.basic.impl.process-c]
             [lang.runtime.basic.impl.source-hara :as hara-source]
             [lang.runtime.basic.impl.source-js :as js-source]
             [lang.runtime.basic.impl.source-lua :as lua-source]
@@ -18,6 +19,14 @@
                                :process {}})]
                   [(:lang value) (:runtime value) (:program value) (:exec value)]))
    :expected [:js :oneshot :nodejs ["node" "-e"]]}])
+
+^{:refer lang.runtime.basic/rt-twostep:create}
+(Test/check
+ [{:name "constructs the C compiler runtime through the facade"
+   :test (fn [] (let [value (basic/rt-twostep:create {:lang :c})]
+                  [(:id value) (:lang value) (:runtime value) (:program value)
+                   (:exec value)]))
+   :expected [:c.twostep :c :twostep :gcc ["gcc"]]}])
 
 ^{:refer lang.runtime.basic.type-oneshot/oneshot-result}
 (Test/check
@@ -68,19 +77,24 @@
 (Test/check
  [{:name "emits a Python persistent return-eval bootstrap"
    :test (fn [] (let [source (python-source/transport-source 4123)]
-                  [(str/includes? source "socket.create_connection")
+                  [(str/includes? source "socket.socket")
+                   (str/includes? source "wire.connect")
+                   (str/includes? source "<PING>")
                    (str/includes? source "return_eval")
                    (str/includes? source "4123")]))
-   :expected [true true true]}])
+   :expected [true true true true true]}])
 
 ^{:refer lang.runtime.basic.impl.source-lua/transport-source}
 (Test/check
  [{:name "emits a Lua persistent return-eval bootstrap"
    :test (fn [] (let [source (lua-source/transport-source 4123)]
                   [(str/includes? source "socket.connect")
+                   (str/includes? source "cjson")
+                   (str/includes? source "<PING>")
                    (str/includes? source "return_eval")
+                   (str/includes? source "loader('return '..source)")
                    (str/includes? source "4123")]))
-   :expected [true true true]}])
+   :expected [true true true true true true]}])
 
 ^{:refer lang.runtime.basic.impl.source-hara/transport-source}
 (Test/check
@@ -93,6 +107,14 @@
 
 ^{:refer lang.runtime.basic/raw-eval-oneshot}
 (Test/check
- [{:name "one-shot evaluation is capability-gated in the native test host"
+[{:name "one-shot evaluation is capability-gated in the native test host"
    :test (fn [] true)
    :expected true}])
+
+^{:refer lang.runtime.basic/raw-eval-twostep}
+(Test/check
+ [{:name "evaluates an emitted C expression through the facade"
+   :test (fn [] (basic/raw-eval-twostep
+                  (basic/rt-twostep:create {:lang :c})
+                  "1 + 2"))
+   :expected "3"}])

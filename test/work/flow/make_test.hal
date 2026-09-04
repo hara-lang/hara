@@ -1,0 +1,77 @@
+(ns work.flow.make-test
+  (:require [work.flow.make :as make]
+            [work.flow.make.common :as common]))
+
+^{:refer work.flow.make/path}
+(Test/check
+ [{:name "publishes the make workflow path"
+   :test (fn [] make/path)
+   :expected [:make]}])
+
+^{:refer work.flow.make/build}
+(Test/check
+ [{:name "publishes the core build operation"
+   :test (fn [] (function? make/build))
+   :expected true}])
+
+^{:refer work.flow.make/map-values}
+(Test/check
+ [{:name "publishes bulk helpers"
+   :test (fn [] (make/map-values inc {:a 1 :b 2}))
+   :expected {:a 2 :b 3}}])
+
+^{:refer work.flow.make/tangle}
+(Test/check
+ [{:name "publishes readme tangling"
+   :test (fn [] (function? make/tangle))
+   :expected true}])
+
+^{:refer work.flow.make/triggers-set}
+(Test/check
+ [{:name "publishes trigger registration"
+   :test (fn [] (let [before (common/triggers-snapshot)
+                      config (common/make-config-fn {:tag "facade"
+                                                     :default []})]
+                  (try
+                    (make/triggers-set config [:sample])
+                    (make/triggers-get config)
+                    (finally (common/triggers-restore! before)))))
+   :expected [:sample]}])
+
+^{:refer work.flow.make/triggers-clear}
+(Test/check
+ [{:name "publishes trigger removal"
+   :test (fn [] (let [before (common/triggers-snapshot)
+                      config (common/make-config-fn {:tag "facade"
+                                                     :default []})]
+                  (try
+                    (make/triggers-set config [:sample])
+                    (make/triggers-clear config)
+                    (make/triggers-get config)
+                    (finally (common/triggers-restore! before)))))
+   :expected nil}])
+
+^{:refer work.flow.make/triggers-list}
+(Test/check
+ [{:name "publishes trigger listing"
+   :test (fn [] (let [before (common/triggers-snapshot)
+                      config (common/make-config-fn {:tag "facade"
+                                                     :default []})]
+                  (try
+                    (make/triggers-set config [:sample])
+                    (make/triggers-list)
+                    (finally (common/triggers-restore! before)))))
+   :expected {"facade" [:sample]} }])
+
+^{:refer work.flow.make/get-triggered}
+(Test/check
+ [{:name "publishes trigger matching"
+   :test (fn [] (let [before (common/triggers-snapshot)
+                      config (common/make-config-fn {:tag "facade"
+                                                     :default []})]
+                  (try
+                    (make/triggers-set config ["demo.sample"])
+                    (vec (map common/get-config-tag
+                              (make/get-triggered "demo.sample/item")))
+                    (finally (common/triggers-restore! before)))))
+   :expected ["facade"]}])

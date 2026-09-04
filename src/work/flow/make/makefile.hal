@@ -1,0 +1,65 @@
+(ns work.flow.make.makefile
+  (:config {:role :internal}))
+
+(def ^:dynamic *indent* 0)
+
+(defn block?
+  [value]
+  (or (map? value)
+      (and (vector? value)
+           (vector? (first value)))))
+
+(defn nested-block?
+  [value]
+  (and (vector? value)
+       (block? (last value))))
+
+(defn write-line
+  [value]
+  (if (vector? value)
+    (let [metadata (or (meta value) {})
+          marker (first (keys metadata))
+          body (str/join " " (map write-line value))]
+      (if (or (= marker "")
+              (= marker :quote))
+        (str "'" body "'")
+        body))
+    (str/tag value)))
+
+(defn emit-headers
+  "Emits makefile variable headers."
+  [headers]
+  (->> (reduce-kv
+        (fn [lines key value]
+          (conj lines (str (str/tag key) " = " (write-line value))))
+        []
+        headers)
+       (str/join "\n")))
+
+(defn emit-target
+  "Emits one makefile target."
+  [[tag & entries]]
+  (let [more (vec entries)
+        options (first more)
+        [dependencies commands]
+        (if (map? options)
+          [(:- options) (subvec more 1)]
+          [nil more])]
+    (str (str/tag tag) ":"
+         (if dependencies (str " " (write-line dependencies)))
+         "\n\t"
+         (str/join "\n\t" (map write-line commands)))))
+
+(defn write
+  "Renders makefile data as text."
+  [value]
+  (let [[headers & targets]
+        (if (map? (first value))
+          value
+          (cons nil value))]
+    (str (if headers
+           (str (emit-headers headers) "\n\n")
+           "")
+         (->> targets
+              (map emit-target)
+              (str/join "\n\n")))))

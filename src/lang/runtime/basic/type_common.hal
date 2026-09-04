@@ -1,7 +1,6 @@
 (ns lang.runtime.basic.type-common
   (:config {:role :internal})
-  (:require [lang.common.grammar-api :as grammar]
-            [lang.core.runtime :as runtime]
+  (:require [lang.core.runtime :as runtime]
             [lang.core.registry :as registry]))
 
 (def *context-options* (atom {}))
@@ -10,8 +9,21 @@
 (defn atom-value [reference]
   (deref (identity reference)))
 
+(defn runtime-deep-merge
+  "Recursively merges runtime option maps without loading the grammar API."
+  [left right]
+  (reduce-kv (fn [out key value]
+               (let [current (get out key)]
+                 (assoc out key
+                        (if (and (map? current)
+                                 (map? value))
+                          (runtime-deep-merge current value)
+                          value))))
+             (or left {})
+             (or right {})))
+
 (def +valid-contexts+
-  #{:oneshot :basic :host :interactive :websocket :remote-port :remote-ws :verify})
+  #{:oneshot :twostep :basic :host :interactive :websocket :remote-port :remote-ws :verify})
 
 (defn get-context-options
   ([] (atom-value *context-options*))
@@ -25,7 +37,7 @@
   (let [language (first coordinate)
         context (second coordinate)
         current (get-in (atom-value *context-options*) [language context])
-        next (grammar/deep-merge current value)]
+        next (runtime-deep-merge current value)]
     (swap! *context-options* assoc-in [language context] next)
     next))
 
@@ -44,7 +56,7 @@
 (defn put-program-options
   [language value]
   (let [current (get (atom-value *program-options*) language)
-        next (grammar/deep-merge current value)]
+        next (runtime-deep-merge current value)]
     (swap! *program-options* assoc language next)
     next))
 
@@ -110,8 +122,8 @@
   (let [context-options (get-in (atom-value *context-options*) [language context])
         program-options (get-in (atom-value *program-options*) [language :env program])]
     (if context-options
-      (grammar/deep-merge
-       (grammar/deep-merge (get context-options :default) program-options)
+      (runtime-deep-merge
+       (runtime-deep-merge (get context-options :default) program-options)
        (get context-options program))
       (throw
        (ex :host {:lang language

@@ -49,7 +49,7 @@
 (Test/check
  [{:name "reads the current project's portable declaration"
    :test (fn [] (select-keys (catalog/read-project ".") [:project/id :project/version]))
-   :expected {:project/id 'hara/foundation :project/version "0.1.16"}}])
+      :expected {:project/id 'hara/foundation :project/version "0.1.23"}}])
 
 ^{:refer code.deploy.catalog/catalog-relative-path}
 (Test/check
@@ -95,13 +95,58 @@
                     (catalog/read-catalog root)
                     (finally
                       (clean-root root ["config/packages.edn" "config" "project.edn"])))))
-   :expected {'demo/base {:include ['[demo.base :complete]]}}}])
+   :expected {'demo/base {:include ['[demo.base :complete]]}}}
+  {:name "loads the complete Foundation split catalog"
+   :test (fn [] (mapv (fn [value] (str value ""))
+                      (sort-by (fn [value] (str value ""))
+                               (keys (catalog/read-catalog ".")))))
+   :expected ["hara/code.deploy"
+              "hara/code.framework"
+              "hara/code.manage"
+              "hara/code.test"
+              "hara/command"
+              "hara/db.postgres"
+              "hara/lang.common"
+              "hara/lang.core"
+              "hara/lang.model"
+              "hara/lang.runtime"
+              "hara/lang.typed"
+              "hara/postgres.core"
+              "hara/postgres.entity"
+              "hara/postgres.model"
+              "hara/postgres.typed"
+              "hara/std.block"
+              "hara/std.config"
+              "hara/std.foundation"
+              "hara/std.lib"
+              "hara/std.package"
+              "hara/std.stream"
+              "hara/std.typed"
+              "hara/tool.cli"
+              "hara/tool.metaspec"
+              "hara/tool.sh"
+              "hara/work"
+              "hara/xt.lang"]}])
 
 ^{:refer code.deploy.catalog/source-path}
 (Test/check
  [{:name "joins an explicit source path below the deploy root"
    :test (fn [] (catalog/source-path "fixture" "src/demo/main.hal"))
    :expected "/fixture/src/demo/main.hal"}])
+
+^{:refer code.deploy.catalog/merge-sorted-paths}
+(Test/check
+ [{:name "merges ordered source path runs without changing their order"
+   :test (fn [] (catalog/merge-sorted-paths ["a" "c"] ["b" "d"]))
+   :expected ["a" "b" "c" "d"]}])
+
+^{:refer code.deploy.catalog/sort-paths}
+(Test/check
+ [{:name "orders paths and is idempotent for an already ordered graph"
+   :test (fn [] (let [paths ["src/z.hal" "src/a.hal" "src/m.hal"]
+                      ordered (catalog/sort-paths paths)]
+                  [ordered (= ordered (catalog/sort-paths ordered))]))
+   :expected [["src/a.hal" "src/m.hal" "src/z.hal"] true]}])
 
 ^{:refer code.deploy.catalog/source-analysis}
 (Test/check
@@ -149,6 +194,32 @@
                                         "src"])))))
    :expected [['demo.one "src/demo/one.hal"]]}])
 
+^{:refer code.deploy.catalog/project-source-files}
+(Test/check
+ [{:name "combines explicit and discovered sources with deterministic exclusion"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-files-"}))
+                      one (File/join root "src/demo/one.hal")
+                      private (File/join root "src/demo/private/hidden.hal")]
+                  (try
+                    (deref (File/write one
+                                        (String/encode-utf8 "(ns demo.one)")
+                                        {:mode :replace :parents? true}))
+                    (deref (File/write private
+                                        (String/encode-utf8 "(ns demo.private.hidden)")
+                                        {:mode :replace :parents? true}))
+                    (catalog/project-source-files
+                     root
+                     {:project/source-paths ["src"]
+                      :project/source-files ["src/demo/one.hal" "src/demo/one.hal"]
+                      :project/deploy {:source-excludes ["src/demo/private"]}})
+                    (finally
+                      (clean-root root ["src/demo/private/hidden.hal"
+                                        "src/demo/private"
+                                        "src/demo/one.hal"
+                                        "src/demo"
+                                        "src"])))))
+   :expected ["src/demo/one.hal"]}])
+
 ^{:refer code.deploy.catalog/namespace-text}
 (Test/check
  [{:name "normalises symbol namespaces to selector text"
@@ -190,6 +261,18 @@
    :expected {:include ['[demo :complete]] :package/name "demo/base"}}
   {:name "rejects definitions without vector selectors"
    :test (fn [] (try (catalog/package-definition 'demo/base {:include '(demo)}) false (catch error true)))
+   :expected true}
+  {:name "rejects non-vector explicit dependency declarations"
+   :test (fn [] (try
+                  (catalog/package-definition 'demo/base {:include [] :dependencies '(demo/other)})
+                  false
+                  (catch error true)))
+   :expected true}
+  {:name "rejects non-vector compiler context declarations"
+   :test (fn [] (try
+                  (catalog/package-definition 'demo/base {:include [] :context-dependencies '(demo/other)})
+                  false
+                  (catch error true)))
    :expected true}])
 
 ^{:refer code.deploy.catalog/package-definitions}
@@ -236,6 +319,47 @@
                   (catalog/package-dependencies linkage owners (first definitions) sample-analyses)))
    :expected #{"demo/base"}}])
 
+^{:refer code.deploy.catalog/dependency-package-name}
+(Test/check
+ [{:name "resolves semantic names and native coordinates to catalog entries"
+   :test (fn [] (let [definitions (catalog/package-definitions
+                                   {'hara/base {:include []}
+                                    'hara/app {:include []}})]
+                  [(catalog/dependency-package-name definitions "hara/base")
+                   (catalog/dependency-package-name definitions "hara:hara/base")
+                   (catalog/dependency-package-name definitions "hara:external/http")]))
+   :expected ["hara/base" "hara/base" nil]}])
+
+^{:refer code.deploy.catalog/explicit-dependency-split}
+(Test/check
+ [{:name "separates profile-internal dependencies from external declarations"
+   :test (fn [] (let [definitions (catalog/package-definitions
+                                   {'hara/base {:include []}
+                                    'hara/app {:include []}})]
+                  (catalog/explicit-dependency-split
+                   definitions
+                   {:dependencies ['hara/base "hara:external/http"]})))
+   :expected {:internal ["hara/base"] :external ["hara:external/http"]}}])
+
+^{:refer code.deploy.catalog/explicit-context-dependency-split}
+(Test/check
+ [{:name "resolves context-only package dependencies without creating install edges"
+   :test (fn [] (let [definitions (catalog/package-definitions
+                                   {'hara/base {:include []}
+                                    'hara/app {:include []}})]
+                  (catalog/explicit-context-dependency-split
+                   definitions
+                   {:context-dependencies ['hara/base "hara:hara/base"]})))
+   :expected ["hara/base"]}
+  {:name "rejects external compiler context declarations"
+   :test (fn [] (try
+                  (catalog/explicit-context-dependency-split
+                   (catalog/package-definitions {'hara/app {:include []}})
+                   {:context-dependencies ["hara:external/http"]})
+                  false
+                  (catch error true)))
+   :expected true}])
+
 ^{:refer code.deploy.catalog/unresolved-namespaces}
 (Test/check
  [{:name "reports namespace declarations omitted by the package catalogue"
@@ -254,3 +378,51 @@
                   false
                   (catch error true)))
    :expected true}])
+
+^{:refer code.deploy.catalog/plan}
+(Test/check
+ [{:name "merges explicit and inferred package edges into a deterministic plan"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-plan-"}))]
+                  (try
+                    (deref (File/write (File/join root "project.edn")
+                                        (String/encode-utf8 "{:project/version \"1.2.3\" :project/source-paths [\"src\"] :project/source-files [\"src/demo/base.hal\" \"src/demo/app.hal\"] :project/deploy {:catalog \"config/packages.edn\"}}")
+                                        {:mode :replace :parents? true}))
+                    (deref (File/write (File/join root "config/packages.edn")
+                                        (String/encode-utf8 "{hara/base {:include [[demo.base :complete]]} hara/app {:include [[demo.app :complete]] :dependencies [hara/base \"hara:external/http\"]}}")
+                                        {:mode :replace :parents? true}))
+                    (deref (File/write (File/join root "src/demo/base.hal")
+                                        (String/encode-utf8 "(ns demo.base)")
+                                        {:mode :replace :parents? true}))
+                    (deref (File/write (File/join root "src/demo/app.hal")
+                                        (String/encode-utf8 "(ns demo.app (:require [demo.base]))")
+                                        {:mode :replace :parents? true}))
+                    (mapv
+                     (fn [package]
+                       (select-keys package [:package/name
+                                             :package/coordinate
+                                             :package/version
+                                             :package/internal-dependencies
+                                             :package/external-dependencies]))
+                     (:deploy/packages (catalog/plan root)))
+                    (finally
+                      (clean-root root ["src/demo/app.hal"
+                                        "src/demo/base.hal"
+                                        "src/demo"
+                                        "src"
+                                        "config/packages.edn"
+                                        "config"
+                                        "project.edn"
+                                        ".hara/code/framework/index.edn"
+                                        ".hara/code/framework"
+                                        ".hara/code"
+                                        ".hara"])))))
+   :expected [{:package/name "hara/app"
+               :package/coordinate "hara:hara/app"
+               :package/version "1.2.3"
+               :package/internal-dependencies ["hara/base"]
+               :package/external-dependencies ["hara:external/http"]}
+              {:package/name "hara/base"
+               :package/coordinate "hara:hara/base"
+               :package/version "1.2.3"
+               :package/internal-dependencies []
+               :package/external-dependencies []}]}])

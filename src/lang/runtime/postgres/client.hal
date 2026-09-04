@@ -2,6 +2,7 @@
   (:require [db.protocol :as protocol]
             [db.postgres.connection :as connection]
             [lang.core.compile :as compile]
+            [lang.core.library :as library]
             [lang.core.registry :as registry]
             [lang.core.script :as script]
             [std.lib.context.registry :as context]))
@@ -192,9 +193,10 @@
   (if (map? module)
     module
     (let [loaded (if (symbol? module)
-                   (try (script/load-module module) (catch error module))
+                   (try (script/load-module :postgres module) (catch error module))
                    module)]
-      (or (get (deref script/+modules+) loaded)
+      (or (get (library/library-book-modules (library/runtime-library) :postgres)
+               loaded)
           {:id module :lang :postgres :code {} :fragment {}}))))
 
 (defn lifecycle-module-id
@@ -264,7 +266,8 @@
   "Returns true only for a module registered by the script source pipeline."
   [module]
   (and (symbol? (:id module))
-       (has? (deref script/+modules+) (:id module))))
+       (has? (library/library-book-modules (library/runtime-library) :postgres)
+             (:id module))))
 
 (defn compile-module-output
   "Compiles one registered PostgreSQL module or delegates to an isolated adapter."
@@ -302,7 +305,7 @@
       (let [module (or (get pointer :module) (get pointer :namespace))
             id (get pointer :id)]
         (if (and module id)
-          (get-in (deref script/+modules+)
+          (get-in (library/library-book-modules (library/runtime-library) :postgres)
                   [module :code (script/symbol-id id)])))))
 
 (defn lifecycle-pointer

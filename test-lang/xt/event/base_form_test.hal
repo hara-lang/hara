@@ -1,0 +1,276 @@
+(ns xt.event.base-form-test
+  (:require [lang.core :as l]
+            [xt.lang.common-notify :as notify]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.base-form :as form]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.base-form :as form]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.spec-promise :as spec-promise]
+             [xt.lang.common-repl :as repl]
+             [xt.event.base-form :as form]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.base-form/make-form}
+  {:name "creates form data and validator state"
+   :test (fn [] (get (deref +results+) "make"))
+   :expected ["event.form" "" "pending"]}
+
+  ^{:refer xt.event.base-form/check-event}
+  {:name "matches form fields by overlap"
+   :test (fn [] (get (deref +results+) "check"))
+   :expected [true false true]}
+
+  ^{:refer xt.event.base-form/add-listener}
+  {:name "adds a listener filtered by form field"
+   :test (fn [] (get (deref +results+) "add"))
+   :expected ["a1" ["a1"]]}
+
+  ^{:refer xt.event.base-form/trigger-all}
+  {:name "triggers listeners for all validator fields"
+   :test (fn [] (get (deref +results+) "trigger-all"))
+   :expected ["a1"]}
+
+  ^{:refer xt.event.base-form/trigger-field}
+  {:name "triggers listeners for selected fields"
+   :test (fn [] (get (deref +results+) "trigger-field"))
+   :expected ["a1"]}
+
+  ^{:refer xt.event.base-form/set-field}
+  {:name "sets one field and emits its event"
+   :test (fn [] (get (deref +results+) "set-field"))
+   :expected ["user" ["a1"]]}
+
+  ^{:refer xt.event.base-form/get-field}
+  {:name "reads one field"
+   :test (fn [] (get (deref +results+) "get-field"))
+   :expected "user"}
+
+  ^{:refer xt.event.base-form/toggle-field}
+  {:name "toggles a boolean field"
+   :test (fn [] (get (deref +results+) "toggle"))
+   :expected [true false]}
+
+  ^{:refer xt.event.base-form/field-fn}
+  {:name "returns a setter for one field"
+   :test (fn [] (get (deref +results+) "field-fn"))
+   :expected ["changed"]}
+
+  ^{:refer xt.event.base-form/get-result}
+  {:name "returns the form validation result"
+   :test (fn [] (get (deref +results+) "result"))
+   :expected ["validation.result" "pending"]}
+
+  ^{:refer xt.event.base-form/get-field-result}
+  {:name "returns one field validation result"
+   :test (fn [] (get (deref +results+) "field-result"))
+   :expected "pending"}
+
+  ^{:refer xt.event.base-form/get-data}
+  {:name "returns mutable form data"
+   :test (fn [] (get (deref +results+) "data"))
+   :expected {"login" "user" "flag" true}}
+
+  ^{:refer xt.event.base-form/set-data}
+  {:name "merges multiple fields and emits one event"
+   :test (fn [] (get (deref +results+) "set-data"))
+   :expected ["user" true ["a1"]]}
+
+  ^{:refer xt.event.base-form/reset-all-data}
+  {:name "restores all data from the initialiser"
+   :test (fn [] (get (deref +results+) "reset-all-data"))
+   :expected ["" false]}
+
+  ^{:refer xt.event.base-form/reset-field-data}
+  {:name "restores one field from the initialiser"
+   :test (fn [] (get (deref +results+) "reset-field-data"))
+   :expected ["" true]}
+
+  ^{:refer xt.event.base-form/reset-field-validator}
+  {:name "resets one validator result to pending"
+   :test (fn [] (get (deref +results+) "reset-field-validator"))
+   :expected "pending"}
+
+  ^{:refer xt.event.base-form/reset-all-validators}
+  {:name "recreates pending validation entries"
+   :test (fn [] (get (deref +results+) "reset-all-validators"))
+   :expected ["pending" "pending"]}
+
+  ^{:refer xt.event.base-form/reset-all}
+  {:name "resets both form data and validation state"
+   :test (fn [] (get (deref +results+) "reset-all"))
+   :expected ["" "pending"]}
+
+  ^{:refer xt.event.base-form/check-field-passed}
+  {:name "recognizes a passed field"
+   :test (fn [] (get (deref +results+) "passed"))
+   :expected true}
+
+  ^{:refer xt.event.base-form/check-field-errored}
+  {:name "recognizes an errored field"
+   :test (fn [] (get (deref +results+) "errored"))
+   :expected true}
+
+  ^{:refer xt.event.base-form/check-all-passed}
+  {:name "requires every field to pass"
+   :test (fn [] (get (deref +results+) "all-passed"))
+   :expected false}
+
+  ^{:refer xt.event.base-form/check-any-errored}
+  {:name "detects any errored field"
+   :test (fn [] (get (deref +results+) "any-errored"))
+   :expected true}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var initial (fn [] (return {:login "" :flag false})))
+             (var validators
+                  {:login [["required"
+                            {:message "Required"
+                             :check (fn [value rec]
+                                      (return (and (xt/x:not-nil? value)
+                                                   (< 0 (xt/x:len value)))))}]]})
+             (var f (form/make-form initial validators))
+             (var calls [])
+             (form/add-listener f "a1" ["login"]
+                                (fn [id data time meta]
+                                  (xt/x:arr-push calls id)) nil)
+             (var make [(. f ["::"])
+                        (form/get-field f "login")
+                        (xt/x:get-key (form/get-result f) "status")])
+             (var check [(form/check-event {:fields ["login" "flag"]} ["login"])
+                         (form/check-event {:fields ["login" "flag"]} ["other"])
+                         (form/check-event {:fields ["login" "flag"]} ["flag" "other"])])
+             (form/set-field f "login" "user")
+             (var set-field [(form/get-field f "login") (xt/x:arr-clone calls)])
+             (var get-field-snapshot (form/get-field f "login"))
+             (var trigger-all (form/trigger-all f "form.data"))
+             (var before-field (xt/x:len calls))
+             (var trigger-field (form/trigger-field f ["login"] "form.data"))
+             (form/set-data f {:flag true})
+             (var set-data [(form/get-field f "login") (form/get-field f "flag")
+                            (xt/x:arr-slice calls before-field (xt/x:len calls))])
+             (var data-snapshot (xt/x:obj-assign {} (form/get-data f)))
+             (form/set-field f "flag" false)
+             (var toggle-a (form/toggle-field f "flag"))
+             (var toggle-b (form/get-field f "flag"))
+             (var setter (form/field-fn f "login"))
+             (setter "changed")
+             (var field-fn [(form/get-field f "login")])
+             (var result (form/get-result f))
+             (var field-result (form/get-field-result f "login"))
+             (var data (form/get-data f))
+             (form/set-data f {:login "temporary" :flag true})
+             (form/reset-all-data f)
+             (var reset-all-data [(form/get-field f "login") (form/get-field f "flag")])
+             (form/set-data f {:login "temporary"})
+             (form/reset-field-data f "login")
+             (var reset-field-data [(form/get-field f "login") (form/get-field f "flag")])
+             (var reset-validator (form/reset-field-validator f "login"))
+             (var reset-validator-result (xt/x:get-key reset-validator "status"))
+             (var reset-validators (form/reset-all-validators f))
+             (var reset-validators-result
+                  [(xt/x:get-key (form/get-field-result f "login") "status")
+                   (xt/x:get-key (form/get-result f) "status")])
+             (form/set-data f {:login "temporary"})
+             (form/reset-all f)
+             (var reset-all [(form/get-field f "login")
+                             (xt/x:get-key (form/get-result f) "status")])
+             (var status-form (form/make-form initial validators))
+             (var status-result
+                  {"::" "validation.result"
+                   "status" "errored"
+                   "fields" {"login" {"status" "ok"}
+                              "flag" {"status" "errored"}}})
+             (xt/x:set-key status-form "result" status-result)
+             {"make" make "check" check "add" set-field
+              "trigger-all" trigger-all
+              "trigger-field" trigger-field
+              "set-field" set-field "get-field" get-field-snapshot
+              "toggle" [toggle-a toggle-b] "field-fn" field-fn
+              "result" [(. result ["::"]) (. result ["status"])]
+              "field-result" (. field-result ["status"])
+              "data" data-snapshot "set-data" set-data
+              "reset-all-data" reset-all-data
+              "reset-field-data" reset-field-data
+              "reset-field-validator" reset-validator-result
+              "reset-all-validators" reset-validators-result
+              "reset-all" reset-all
+              "passed" (form/check-field-passed status-form "login")
+              "errored" (form/check-field-errored status-form "flag")
+              "all-passed" (form/check-all-passed status-form)
+              "any-errored" (form/check-any-errored status-form)})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.base-form/validate-field}
+  {:name "validates a field through the live promise runtime"
+   :test (fn []
+           (notify/wait-on :js
+             (var f (form/make-form
+                     {:login "ok"}
+                     {:login [["required"
+                               {:message "Required"
+                                :check (fn [value rec]
+                                         (return (== value "ok")))}]]}))
+             (spec-promise/x:promise-then
+              (form/validate-field f "login" nil nil)
+              (fn [result]
+                (repl/notify [(xt/x:get-key result "status")
+                              (form/check-field-passed f "login")])))))
+   :expected ["ok" true]}
+
+  ^{:refer xt.event.base-form/validate-all}
+  {:name "validates all fields and returns an ok result"
+   :test (fn []
+           (notify/wait-on :js
+             (var f (form/make-form
+                     {:login "ok" :name "hara"}
+                     {:login [["required" {:check (fn [value rec]
+                                                      (return (== value "ok")))}]]
+                      :name [["required" {:check (fn [value rec]
+                                                     (return (== value "hara")))}]]}))
+             (spec-promise/x:promise-then
+              (form/validate-all f nil nil)
+              (fn [result]
+                (repl/notify [(xt/x:get-key result "status")
+                              (form/check-all-passed f)])))))
+   :expected ["ok" true]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})
+
+(Test/check
+ [^{:refer xt.event.base-form/make-form}
+  {:name "creates form data in every basic target"
+   :test (fn []
+           [(!.js (form/get-data (form/make-form {:name "a"} {}) ))
+            (!.lua (form/get-data (form/make-form {:name "a"} {}) ))
+            (!.py (form/get-data (form/make-form {:name "a"} {}) ))])
+   :expected [{"name" "a"} {"name" "a"} {"name" "a"}]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

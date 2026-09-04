@@ -1,0 +1,191 @@
+(ns js.react.compile-components-test
+  (:require [js.react.compile-components :as components]))
+
+^{:refer js.react.compile-components/postwalk-form}
+(Test/check
+ [{:name "walks nested forms after their children"
+   :test (fn []
+           (components/postwalk-form
+            [1 [2 3] {:a 4}]
+            (fn [entry]
+              (if (number? entry) (+ entry 1) entry))))
+   :expected [2 [3 4] {:a 5}]}])
+
+^{:refer js.react.compile-components/prewalk-form}
+(Test/check
+ [{:name "walks a rewritten parent before its children"
+   :test (fn []
+           (components/prewalk-form
+            [:old]
+            (fn [entry]
+              (if (= entry :old) :new entry))))
+   :expected [:new]}])
+
+^{:refer js.react.compile-components/classify-tagged}
+(Test/check
+ [{:name "normalises element tag props and children"
+   :test (fn []
+           (components/classify-tagged
+            '[:% Widget {:id "one"} "child"]
+            false))
+   :expected {:tag 'Widget :props {:id "one"} :children ["child"]}}])
+
+^{:refer js.react.compile-components/components-resolve}
+(Test/check
+ [{:name "merges a vector of component maps"
+   :test (fn []
+           (components/components-resolve [{:ui/a 1} {:ui/b 2}]))
+   :expected {:ui/a 1 :ui/b 2}}])
+
+^{:refer js.react.compile-components/components-find-deps}
+(Test/check
+ [{:name "finds namespaced sibling component references"
+   :test (fn []
+           (components/components-find-deps
+            {:ui/a {:tag :div :props {} :children []}
+             :ui/b {:tag :ui/a :props {} :children []}}))
+   :expected {:ui/a {:deps #{}}
+              :ui/b {:deps #{:ui/a}}}}])
+
+^{:refer js.react.compile-components/components-expand}
+(Test/check
+ [{:name "expands vector component templates and dependencies"
+   :test (fn []
+           (components/components-expand
+            {:ui/a [:div]
+             :ui/b [:ui/a]}))
+   :expected {:ui/a {:tag :div :props {} :children [:props/children] :deps #{}}
+              :ui/b {:tag :ui/a :props {} :children [:props/children]
+                      :deps #{:ui/a}}}}])
+
+^{:refer js.react.compile-components/compile-replace}
+(Test/check
+ [{:name "replaces namespaced props and many children"
+   :test (fn []
+           (components/compile-replace
+            [:props/children :props/name]
+            {:props/name "Ada"}
+            [:one :two]))
+   :expected [[:<> :one :two] "Ada"]}])
+
+^{:refer js.react.compile-components/find-namespaced-props}
+(Test/check
+ [{:name "finds only props namespace keys"
+   :test (fn []
+           (components/find-namespaced-props
+            [:props/name {:props/age 3 :other/value 4}]))
+   :expected #{:props/name :props/age}}])
+
+^{:refer js.react.compile-components/get-tmpl-props}
+(Test/check
+ [{:name "splits template props from body props"
+   :test (fn []
+           (components/get-tmpl-props
+            {:name "Ada" :id "one"}
+            #{:props/name}))
+   :expected [{:props/name "Ada"} {:id "one"}]}])
+
+^{:refer js.react.compile-components/getter-symbol}
+(Test/check
+ [{:name "generates camel-case state getters"
+   :test (fn [] (components/getter-symbol :var/item-count))
+   :expected 'itemCount}])
+
+^{:refer js.react.compile-components/setter-symbol}
+(Test/check
+ [{:name "generates camel-case state setters"
+   :test (fn [] (components/setter-symbol :var/item-count))
+   :expected 'setItemCount}])
+
+^{:refer js.react.compile-components/compile-walk-variables}
+(Test/check
+ [{:name "compiles state reads and setter calls"
+   :test (fn []
+           (components/compile-walk-variables
+            '(do :var/count (:var/count 2))))
+   :expected '(do count (setCount 2))}])
+
+^{:refer js.react.compile-components/compile-element-action-do}
+(Test/check
+ [{:name "compiles raw action state references"
+   :test (fn []
+           (components/compile-element-action-do
+            '(do (:var/count 2))
+            {}))
+   :expected '(do (setCount 2))}])
+
+^{:refer js.react.compile-components/compile-element-action-set}
+(Test/check
+ [{:name "compiles set actions"
+   :test (fn []
+           (components/compile-element-action-set :var/count {:to 2}))
+   :expected '(setCount 2)}])
+
+^{:refer js.react.compile-components/compile-element-action-inc}
+(Test/check
+ [{:name "compiles increment actions"
+   :test (fn []
+           (components/compile-element-action-inc :var/count {:val 2}))
+   :expected '(setCount (+ count 2))}])
+
+^{:refer js.react.compile-components/compile-element-action-dec}
+(Test/check
+ [{:name "compiles decrement actions"
+   :test (fn []
+           (components/compile-element-action-dec :var/count {:val 2}))
+   :expected '(setCount (- count 2))}])
+
+^{:refer js.react.compile-components/compile-element-action-set-async}
+(Test/check
+ [{:name "compiles promise setters with pending cleanup"
+   :test (fn []
+           (components/compile-element-action-set-async
+            :var/value
+            {:to '(request)
+             :pending :var/pending}))
+   :expected '(do (setPending true)
+                  (. (request)
+                     (then (fn [result]
+                             (return (setValue result))))
+                     (finally (fn []
+                                (setPending false)))))}])
+
+^{:refer js.react.compile-components/compile-element-actions}
+(Test/check
+ [{:name "compiles a vector of declarative actions into a callback"
+   :test (fn []
+           (components/compile-element-actions
+            [{:%/set :var/count :to 2}
+             {:%/inc :var/count}]))
+   :expected '(fn [] (setCount 2) (setCount (+ count 1)))}])
+
+^{:refer js.react.compile-components/compile-element-directives}
+(Test/check
+ [{:name "compiles action directives into event props"
+   :test (fn []
+           (components/compile-element-directives
+            {:type :action :key :onClick}
+            {:%/action [{:%/set :var/count :to 2}]}))
+   :expected {:onClick '(fn [] (setCount 2))}}])
+
+^{:refer js.react.compile-components/compile-element}
+(Test/check
+ [{:name "expands a component invocation into its concrete element"
+   :test (fn []
+           (components/compile-element
+            [:ui/text {:class "primary"} "hello"]
+            {:ui/text {:tag :span
+                       :props {:class :props/class}
+                       :children [:props/children]}}))
+   :expected [:span {:class "primary"} "hello"]}])
+
+^{:refer js.react.compile-components/compile-element-loop}
+(Test/check
+ [{:name "stops after expanding a dependency-free component"
+   :test (fn []
+           (components/compile-element-loop
+            [:ui/text "hello"]
+            {:ui/text {:tag :span :props {} :children [:props/children]
+                       :deps #{}}}
+            identity))
+   :expected [:span {} "hello"]}])

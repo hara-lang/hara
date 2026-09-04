@@ -1,0 +1,260 @@
+(ns xt.event.base-listener-test
+  (:require [lang.core :as l]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-listener :as event]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-listener :as event]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-listener :as event]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.base-listener/blank-container}
+  {:name "creates a blank listener container with caller attributes"
+   :test (fn [] (get (deref +results+) "blank"))
+   :expected {"::" "custom.container" "info" {"name" "hello"} "listeners" {}}}
+
+  ^{:refer xt.event.base-listener/make-container}
+  {:name "normalizes a value initialiser and records initial data"
+   :test (fn [] (get (deref +results+) "make"))
+   :expected ["custom.container" {"hello" "world"} true {"name" "hello"}]}
+
+  ^{:refer xt.event.base-listener/make-listener-entry}
+  {:name "records identity and caller metadata on a listener entry"
+   :test (fn [] (get (deref +results+) "entry"))
+   :expected [true true {"label" "hello" "listener/id" "a1" "listener/type" "custom"}]}
+
+  ^{:refer xt.event.base-listener/listener-entry?}
+  {:name "distinguishes listener entries from absent values and keyed groups"
+   :test (fn [] (get (deref +results+) "entry?"))
+   :expected [false false true false]}
+
+  ^{:refer xt.event.base-listener/arrayify-path}
+  {:name "normalizes nil and empty objects to no path"
+   :test (fn [] (get (deref +results+) "arrayify"))
+   :expected [[] [] ["a"] ["a"]]}
+
+  ^{:refer xt.event.base-listener/callback-data}
+  {:name "removes metadata only from object payloads passed to callbacks"
+   :test (fn [] (get (deref +results+) "data"))
+   :expected ["hello" {"ok" true "data" "hello"} {"ok" true}]}
+
+  ^{:refer xt.event.base-listener/callback-time}
+  {:name "uses time before its short t fallback"
+   :test (fn [] (get (deref +results+) "time"))
+   :expected [nil nil 123 456]}
+
+  ^{:refer xt.event.base-listener/clear-listeners}
+  {:name "clears plain listeners while retaining keyed groups"
+   :test (fn [] (get (deref +results+) "clear"))
+   :expected [["a1"] [] {"group" ["k1"]}]}
+
+  ^{:refer xt.event.base-listener/add-listener}
+  {:name "adds a plain listener under its id"
+   :test (fn [] (get (deref +results+) "add"))
+   :expected [{"listener/id" "a1" "listener/type" "custom" "label" "one"} ["a1"]]}
+
+  ^{:refer xt.event.base-listener/remove-listener}
+  {:name "removes only a plain listener and reports missing ids as nil"
+   :test (fn [] (get (deref +results+) "remove"))
+   :expected [{"listener/id" "a1" "listener/type" "custom" "label" "one"} nil []]}
+
+  ^{:refer xt.event.base-listener/list-listeners}
+  {:name "lists insertion-ordered plain listener ids only"
+   :test (fn [] (get (deref +results+) "list"))
+   :expected ["a1" "b2"]}
+
+  ^{:refer xt.event.base-listener/list-listener-types}
+  {:name "indexes plain listeners under their declared types"
+   :test (fn [] (get (deref +results+) "types"))
+   :expected {"custom" ["a1"] "route" ["b2"]}}
+
+  ^{:refer xt.event.base-listener/trigger-entry}
+  {:name "merges entry metadata and normalizes callback arguments"
+   :test (fn [] (get (deref +results+) "trigger-entry"))
+   :expected {"id" "a1" "data" {"value" "world" "time" 123} "time" 123
+              "meta" {"base" true "label" "hello" "listener/id" "a1" "listener/type" "custom"}}}
+
+  ^{:refer xt.event.base-listener/trigger-listeners}
+  {:name "attempts every plain listener while predicates control callbacks"
+   :test (fn [] (get (deref +results+) "trigger"))
+   :expected [["a1" "b2"] ["a1"]]}
+
+  ^{:refer xt.event.base-listener/add-keyed-listener}
+  {:name "adds a keyed listener under its named group"
+   :test (fn [] (get (deref +results+) "add-keyed"))
+   :expected [{"listener/id" "k1" "listener/type" "custom" "label" "hello"} ["k1"]]}
+
+  ^{:refer xt.event.base-listener/remove-keyed-listener}
+  {:name "removes a keyed listener and cleans its empty group"
+   :test (fn [] (get (deref +results+) "remove-keyed"))
+   :expected [{"listener/id" "k1" "listener/type" "custom"} nil {}]}
+
+  ^{:refer xt.event.base-listener/list-keyed-listeners}
+  {:name "lists keyed listener ids and returns empty for a missing group"
+   :test (fn [] (get (deref +results+) "list-keyed"))
+   :expected [["k1" "k2"] []]}
+
+  ^{:refer xt.event.base-listener/all-keyed-listeners}
+  {:name "lists each keyed group without including plain listeners"
+   :test (fn [] (get (deref +results+) "all-keyed"))
+   :expected {"group-a" ["k1"] "group-b" ["k2"]}}
+
+  ^{:refer xt.event.base-listener/trigger-keyed-listeners}
+  {:name "triggers one keyed group without touching other groups"
+   :test (fn [] (get (deref +results+) "trigger-keyed"))
+   :expected [["k1" "k2"] ["k1" "k2"]]}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var blank (event/blank-container "custom.container" {:info {:name "hello"}}))
+
+             (var made-container (event/make-container {:hello "world"}
+                                                       "custom.container"
+                                                       {:info {:name "hello"}}))
+             (var make [(. made-container ["::"])
+                        (. made-container ["data"])
+                        (xt/x:is-function? (. made-container ["initial"]))
+                        (. made-container ["info"])])
+
+             (var made-entry (event/make-listener-entry
+                              "a1" "custom"
+                              (fn [id data time meta] (return data))
+                              {:label "hello"}
+                              (fn [event] (return (. event ["ok"])))))
+             (var entry [(xt/x:is-function? (. made-entry ["callback"]))
+                         (xt/x:is-function? (. made-entry ["pred"]))
+                         (. made-entry ["meta"])])
+             (var entry-check [(event/listener-entry? nil)
+                               (event/listener-entry? {})
+                               (event/listener-entry?
+                                (event/make-listener-entry "a1" "custom"
+                                                           (fn [id data time meta] (return id)) nil nil))
+                               (event/listener-entry?
+                                {"a1" (event/make-listener-entry "a1" "custom"
+                                                                   (fn [id data time meta] (return id)) nil nil)})])
+
+             (var arrayify [(event/arrayify-path nil) (event/arrayify-path {})
+                            (event/arrayify-path "a") (event/arrayify-path ["a"])])
+             (var data [(event/callback-data "hello")
+                        (event/callback-data {:ok true :data "hello"})
+                        (event/callback-data {:ok true :meta {:base true}})])
+             (var time [(event/callback-time "hello") (event/callback-time {:ok true})
+                        (event/callback-time {:time 123 :t 456}) (event/callback-time {:t 456})])
+
+             (var clear-container (event/blank-container "custom.container" {}))
+             (event/add-listener clear-container "a1" "custom" (fn [id data time meta] (return id)) nil nil)
+             (event/add-keyed-listener clear-container "group" "k1" "custom" (fn [id data time meta] (return id)) nil nil)
+             (var clear [(xt/x:obj-keys (event/clear-listeners clear-container))
+                         (event/list-listeners clear-container) (event/all-keyed-listeners clear-container)])
+
+             (var add-container (event/blank-container "custom.container" {}))
+             (var added (event/add-listener add-container "a1" "custom"
+                                            (fn [id data time meta] (return id)) {:label "one"} nil))
+             (var add [(. added ["meta"]) (event/list-listeners add-container)])
+
+             (var remove-container (event/blank-container "custom.container" {}))
+             (event/add-listener remove-container "a1" "custom" (fn [id data time meta] (return id)) {:label "one"} nil)
+             (var remove [(. (event/remove-listener remove-container "a1") ["meta"])
+                          (event/remove-listener remove-container "a1")
+                          (event/list-listeners remove-container)])
+
+             (var list-container (event/blank-container "custom.container" {}))
+             (event/add-listener list-container "a1" "custom" (fn [id data time meta] (return id)) nil nil)
+             (event/add-listener list-container "b2" "route" (fn [id data time meta] (return id)) nil nil)
+             (event/add-keyed-listener list-container "group" "k1" "custom" (fn [id data time meta] (return id)) nil nil)
+             (var list (event/list-listeners list-container))
+             (var types (event/list-listener-types list-container))
+
+             (var trigger-entry
+                  (event/trigger-entry
+                   (event/make-listener-entry
+                    "a1" "custom"
+                    (fn [id callback-data callback-time callback-meta]
+                      (return {"id" id "data" callback-data "time" callback-time "meta" callback-meta}))
+                    {:label "hello"}
+                    nil)
+                   {:value "world" :time 123 :meta {:base true}}))
+
+             (var trigger-container (event/blank-container "custom.container" {}))
+             (var trigger-calls [])
+             (event/add-listener trigger-container "a1" "custom"
+                                 (fn [id data time meta] (xt/x:arr-push trigger-calls id)) nil nil)
+             (event/add-listener trigger-container "b2" "custom"
+                                 (fn [id data time meta] (xt/x:arr-push trigger-calls id)) nil
+                                 (fn [event] (return (. event ["allow"]))))
+             (var trigger [(event/trigger-listeners trigger-container {:allow false}) trigger-calls])
+
+             (var add-keyed-container (event/blank-container "custom.container" {}))
+             (var added-keyed (event/add-keyed-listener add-keyed-container "group" "k1" "custom"
+                                                        (fn [id data time meta] (return id)) {:label "hello"} nil))
+             (var add-keyed [(. added-keyed ["meta"])
+                             (event/list-keyed-listeners add-keyed-container "group")])
+
+             (var remove-keyed-container (event/blank-container "custom.container" {}))
+             (event/add-keyed-listener remove-keyed-container "group" "k1" "custom"
+                                       (fn [id data time meta] (return id)) nil nil)
+             (var remove-keyed [(. (event/remove-keyed-listener remove-keyed-container "group" "k1") ["meta"])
+                                (event/remove-keyed-listener remove-keyed-container "group" "missing")
+                                (event/all-keyed-listeners remove-keyed-container)])
+
+             (var list-keyed-container (event/blank-container "custom.container" {}))
+             (event/add-keyed-listener list-keyed-container "group" "k1" "custom" (fn [id data time meta] (return id)) nil nil)
+             (event/add-keyed-listener list-keyed-container "group" "k2" "custom" (fn [id data time meta] (return id)) nil nil)
+             (var list-keyed [(event/list-keyed-listeners list-keyed-container "group")
+                              (event/list-keyed-listeners list-keyed-container "missing")])
+
+             (var all-keyed-container (event/blank-container "custom.container" {}))
+             (event/add-listener all-keyed-container "a1" "custom" (fn [id data time meta] (return id)) nil nil)
+             (event/add-keyed-listener all-keyed-container "group-a" "k1" "custom" (fn [id data time meta] (return id)) nil nil)
+             (event/add-keyed-listener all-keyed-container "group-b" "k2" "custom" (fn [id data time meta] (return id)) nil nil)
+             (var all-keyed (event/all-keyed-listeners all-keyed-container))
+
+             (var trigger-keyed-container (event/blank-container "custom.container" {}))
+             (var trigger-keyed-calls [])
+             (event/add-keyed-listener trigger-keyed-container "group-a" "k1" "custom"
+                                       (fn [id data time meta] (xt/x:arr-push trigger-keyed-calls id)) nil nil)
+             (event/add-keyed-listener trigger-keyed-container "group-a" "k2" "custom"
+                                       (fn [id data time meta] (xt/x:arr-push trigger-keyed-calls id)) nil nil)
+             (event/add-keyed-listener trigger-keyed-container "group-b" "k3" "custom"
+                                       (fn [id data time meta] (xt/x:arr-push trigger-keyed-calls id)) nil nil)
+             (var trigger-keyed [(event/trigger-keyed-listeners trigger-keyed-container "group-a" {:ok true})
+                                 trigger-keyed-calls])
+
+             {"blank" blank "make" make "entry" entry "entry?" entry-check
+              "arrayify" arrayify "data" data "time" time "clear" clear "add" add "remove" remove
+              "list" list "types" types "trigger-entry" trigger-entry "trigger" trigger
+              "add-keyed" add-keyed "remove-keyed" remove-keyed "list-keyed" list-keyed
+              "all-keyed" all-keyed "trigger-keyed" trigger-keyed})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.base-listener/blank-container}
+  {:name "creates listener containers in every basic target"
+   :test (fn []
+           [(!.js (xt/x:get-key (event/blank-container "event.test" {}) "::"))
+            (!.lua (xt/x:get-key (event/blank-container "event.test" {}) "::"))
+            (!.py (xt/x:get-key (event/blank-container "event.test" {}) "::"))])
+   :expected ["event.test" "event.test" "event.test"]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

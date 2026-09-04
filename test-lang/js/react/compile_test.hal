@@ -1,0 +1,47 @@
+(ns js.react.compile-test
+  (:require [js.react.compile :as compile]))
+
+^{:refer js.react.compile/registry-snapshot}
+(Test/check
+ [{:name "snapshots, restores, mutates, and resets component registry state"
+   :test (fn []
+           (compile/registry-reset!)
+           (let [baseline (compile/registry-snapshot)
+                 _ (compile/put-registry :base {:ui/a [:div]})
+                 registered (compile/get-registry)
+                 defaults (compile/get-default-components nil)
+                 restored (compile/registry-restore! baseline)
+                 deleted (do (compile/put-registry :temp {:ui/b [:span]})
+                             (compile/del-registry :temp))
+                 reset (compile/registry-reset!)]
+             [baseline registered defaults restored deleted reset]))
+   :expected [{} {:base {:ui/a [:div]}} {:ui/a [:div]} {} {} {}]}])
+
+^{:refer js.react.compile/check-valid-variables}
+(Test/check
+ [{:name "preserves layouts whose state references are declared"
+   :test (fn []
+           (compile/check-valid-variables
+            {:var/count 0}
+            '[:div :var/count]))
+   :expected '[:div :var/count]}])
+
+^{:refer js.react.compile/compile-states-deps}
+(Test/check
+ [{:name "finds state dependencies"
+   :test (fn []
+           (compile/compile-states-deps
+            {:var/count 0
+             :var/next {:% '(+ :var/count 1)}}))
+   :expected {:var/count #{}
+              :var/next #{:var/count}}}])
+
+^{:refer js.react.compile/compile-states}
+(Test/check
+ [{:name "emits React bindings in dependency order"
+   :test (fn []
+           (compile/compile-states
+            {:var/count 0
+             :var/next {:% '(+ :var/count 1)}}))
+   :expected '((var [count setCount] (React.useState 0))
+               (var next (+ count 1)))}])

@@ -1,0 +1,78 @@
+(ns xt.event.base-log-latest-test
+  (:require [lang.core :as l]))
+
+^{:seedgen/root {:all true :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-log-latest :as latest]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-log-latest :as latest]]})
+
+(l/script- :python
+  {:runtime :basic
+   :timeout 15000
+   :require [[xt.lang.spec-base :as xt]
+             [xt.event.base-log-latest :as latest]]})
+
+(def +results+ (atom nil))
+
+(Test/check
+ [^{:refer xt.event.base-log-latest/new-log-latest}
+  {:name "creates a latest-value log with defaults"
+   :test (fn [] (get (deref +results+) "new"))
+   :expected ["event.log-latest" 30000 nil {}]}
+
+  ^{:refer xt.event.base-log-latest/clear-cache}
+  {:name "evicts cache entries older than the interval"
+   :test (fn [] (get (deref +results+) "clear"))
+   :expected [["old"] []]}
+
+  ^{:refer xt.event.base-log-latest/queue-latest}
+  {:name "keeps only newer values for a cache key"
+   :test (fn [] (get (deref +results+) "queue"))
+   :expected [true false true 2]}]
+ {:setup
+  (fn []
+    (l/restart)
+    (reset! +results+
+            (!.js
+             (var fresh (latest/new-log-latest nil))
+             (var log (latest/new-log-latest {:interval 50}))
+             (xt/x:set-key log "cache"
+                           {"old" {:t 0 :latest 1}
+                            "new" {:t 80 :latest 1}})
+             (var clear-first (latest/clear-cache log 100))
+             (var clear-second (latest/clear-cache log 120))
+             (var queued (latest/new-log-latest {:interval 0}))
+             (var first (latest/queue-latest queued "a" 1))
+             (var second (latest/queue-latest queued "a" 1))
+             (var third (latest/queue-latest queued "a" 2))
+             {"new" [(. fresh ["::"])
+                     (. fresh ["interval"])
+                     (. fresh ["last"])
+                     (. fresh ["cache"])]
+              "clear" [clear-first clear-second]
+              "queue" [first second third
+                        (. (xt/x:get-key (. queued ["cache"]) "a") ["latest"])]})))
+  :teardown
+  (fn []
+    (try
+      (l/stop)
+      (finally (reset! +results+ nil))))})
+
+(Test/check
+ [^{:refer xt.event.base-log-latest/new-log-latest}
+  {:name "creates latest log state in every basic target"
+   :test (fn []
+           [(!.js (xt/x:get-key (latest/new-log-latest nil) "::"))
+            (!.lua (xt/x:get-key (latest/new-log-latest nil) "::"))
+            (!.py (xt/x:get-key (latest/new-log-latest nil) "::"))])
+   :expected ["event.log-latest" "event.log-latest" "event.log-latest"]}]
+ {:setup (fn [] (l/restart))
+  :teardown (fn [] (l/stop))})

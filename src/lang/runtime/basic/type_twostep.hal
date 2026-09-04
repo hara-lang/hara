@@ -1,0 +1,184 @@
+;; ============================================================================
+;; lang.runtime.basic.type-twostep — compile-and-run process runtime.
+;; ============================================================================
+(ns lang.runtime.basic.type-twostep
+  (:config {:role :internal})
+  (:require [lang.runtime.basic.type-oneshot :as oneshot]
+            [std.fs :as fs]
+            [std.fs.path :as path]
+            [tool.sh :as sh]))
+
+(defstruct RuntimeTwostep [id lang runtime program exec process])
+
+(defn rt-twostep-setup
+  "Prepares the selected compiler program and its merged process options."
+  ([language program process exec]
+   (rt-twostep-setup language program process exec :twostep))
+  ([language program process exec context]
+   (oneshot/rt-oneshot-setup language program process exec context)))
+
+(defn rt-twostep:create
+  "Creates a stateless runtime that compiles source and executes its binary."
+  [options]
+  (let [id (:id options)
+        lang (:lang options)
+        runtime (or (:runtime options) :twostep)
+        [program process exec]
+        (rt-twostep-setup lang
+                          (:program options)
+                          (:process options)
+                          (:exec options)
+                          runtime)]
+    (lang.runtime.basic.type-twostep/RuntimeTwostep
+     (or id (oneshot/default-id lang runtime))
+     lang
+     runtime
+     program
+     exec
+     process)))
+
+(defn rt-twostep
+  "Creates a two-step runtime without retaining process state between calls."
+  [options]
+  (rt-twostep:create options))
+
+(defn process-options
+  "Selects the safe process options inherited by compiler and executable calls."
+  [runtime]
+  (select-keys (or (:process runtime) {}) [:env :timeout]))
+
+(defn source-transform
+  "Applies the language-owned standalone-source wrapper when one is configured."
+  [runtime source]
+  (let [transform (get-in runtime [:process :source-transform])]
+    (if transform (transform source) source)))
+
+(defn compile-command
+  "Builds the compiler argv for one temporary source and executable name."
+  [runtime source-name executable-name]
+  (let [flag (get-in runtime [:process :output-flag])]
+    (if flag
+      (vec (concat (:exec runtime) [flag executable-name source-name]))
+      (vec (concat (:exec runtime) [source-name])))))
+
+(defn run-command
+  "Builds the executable argv relative to the temporary working directory."
+  [runtime executable-name]
+  (let [configured (get-in runtime [:process :run-args])]
+    (if configured
+      (vec configured)
+      [(if (str/starts-with? executable-name "/")
+         executable-name
+         (str "./" executable-name))])))
+
+(defn twostep-result
+  "Adds stable runtime metadata to one compile or execution completion record."
+  [runtime phase result]
+  (merge
+   {:phase phase
+    :runtime/id (:id runtime)
+    :runtime/language (:lang runtime)
+    :lang (:lang runtime)
+    :runtime (:runtime runtime)
+    :program (:program runtime)}
+   result))
+
+(defn twostep-output
+  "Returns the diagnostic stream when present, otherwise standard output."
+  [result]
+  (let [stderr (str/trim-right (or (:stderr result) ""))
+        stdout (str/trim-right (or (:stdout result) ""))]
+    (if (str/blank? stderr) stdout stderr)))
+
+(defn stage-result
+  "Runs one named compiler or executable stage through the argv-only boundary."
+  [runtime phase argv options source]
+  (try
+    (twostep-result runtime phase (sh/result-record (sh/run argv options)))
+    (catch error
+      (throw
+       (ex :host {:phase phase
+                  :lang (:lang runtime)
+                  :runtime (:runtime runtime)
+                  :program (:program runtime)
+                  :command argv
+                  :generated-fragment source
+                  :cause-data (ex-data error)}
+           :ex/message "Two-step target process could not complete"
+           :ex/cause error)))))
+
+(defn execute-twostep
+  "Writes source, compiles it, runs the produced binary, and deletes all output."
+  [runtime source]
+  (let [process (:process runtime)
+        extension (:extension process)
+        parent (or (:root process) (OS/cwd))
+        root (fs/temp-directory parent {:prefix "hara-twostep-"})
+        source-name (str "main." extension)
+        executable-name "program"
+        source-file (path/join root source-name)
+        executable-file (path/join root executable-name)
+        options (process-options runtime)]
+    (try
+      (let [source (source-transform runtime source)]
+        (fs/write-bytes source-file
+                        (str/encode-utf8 source)
+                        {:parents? true :mode :replace})
+      (let [compiled (stage-result runtime
+                                   :compile
+                                   (compile-command runtime source-file executable-file)
+                                   options
+                                   source)]
+        (if (= 0 (:exit compiled))
+          (if (:compile-only process)
+            compiled
+            (stage-result runtime
+                          :run
+                          (run-command runtime executable-file)
+                          options
+                          source))
+          compiled))
+      )
+      (finally
+        (fs/delete root {:recursive? true :missing-ok? true})))))
+
+(defn raw-eval-twostep
+  "Compiles emitted target source and returns output or a structured target error."
+  [runtime source]
+  (let [result (execute-twostep runtime source)
+        process (:process runtime)]
+    (if (= 0 (:exit result))
+      (if (:raw process)
+        result
+        (if (:return-source process)
+          source
+          (str/trim-right (:stdout result))))
+      (if (:raw process)
+        result
+        (if (:stderr process)
+          (twostep-output result)
+          (throw
+           (ex :host (assoc result :generated-fragment source)
+               :ex/message "Two-step target evaluation failed")))))))
+
+(extend-type RuntimeTwostep IContext
+  (call [runtime & arguments]
+    (raw-eval-twostep runtime (first arguments))))
+
+(extend-type RuntimeTwostep IContextEval
+  (evaluate [runtime request options]
+    (promise/from (raw-eval-twostep runtime request)))
+  (evaluate-raw [runtime request options]
+    (promise/from (raw-eval-twostep runtime request))))
+
+(extend-type RuntimeTwostep IComponent
+  (props [runtime]
+    {:lang {:get (fn [] (:lang runtime))}
+     :program {:get (fn [] (:program runtime))}})
+  (status [runtime] :started)
+  (started? [runtime] true)
+  (stopped? [runtime] false)
+  (start [runtime] runtime)
+  (stop [runtime] runtime)
+  (kill [runtime] runtime)
+  (remote? [runtime] false))

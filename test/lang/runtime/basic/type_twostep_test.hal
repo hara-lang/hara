@@ -1,0 +1,166 @@
+(ns lang.runtime.basic.type-twostep-test
+  (:require [lang.runtime.basic.impl.process-c]
+            [lang.runtime.basic.type-twostep :as subject]
+            [std.lib.component :as component]
+            [std.fs :as fs]))
+
+(def +c-runtime+
+  (subject/RuntimeTwostep
+   :c.twostep
+   :c
+   :twostep
+   :gcc
+   ["gcc"]
+   {:extension "c"
+    :output-flag "-o"}))
+
+^{:refer lang.runtime.basic.type-twostep/rt-twostep-setup}
+(Test/check
+ [{:name "resolves C compiler defaults for the two-step coordinate"
+   :test (fn [] (let [[program process exec]
+                       (subject/rt-twostep-setup :c nil {} nil)]
+                  [program
+                   (select-keys process [:extension :exec :stderr :flags :output-flag
+                                         :main :emit :json])
+                   (fn? (:source-transform process))
+                   exec]))
+   :expected [:gcc
+              {:extension "c" :exec "gcc" :stderr true
+               :flags {:twostep [] :verify ["-fsyntax-only"]}
+               :output-flag "-o" :main {} :emit {} :json :string}
+              true
+              ["gcc"]]}])
+
+^{:refer lang.runtime.basic.type-twostep/rt-twostep:create}
+(Test/check
+ [{:name "creates a compiler runtime with the stable coordinate identity"
+   :test (fn [] (let [value (subject/rt-twostep:create {:lang :c})]
+                  [(:id value) (:lang value) (:runtime value) (:program value)
+                   (:exec value)]))
+   :expected [:c.twostep :c :twostep :gcc ["gcc"]]}])
+
+^{:refer lang.runtime.basic.type-twostep/rt-twostep}
+(Test/check
+ [{:name "publishes the constructor alias without starting a persistent process"
+   :test (fn [] (let [value (subject/rt-twostep {:lang :c})]
+                  [(:id value) (:runtime value)]))
+   :expected [:c.twostep :twostep]}])
+
+^{:refer lang.runtime.basic.type-twostep/process-options}
+(Test/check
+ [{:name "keeps only host-process options for compiler and executable stages"
+   :test (fn [] (subject/process-options
+                  (assoc +c-runtime+ :process {:extension "c"
+                                                :env {"MODE" "test"}
+                                                :timeout 500
+                                                :root "."})))
+   :expected {:env {"MODE" "test"} :timeout 500}}])
+
+^{:refer lang.runtime.basic.type-twostep/source-transform}
+(Test/check
+ [{:name "applies a language-owned standalone source wrapper once"
+   :test (fn [] (subject/source-transform
+                  (assoc +c-runtime+ :process {:source-transform
+                                                (fn [source] (str "wrapped:" source))})
+                  "1 + 2"))
+   :expected "wrapped:1 + 2"}])
+
+^{:refer lang.runtime.basic.type-twostep/compile-command}
+(Test/check
+ [{:name "uses an explicit compiler output path when the program supports it"
+   :test (fn [] [(subject/compile-command +c-runtime+ "main.c" "program")
+                 (subject/compile-command
+                  (assoc +c-runtime+ :process {}) "main.c" "program")])
+   :expected [["gcc" "-o" "program" "main.c"]
+              ["gcc" "main.c"]]}])
+
+^{:refer lang.runtime.basic.type-twostep/run-command}
+(Test/check
+ [{:name "uses the compiler product by default and respects an explicit runner"
+   :test (fn [] [(subject/run-command +c-runtime+ "program")
+                 (subject/run-command
+                  (assoc +c-runtime+ :process {:run-args ["runner" "program"]})
+                  "program")])
+   :expected [["./program"] ["runner" "program"]]}])
+
+^{:refer lang.runtime.basic.type-twostep/twostep-result}
+(Test/check
+ [{:name "adds stable runtime metadata to each compiler stage result"
+   :test (fn [] (select-keys
+                 (subject/twostep-result +c-runtime+ :compile
+                                         {:exit 0 :stdout "" :stderr ""})
+                 [:phase :runtime/id :runtime/language :lang :runtime :program :exit]))
+   :expected {:phase :compile :runtime/id :c.twostep :runtime/language :c
+              :lang :c :runtime :twostep :program :gcc :exit 0}}])
+
+^{:refer lang.runtime.basic.type-twostep/twostep-output}
+(Test/check
+ [{:name "prefers trimmed diagnostics and otherwise returns standard output"
+   :test (fn [] [(subject/twostep-output {:stdout "out\n" :stderr "warn\n"})
+                 (subject/twostep-output {:stdout "out\n" :stderr " \n"})])
+   :expected ["warn" "out"]}])
+
+^{:refer lang.runtime.basic.type-twostep/stage-result}
+(Test/check
+ [{:name "records a successful local compiler invocation with its phase"
+   :test (fn [] (select-keys
+                 (subject/stage-result +c-runtime+ :compile ["gcc" "--version"] {} "")
+                 [:phase :exit :runtime/id]))
+   :expected {:phase :compile :exit 0 :runtime/id :c.twostep}}])
+
+^{:refer lang.runtime.basic.type-twostep/execute-twostep}
+(Test/check
+ [{:name "compiles and executes C source in an isolated directory then removes it"
+   :test (fn [] (let [root (fs/temp-directory (OS/cwd) {:prefix "twostep-execute-"})
+                       runtime (assoc +c-runtime+
+                                      :process {:extension "c"
+                                                :output-flag "-o"
+                                                :root root})]
+                  (try
+                    (let [result (subject/execute-twostep
+                                  runtime
+                                  "#include <stdio.h>\nint main(void) { puts(\"ok\"); return 0; }\n")]
+                      [(:phase result) (str/trim-right (:stdout result))
+                       (empty? (fs/select root (fn [entry] true)))])
+                    (finally
+                      (fs/delete root {:recursive? true :missing-ok? true})))))
+   :expected [:run "ok" true]}])
+
+^{:refer lang.runtime.basic.type-twostep/raw-eval-twostep}
+(Test/check
+ [{:name "returns output for valid C source and compiler diagnostics for invalid source"
+   :test (fn [] (let [root (fs/temp-directory (OS/cwd) {:prefix "twostep-raw-"})
+                       runtime (assoc +c-runtime+
+                                      :process {:extension "c"
+                                                :output-flag "-o"
+                                                :stderr true
+                                                :root root})]
+                  (try
+                    [(subject/raw-eval-twostep
+                      runtime
+                      "#include <stdio.h>\nint main(void) { puts(\"ok\"); return 0; }\n")
+                     (str/includes?
+                      (subject/raw-eval-twostep runtime "int main(void) { not valid; }")
+                      "error")
+                     (empty? (fs/select root (fn [entry] true)))]
+                    (finally
+                      (fs/delete root {:recursive? true :missing-ok? true})))))
+   :expected ["ok" true true]}])
+
+^{:refer lang.runtime.basic.type-twostep/RuntimeTwostep}
+(Test/check
+ [{:name "implements direct context calls and stateless component lifecycle"
+   :test (fn [] (let [root (fs/temp-directory (OS/cwd) {:prefix "twostep-context-"})
+                       runtime (assoc +c-runtime+
+                                      :process {:extension "c"
+                                                :output-flag "-o"
+                                                :root root})]
+                  (try
+                    [(IContext/call runtime
+                                    "#include <stdio.h>\nint main(void) { puts(\"context\"); return 0; }\n")
+                     (component/status runtime)
+                     (component/started? runtime)
+                     (component/stopped? runtime)]
+                    (finally
+                      (fs/delete root {:recursive? true :missing-ok? true})))))
+   :expected ["context" :started true false]}])
