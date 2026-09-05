@@ -1,0 +1,55 @@
+(ns std.lib.encode.hex-test
+  (:require [std.lib.encode.hex :as hex]))
+
+(def +all-bytes+ (apply std.native.Bytes/new (range 0 256)))
+
+(def results
+  [^{:refer std.lib.encode.hex/input-bytes}
+   (test-check "accepts Bytes and rejects other encode inputs"
+               [(bytes? (hex/input-bytes (std.native.Bytes/new 1 2 3)))
+                (try (hex/input-bytes "Hara") false
+                     (catch Throwable error true))]
+               [true true])
+
+   ^{:refer std.lib.encode.hex/digit}
+   (test-check "maps hexadecimal digits and rejects invalid digits"
+               [(hex/digit "0" 0)
+                (hex/digit "a" 1)
+                (hex/digit "F" 2)
+                (try (hex/digit "g" 3) false
+                     (catch Throwable error true))]
+               [0 10 15 true])
+
+   (test-check "marks only the supported hex surface public"
+               [(:public (meta (get (ns-publics 'std.lib.encode.hex) 'encode)))
+                (:public (meta (get (ns-publics 'std.lib.encode.hex) 'decode)))
+                (:public (meta (get (ns-publics 'std.lib.encode.hex) 'input-bytes)))
+                (:public (meta (get (ns-publics 'std.lib.encode.hex) 'digit)))]
+               [true true nil nil])
+
+   ^{:refer std.lib.encode.hex/encode}
+   (test-check "hex encodes Bytes with lowercase output"
+               [(hex/encode (std.native.Bytes/new))
+                (hex/encode (std.native.Bytes/new 0 15 16 255))]
+               ["" "000f10ff"])
+
+   ^{:refer std.lib.encode.hex/decode}
+   (test-check "hex decodes either letter case and round trips every byte"
+               [(= (hex/decode "00FF10")
+                   (std.native.Bytes/new 0 255 16))
+                (= (hex/decode (hex/encode +all-bytes+))
+                   +all-bytes+)]
+               [true true])
+
+   (test-check "hex rejects non-Bytes encode input and malformed text"
+               [(try (hex/encode "Hara") false
+                     (catch Throwable error true))
+                (try (hex/decode "0") false
+                     (catch Throwable error true))
+                (try (hex/decode "0g") false
+                     (catch Throwable error true))
+                (try (hex/decode (std.native.Bytes/new 0)) false
+                     (catch Throwable error true))]
+               [true true true true])])
+
+results

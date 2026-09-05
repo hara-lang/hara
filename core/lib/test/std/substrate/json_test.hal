@@ -1,0 +1,205 @@
+(ns std.substrate.json-test
+  (:use code.test)
+  (:require [std.substrate.frame :as frame]
+            [std.substrate.json :as substrate-json]
+            [std.substrate.router :as router]))
+
+(fact "recognises supported JSON wire kinds"
+  [(substrate-json/frame-kind? frame/KIND_REQUEST)
+   (substrate-json/frame-kind? frame/KIND_RESPONSE)
+   (substrate-json/frame-kind? frame/KIND_STREAM)
+   (substrate-json/frame-kind? router/KIND_SUBSCRIBE)
+   (substrate-json/frame-kind? "unknown")]
+  => [true true true true false])
+
+(fact "validates request response and stream frames"
+  [(substrate-json/valid-frame?
+    {"kind" "request"
+     "id" "req-1"
+     "space" "room/a"
+     "action" "demo/echo"
+     "args" ["ping"]})
+   (substrate-json/valid-frame?
+    {"kind" "response"
+     "id" "res-1"
+     "space" "room/a"
+     "reply_to" "req-1"
+     "status" "ok"})
+   (substrate-json/valid-frame?
+    {"kind" "stream"
+     "id" "evt-1"
+     "space" "room/a"
+     "signal" "demo/update"})
+   (substrate-json/valid-frame?
+    {"kind" "request"
+     "id" "req-2"
+     "space" "room/a"
+     "action" "demo/echo"
+     "args" {"bad" true}})
+   (substrate-json/valid-frame?
+    {"kind" "invalid"
+     "id" "req-3"
+     "space" "room/a"})]
+  => [true true true false false])
+
+^{:refer std.substrate.json/normalize-error}
+(fact "normalises arbitrary errors into JSON-safe maps"
+  [(substrate-json/normalize-error nil)
+   (substrate-json/normalize-error "broken")
+   (substrate-json/normalize-error {"error" "denied"})
+   (substrate-json/normalize-error {"status" "error"})
+   (substrate-json/normalize-error 42)
+   (substrate-json/normalize-error (ex-info "denied" {:code :app/denied}))]
+  => [nil
+      {"message" "broken"}
+      {"error" "denied" "message" "denied"}
+      {"status" "error" "message" "error"}
+      {"message" "42"}
+      {"message" "denied"}])
+
+(fact "normalises response error payloads before emission"
+  [(substrate-json/normalize-frame
+    {"kind" "response"
+     "id" "res-1"
+     "space" "room/a"
+     "reply_to" "req-1"
+     "status" "error"
+     "error" {"error" "denied"}})
+   (substrate-json/normalize-frame
+    {"kind" "request"
+     "id" "req-1"
+     "space" "room/a"
+     "action" "demo/echo"
+     "args" []})]
+  => [{"version" "substrate.v1"
+       "kind" "response"
+       "id" "res-1"
+       "source" nil
+       "target" nil
+       "space" "room/a"
+       "meta" {}
+       "action" nil
+       "args" nil
+       "reply_to" "req-1"
+       "status" "error"
+       "data" nil
+       "error" {"error" "denied" "message" "denied"}
+       "signal" nil
+       "cause" nil}
+      {"version" "substrate.v1"
+       "kind" "request"
+       "id" "req-1"
+       "source" nil
+       "target" nil
+       "space" "room/a"
+       "meta" {}
+       "action" "demo/echo"
+       "args" []
+       "reply_to" nil
+       "status" nil
+       "data" nil
+       "error" nil
+       "signal" nil
+       "cause" nil}])
+
+(fact "normalises keyword input into the fixed substrate.v1 wire shape"
+  (substrate-json/frame-create
+   :request "req-keyword"
+   {:space "room/a"
+    :action :demo/echo
+    :args [42]
+    :meta {:trace :local}})
+  => {"version" "substrate.v1"
+      "kind" "request"
+      "id" "req-keyword"
+      "source" nil
+      "target" nil
+      "space" "room/a"
+      "meta" {"trace" "local"}
+      "action" "echo"
+      "args" [42]
+      "reply_to" nil
+      "status" nil
+      "data" nil
+      "error" nil
+      "signal" nil
+      "cause" nil})
+
+(fact "translates kebab-case keyword fields to snake-case wire fields"
+  (substrate-json/frame-create
+   :response "response-keyword"
+   {:space "room/a"
+    :reply-to "request-keyword"
+    :status :ok
+    :meta {:trace-id :local}
+    :data {:event-name :changed}})
+  => {"version" "substrate.v1"
+      "kind" "response"
+      "id" "response-keyword"
+      "source" nil
+      "target" nil
+      "space" "room/a"
+      "meta" {"trace_id" "local"}
+      "action" nil
+      "args" nil
+      "reply_to" "request-keyword"
+      "status" "ok"
+      "data" {"event_name" "changed"}
+      "error" nil
+      "signal" nil
+      "cause" nil})
+
+(fact "encodes and decodes validated frames"
+  (let [encoded
+        (substrate-json/encode-frame
+         {"kind" "response"
+          "id" "res-1"
+          "space" "room/a"
+          "reply_to" "req-1"
+          "status" "error"
+          "error" {"error" "denied"}})
+        decoded
+        (substrate-json/decode-frame
+         "{\"kind\":\"stream\",\"id\":\"evt-1\",\"space\":\"room/a\",\"signal\":\"demo/update\",\"data\":{\"ok\":true}}")]
+    [(substrate-json/decode-frame encoded)
+     decoded])
+  => [{"version" "substrate.v1"
+       "kind" "response"
+       "id" "res-1"
+       "source" nil
+       "target" nil
+       "space" "room/a"
+       "meta" {}
+       "action" nil
+       "args" nil
+       "reply_to" "req-1"
+       "status" "error"
+       "data" nil
+       "error" {"error" "denied" "message" "denied"}
+       "signal" nil
+       "cause" nil}
+      {"version" "substrate.v1"
+       "kind" "stream"
+       "id" "evt-1"
+       "source" nil
+       "target" nil
+       "space" "room/a"
+       "meta" {}
+       "action" nil
+       "args" nil
+       "reply_to" nil
+       "status" nil
+       "error" nil
+       "signal" "demo/update"
+       "data" {"ok" true}
+       "cause" nil}])
+
+(fact "rejects invalid frames"
+  (try
+    (do (substrate-json/encode-frame
+         {"kind" "request" "id" "bad" "space" "room/a"})
+        false)
+    (catch Throwable error true))
+  => true)
+
+(pr-str (run '[std.substrate.json-test]))

@@ -1,0 +1,35 @@
+(ns postgres.core.impl-test
+  (:require [postgres.core.impl :as impl])
+  (:use code.test))
+
+(def schema
+  {:id [{:type :uuid :primary true :order 0}]
+   :name [{:type :text :order 1}]})
+(def entry {:id 'Entry :module 'demo :table-schema schema})
+
+(defn expand [form]
+  (second (macroexpand-1 form)))
+
+(fact "exposes select operations through the implementation facade"
+  (expand (list 'impl/t:select entry {:as :raw})) => '[:select * :from demo/Entry]
+  (expand (list 'impl/t:count entry {}))
+  => '(pg:scalar [:select (count *) :from demo/Entry]))
+
+(fact "guards single-record reads with WHERE"
+  (expand (list 'impl/t:get entry {})) => (throws)
+  (expand (list 'impl/t:id entry {})) => (throws)
+  (expand (list 'impl/t:get entry {:where {:id "a"}}))
+  => '(pg:scalar
+       [:with j-ret :as
+        [:select (--- [#{"id"} #{"name"}]) :from demo/Entry
+         \\ :where {"id" [:eq "a"]} \\ :limit 1]
+        \\ :select (to-jsonb j-ret) :from j-ret]))
+
+(fact "exposes insert and update operations"
+  (expand (list 'impl/t:insert entry {:id "a"} {:as :raw}))
+  => '[:insert-into demo/Entry (>-< [#{"id"}]) :values (>-< [(:uuid "a")])]
+  (expand (list 'impl/t:update-untracked entry {:set {:name "n"}}))
+  => '[:update demo/Entry :set (== (>-< [#{"name"}]) (row (:text "n")))])
+
+(fact "exposes table fields"
+  (expand (list 'impl/t:fields entry {})) => '[name])

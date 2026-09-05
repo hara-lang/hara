@@ -1,0 +1,713 @@
+(ns lang.core.script
+  (:require
+            [lang.common.book :as book]
+            [lang.common.compiler :as compiler]
+            [lang.core.eval :as evaluation]
+            [lang.core.registry :as registry]
+            [lang.core.runtime :as runtime]))
+
+(def +modules+ (atom {}))
+(def +scripts+ (atom {}))
+(def +loaded-modules+ (atom {}))
+(def +module-contexts+ (atom {}))
+
+(def +module-metadata-keys+
+  [:static :application :schema :source :require-impl :implements
+   :specialize :includes :export :file :display :module/primary])
+
+(defn- namespace-symbol
+  []
+  (symbol (str (ns-current))))
+
+(defn- module-symbol
+  []
+  (or (get (deref +module-contexts+) (namespace-symbol))
+      (namespace-symbol)))
+
+(defn current-module-id
+  []
+  (module-symbol))
+
+(defn- symbol-id
+  [value]
+  (symbol (name value)))
+
+(defn- require-module
+  [spec]
+  (if (symbol? spec)
+    spec
+    (first spec)))
+
+(defn- require-option-value
+  [key value]
+  (cond (= key :as)
+        (list 'quote (if (vector? value) (last value) value))
+
+        (or (= key :refer)
+            (= key :refer-macros)
+            (= key :exclude))
+        (list 'quote value)
+
+        :else
+        value))
+
+(defn- require-options
+  [spec reload?]
+  (if (not (vector? spec))
+    (if reload? {:reload true} {})
+    (loop [remaining (vec (rest spec))
+           options (if reload? {:reload true} {})]
+      (if (empty? remaining)
+        options
+        (let [key (first remaining)
+              value (second remaining)
+              remaining (vec (drop 2 remaining))]
+          (if (or (= key :primary)
+                  (and (= key :with)
+                       (not (or (vector? value)
+                                (list? value)
+                                (set? value)))))
+            (recur remaining options)
+            (let [option-key (if (= key :with) :refer key)]
+              (recur remaining
+                     (assoc options
+                            option-key
+                            (require-option-value option-key value))))))))))
+
+(defn require-primary?
+  [spec]
+  (if (not (vector? spec))
+    false
+    (loop [index 1]
+      (if (>= index (count spec))
+        false
+        (if (and (= :primary (nth spec index))
+                 (= true (nth spec (inc index))))
+          true
+          (recur (+ index 2)))))))
+
+(defn- require-link
+  [spec]
+  (let [module (require-module spec)
+        values (if (symbol? spec)
+                 []
+                 (vec (rest spec)))]
+    (loop [remaining values]
+      (if (empty? remaining)
+        [module module]
+        (if (= :as (first remaining))
+          [(let [alias (second remaining)]
+             (if (vector? alias) (last alias) alias))
+           module]
+          (recur (vec (rest remaining))))))))
+
+(defn- module-config
+  [lang module config]
+  (let [requires (vec (or (:require config) []))
+        require-impl (vec (or (:require-impl config) []))
+        implements (book/module-normalize-implements (:implements config))
+        explicit-links (or (:link config) {})
+        links (reduce (fn [out spec]
+                        (let [[alias target] (require-link spec)]
+                          (assoc out alias target)))
+                      (merge {'- module} explicit-links)
+                      requires)]
+    (merge {:id module
+            :lang lang
+            :require requires
+            :require-impl require-impl
+            :implements implements
+            :link links
+            :code {}
+            :fragment {}}
+           (select-keys config +module-metadata-keys+))))
+
+(defn configure-module
+  ([lang config]
+   (configure-module lang (namespace-symbol) config))
+  ([lang module config]
+   (let [source (namespace-symbol)
+         _ (swap! +module-contexts+ assoc source module)
+         current (get (deref +modules+) module)
+         value (module-config lang module config)
+         value (assoc value
+                      :code (or (:code current) {})
+                      :fragment (or (:fragment current) {}))
+         value (if (:native current)
+                 (assoc value :native (:native current))
+                 value)]
+     (swap! +modules+ assoc module value)
+     value)))
+
+(declare portable-schema-form)
+
+(defn schema-value-form
+  "Returns the portable schema surface owned by a declaration Var.
+
+   Ordinary `(def Name (schema ...))` values own a SchemaType directly. Native
+   `defstruct` and `defmutable` declarations own a runtime type, so their
+   SchemaType is obtained through Schema/of. The registry receives only the
+   portable form; runtime descriptor objects never cross the module boundary."
+  [variable]
+  (let [value (deref variable)
+        value-type (type value)]
+    (cond
+      (= :std.native.SchemaType value-type)
+      (portable-schema-form (std.native.Schema/form value))
+
+      (or (= :std.native.StructType value-type)
+          (= :std.native.MutableType value-type))
+      (let [schema-value (std.native.Schema/of variable)]
+        (when schema-value
+          (portable-schema-form (std.native.Schema/form schema-value))))
+
+      :else nil)))
+
+(defn portable-schema-form
+  "Rewrites runtime Var and schema values into portable schema forms."
+  [value]
+  (let [value-type (type value)]
+    (cond
+      (= :std.native.Var value-type)
+      (list 'var (std.native.Runtime/var-sym value))
+
+      (= :std.native.SchemaType value-type)
+      (portable-schema-form (std.native.Schema/form value))
+
+      (vector? value)
+      (vec (map portable-schema-form value))
+
+      (list? value)
+      (apply list (map portable-schema-form value))
+
+      (map? value)
+      (reduce-kv (fn [output key item]
+                   (assoc output
+                          (portable-schema-form key)
+                          (portable-schema-form item)))
+                 {}
+                 value)
+
+      (set? value)
+      (set (map portable-schema-form value))
+
+      :else value)))
+
+(defn module-source-symbol
+  "Resolves the source namespace which owns a logical module id."
+  [module-id]
+  (let [module (get (deref +modules+) module-id)
+        source (get module :source)
+        context-source
+        (reduce-kv
+         (fn [found source-symbol target]
+           (if (or found (not= target module-id))
+             found
+             source-symbol))
+         nil
+         (deref +module-contexts+))]
+    (or (when (symbol? source) source)
+        context-source
+        module-id)))
+
+(defn module-schema-values
+  "Collects portable schemas from all declaration Vars in a module namespace."
+  [module-id]
+  (let [source (module-source-symbol module-id)
+        variables (std.native.Runtime/vars source)]
+    (reduce-kv
+     (fn [output var-name variable]
+       (if-let [form (schema-value-form variable)]
+         (assoc output
+                (symbol (str source) (name var-name))
+                form)
+         output))
+     {}
+     variables)))
+
+(defn refresh-module-schemas
+  "Publishes declaration schemas into a module's portable sidecar."
+  [module-id]
+  (let [module (get (deref +modules+) module-id)]
+    (if (nil? module)
+      (throw (ex :not-found {:module module-id}
+                 :ex/message "Tahto script module not found"))
+      (let [existing (if (map? (:schema module)) (:schema module) {})
+            schemas (module-schema-values module-id)
+            updated (assoc module :schema (merge existing schemas))]
+        (swap! +modules+ assoc module-id updated)
+        updated))))
+
+(defn register-code
+  ([form]
+   (register-code nil form))
+  ([explicit-language form]
+   (let [module (module-symbol)
+        symbol (second form)
+        id (symbol-id symbol)
+        op (first form)
+        module-value (get (deref +modules+) module)
+        metadata (or (meta symbol) {})
+        language (or explicit-language (:lang module-value) :xtalk)
+        schema (or (:static/schema metadata)
+                   (:schema metadata)
+                   (:schema module-value)
+                   (first (get-in module-value [:static :all :schema])))
+        entry (merge metadata
+                     {:id id
+                      :module module
+                      :lang language
+                      :section :code
+                      :op op
+                      :op-key (keyword (name op))
+                      :form form
+                      :form-input form})
+        entry (if schema
+                (assoc (dissoc entry :schema)
+                       :static/schema
+                       (portable-schema-form schema))
+                entry)
+        entry (if (has? metadata :public)
+                (assoc entry :static/public (:public metadata))
+                entry)]
+    (swap! +modules+
+           (fn [modules]
+             (let [current (or (get modules module)
+                               (module-config :xtalk module {}))]
+               (assoc modules module
+                      (assoc-in current [:code id] entry)))))
+     nil)))
+
+(defn register-fragment
+  [form template]
+  (let [module (module-symbol)
+        symbol (second form)
+        id (symbol-id symbol)
+        entry {:id id
+               :module module
+               :lang :xtalk
+               :section :fragment
+               :op 'defmacro
+               :op-key :defmacro
+               :form form
+               :form-input form
+               :template template
+               :standalone (:standalone (meta symbol))}]
+    (swap! +modules+
+           (fn [modules]
+             (let [current (or (get modules module)
+                               (module-config :xtalk module {}))]
+               (assoc modules module
+                      (assoc-in current [:fragment id] entry)))))
+    nil))
+
+(defmacro defn.xt
+  [symbol & body]
+  `(lang.core.script/register-code
+    '~(apply list 'defn symbol body)))
+
+(defn- quote-macro-expansion
+  [forms]
+  (list 'list
+        (list 'quote 'quote)
+        (apply list 'do forms)))
+
+(defn- runtime-macro-body
+  [body]
+  (let [[prefix declarations]
+        (loop [prefix [] declarations (vec body)]
+          (if (or (string? (first declarations))
+                  (map? (first declarations)))
+            (recur (conj prefix (first declarations))
+                   (vec (rest declarations)))
+            [prefix declarations]))
+        transformed
+        (if (vector? (first declarations))
+          [(first declarations)
+           (quote-macro-expansion (vec (rest declarations)))]
+          (map (fn [clause]
+                 (list (first clause)
+                       (quote-macro-expansion (vec (rest clause)))))
+               declarations))]
+    (vec (concat prefix transformed))))
+
+(defmacro defmacro.xt
+  [sym & body]
+  (let [form (apply list 'defmacro sym body)
+        runtime-form (apply list 'defmacro sym (runtime-macro-body body))
+        qualified (symbol (str (:ns &env)) (name sym))]
+    `(do
+       ~runtime-form
+       (lang.core.script/register-fragment
+        '~form
+        (fn [& args]
+          (let [expanded (macroexpand-1
+                          (apply list '~qualified args))]
+            (if (and (list? expanded)
+                     (= 'quote (first expanded)))
+              (second expanded)
+              expanded)))))))
+
+(defn module-loaded?
+  [module]
+  (if (or (get (deref +loaded-modules+) module)
+          (get (deref +modules+) module))
+    true
+    false))
+
+(defn load-module
+  [spec]
+  (let [source (require-module spec)
+        known-module (or (get (deref +module-contexts+) source)
+                         source)
+        loaded? (module-loaded? known-module)
+        source-configured? (boolean (get (deref +module-contexts+) source))]
+    ;; Script dependencies are Hara namespaces first.  The ordinary namespace
+    ;; loader owns source/resource resolution, cycle detection, reload, and
+    ;; transactional rollback.  A configured source is required without
+    ;; reload so that its aliases/referred vars are still applied; an
+    ;; in-memory fixture module has no source context and is already complete.
+    (if (or (not loaded?) source-configured?)
+      (eval (list 'require
+                  (list 'quote source)
+                  (require-options spec (not loaded?))))
+      nil)
+    (let [module (or (get (deref +module-contexts+) source)
+                     source)
+          value (get (deref +modules+) module)]
+      (if (nil? value)
+        (throw (ex :dependency {:module module
+                         :source source}
+                   :ex/message "Required namespace did not provide a script module"))
+        (do
+          (refresh-module-schemas module)
+          (swap! +loaded-modules+ assoc module true)
+          module)))))
+
+(defn- intern-form
+  [target-symbol]
+  (list 'intern-var
+        (list 'ns-current)
+        (list 'quote target-symbol)
+        (list 'var (symbol "lang.core.script" (name target-symbol)))))
+
+(defn- install-macro
+  [target-symbol]
+  (let [qualified (symbol "lang.core.script" (name target-symbol))
+        source (resolve qualified)]
+    (intern-var (ns-current) target-symbol source)
+    target-symbol))
+
+(defn script-options
+  [options]
+  (cond
+    (empty? options) [(namespace-symbol) {}]
+    (map? (first options)) [(namespace-symbol) (first options)]
+    (symbol? (first options)) [(first options) (or (second options) {})]
+    :else (throw (ex :dependency {:options options} :ex/message "script expects an optional module symbol and config map"))))
+
+(defn script-form
+  [lang options]
+  (let [[module config] (script-options options)]
+    (list 'lang.core.script/setup
+          (list 'quote lang)
+          (list 'quote module)
+          (list 'quote config)
+          false)))
+
+(defmacro script
+  [lang & options]
+  (lang.core.script/script-form lang options))
+
+(defn register-script
+  [lang module config]
+  (let [source (namespace-symbol)
+        coordinate [module lang]
+        value {:lang lang
+               :module module
+               :source source
+               :config config
+               :runtime nil}]
+    (swap! +scripts+ assoc coordinate value)
+    value))
+
+(defn script-require-target-id
+  "Constructs the logical module id used for a same-language specialization."
+  [module-id source-id as]
+  (symbol
+   (str module-id
+        "."
+        (name (or (if (vector? as) (last as) as)
+                  source-id)))))
+
+(defn script-ns-import
+  "Requires script dependencies and returns the explicitly primary sources."
+  [lang config]
+  (let [require-impl (vec (or (:require-impl config) []))
+        implements (book/module-normalize-implements (:implements config))
+        requires (vec (or (:require config) []))
+        entries (concat require-impl implements requires)]
+    (reduce (fn [primary spec]
+              (let [source (require-module spec)]
+                (load-module spec)
+                (if (require-primary? spec)
+                  (conj primary source)
+                  primary)))
+            #{}
+            entries)))
+
+(defn setup
+  ([lang config test?]
+   (setup lang (namespace-symbol) config test?))
+  ([lang module config test?]
+   (let [primary (script-ns-import lang config)
+         config (assoc config :module/primary primary)]
+     (configure-module lang module config)
+     (if test?
+       (register-script lang module config)))
+   nil))
+
+(defn script-test-form
+  [lang options]
+  (let [[module config] (script-options options)]
+    (list 'lang.core.script/setup
+          (list 'quote lang)
+          (list 'quote module)
+          (list 'quote config)
+          true)))
+
+(defmacro script-
+  [lang & options]
+  (lang.core.script/script-test-form lang options))
+
+(defn- selected-book
+  [lang]
+  (registry/registry-book lang :default nil))
+
+(defn- compile-one
+  [lang form module entry]
+  (let [book (selected-book lang)
+        selected (:selection book)
+        context {:book (assoc book :modules (deref +modules+))
+                 :modules (deref +modules+)
+                 :module module
+                 :entry entry
+                 :lang lang
+                 :layout :flat}]
+    (if entry
+      (compiler/compile-entry (compiler/compiler) entry selected context)
+      (compiler/compile (compiler/compiler) form selected context))))
+
+(defn- dependency-entry
+  [qualified]
+  (let [module (symbol (namespace qualified))
+        id (symbol (name qualified))]
+    (get-in (deref +modules+) [module :code id])))
+
+(defn- flat-forward-alias?
+  "True when a flat-layout def only republishes an identically named linked
+   value. The linked dependency already owns that target declaration."
+  [entry]
+  (let [form (:form-input entry)]
+    (and (list? form)
+         (= (quote def) (first form))
+         (= 3 (count form))
+         (symbol? (second form))
+         (symbol? (nth form 2))
+         (namespace (nth form 2))
+         (= (name (second form))
+            (name (nth form 2))))))
+
+(defn- dependency-source
+  [lang qualified emitted]
+  (if (get emitted qualified)
+    [emitted []]
+    (let [entry (dependency-entry qualified)]
+      (if (nil? entry)
+        (throw (ex :not-found {:dependency qualified
+                         :lang lang} :ex/message "Tahto dependency entry is missing"))
+        (let [module (get (deref +modules+) (:module entry))
+              result (compile-one lang (:form-input entry) module entry)
+              dependencies (vec (:code (:dependencies result)))
+              nested (reduce (fn [state dependency]
+                               (let [seen (nth state 0)
+                                     sources (nth state 1)
+                                     next-state (dependency-source lang dependency seen)
+                                     next-seen (nth next-state 0)
+                                     next-sources (nth next-state 1)]
+                                 [next-seen (into sources next-sources)]))
+                             [emitted []]
+                             dependencies)
+              seen (assoc (nth nested 0) qualified true)
+              sources (if (flat-forward-alias? entry)
+                        (nth nested 1)
+                        (conj (nth nested 1) (:output result)))]
+          [seen sources])))))
+
+(defn- lua-expression-form
+  [form]
+  (if (and (list? form) (= (quote do) (first form)))
+    (let [body (vec (rest form))
+          final-form (last body)
+          returned (if (and (list? final-form)
+                            (= (quote return) (first final-form)))
+                     final-form
+                     (list (quote return) final-form))]
+      (apply list (quote do)
+             (conj (vec (drop-last body)) returned)))
+    form))
+
+(defn- js-expression-form
+  [form]
+  (if (and (list? form) (= (quote do) (first form)))
+    (let [body (vec (rest form))
+          final-form (last body)
+          returned (if (and (list? final-form)
+                            (= (quote return) (first final-form)))
+                     final-form
+                     (list (quote return) final-form))
+          body (conj (vec (drop-last body)) returned)]
+      (list (apply list (quote fn) [] body)))
+    form))
+
+(defn- lua-return-output
+  [output]
+  (if (str/starts-with? output "local ")
+    (let [index (str/last-index-of output "\nend\n")
+          offset (+ index 5)]
+      (str (str/slice output 0 offset)
+           "return "
+           (str/slice output offset)))
+    (str "return " output)))
+
+(defn compile-form
+  [lang module form]
+  (let [lua-do? (and (= lang :lua)
+                     (list? form)
+                     (= (quote do) (first form)))
+        js-do? (and (= lang :js)
+                    (list? form)
+                    (= (quote do) (first form)))
+        python-do? (and (= lang :python)
+                        (list? form)
+                        (= (quote do) (first form)))
+        form (cond lua-do? (lua-expression-form form)
+                   js-do? (js-expression-form form)
+                   python-do? (js-expression-form form)
+                   :else form)
+        module-config (or (get (deref +modules+) module)
+                          (module-config :xtalk module {}))
+        result (compile-one lang form module-config nil)
+        dependencies (vec (:code (:dependencies result)))
+        compiled (reduce (fn [state dependency]
+                           (let [seen (nth state 0)
+                                 sources (nth state 1)
+                                 next-state (dependency-source lang dependency seen)
+                                 next-seen (nth next-state 0)
+                                 next-sources (nth next-state 1)]
+                             [next-seen (into sources next-sources)]))
+                         [{} []]
+                         dependencies)
+        expression (:output result)
+        expression (if (and (= lang :lua) (not lua-do?))
+                     (lua-return-output expression)
+                     expression)
+        expression (if (and (= lang :js)
+                            (not js-do?)
+                            (str/starts-with? expression "{"))
+                     (str "(" expression ")")
+                     expression)
+        sources (conj (nth compiled 1) expression)]
+    (str/join "\n" sources)))
+
+(defn restart
+  []
+  (let [module (namespace-symbol)
+        entries (filter (fn [entry]
+                          (= module (first (first entry))))
+                        (deref +scripts+))]
+    (reduce (fn [_ entry]
+              (let [coordinate (first entry)
+                    script (second entry)
+                    lang (:lang script)
+                    config (:config script)
+                    runtime-type (or (:runtime config) :basic)
+                    instance (runtime/rt-create lang runtime-type config)
+                    started (runtime/rt-start instance)
+                    started
+                    (if (= lang :postgres)
+                      (reduce
+                       (fn [current spec]
+                         (if (require-primary? spec)
+                           (IContextLifeCycle/setup-module current (first spec))
+                           current))
+                       started
+                       (or (:require config) []))
+                      started)]
+                (swap! +scripts+ assoc coordinate
+                       (assoc script :runtime started))))
+            nil
+            entries)
+    nil))
+
+(defn stop
+  []
+  (let [module (namespace-symbol)
+        entries (filter (fn [entry]
+                          (= module (first (first entry))))
+                        (deref +scripts+))]
+    (reduce (fn [_ entry]
+              (let [coordinate (first entry)
+                    script (second entry)
+                    instance (:runtime script)]
+                (if instance (runtime/rt-stop instance))
+                (swap! +scripts+ assoc coordinate
+                       (assoc script :runtime nil))))
+            nil
+            entries)
+    nil))
+
+(defn eval-form
+  [lang form]
+  (let [module (namespace-symbol)
+        script (get (deref +scripts+) [module lang])
+        instance (:runtime script)]
+    (if (nil? script)
+      (throw (ex :dependency {:module module :lang lang} :ex/message "Tahto script is not configured"))
+      (if (nil? instance)
+        (throw (ex :dependency {:module module :lang lang} :ex/message "Tahto script runtime is not started"))
+        (let [source (compile-form lang module form)
+              response (evaluation/eval-await instance source {})]
+          (if (and (map? response) (has? response :value))
+            (:value response)
+            response))))))
+
+(defn eval-forms
+  "Evaluates target forms independently and preserves every visible result."
+  [lang forms]
+  (let [results (map (fn [form] (eval-form lang form)) forms)]
+    (if (= 1 (count results))
+      (first results)
+      (apply list results))))
+
+(defmacro !.js
+  [& body]
+  `(lang.core.script/eval-form :js '~(if (= 1 (count body))
+                                         (first body)
+                                         (apply list 'do body))))
+
+(defmacro !.lua
+  [& body]
+  `(lang.core.script/eval-form :lua '~(if (= 1 (count body))
+                                          (first body)
+                                          (apply list 'do body))))
+
+(defmacro !.py
+  [& body]
+  `(lang.core.script/eval-form :python '~(if (= 1 (count body))
+                                             (first body)
+                                         (apply list 'do body))))
+
+(defmacro !.pg
+  [& body]
+  `(lang.core.script/eval-forms :postgres '~body))

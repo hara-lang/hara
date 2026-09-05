@@ -1,0 +1,291 @@
+(ns work.flow)
+
+(def +flows+
+  (atom {}))
+
+(def +definitions+
+  (atom {}))
+
+(defn merge-options
+  "Recursively merges workflow option maps.
+
+   Right-hand values win, functions and scalar values replace their parents,
+   and nil means inherit the current value. Use :flow/remove for an explicit
+   removal."
+  [left right]
+  (reduce
+   (fn [output entry]
+     (let [key (nth entry 0)
+           value (nth entry 1)
+           current (get output key)]
+       (cond
+         (nil? value)
+         output
+
+         (and (map? current) (map? value))
+         (assoc output key (merge-options current value))
+
+         :else
+         (assoc output key value))))
+   (or left {})
+   (or right {})))
+
+(defn flow-path?
+  "Checks that value is a non-empty workflow path of keywords."
+  [value]
+  (and (vector? value)
+       (not (empty? value))
+       (every? keyword? value)))
+
+(defn assert-flow-path
+  [path]
+  (if (not (flow-path? path))
+    (throw
+     (ex :io {:workflow/path path} :ex/message "Workflow path must be a non-empty keyword vector")))
+  path)
+
+(defn removal-path?
+  [value]
+  (and (vector? value)
+       (not (empty? value))))
+
+(defn assert-removals
+  [removals]
+  (let [removals (or removals [])]
+    (if (not (vector? removals))
+      (throw
+       (ex :io {:workflow/removals removals} :ex/message "Workflow removals must be a vector of paths")))
+    (if (not (every? removal-path? removals))
+      (throw
+       (ex :argument {:workflow/removals removals} :ex/message "Each workflow removal must be a non-empty vector")))
+    removals))
+
+(defn remove-option
+  "Removes one nested option path. Missing paths are ignored."
+  [options path]
+  (let [key (first path)
+        remaining (vec (rest path))]
+    (if (empty? remaining)
+      (dissoc options key)
+      (let [current (get options key)]
+        (if (map? current)
+          (assoc options key (remove-option current remaining))
+          options)))))
+
+(defn remove-options
+  "Applies explicit :flow/remove paths to an option map."
+  [options removals]
+  (reduce remove-option
+          options
+          (assert-removals removals)))
+
+(defn parent-path
+  [path]
+  (if (> (count path) 1)
+    (vec (take (dec (count path)) path))
+    nil))
+
+(defn assert-flow-function
+  [flow key required?]
+  (let [value (get flow key)]
+    (if (and required? (nil? value))
+      (throw
+       (ex :io {:workflow/path (:flow/path flow)
+                 :workflow/key key} :ex/message "Workflow descriptor requires a function")))
+    (if (and value (not (fn? value)))
+      (throw
+       (ex :io {:workflow/path (:flow/path flow)
+                 :workflow/key key
+                 :workflow/value value} :ex/message "Workflow descriptor entry must be a function")))
+    value))
+
+(defn assert-flow
+  [flow]
+  (if (not (map? flow))
+    (throw
+     (ex :argument {:workflow/flow flow} :ex/message "Workflow descriptor must be a map")))
+  (assert-flow-path (:flow/path flow))
+  (assert-flow-function flow :flow/compile true)
+  (assert-flow-function flow :flow/merge false)
+  (assert-flow-function flow :flow/configure false)
+  (assert-flow-function flow :flow/normalise false)
+  (assert-flow-function flow :flow/reconcile false)
+  (assert-flow-function flow :flow/invoke false)
+  (assert-flow-function flow :flow/metadata false)
+  (if (and (:flow/defaults flow)
+           (not (map? (:flow/defaults flow))))
+    (throw
+     (ex :io {:workflow/path (:flow/path flow)} :ex/message "Workflow descriptor :flow/defaults must be a map")))
+  (if (:flow/extends flow)
+    (assert-flow-path (:flow/extends flow)))
+  flow)
+
+(defn register
+  "Registers one workflow descriptor by :flow/path."
+  [flow]
+  (let [flow (assert-flow flow)
+        path (:flow/path flow)]
+    (swap! +flows+ assoc path flow)
+    flow))
+
+(defn unregister
+  "Removes one workflow descriptor."
+  [path]
+  (swap! +flows+ dissoc (assert-flow-path path)))
+
+(defn registered
+  "Returns registered workflow descriptors."
+  []
+  (deref +flows+))
+
+(defn registered-flow
+  [path]
+  (get (deref +flows+) path))
+
+(defn resolve-flow
+  "Resolves an exact workflow descriptor or the nearest registered ancestor."
+  [path]
+  (let [path (assert-flow-path path)]
+    (loop [candidate path]
+      (if (nil? candidate)
+        (throw
+         (ex :io {:workflow/path path
+                   :workflow/registered (vec (keys (deref +flows+)))} :ex/message "Workflow path is not registered"))
+        (let [flow (registered-flow candidate)]
+          (if flow
+            flow
+            (recur (parent-path candidate))))))))
+
+(defn profile-parent-path
+  [path flow overrides]
+  (let [selected (or (:extends overrides)
+                     (:flow/extends flow)
+                     (parent-path path))]
+    (if selected
+      (assert-flow-path selected)
+      nil)))
+
+(defn profile-cycle?
+  [path ancestry]
+  (reduce
+   (fn [found candidate]
+     (or found (= path candidate)))
+   false
+   ancestry))
+
+(defn profile-options
+  [flow parent-profile overrides]
+  (let [merge-function (or (:flow/merge flow) merge-options)
+        parent-options (if parent-profile
+                         (:workflow/options parent-profile)
+                         {})
+        same-flow?
+        (and parent-profile
+             (= (:flow/path flow)
+                (get-in parent-profile [:workflow/flow :flow/path])))
+        descriptor-defaults
+        (if same-flow?
+          {}
+          (or (:flow/defaults flow) {}))
+        local-options (dissoc overrides :extends :flow/remove)
+        merged (merge-function
+                (merge-function parent-options descriptor-defaults)
+                local-options)
+        options (remove-options merged (:flow/remove overrides))
+        configure-function (:flow/configure flow)]
+    (if configure-function
+      (configure-function flow options)
+      options)))
+
+(defn configure-for*
+  [path overrides ancestry]
+  (let [path (assert-flow-path path)
+        overrides (or overrides {})]
+    (if (not (map? overrides))
+      (throw
+       (ex :io {:workflow/path path
+                 :workflow/overrides overrides} :ex/message "Workflow profile overrides must be a map")))
+    (if (profile-cycle? path ancestry)
+      (throw
+       (ex :io {:workflow/path path
+                 :workflow/ancestry ancestry} :ex/message "Workflow profile inheritance contains a cycle")))
+    (let [flow (resolve-flow path)
+          parent (profile-parent-path path flow overrides)
+          parent-profile
+          (if parent
+            (configure-for* parent
+                            {}
+                            (conj ancestry path))
+            nil)
+          options (profile-options flow parent-profile overrides)]
+      {:workflow/path path
+       :workflow/extends parent
+       :workflow/flow flow
+       :workflow/options options})))
+
+(defn configure
+  "Creates one immutable workflow profile, including inherited defaults."
+  [path & [overrides]]
+  (configure-for* path (or overrides {}) []))
+
+(defn profile?
+  [value]
+  (and (map? value)
+       (flow-path? (:workflow/path value))
+       (map? (:workflow/flow value))
+       (map? (:workflow/options value))))
+
+(defn definition
+  "Returns the last installed workflow definition for qualified-name."
+  [qualified-name]
+  (get (deref +definitions+) qualified-name))
+
+(defn definitions
+  []
+  (deref +definitions+))
+
+(defn define
+  "Normalises, compiles, and reconciles one named workflow definition.
+
+   The definitions registry is updated only after every flow-specific stage
+   succeeds, so a failed redefinition leaves the prior installed value intact."
+  [profile qualified-name raw-definition]
+  (if (not (profile? profile))
+    (throw
+     (ex :io {:workflow/profile profile
+               :workflow/name qualified-name} :ex/message "Workflow definition requires a configured profile")))
+  (let [flow (:workflow/flow profile)
+        normalise-function (or (:flow/normalise flow)
+                               (fn [profile name definition]
+                                 definition))
+        compile-function (:flow/compile flow)
+        reconcile-function (or (:flow/reconcile flow)
+                               (fn [profile previous candidate definition]
+                                 candidate))
+        definition
+        (normalise-function profile
+                            qualified-name
+                            raw-definition)
+        candidate (compile-function profile definition)
+        previous (get (deref +definitions+) qualified-name)
+        installed
+        (reconcile-function profile
+                            previous
+                            candidate
+                            definition)]
+    (swap! +definitions+ assoc qualified-name installed)
+    installed))
+
+(defn define-work
+  "Defines one named value through a registered workflow descriptor."
+  [qualified-name path raw-definition]
+  (let [path (assert-flow-path path)]
+    (if (and (map? raw-definition)
+             (has? raw-definition :workflow))
+      (throw
+       (ex :io {:workflow/name qualified-name
+                 :workflow/path path
+                 :workflow/definition raw-definition} :ex/message "Workflow path must be supplied to def.work")))
+    (define (configure path)
+             qualified-name
+             raw-definition)))

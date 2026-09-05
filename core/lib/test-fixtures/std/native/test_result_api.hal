@@ -1,0 +1,63 @@
+(Test/run
+ [{:name "compares and exposes canonical mismatch data"
+   :test (fn []
+           (let [result (Test/result
+                         "different"
+                         7
+                         8
+                         (Test/compare 7 8))]
+             [(Test/passed? result)
+              (Test/actual result)
+              (Test/expected result)
+              (Test/failure-count result)
+              (Test/failure?
+               (Test/failure result 0))]))
+   :expected [false 7 8 1 true]}
+  {:name "traverses strict Failure leaves depth first"
+   :test (fn []
+           (let [leaf (fn [code]
+                        {:failure/code code
+                         :failure/path []
+                         :failure/in []
+                         :failure/actual nil
+                         :failure/expected nil
+                         :failure/message "failure"
+                         :failure/context {}
+                         :failure/children []})
+                 left (leaf :left)
+                 right (leaf :right)
+                 parent {:failure/code :parent
+                         :failure/path []
+                         :failure/in []
+                         :failure/actual nil
+                         :failure/expected nil
+                         :failure/message "parent"
+                         :failure/context {}
+                         :failure/children [left right]}
+                 result (Result/create
+                         :success
+                         false
+                         {:failures [parent]})]
+             [(vec (map :failure/code
+                        (Test/failure-seq result)))
+              (Test/failure-count result)
+              (:failure/code (Test/failure result 1))
+              (Test/failure? parent)
+              (Test/failure?
+               (assoc parent :failure/children [{}]))]))
+   :expected [[:left :right] 2 :right true false]}
+  {:name "enriches without recomputing comparison data"
+   :test (fn []
+           (let [comparison (Result/create
+                             :success
+                             false
+                             {:failures []})
+                 result (Test/result
+                         "preserved"
+                         1
+                         1
+                         comparison)]
+             [(Result/data result)
+              (Test/passed? result)
+              (get-in (Result/context result) [:test :name])]))
+   :expected [false false "preserved"]}])

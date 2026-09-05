@@ -1,0 +1,106 @@
+(ns lang.common.grammar-test
+  (:use code.test)
+  (:require [lang.common.grammar :as grammar]
+            [lang.common.grammar-xtalk :as xtalk]))
+
+^{:refer lang.common.grammar/gen-ops :added "4.0"}
+(fact "discovers operator table vars"
+  (vector? (grammar/gen-ops 'lang.common.grammar-spec "spec")) => true)
+
+^{:refer lang.common.grammar/normalize-op-entry :added "4.1"}
+(fact "normalizes macro and hard-link defaults"
+  (grammar/normalize-op-entry
+   {:op :x-add :emit :macro :macro #'xtalk/tf-add})
+  => (contains {:lower #'xtalk/tf-add
+                :value/template #'xtalk/tf-add
+                :value/standalone true})
+
+  (grammar/normalize-op-entry
+   {:op :helper :emit :hard-link :raw 'xt.lang.common-data/obj-keys})
+  => (contains {:value/standalone 'xt.lang.common-data/obj-keys}))
+
+^{:refer lang.common.grammar/collect-ops :added "4.0"}
+(fact "collects ordered operator categories"
+  (map? (grammar/collect-ops grammar/+op-categories+)) => true)
+
+^{:refer lang.common.grammar/ops-list :added "4.0"}
+(fact "lists operator categories in grammar order"
+  [(first (grammar/ops-list)) (last (grammar/ops-list))]
+  => [:builtin :xtalk-runtime-specific])
+
+^{:refer lang.common.grammar/ops-symbols :added "4.0"}
+(fact "groups symbols by operator category"
+  (sequential? (grammar/ops-symbols)) => true)
+
+^{:refer lang.common.grammar/ops-summary :added "4.0"}
+(fact "summarizes selected operator categories"
+  (grammar/ops-summary [:macro])
+  => '[[:macro {:tfirst #{->} :tlast #{->>} :doto #{doto}
+                :if #{if} :cond #{cond} :when #{when}}]])
+
+^{:refer lang.common.grammar/ops-detail :added "4.0"}
+(fact "returns detailed operator entries"
+  (map? (grammar/ops-detail :macro-arrow)) => true)
+
+^{:refer lang.common.grammar/default-lookup :added "4.1"}
+(fact "removes optional categories from default lookup"
+  [(has? (set (keys (grammar/default-lookup grammar/+op-all+)))
+         :functional-core)
+   (has? (set (keys (grammar/default-lookup grammar/+op-all+))) :math)]
+  => [false true])
+
+^{:refer lang.common.grammar/build :added "4.1"}
+(fact "selects functional-core operators explicitly"
+  (map? (grammar/build :include [:functional-core])) => true)
+
+^{:refer lang.common.grammar/build-min :added "4.0"}
+(fact "builds the minimum portable operator set"
+  (map? (grammar/build-min)) => true)
+
+^{:refer lang.common.grammar/build-xtalk :added "4.0"}
+(fact "builds the XTalk operator set"
+  (map? (grammar/build-xtalk)) => true)
+
+^{:refer lang.common.grammar/build:override :added "4.0"}
+(fact "overrides only existing operators"
+  (grammar/build:override (grammar/build-min) {:WRONG {}}) => (throws)
+  (map? (grammar/build:override (grammar/build-min) {:ret {}})) => true)
+
+^{:refer lang.common.grammar/build:extend :added "4.0"}
+(fact "extends only with new operators"
+  (map? (grammar/build:extend (grammar/build-min) {:NEW {}})) => true
+  (grammar/build:extend (grammar/build-min) {:ret {}}) => (throws))
+
+^{:refer lang.common.grammar/to-reserved :added "3.0"}
+(fact "indexes operator entries by symbol"
+  (set (keys (grammar/to-reserved (grammar/build :include [:vars]))))
+  => '#{:= var})
+
+^{:refer lang.common.grammar/grammar-structure :added "3.0"}
+(fact "derives block, definition, and function structure"
+  (grammar/grammar-structure (grammar/build :include [:control-general]))
+  => {:block #{:for :while :branch} :def #{} :fn #{}})
+
+^{:refer lang.common.grammar/grammar-sections :added "3.0"}
+(fact "derives grammar sections"
+  (grammar/grammar-sections (grammar/build :include [:top-base]))
+  => #{:code})
+
+^{:refer lang.common.grammar/grammar-macros :added "3.0"}
+(fact "derives macro operations"
+  (grammar/grammar-macros (grammar/build-min))
+  => #{:defn :defglobal :def :defrun})
+
+^{:refer lang.common.grammar/grammar? :added "3.0"}
+(fact "recognizes materialized grammar maps"
+  (grammar/grammar?
+   (grammar/grammar :test (grammar/to-reserved (grammar/build)) {}))
+  => true)
+
+^{:refer lang.common.grammar/grammar :added "3.0"}
+(fact "constructs grammar maps"
+  (map? (grammar/grammar
+         :test (grammar/to-reserved (grammar/build-min)) {}))
+  => true)
+
+(run {:namespace "lang.common.grammar-test"})

@@ -1,0 +1,44 @@
+(ns std.typed.result-test
+  (:use code.test)
+  (:require [std.typed.schema :as schema]
+            [std.typed.infer :as infer]))
+
+^{:refer 'std.typed.schema/normalize :id 'result-schema-contract}
+(fact "normalizes, validates, and compares Result schemas"
+  (let [success (Result/create :success 42 {})
+        timeout (Result/create :error
+                               (ex-info "timed out" {:code :result/timeout})
+                               {})]
+    [(schema/normalize [:result :int])
+     (schema/valid? [:result {:status :success} :int] success)
+     (schema/valid? [:result {:status :error
+                              :error-code :result/timeout} :int]
+                    timeout)
+     (schema/compatible? [:result {:status :success} :int]
+                         [:result :int])])
+  => [{:kind :result
+       :properties {}
+       :data {:kind :primitive :name :int}}
+      true true true])
+
+^{:refer 'std.typed.infer/infer :id 'result-transfer-contract}
+(fact "infers current Foundation and native Result operations"
+  [(infer/infer '(result :success 42 {}))
+   (infer/infer '(Result/data (result :success 42 {})))
+   (infer/infer '(Result/with-context (result :success 42 {}) {}))
+   (infer/infer '(deref (result :success 42 {})))
+   (infer/infer '(let [outcome (result 42)]
+                   (if (Result/success? outcome)
+                     (Result/data outcome)
+                     0)))]
+  => [{:kind :result
+       :properties {:status :success}
+       :data {:kind :primitive :name :int}}
+      {:kind :primitive :name :int}
+      {:kind :result
+       :properties {:status :success}
+       :data {:kind :primitive :name :int}}
+      {:kind :primitive :name :int}
+      {:kind :primitive :name :int}])
+
+(pr-str (run '[std.typed.result-test]))

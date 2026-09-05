@@ -1,0 +1,593 @@
+;; Foundation-compatible, pure source analysis primitives. Host adapters
+;; supply file text; this namespace never grants filesystem authority.
+(ns code.framework
+  (:require [code.framework.source :as source]
+            [std.lib.context.definition :as definition]
+            [std.block.base :as block]
+            [std.block.parse :as parse]))
+
+(defn source-position
+  "Returns a one-based line/column position for a byte-compatible HAL offset."
+  [source offset]
+  (let [position (parse/source-position source offset)]
+    {:line (:row position)
+     :column (:col position)}))
+
+(defn line-number
+  [source offset]
+  (:line (source-position source offset)))
+
+(defn parsed-block-value
+  "Returns the canonical value already produced by std.block.parse."
+  [value]
+  (block/block-value value))
+
+(defn block-source-length
+  "Returns the source span of a parsed block without relying on the escaped
+   diagnostic string used by native container blocks."
+  [value]
+  (let [children (block/block-children value)]
+    (if (empty? children)
+      (let [height (block/block-height value)
+            width (block/block-width value)]
+        (if (< 0 height)
+          (str/length (block/block-string value))
+          width))
+      (+ (* (if (= :meta (block/block-tag value)) 1 2)
+            (block/block-prefixed value))
+         (apply + (map block-source-length children))))))
+
+(defn block-record
+  [source value fallback-start]
+  (let [text (block/block-string value)
+        props (or (:props value) (block/block-info value))
+        start (or (:start-offset props) fallback-start)
+        end (or (:end-offset props)
+                (+ start (block-source-length value)))
+        position (source-position source start)]
+    {:block value
+     :tag (block/block-tag value)
+     :text text
+     :value (parsed-block-value value)
+     :start start
+     :end end
+     :line (or (:row props) (:line position))
+     :column (or (:col props) (:column position))}))
+
+(defn child-records
+  "Returns exact source ranges for a parsed container's direct children."
+  [source container start]
+  (let [children (block/block-children container)
+        child-start (+ start (block/block-prefixed container))]
+    (loop [index 0
+           offset child-start
+           output []]
+      (if (= index (count children))
+        output
+        (let [child (nth children index)
+              record (block-record source child offset)]
+          (recur (inc index)
+                 (:end record)
+                 (conj output record)))))))
+
+(defn code-record?
+  [record]
+  (block/expression? (:block record)))
+
+(defn metadata-record?
+  [record]
+  (= :meta (:tag record)))
+
+(defn list-record?
+  [record]
+  (= :list (:tag record)))
+
+(defn map-record?
+  [record]
+  (= :map (:tag record)))
+
+(defn significant-records
+  [records]
+  (vec (filter code-record? records)))
+
+(defn form-records-in
+  "Groups prefix metadata with each direct list form in a parsed container."
+  [source container start]
+  (:output
+   (reduce
+    (fn [state record]
+      (let [pending (:pending state)
+            output (:output state)]
+        (cond
+          (metadata-record? record)
+          (let [children
+                (significant-records
+                 (child-records source (:block record) (:start record)))
+                wrapped (first (filter list-record? children))]
+            (if wrapped
+              (let [metadata (conj pending record)
+                    full-start (if (empty? pending)
+                                 (:start record)
+                                 (:start (first pending)))]
+                {:pending []
+                 :output
+                 (conj output
+                       (assoc wrapped
+                              :prefix-metadata metadata
+                              :full-start full-start
+                              :full-text
+                              (str/slice source full-start (:end wrapped))))})
+              {:pending (conj pending record)
+               :output output}))
+
+          (list-record? record)
+          (let [full-start (if (empty? pending)
+                             (:start record)
+                             (:start (first pending)))]
+            {:pending []
+             :output
+             (conj output
+                   (assoc record
+                          :prefix-metadata pending
+                          :full-start full-start
+                          :full-text (str/slice source full-start (:end record))))})
+
+          (code-record? record)
+          {:pending [] :output output}
+
+          :else
+          state)))
+    {:pending [] :output []}
+    (child-records source container start))))
+
+(defn semantic-children
+  "Returns direct code children excluding metadata containers."
+  [source form]
+  (vec
+   (mapcat
+    (fn [record]
+      (cond
+        (metadata-record? record)
+        (rest
+         (significant-records
+          (child-records source (:block record) (:start record))))
+
+        (code-record? record)
+        [record]
+
+        :else
+        []))
+    (child-records source (:block form) (:start form)))))
+
+(defn inline-metadata-records
+  [source form]
+  (vec
+   (filter metadata-record?
+           (child-records source (:block form) (:start form)))))
+
+(defn metadata-map-record
+  [source metadata-record]
+  (first
+   (filter
+    map-record?
+    (significant-records
+     (child-records source
+                    (:block metadata-record)
+                    (:start metadata-record))))))
+
+(defn map-pairs
+  [source map-record]
+  (if (nil? map-record)
+    []
+    (let [records
+          (significant-records
+           (child-records source (:block map-record) (:start map-record)))]
+      (loop [index 0
+             output []]
+        (if (>= index (count records))
+          output
+          (let [key-record (nth records index)
+                value-record (if (< (inc index) (count records))
+                               (nth records (inc index))
+                               nil)]
+            (recur
+             (+ index 2)
+             (conj output
+                   {:key (:value key-record)
+                    :value (if value-record (:value value-record) nil)
+                    :key-record key-record
+                    :value-record value-record}))))))))
+
+(defn metadata-info
+  [source metadata-record]
+  (let [records
+        (significant-records
+         (child-records source
+                        (:block metadata-record)
+                        (:start metadata-record)))
+        map-record (first (filter map-record? records))
+        shorthand (first records)
+        shorthand-value (if shorthand (:value shorthand) nil)
+        value
+        (cond
+          map-record (:value map-record)
+          (keyword? shorthand-value) {shorthand-value true}
+          (or (symbol? shorthand-value)
+              (string? shorthand-value)) {:tag shorthand-value}
+          :else {})]
+    {:record metadata-record
+     :map-record map-record
+     :pairs (map-pairs source map-record)
+     :value (if (map? value) value {})}))
+
+(defn form-metadata
+  [source form]
+  (vec
+   (map
+    (fn [record]
+      (metadata-info source record))
+    (concat (:prefix-metadata form)
+            (inline-metadata-records source form)))))
+
+(defn binding-metadata
+  "Returns metadata attached to a definition's binding symbol only."
+  [source form name-record]
+  (if (nil? name-record)
+    {}
+    (let [record
+          (first
+           (filter
+            (fn [metadata]
+              (= (:end metadata) (:end name-record)))
+            (inline-metadata-records source form)))]
+      (if record
+        (:value (metadata-info source record))
+        {}))))
+
+(defn merged-metadata
+  [metadata]
+  (reduce
+   (fn [output entry]
+     (merge output (:value entry)))
+   {}
+   metadata))
+
+(def +definition-families+
+  [{:id :hara/function
+    :origin :code.framework/native
+    :exact #{"defn" "defn-"}
+    :prefix #{"defn."}
+    :private-heads #{"defn-"}
+    :kind :function}
+   {:id :hara/macro
+   :origin :code.framework/native
+    :exact #{"defmacro" "defmacro-"}
+    :prefix #{"defmacro."}
+    :private-heads #{"defmacro-"}
+    :kind :macro}
+   {:id :hara/struct
+    :origin :code.framework/native
+    :exact #{"defstruct" "defmutable"}
+    :kind :struct
+    :type-export true
+    :generated [{:name-prefix "map->" :kind :constructor}
+                {:name-prefix "->" :kind :constructor}]}
+   {:id :hara/type
+    :origin :code.framework/native
+    :exact #{"deftype"}
+    :prefix #{"deftype."}
+    :kind :type
+    :type-export true}
+   {:id :hara/protocol
+    :origin :code.framework/native
+    :exact #{"defprotocol"}
+    :kind :protocol}
+   {:id :hara/interface
+    :origin :code.framework/native
+    :exact #{"definterface"}
+    :kind :interface}
+   {:id :hara/multimethod
+    :origin :code.framework/native
+    :exact #{"defmulti"}
+    :kind :multimethod}
+   {:id :hara/method
+    :origin :code.framework/native
+    :exact #{"defmethod"}
+    :kind :method}
+   {:id :hara/once
+    :origin :code.framework/native
+    :exact #{"defonce"}
+    :kind :once}
+   {:id :hara/value
+   :origin :code.framework/native
+    :exact #{"def"}
+    :prefix #{"def."}
+    :kind :value}
+   {:id :hara/extended-definition
+    :origin :code.framework/native
+    :exact #{"defenum" "defpolicy" "defcache" "defmemoize"
+             "deftask" "definvoke" "defgen" "defsingleton"}
+    :prefix #{"defenum." "defpolicy." "defgen." "defsingleton."}
+    :kind :definition}])
+
+(def +definition-registry+
+  (definition/sync-origin :code.framework/native +definition-families+))
+
+(defn definition-head-name
+  [head]
+  (let [index (str/last-index-of head "/")]
+    (if (< index 0) head
+      (str/slice head (inc index) (str/length head)))))
+
+(defn definition-head?
+  [head]
+  (boolean (definition/match-family (definition-head-name head))))
+
+(defn form-head
+  [source form]
+  (let [children (semantic-children source form)]
+    (if (empty? children)
+      nil
+      (str (:value (first children))))))
+
+(defn definition-kind
+  [head]
+  (let [head (definition-head-name head)
+        family (definition/match-family head)]
+    (if (= head "defn-") :private-function
+      (or (:kind family) :definition))))
+
+(defn definition-info
+  [source form]
+  (let [children (semantic-children source form)
+        head (if (empty? children) nil (str (:value (first children))))]
+    (if (not (definition-head? head))
+      nil
+      (let [family (definition/match-family (definition-head-name head))
+            name-record (if (< 1 (count children)) (nth children 1) nil)
+            doc-record (if (< 2 (count children)) (nth children 2) nil)
+            name (if name-record (str (:value name-record)) nil)
+            metadata (form-metadata source form)
+            metadata-value (merged-metadata metadata)
+            binding-metadata-value (binding-metadata source form name-record)
+            docstring (if (and doc-record (string? (:value doc-record)))
+                        (:value doc-record)
+                        nil)
+            form-position (source-position source (:start form))
+            name-position (if name-record
+                            (source-position source (:start name-record))
+                            form-position)
+            private (or (has? (or (:private-heads family) #{})
+                              (definition-head-name head))
+                        (= true (:private metadata-value))
+                        (and name (str/starts-with? name "-")))]
+        {:head head
+         :name name
+         :kind (definition-kind head)
+         :family-id (:id family)
+         :language (:language family)
+         :reachable (not private)
+         :public (= true (:public binding-metadata-value))
+         :private private
+         :line (:line name-position)
+         :column (:column name-position)
+         :form-line (:line form-position)
+         :form-column (:column form-position)
+         :start (:start form)
+         :end (:end form)
+         :full-start (:full-start form)
+         :source (:text form)
+         :form form
+         :name-record name-record
+         :name-start (if name-record (:start name-record) nil)
+         :name-end (if name-record (:end name-record) nil)
+         :doc-record (if docstring doc-record nil)
+         :doc-start (if docstring (:start doc-record) nil)
+         :doc-end (if docstring (:end doc-record) nil)
+         :docstring docstring
+         :metadata metadata
+         :meta metadata-value}))))
+
+(defn definition-entries
+  [definition]
+  (if (nil? definition)
+    []
+    (let [family (definition/match-family
+                  (definition-head-name (:head definition)))
+          name (:name definition)
+          generated (if name (:generated family) [])]
+      (into [definition]
+            (map (fn [entry]
+                   (assoc definition
+                          :name (str (:name-prefix entry) name)
+                          :kind (:kind entry)
+                          :generated true))
+                 generated)))))
+
+(defn namespace-name-from-forms
+  [source forms]
+  (loop [remaining forms]
+    (if (empty? remaining)
+      nil
+      (let [form (first remaining)
+            children (semantic-children source form)
+            head (if (empty? children) nil (str (:value (first children))))]
+        (if (and (or (= head "ns") (= head "ns+"))
+                 (< 1 (count children)))
+          (str (:value (nth children 1)))
+          (recur (rest remaining)))))))
+
+(defn namespace-name
+  [source]
+  (let [root (parse/parse-ranges source)
+        forms (form-records-in source root 0)]
+    (namespace-name-from-forms source forms)))
+
+(defn definitions-from-forms
+  [source forms]
+  (vec
+   (mapcat
+    (fn [form]
+      (definition-entries (definition-info source form)))
+    forms)))
+
+(defn docstrings
+  [definitions]
+  (vec (filter (fn [entry] (:docstring entry)) definitions)))
+
+(defn analyse-structure
+  "Returns the internal structural model used by precise source editors."
+  [source]
+  (let [root (parse/parse-ranges source)
+        forms (form-records-in source root 0)
+        definitions (definitions-from-forms source forms)]
+    {:namespace (namespace-name-from-forms source forms)
+     :forms (count forms)
+     :form-records forms
+     :definitions definitions
+     :docstrings (docstrings definitions)
+     :source source}))
+
+(defn public-definition
+  "Removes parser blocks and edit-only records from one analysis entry."
+  [definition]
+  {:head (:head definition)
+   :name (:name definition)
+   :kind (:kind definition)
+   :family-id (:family-id definition)
+   :language (:language definition)
+   :reachable (:reachable definition)
+   :generated (if (:generated definition) true false)
+   :public (:public definition)
+   :private (:private definition)
+   :line (:line definition)
+   :column (:column definition)
+   :form-line (:form-line definition)
+   :form-column (:form-column definition)
+   :start (:start definition)
+   :end (:end definition)
+   :full-start (:full-start definition)
+   :source (:source definition)
+   :name-start (:name-start definition)
+   :name-end (:name-end definition)
+   :doc-start (:doc-start definition)
+   :doc-end (:doc-end definition)
+   :docstring (:docstring definition)
+   :metadata (vec (map :value (:metadata definition)))
+   :meta (:meta definition)})
+
+(defn analyse-source
+  "Structurally analyses top-level HAL forms and returns portable EDN data."
+  [source]
+  (let [analysis (analyse-structure source)
+        definitions (vec (map public-definition (:definitions analysis)))]
+    {:namespace (:namespace analysis)
+     :forms (:forms analysis)
+     :definitions definitions
+     :docstrings (docstrings definitions)
+     :source source}))
+
+(defn test-run-records-in
+  "Finds direct Test/run forms and Test/run forms wrapped by a top-level do."
+  [source record]
+  (let [head (form-head source record)]
+    (if (= head "Test/run")
+      [record]
+      (if (= head "do")
+        (mapcat
+         (fn [child]
+           (if (= :list (:tag child))
+             (test-run-records-in source child)
+             []))
+         (rest (semantic-children source record)))
+        []))))
+
+(defn test-run-info
+  "Returns structural checker and lifecycle information for one Test/run form."
+  [source record]
+  (let [children (semantic-children source record)
+        arguments (vec (rest children))
+        second-argument (if (< 1 (count arguments)) (nth arguments 1) nil)
+        third-argument (if (< 2 (count arguments)) (nth arguments 2) nil)
+        second-map (if (nil? second-argument) false (= :map (:tag second-argument)))
+        lifecycle (if (nil? third-argument)
+                    (if second-map second-argument nil)
+                    third-argument)
+        checker (if (nil? second-argument) nil (if second-map nil second-argument))
+        lifecycle-value (if (nil? lifecycle) {} (:value lifecycle))]
+    {:line (:line record)
+     :column (:column record)
+     :checker (boolean checker)
+     :lifecycle (boolean lifecycle)
+     :setup (boolean (:setup lifecycle-value))
+     :teardown (boolean (:teardown lifecycle-value))
+     :source (:text record)}))
+
+(defn analyse-test-runs
+  "Structurally reports Test/run checker and lifecycle usage without evaluation."
+  [source]
+  (let [root (parse/parse-ranges source)
+        forms (form-records-in source root 0)]
+    (vec
+     (map
+      (fn [record] (test-run-info source record))
+      (mapcat (fn [record] (test-run-records-in source record)) forms)))))
+
+(defn grep-source
+  [source needle]
+  (if (str/blank? needle)
+    []
+    (let [lines (str/split-lines source)]
+      (loop [line-index 0 output []]
+        (if (= line-index (count lines))
+          output
+          (let [line (nth lines line-index)
+                matches
+                (loop [offset 0 found []]
+                  (let [index (str/index-of line needle offset)]
+                    (if (< index 0)
+                      found
+                      (recur (+ index (str/length needle))
+                             (conj found
+                                   {:line (inc line-index)
+                                    :column (inc index)
+                                    :text line})))))]
+            (recur (inc line-index) (into output matches))))))))
+
+(defn value-contains?
+  "Recursively searches parsed data for a value such as the `=>` symbol."
+  [value target]
+  (cond
+    (= value target)
+    true
+
+    (map? value)
+    (reduce
+     (fn [found entry]
+       (or found
+           (value-contains? (first entry) target)
+           (value-contains? (second entry) target)))
+     false
+     value)
+
+    (or (vector? value) (list? value) (set? value))
+    (reduce
+     (fn [found child]
+       (or found (value-contains? child target)))
+     false
+     value)
+
+    :else
+    false))
+
+(def transform-function source/transform-function)
+(def normalize-edit source/normalize-edit)
+(def transform-code source/transform-code)
+(def grep-code source/grep-code)
+(def replacement source/replacement)
+(def checked-edits source/checked-edits)
+(def apply-edits source/apply-edits)
+(def replacements source/replacements)
+(def replace-all source/replace-all)
+(def grep-replace source/grep-replace)
+(def apply-edit-record source/apply-edit-record)

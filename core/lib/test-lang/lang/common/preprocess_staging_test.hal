@@ -1,0 +1,38 @@
+(ns lang.common.preprocess-staging-test
+  (:use code.test)
+  (:require [lang.common.preprocess-assign :as assign]
+            [lang.common.preprocess-staging :as staging]))
+
+(def grammar
+  {:reserved
+   {'return {:op :ret :emit :return :raw "return"}
+    'hard {:op :hard :emit :hard-link :raw 'linked}}})
+
+^{:refer lang.common.preprocess-staging/to-staging-form :added "4.1"}
+(fact "stages hard links and protects reserved heads"
+  (staging/to-staging-form
+   '(hard 1) grammar {} {} (atom #{}) identity)
+  => '(linked 1)
+
+  (let [out
+        (staging/to-staging-form
+         '(return 1) grammar {} {} (atom #{}) identity)]
+    [(assign/protected-head? (first out))
+     (assign/unwrap-protected-head (first out))
+     (rest out)])
+  => '[true return (1)])
+
+^{:refer lang.common.preprocess-staging/to-staging :added "4.1"}
+(fact "stages forms while collecting dependency classes"
+  (staging/to-staging '(return 1) grammar {} {})
+  => '[(return 1) #{} #{} {}])
+
+^{:refer lang.common.preprocess-staging/to-resolve :added "4.1"}
+(fact "resolves without expanding the final staged form"
+  (let [out (staging/to-resolve '(return 1) grammar {} {})]
+    [(assign/protected-head? (first out))
+     (assign/unwrap-protected-head (first out))
+     (rest out)])
+  => '[true return (1)])
+
+(run {:namespace "lang.common.preprocess-staging-test"})

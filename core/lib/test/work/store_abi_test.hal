@@ -1,0 +1,113 @@
+(ns work.store-abi-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.base.store :as store]
+            [work.provider.memory :as memory]
+            [work.provider.conformance :as conformance]))
+
+(defstruct TracingStore [descriptor delegate calls])
+
+(extend-type TracingStore IWorkStore
+  (work-query [tracing request]
+    (swap! (:calls tracing) conj [:query request])
+    (IWorkStore/work-query (:delegate tracing) request))
+  (work-transact [tracing transition]
+    (swap! (:calls tracing) conj [:transact transition])
+    (IWorkStore/work-transact (:delegate tracing) transition)))
+
+(def calls (atom []))
+(def memory-store (memory/memory-store))
+(def tracing-store
+  (work.store-abi-test/TracingStore
+   (assoc (store/descriptor memory-store)
+          :provider/id :tracing-memory
+          :provider/capabilities
+          #{:runs :transactions :events :checkpoints})
+   memory-store
+   calls))
+
+(def runtime
+  (work/local-runtime
+   {:work/store tracing-store
+    :work/receipt nil}))
+
+(def reference
+  (work/start runtime
+              (work/step :managed-double
+                (fn [input context] (* input 2)))
+              4
+              {:id "managed-store-abi"}))
+
+(def records (deref calls))
+(defn selected
+  [records kind transform]
+  (reduce
+   (fn [output entry]
+     (if (= kind (first entry))
+       (conj output (transform (nth entry 1)))
+       output))
+   []
+   records))
+
+(def queries
+  (selected records :query (fn [request] (:work/query request))))
+(def transitions
+  (selected records :transact identity))
+
+^{:refer work.base.store/transact :added "0.1"}
+(fact "managed execution crosses only the two-method IWorkStore boundary"
+  [(work/status runtime reference)
+   (work/result runtime reference)
+   (satisfies? IWorkStore tracing-store)
+   (store/capability? tracing-store :outbox)
+   (first queries)
+   (:transition/expected-revision (first transitions))
+   (:run/id (:transition/create-run (first transitions)))
+   (reduce
+    (fn [valid query]
+      (and valid
+           (or (= :run/load query)
+               (= :checkpoint/load query))))
+    true
+    queries)]
+  => [:completed 8 true false
+      :run/load :absent "managed-store-abi" true])
+
+^{:refer work.base.store/query-operations :added "0.1"}
+(fact "the canonical query vocabulary is exact"
+  (set (keys store/query-operations))
+  => #{:run/load
+       :run/list
+       :event/list
+       :checkpoint/load
+       :checkpoint/list})
+
+(defn baseline-memory-store
+  []
+  (let [backend (memory/memory-backend)
+        operations
+        (dissoc
+         (dissoc
+          (dissoc backend :list-outbox)
+          :claim-outbox)
+         :ack-outbox)]
+    (store/normalise-provider
+     {:provider/role :work/store
+      :provider/id :baseline-memory
+      :provider/capabilities
+      #{:runs :transactions :events :checkpoints}
+      :provider/operations operations})))
+
+^{:refer work.provider.conformance/run-baseline-corpus :added "0.1"}
+(fact "baseline conformance does not require the outbox extension"
+  (conformance/run-baseline-corpus baseline-memory-store)
+  => {:idempotent-create true
+      :conflicting-create-rejected true
+      :monotonic-revisions true
+      :failed-cas-no-partial-writes true
+      :checkpoint-event-atomic true
+      :stable-event-ordering true
+      :completed-checkpoint-immutable true
+      :cancellation-visible true})
+
+(pr-str (run '[work.store-abi-test]))

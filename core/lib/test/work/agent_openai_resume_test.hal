@@ -1,0 +1,126 @@
+(ns work.agent-openai-resume-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.agent :as agent]
+            [work.agent.openai :as openai]))
+
+(fact "resume retries only the failed next model request after completed effectful Work"
+  (let [transport-count (atom 0)
+        publish-count (atom 0)
+        publish-tool
+        (agent/tool
+         "publish"
+         "Publishes one value."
+         {:type "object"
+          :properties {:value {:type "integer"}}
+          :required ["value"]
+          :additionalProperties false}
+         (fn [arguments]
+           (work/step
+            {:id [:publish-once (get arguments "value")]}
+            (fn [input context]
+              (swap! publish-count inc)
+              {:published (get input "value")})))
+         {:effect :external})
+        transport
+        (fn [request]
+          (let [attempt (swap! transport-count inc)
+                body (Json/read (:body request))
+                input (get body "input")]
+            (cond
+              (= attempt 1)
+              {:status 200
+               :body
+               (Json/write
+                (openai/wire-value
+                 {:id "resume-1"
+                  :status "completed"
+                  :output
+                  [{:type "function_call"
+                    :call_id "publish-resume-1"
+                    :name "publish"
+                    :arguments "{\"value\":7}"}]}))}
+
+              (= attempt 2)
+              (throw
+               (ex :io
+                   {:attempt attempt}
+                   :ex/message "next model request unavailable"))
+
+              (= attempt 3)
+              (let [function-output (if (= 3 (count input))
+                                      (nth input 2)
+                                      nil)]
+                (if (or (not= "function_call_output"
+                              (get function-output "type"))
+                        (not= "publish-resume-1"
+                              (get function-output "call_id"))
+                        (not= (openai/wire-value
+                               {:ok true
+                                :value {:published 7}})
+                              (Json/read
+                               (get function-output "output"))))
+                  (throw
+                   (ex :state
+                       {:input input}
+                       :ex/message "resumed transcript lost tool output")))
+                {:status 200
+                 :body
+                 (Json/write
+                  (openai/wire-value
+                   {:id "resume-2"
+                    :status "completed"
+                    :output
+                    [{:type "message"
+                      :role "assistant"
+                      :content
+                      [{:type "output_text"
+                        :text "publish complete"}]}]}))})
+
+              :else
+              (throw
+               (ex :state
+                   {:attempt attempt}
+                   :ex/message "unexpected extra model request")))))
+        client
+        (agent/openai-client
+         {:model "gpt-5"
+          :api-key "test-key"
+          :transport transport})
+        publisher
+        {:agent/id :resume-publisher
+         :agent/driver
+         (agent/openai-driver
+          {:client client
+           :tools [publish-tool]
+           :max-turns 4})}
+        workflow (agent/drive publisher "Publish seven")
+        backend (work/memory-backend)
+        before (work/durable-runtime {:backend backend})
+        reference
+        (work/start before workflow nil {:id "openai-resume"})
+        status-before (work/status before reference)
+        after (work/durable-runtime {:backend backend})
+        registration (work/register after workflow)
+        resumed (work/resume after reference)
+        history (work/history after resumed)
+        replay-count
+        (count
+         (filter
+          (fn [event]
+            (= :work/step-replayed (:event event)))
+          history))]
+    [status-before
+     (work/status after resumed)
+     (work/result after resumed)
+     (deref transport-count)
+     (deref publish-count)
+     replay-count])
+  => [:failed
+      :completed
+      "publish complete"
+      3
+      1
+      2])
+
+(pr-str (run '[work.agent-openai-resume-test]))

@@ -1,0 +1,89 @@
+(ns std.typed.schema-test
+  (:use code.test)
+  (:require [std.typed.schema :as schema]))
+
+(defmethod schema/normalize :test/tagged [surface]
+  {:kind :test/tagged :value (second surface)})
+
+(defmethod schema/validate-normal :test/tagged [schema value path]
+  (if (= (:value schema) value)
+    []
+    [{:finding/type :test/tagged-mismatch
+      :finding/path path}]))
+
+^{:refer 'std.typed.schema/normalize
+  :id 'extensible-normalization}
+(fact "dispatches built-in and extension schema normalization"
+  [(schema/normalize :int)
+   (schema/normalize [:vector :int])
+   (schema/normalize [:test/tagged 42])
+   (schema/valid? [:test/tagged 42] 42)
+   (schema/valid? [:test/tagged 42] 41)]
+  => [{:kind :primitive :name :int}
+      {:kind :vector :item {:kind :primitive :name :int}}
+      {:kind :test/tagged :value 42}
+      true
+      false])
+
+^{:refer 'std.typed.schema/normalize
+  :id 'integer-width-union}
+(fact "normalizes integer to the long and bigint alternatives"
+  (schema/normalize :integer)
+  => {:kind :union
+      :types [{:kind :primitive :name :long}
+              {:kind :primitive :name :bigint}]})
+
+^{:refer 'std.typed.schema/valid?
+  :id 'integer-width-validation}
+(fact "validates both integer widths and rejects exact floats"
+  [(schema/valid? :integer 42)
+   (schema/valid? :integer 9223372036854775808)
+   (schema/valid? :integer 42.0)]
+  => [true true false])
+
+^{:refer 'std.typed.schema/project-arities
+  :id 'variadic-and-multi-arity-annotations}
+(fact "normalizes variadic and multi-arity function annotations"
+  [(schema/project-arities '[:fn [:str & :any] :str])
+   (count
+    (schema/project-arities
+     '[:function [:fn [:int] :int]
+                 [:fn [:str & :any] :str]]))]
+  => [[{:kind :fn
+        :inputs {:fixed [{:kind :primitive :name :str}]
+                 :rest {:kind :primitive :name :any}}
+        :output {:kind :primitive :name :str}}]
+      2])
+
+^{:refer 'std.typed.schema/valid?
+  :id 'typed-map-validation}
+(fact "accepts typed map fields and rejects incompatible field values"
+  [(schema/valid? [:map [:name :str] [:count :int]]
+                  {:name "demo" :count 2})
+   (schema/valid? [:map [:name :str] [:count :int]]
+                  {:name "demo" :count "two"})]
+  => [true false])
+
+^{:refer 'std.typed.schema/validate
+  :id 'collection-finding-path}
+(fact "retains the exact collection path for an incompatible value"
+  (:finding/path
+   (first (schema/validate [:vector :int] [1 "two"])))
+  => [1])
+
+^{:refer 'std.typed.schema/compatible?
+  :id 'union-and-enum-validation}
+(fact "recognizes overlapping unions and validates finite enum values"
+  [(schema/compatible? [:maybe :int] :nil)
+   (schema/valid? [:enum :must :may] :must)
+   (schema/valid? [:enum :must :may] :never)]
+  => [true true false])
+
+^{:refer 'std.typed.schema/valid?
+  :id 'typed-relation-tuple}
+(fact "validates heterogeneous tuple contracts used by logic relations"
+  [(schema/valid? [:tuple :keyword :int :str] [:age 42 "years"])
+   (schema/valid? [:tuple :keyword :int :str] [:age "42" "years"])]
+  => [true false])
+
+(pr-str (run '[std.typed.schema-test]))

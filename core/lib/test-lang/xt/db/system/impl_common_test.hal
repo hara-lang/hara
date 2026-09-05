@@ -1,0 +1,213 @@
+(ns xt.db.system.impl-common-test
+  (:use code.test)
+  (:require [lang.core :as l]
+            [xt.db.system.impl-common :as impl-common]))
+
+^{:seedgen/root {:all true, :langs [:js :lua :python]}}
+(l/script- :js
+  {:runtime :basic
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-data :as xtd]
+             [xt.db.system.impl-common :as impl-common]]})
+
+(l/script- :lua
+  {:runtime :basic
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-data :as xtd]
+             [xt.db.system.impl-common :as impl-common]]})
+
+(l/script- :python
+  {:runtime :basic
+   :require [[xt.lang.spec-base :as xt]
+             [xt.lang.common-data :as xtd]
+             [xt.db.system.impl-common :as impl-common]]})
+
+(fact:global
+ {:setup [(l/rt:restart)]
+  :teardown [(l/rt:stop)]})
+
+^{:refer xt.db.system.impl-common/add-db-listener-default :added "4.1"}
+(fact "adds, retrieves, and removes listener handles"
+
+  (!.js
+   (var impl {"listeners" {}})
+   (var handle {"guard" true})
+   (return
+    [(impl-common/add-db-listener-default impl "l-1" handle)
+     (== handle (impl-common/get-db-listener-default impl "l-1" nil))
+     (impl-common/remove-db-listener-default impl "l-1")
+     (xt/x:nil? (impl-common/get-db-listener-default impl "l-1" nil))]))
+  => ["l-1" true "l-1" true]
+
+  (!.lua
+   (var impl {"listeners" {}})
+   (var handle {"guard" true})
+   (return
+    [(impl-common/add-db-listener-default impl "l-1" handle)
+     (== handle (impl-common/get-db-listener-default impl "l-1" nil))
+     (impl-common/remove-db-listener-default impl "l-1")
+     (xt/x:nil? (impl-common/get-db-listener-default impl "l-1" nil))]))
+  => ["l-1" true "l-1" true]
+
+  (!.py
+   (var impl {"listeners" {}})
+   (var handle {"guard" true})
+   (return
+    [(impl-common/add-db-listener-default impl "l-1" handle)
+     (== handle (impl-common/get-db-listener-default impl "l-1" nil))
+     (impl-common/remove-db-listener-default impl "l-1")
+     (xt/x:nil? (impl-common/get-db-listener-default impl "l-1" nil))]))
+  => ["l-1" true "l-1" true])
+
+^{:refer xt.db.system.impl-common/sync-get-tables :added "4.1"}
+(fact "extracts table names from sync and removal payloads"
+
+  (!.js
+   (impl-common/sync-get-tables
+    {"db/sync" {"User" [] "Log" []}
+     "db/remove" {"Role" [1]}}))
+  => (fn [tables]
+       (= #{"User" "Log" "Role"} (set tables)))
+
+  (!.lua
+   (impl-common/sync-get-tables
+    {"db/sync" {"User" [] "Log" []}
+     "db/remove" {"Role" [1]}}))
+  => (fn [tables]
+       (= #{"User" "Log" "Role"} (set tables)))
+
+  (!.py
+   (impl-common/sync-get-tables
+    {"db/sync" {"User" [] "Log" []}
+     "db/remove" {"Role" [1]}}))
+  => (fn [tables]
+       (= #{"User" "Log" "Role"} (set tables))))
+
+^{:refer xt.db.system.impl-common/sync-notify-listeners :added "4.1"}
+(fact "notifies only listeners whose table guard matches"
+
+  (!.js
+   (var called [])
+   (var impl
+        {"listeners"
+         {"user" {"guard" {"User" true}
+                   "callback" (fn [_]
+                                (xt/x:arr-push called "user"))}
+          "log" {"guard" {"Log" true}
+                  "callback" (fn [_]
+                               (xt/x:arr-push called "log"))}}})
+   (impl-common/sync-notify-listeners impl ["User"] {})
+   (return called))
+  => ["user"]
+
+  (!.lua
+   (var called [])
+   (var impl
+        {"listeners"
+         {"user" {"guard" {"User" true}
+                   "callback" (fn [_]
+                                (xt/x:arr-push called "user"))}
+          "log" {"guard" {"Log" true}
+                  "callback" (fn [_]
+                               (xt/x:arr-push called "log"))}}})
+   (impl-common/sync-notify-listeners impl ["User"] {})
+   (return called))
+  => ["user"]
+
+  (!.py
+   (var called [])
+   (var impl
+        {"listeners"
+         {"user" {"guard" {"User" true}
+                   "callback" (fn [_]
+                                (xt/x:arr-push called "user"))}
+          "log" {"guard" {"Log" true}
+                  "callback" (fn [_]
+                               (xt/x:arr-push called "log"))}}})
+   (impl-common/sync-notify-listeners impl ["User"] {})
+   (return called))
+  => ["user"])
+
+^{:refer xt.db.system.impl-common/sync-process-payload :added "4.1.4"}
+(fact "applies payload operations and notifies matching listeners"
+
+  (!.js
+   (var notified [])
+   (var impl
+        {"::" "test/Source"
+         "::/protocol-impls"
+         {"xt.db.system.impl_common/ISourceLocal"
+          {"process_add_event"
+           (fn [impl data]
+             (xt/x:set-key impl "added" data)
+             (return true))
+           "record_delete"
+           (fn [impl table ids]
+             (xt/x:set-key impl "deleted" [table ids])
+             (return true))}}
+         "listeners"
+         {"user" {"guard" {"User" true}
+                   "callback" (fn [_]
+                                (xt/x:arr-push notified "user"))}}})
+   (impl-common/sync-process-payload
+    impl
+    {"db/sync" {"User" [{"id" 1}]}
+     "db/remove" {"Role" [2]}})
+   (return [(. impl ["added"])
+            (. impl ["deleted"])
+            notified]))
+  => [{"User" [{"id" 1}]} ["Role" [2]] ["user"]]
+
+  (!.lua
+   (var notified [])
+   (var impl
+        {"::" "test/Source"
+         "::/protocol-impls"
+         {"xt.db.system.impl_common/ISourceLocal"
+          {"process_add_event"
+           (fn [impl data]
+             (xt/x:set-key impl "added" data)
+             (return true))
+           "record_delete"
+           (fn [impl table ids]
+             (xt/x:set-key impl "deleted" [table ids])
+             (return true))}}
+         "listeners"
+         {"user" {"guard" {"User" true}
+                   "callback" (fn [_]
+                                (xt/x:arr-push notified "user"))}}})
+   (impl-common/sync-process-payload
+    impl
+    {"db/sync" {"User" [{"id" 1}]}
+     "db/remove" {"Role" [2]}})
+   (return [(. impl ["added"])
+            (. impl ["deleted"])
+            notified]))
+  => [{"User" [{"id" 1}]} ["Role" [2]] ["user"]]
+
+  (!.py
+   (var notified [])
+   (var impl
+        {"::" "test/Source"
+         "::/protocol-impls"
+         {"xt.db.system.impl_common/ISourceLocal"
+          {"process_add_event"
+           (fn [impl data]
+             (xt/x:set-key impl "added" data)
+             (return true))
+           "record_delete"
+           (fn [impl table ids]
+             (xt/x:set-key impl "deleted" [table ids])
+             (return true))}}
+         "listeners"
+         {"user" {"guard" {"User" true}
+                   "callback" (fn [_]
+                                (xt/x:arr-push notified "user"))}}})
+   (impl-common/sync-process-payload
+    impl
+    {"db/sync" {"User" [{"id" 1}]}
+     "db/remove" {"Role" [2]}})
+   (return [(. impl ["added"])
+            (. impl ["deleted"])
+            notified]))
+  => [{"User" [{"id" 1}]} ["Role" [2]] ["user"]])

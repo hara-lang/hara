@@ -1,0 +1,524 @@
+(ns code.vm.instrument.trace-test
+  (:use code.test)
+  (:require [code.vm.instrument :as instrument]
+            [code.vm.instrument.trace :as trace]
+            [code.vm.model :as model]))
+
+(defn fails?
+  [f]
+  (try
+    (do
+      (f)
+      false)
+    (catch Throwable error
+      true)))
+
+(def interpreter-registration
+  (instrument/registration
+   {:instrument/id :code.vm/trace
+    :session-id "debug-1"
+    :instrument/capabilities
+    #{:event/semantic-boundary
+      :event/call
+      :event/exception
+      :event/effect
+      :event/suspension
+      :event/lifecycle}
+    :instrument/events
+    #{:semantic/boundary
+      :call/enter
+      :call/return
+      :exception/raise
+      :effect/var-set
+      :effect/field-set
+      :promise/suspend
+      :promise/resume
+      :execution/terminal}}))
+
+(def interpreter-target
+  (instrument/target
+   {:target-id "execution-17"
+    :target-kind :interpreter
+    :runtime :rust
+    :session-id "debug-1"
+    :generation 3
+    :capabilities
+    #{:event/semantic-boundary
+      :event/call
+      :event/exception
+      :event/effect
+      :event/suspension
+      :event/lifecycle}}))
+
+(def hbc-registration
+  (instrument/registration
+   {:instrument/id :code.vm/trace
+    :session-id "debug-1"
+    :instrument/capabilities
+    #{:event/instruction
+      :event/call
+      :event/exception
+      :event/suspension
+      :event/lifecycle}
+    :instrument/events
+    #{:instruction/execute
+      :call/enter
+      :call/return
+      :exception/unwind
+      :machine/suspend
+      :machine/resume
+      :execution/terminal}}))
+
+(def hbc-target
+  (instrument/target
+   {:target-id "machine-4"
+    :target-kind :hbc
+    :runtime :rust
+    :session-id "debug-1"
+    :generation 2
+    :capabilities
+    #{:event/instruction
+      :event/call
+      :event/exception
+      :event/suspension
+      :event/lifecycle}}))
+
+(defn interpreter-event
+  [sequence kind options]
+  (instrument/event
+   interpreter-registration
+   interpreter-target
+   sequence
+   kind
+   options))
+
+(defn hbc-event
+  [sequence kind options]
+  (instrument/event
+   hbc-registration
+   hbc-target
+   sequence
+   kind
+   options))
+
+(def +live-machine+
+  (trace/create interpreter-target))
+
+(def +live-event+
+  (interpreter-event
+   1
+   :call/enter
+   {:location {:source-id "editor/main"
+               :form/path [0]
+               :function "calculate"}
+    :data {:arguments/count 2}}))
+
+^{:refer code.vm.instrument.trace/invalid}
+(fact "raises a structured live trace error"
+  (fails? (fn [] (trace/invalid "bad trace" {:value nil})))
+  => true)
+
+^{:refer code.vm.instrument.trace/map-value}
+(fact "accepts maps and rejects non-maps"
+  [(trace/map-value "options" {:x 1})
+   (fails? (fn [] (trace/map-value "options" [])))]
+  => [{:x 1} true])
+
+^{:refer code.vm.instrument.trace/vector-value}
+(fact "accepts vectors and rejects non-vectors"
+  [(trace/vector-value "events" [1])
+   (fails? (fn [] (trace/vector-value "events" {})))]
+  => [[1] true])
+
+^{:refer code.vm.instrument.trace/target-kind}
+(fact "maps target kinds to machine kinds"
+  [(trace/target-kind interpreter-target)
+   (trace/target-kind hbc-target)
+   (fails? (fn []
+             (trace/target-kind
+              (assoc interpreter-target :target-kind :other))))]
+  => [:interpreter :bytecode true])
+
+^{:refer code.vm.instrument.trace/live-machine?}
+(fact "recognizes machines carrying live trace provenance"
+  [(trace/live-machine? +live-machine+)
+   (trace/live-machine? {})]
+  => [true false])
+
+^{:refer code.vm.instrument.trace/target}
+(fact "returns the target attached to a live trace"
+  (trace/target +live-machine+)
+  => interpreter-target)
+
+^{:refer code.vm.instrument.trace/provenance}
+(fact "returns live trace provenance"
+  (trace/provenance +live-machine+)
+  => {:vm/mode :live
+      :vm/backend :interpreter
+      :vm/provider :rust
+      :vm/target-id "execution-17"})
+
+^{:refer code.vm.instrument.trace/create}
+(fact "creates a ready live trace machine"
+  (select-keys +live-machine+ [:vm/id :vm/kind :vm/status])
+  => {:vm/id "vm/live/execution-17"
+      :vm/kind :interpreter
+      :vm/status :ready})
+
+^{:refer code.vm.instrument.trace/same-target?}
+(fact "matches events to the complete live target identity"
+  [(trace/same-target? interpreter-target +live-event+)
+   (trace/same-target?
+    interpreter-target
+    (assoc +live-event+ :generation 4))]
+  => [true false])
+
+^{:refer code.vm.instrument.trace/validate-event}
+(fact "accepts the next live event and rejects replay events"
+  [(= +live-event+ (trace/validate-event +live-machine+ +live-event+))
+   (fails? (fn []
+             (trace/validate-event
+              +live-machine+
+              (assoc +live-event+ :phase :replay))))]
+  => [true true])
+
+^{:refer code.vm.instrument.trace/event-stage-rule}
+(fact "maps instrumentation events to VM stages and rules"
+  [(trace/event-stage-rule {:event :call/enter})
+   (trace/event-stage-rule {:event :execution/terminal})
+   (fails? (fn [] (trace/event-stage-rule {:event :unknown})))]
+  => [[:call :instrument/call-enter]
+      [:terminal :instrument/execution-terminal]
+      true])
+
+^{:refer code.vm.instrument.trace/data-value}
+(fact "prefers keyword data keys and falls back to string keys"
+  [(trace/data-value {:data {:status :returned}} :status "status")
+   (trace/data-value {:data {"status" "failed"}} :status "status")]
+  => [:returned "failed"])
+
+^{:refer code.vm.instrument.trace/terminal-status}
+(fact "normalizes terminal statuses from keyword or string data"
+  [(trace/terminal-status {:data {:status :returned}})
+   (trace/terminal-status {:data {"status" "failed"}})
+   (fails? (fn [] (trace/terminal-status {:data {:status :other}})))]
+  => [:returned :failed true])
+
+^{:refer code.vm.instrument.trace/event-status}
+(fact "derives running, suspended, and terminal statuses"
+  [(trace/event-status {:event :call/enter})
+   (trace/event-status {:event :promise/suspend})
+   (trace/event-status {:event :execution/terminal
+                        :data {:status :returned}})]
+  => [:running :suspended :returned])
+
+^{:refer code.vm.instrument.trace/without-last}
+(fact "removes the most recent call frame"
+  [(trace/without-last [])
+   (trace/without-last [1 2 3])]
+  => [[] [1 2]])
+
+^{:refer code.vm.instrument.trace/event-function}
+(fact "extracts function names from locations or event data"
+  [(trace/event-function {:location {:function "calculate"}
+                          :data {}})
+   (trace/event-function {:location {}
+                          :data {"function" "fallback"}})]
+  => ["calculate" "fallback"])
+
+^{:refer code.vm.instrument.trace/call-entry}
+(fact "records the identity of an entered call"
+  (trace/call-entry +live-event+)
+  => {:instrument/id :code.vm/trace
+      :target-id "execution-17"
+      :generation 3
+      :sequence 1
+      :function "calculate"})
+
+^{:refer code.vm.instrument.trace/next-calls}
+(fact "pushes, pops, and clears call frames by event kind"
+  (let [state {:instrument/calls []}
+        entered (trace/next-calls state +live-event+)
+        returned (trace/next-calls
+                  {:instrument/calls entered}
+                  (interpreter-event 2 :call/return {}))]
+    [entered
+     returned
+     (trace/next-calls
+      {:instrument/calls entered}
+      (interpreter-event 3 :execution/terminal
+                         {:data {:status :returned}}))])
+  => [[{:instrument/id :code.vm/trace
+        :target-id "execution-17"
+        :generation 3
+        :sequence 1
+        :function "calculate"}]
+      []
+      []])
+
+^{:refer code.vm.instrument.trace/next-suspension}
+(fact "tracks suspension until resume or termination"
+  (let [suspend-event (interpreter-event 1 :promise/suspend
+                                         {:data {:promise/id "p-1"}})
+        resume-event (interpreter-event 2 :promise/resume
+                                       {:data {:promise/id "p-1"}})]
+    [(= suspend-event (trace/next-suspension {} suspend-event))
+     (nil? (trace/next-suspension
+            {:suspension/event suspend-event}
+            resume-event))
+     (nil? (trace/next-suspension
+            {:suspension/event suspend-event}
+            (interpreter-event
+             3 :execution/terminal
+             {:data {:status :returned}})))])
+  => [true true true])
+
+^{:refer code.vm.instrument.trace/event-state}
+(fact "updates live trace state from an event"
+  (select-keys
+   (trace/event-state +live-machine+ +live-event+)
+   [:instrument/sequence :instrument/id :instrument/event
+    :instrument/calls :source/current :status :result :error])
+  => {:instrument/sequence 1
+      :instrument/id :code.vm/trace
+      :instrument/event :call/enter
+      :instrument/calls [{:instrument/id :code.vm/trace
+                          :target-id "execution-17"
+                          :generation 3
+                          :sequence 1
+                          :function "calculate"}]
+      :source/current {:source-id "editor/main"
+                       :form/path [0]
+                       :span nil
+                       :ip nil
+                       :function "calculate"}
+      :status :running
+      :result nil
+      :error nil})
+
+^{:refer code.vm.instrument.trace/event-source}
+(fact "copies event identity and location into transition provenance"
+  (select-keys
+   (trace/event-source +live-event+)
+   [:instrument/id :runtime :session-id :target-id :target-kind
+    :generation :sequence :event :source-id :form/path])
+  => {:instrument/id :code.vm/trace
+      :runtime :rust
+      :session-id "debug-1"
+      :target-id "execution-17"
+      :target-kind :interpreter
+      :generation 3
+      :sequence 1
+      :event :call/enter
+      :source-id "editor/main"
+      :form/path [0]})
+
+^{:refer code.vm.instrument.trace/event-transition}
+(fact "turns a live event into a running transition"
+  (select-keys
+   (trace/event-transition +live-machine+ +live-event+)
+   [:step/stage :step/rule :step/status :step/events])
+  => {:step/stage :call
+      :step/rule :instrument/call-enter
+      :step/status :running
+      :step/events [+live-event+]})
+
+^{:refer code.vm.instrument.trace/consume}
+(fact "consumes one validated live event"
+  (let [machine (trace/consume +live-machine+ +live-event+)]
+    [(:vm/status machine)
+     (:vm/step machine)
+     (:step/rule (first (model/trace machine)))])
+  => [:running 1 :instrument/call-enter])
+
+^{:refer code.vm.instrument.trace/consume-all}
+(fact "consumes a vector of live events in order"
+  (let [returned
+        (interpreter-event
+         2
+         :call/return
+         {:location {:source-id "editor/main"
+                     :form/path [0]
+                     :function "calculate"}
+          :data {:result/type "number"}})
+        machine (trace/consume-all +live-machine+ [+live-event+ returned])]
+    [(:vm/status machine)
+     (:vm/step machine)
+     (count (model/trace machine))])
+  => [:running 2 2])
+
+^{:refer code.vm.instrument.trace/from-events}
+(fact "constructs and consumes a live event stream"
+  (let [machine (trace/from-events interpreter-target [+live-event+])]
+    [(:vm/status machine)
+     (:vm/step machine)
+     (:instrument/event (get-in machine [:vm/state]))])
+  => [:running 1 :call/enter])
+
+(def results
+  [(test-check
+    "passive interpreter events become a bounded live code.vm trace"
+    (let [enter
+          (interpreter-event
+           1
+           :call/enter
+           {:location
+            {:source-id "editor/main"
+             :form/path [0]
+             :function "calculate"}
+            :data {:arguments/count 2}})
+          returned
+          (interpreter-event
+           2
+           :call/return
+           {:location
+            {:source-id "editor/main"
+             :form/path [0]
+             :function "calculate"}
+            :data {:result/type "number"}})
+          terminal
+          (interpreter-event
+           3
+           :execution/terminal
+           {:data {:status :returned
+                   :result 42}})
+          machine
+          (trace/from-events
+           interpreter-target
+           [enter returned terminal])]
+      [(:vm/kind machine)
+       (:vm/status machine)
+       (:vm/result machine)
+       (:vm/step machine)
+       (count (model/trace machine))
+       (get-in machine [:vm/state :instrument/calls])
+       (trace/provenance machine)])
+    [:interpreter
+     :returned
+     42
+     3
+     3
+     []
+     {:vm/mode :live
+      :vm/backend :interpreter
+      :vm/provider :rust
+      :vm/target-id "execution-17"}])
+
+   (test-check
+    "HBC instruction events remain bytecode events with real instruction locations"
+    (let [event
+          (hbc-event
+           1
+           :instruction/execute
+           {:location
+            {:source-id "module/main"
+             :function "main"
+             :ip 7}
+            :data {:opcode :call}})
+          machine
+          (trace/consume
+           (trace/create hbc-target)
+           event)]
+      [(:vm/kind machine)
+       (:vm/status machine)
+       (get-in machine [:vm/position :ip])
+       (get-in machine [:vm/position :form/path])
+       (get-in machine [:vm/state :instrument/event])
+       (trace/provenance machine)])
+    [:bytecode
+     :running
+     7
+     nil
+     :instruction/execute
+     {:vm/mode :live
+      :vm/backend :hbc
+      :vm/provider :rust
+      :vm/target-id "machine-4"}])
+
+   (test-check
+    "suspension and resumption update pure trace status without owning execution"
+    (let [suspended
+          (interpreter-event
+           1
+           :promise/suspend
+           {:data {:promise/id "promise-1"}})
+          resumed
+          (interpreter-event
+           2
+           :promise/resume
+           {:data {:promise/id "promise-1"}})
+          machine
+          (trace/create interpreter-target)
+          paused (trace/consume machine suspended)
+          running (trace/consume paused resumed)]
+      [(:vm/status paused)
+       (get-in paused [:vm/state :suspension/event :event])
+       (:vm/status running)
+       (get-in running [:vm/state :suspension/event])])
+    [:suspended :promise/suspend :running nil])
+
+   (test-check
+    "live traces reject replay, target mismatch and non-monotonic streams"
+    (let [machine (trace/create interpreter-target)
+          live
+          (interpreter-event
+           1
+           :semantic/boundary
+           {:data {:rule :form/return}})
+          replay
+          (interpreter-event
+           2
+           :semantic/boundary
+           {:phase :replay
+            :data {:rule :form/return}})
+          other-target
+          (instrument/target
+           {:target-id "other"
+            :target-kind :interpreter
+            :runtime :rust
+            :session-id "debug-1"
+            :generation 3
+            :capabilities #{:event/semantic-boundary}})
+          other-registration
+          (instrument/registration
+           {:instrument/id :code.vm/trace
+            :session-id "debug-1"
+            :instrument/capabilities
+            #{:event/semantic-boundary}
+            :instrument/events #{:semantic/boundary}})
+          other
+          (instrument/event
+           other-registration
+           other-target
+           2
+           :semantic/boundary
+           {:data {:rule :form/return}})
+          consumed (trace/consume machine live)]
+      [(fails? (fn [] (trace/consume machine replay)))
+       (fails? (fn [] (trace/consume machine other)))
+       (fails? (fn [] (trace/consume consumed live)))])
+    [true true true])
+
+   (test-check
+    "terminal traces reject later events"
+    (let [terminal
+          (interpreter-event
+           1
+           :execution/terminal
+           {:data {:status "failed"
+                   :error "boom"}})
+          later
+          (interpreter-event
+           2
+           :semantic/boundary
+           {:data {:rule :form/return}})
+          machine
+          (trace/consume
+           (trace/create interpreter-target)
+           terminal)]
+      [(:vm/status machine)
+       (:vm/error machine)
+       (fails? (fn [] (trace/consume machine later)))])
+    [:failed "boom" true])])
+
+results

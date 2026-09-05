@@ -1,0 +1,46 @@
+(ns tool.cli.package-test
+  (:require [tool.cli.package :as package]
+            ))
+
+[(test-check "package routes select Hara operations"
+              (package/operation-request
+               {:request/route :tool.cli.route/package-inspect
+                :request/arguments ["demo.harp"]})
+              {:operation :inspect :arguments ["demo.harp"]})
+  (test-check "package group routes consume the operation token"
+              (package/operation-request
+               {:request/route :tool.cli.route/package
+                :request/arguments ["check" "fixture"]})
+              {:operation :check :arguments ["fixture"]})
+  (test-check "package publish parses tap and dry-run policy in Hara"
+              (package/parsed-arguments
+               ["fixture" "--tap" "official" "--dry-run"] true)
+              {:dry-run true
+               :parsed {:positionals ["fixture"]
+                        :options {:tap "official"}}})
+  (test-check "package build preserves semantic package selection and profile"
+              (:parsed
+               (package/parsed-arguments
+                ["core" "--package" "code.test"
+                 "--profile" "config/packages.edn"] false))
+              {:positionals ["core"]
+               :options {:package "code.test"
+                         :profile "config/packages.edn"}})
+  (test-check "package registry keeps verification inputs as data"
+              (:parsed
+               (package/parsed-arguments
+                ["verify-request" "--request" "request"
+                 "--identity" "identity"] false))
+              {:positionals ["verify-request"]
+               :options {:request "request" :identity ["identity"]}})
+  (test-check "package checks execute through the default host value"
+              (:result/outcome
+               (package/handler
+                {:request/route :tool.cli.route/package-check
+                 :request/arguments
+                 [(if (deref (file/exists? "core/project.edn"))
+                    "core"
+                    ".")]
+                 :request/options {}
+                 :request/cwd (os/cwd)}))
+              :tool.cli.outcome/success)]

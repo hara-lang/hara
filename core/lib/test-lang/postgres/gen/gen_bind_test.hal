@@ -1,0 +1,96 @@
+(ns postgres.gen.gen-bind-test
+  (:require [std.foundation :as foundation]
+            [postgres.gen.gen-bind :as gen]
+            [lang.core.script :as script])
+  (:use code.test))
+
+(def user-route
+  {:id 'user-get
+   :static/input []
+   :static/return [:jsonb]
+   :api/flags [:public]})
+
+(def user-view
+  {:id 'user-all
+   :static/input []
+   :static/return [:jsonb]
+   :api/flags [:public]
+   :static/view {:table 'User
+                 :type :select
+                 :args []
+                 :query {:id :id}}})
+
+(fact "creates route templates from registered PostgreSQL entries"
+  (let [form
+        (foundation/with-template-meta
+         {:generated true}
+         (gen/tmpl-route
+          ['user-get-route
+           'postgres.gen.gen-bind-test/user-route
+           {:root "/api"}]))]
+    [(first form)
+     (second form)
+     (nth form 2)
+     (meta form)
+     (meta (second form))])
+  => ['def.xt
+      'user-get-route
+      {:id "user_get"
+       :input []
+       :return "jsonb"
+       :flags {:public true}
+       :url "/api/user-route"}
+      {:root "/api" :generated true}
+      {:api/type :route :api/url "/api/user-route"}])
+
+(fact "creates view templates with template-provided options"
+  (let [form
+        (gen/tmpl-view
+         ['user-all-view
+          'postgres.gen.gen-bind-test/user-view
+          {:view {:mode :cached}}])]
+    [(first form)
+     (second form)
+     (nth form 2)
+     (meta form)
+     (meta (second form))])
+  => ['def.xt
+      'user-all-view
+      {:id "user_all"
+       :input []
+       :return "jsonb"
+       :flags {:public true}
+       :view {:table "User"
+              :type "select"
+              :tag "all"
+              :query {"id" "id"}
+              :mode :cached}}
+      {:view {:mode :cached}}
+      {:api/type :view}])
+
+(fact "lists registered routes and views without expanding lang.core"
+  (let [module 'postgres.gen.gen-bind-fixture
+        route {:id 'user-get
+               :module module
+               :api/type :route}
+        second-route {:id 'AdminList
+                      :module module
+                      :api/type :route}
+        view {:id 'user-all
+              :module module
+              :api/type :view}
+        _ (swap! script/+modules+
+                 assoc module
+                 {:code {'user-get route
+                         'AdminList second-route
+                         'user-all view}})]
+    [(gen/route-map module)
+     (gen/route-list module)
+     (gen/view-list module)])
+  => [{"user_get" 'postgres.gen.gen-bind-fixture/user-get
+       "admin_list" 'postgres.gen.gen-bind-fixture/AdminList}
+      ['postgres.gen.gen-bind-fixture/user-get
+       'postgres.gen.gen-bind-fixture/AdminList]
+      ['postgres.gen.gen-bind-fixture/user-all]])
+
+(pr-str (run '[postgres.gen.gen-bind-test]))

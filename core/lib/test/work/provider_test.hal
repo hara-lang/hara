@@ -1,0 +1,116 @@
+(ns work.provider-test
+  (:require 
+            [work.base :as work]
+            [work.base.model :as runtime-base]
+            [work.base.store :as store]
+            [work.base.execution :as execution]))
+
+(def provider-backend (work/memory-backend))
+
+(defstruct TestExecutor [descriptor function])
+
+(extend-type TestExecutor IWorkExecutor
+  (work-execute [executor request]
+    ((:function executor) request)))
+
+(def provider-store
+  {:provider/role :work/store
+   :provider/id :test-memory
+   :provider/capabilities
+   #{:runs :transactions :events :checkpoints :outbox}
+   :provider/operations provider-backend})
+
+(def executor-count (atom 0))
+
+(def provider-executor
+  (work.provider-test/TestExecutor
+   {:provider/role :work/executor
+    :provider/id :test-executor
+    :provider/capabilities #{:synchronous}}
+   (fn [request]
+     (swap! executor-count inc)
+     {:input (:work/input request)
+      :work/id (:node/id request)})))
+
+(def provider-runtime
+  (work/local-runtime
+   {:store provider-store
+    :executor provider-executor}))
+
+(def provider-reference
+  (work/start provider-runtime
+              (work/step :provider-work
+                (fn [input context] input))
+              5
+              {:id "provider-1"}))
+
+(def runs-only-backend
+  (dissoc
+   (dissoc
+    (dissoc (work/memory-backend) :load-checkpoint)
+    :list-checkpoints)
+   :transact))
+
+(def runs-only-store
+  {:provider/role :work/store
+   :provider/id :runs-only
+   :provider/capabilities #{:runs :events}
+   :provider/operations runs-only-backend})
+
+(def results
+  [(test-check
+    "store, executor, and receipt providers are independently visible"
+    [(work/status provider-runtime provider-reference)
+     (work/result provider-runtime provider-reference)
+     (:provider/role
+      (store/descriptor (runtime-base/runtime-store provider-runtime)))
+     (:provider/id
+      (store/descriptor (runtime-base/runtime-store provider-runtime)))
+     (:provider/role
+      (execution/executor-descriptor
+       (runtime-base/runtime-executor provider-runtime)))
+     (:provider/id
+      (execution/executor-descriptor
+       (runtime-base/runtime-executor provider-runtime)))
+     (:provider/role (runtime-base/runtime-receipt provider-runtime))
+     (:provider/id (runtime-base/runtime-receipt provider-runtime))
+     (:run/revision (work/run-record provider-runtime provider-reference))
+     (deref executor-count)]
+    [:completed
+     {:input 5 :work/id :provider-work}
+     :work/store
+     :test-memory
+     :work/executor
+     :test-executor
+     :work/receipt
+     :disabled
+     6
+     1])
+
+   (test-check "all runtimes require the atomic operational-store contract"
+    (try (do (work/local-runtime {:store runs-only-store}) false)
+         (catch Throwable error true))
+    true)
+
+   (test-check "provider roles cannot be substituted accidentally"
+    (try (do (work/local-runtime
+     {:store
+      {:provider/role :work/executor
+       :provider/id :wrong-role
+       :provider/capabilities #{}
+       :provider/operations {}}}) false)
+         (catch Throwable error true))
+    true)
+
+    (test-check "executor maps cannot bypass the IWorkExecutor boundary"
+    (try
+      (work/local-runtime
+       {:executor
+        {:provider/role :work/executor
+         :provider/id :legacy
+         :provider/operations {:execute identity}}})
+      false
+      (catch Throwable error true))
+    true)])
+
+results

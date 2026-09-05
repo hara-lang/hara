@@ -1,0 +1,268 @@
+(ns tool.migrate.classify-ex-info-catalog-script
+  (:require [std.foundation :refer :all]
+            [std.foundation.string :as str]
+            [std.fs.path :as path]
+            [tool.sh :as sh]))
+
+(def +classification-types+
+  [{:ex/class :ex.class/security
+    :description "Authentication, authorization, permission, sandbox, signature, and trust failures."}
+   {:ex/class :ex.class/timeout
+    :description "Deadlines, timeouts, and operations that did not complete in time."}
+   {:ex/class :ex.class/not-found
+    :description "Requested files, keys, namespaces, resources, routes, or entities that do not exist."}
+   {:ex/class :ex.class/conflict
+    :description "Duplicate, already-existing, stale, or mutually conflicting state."}
+   {:ex/class :ex.class/limit
+    :description "Bounds, capacity, recursion, size, rate, and expansion limits."}
+   {:ex/class :ex.class/syntax
+    :description "Malformed source, forms, bindings, queries, and parse failures."}
+   {:ex/class :ex.class/io
+    :description "Filesystem, stream, socket, network, request, and response failures."}
+   {:ex/class :ex.class/database
+    :description "Database connection, transaction, query, table, and persistence failures."}
+   {:ex/class :ex.class/dependency
+    :description "Missing or invalid modules, packages, namespaces, services, and dependency graphs."}
+   {:ex/class :ex.class/serialization
+    :description "Encoding, decoding, EDN, JSON, schema, and wire-format failures."}
+   {:ex/class :ex.class/argument
+    :description "Invalid caller-supplied values, options, arity, and type constraints."}
+   {:ex/class :ex.class/state
+    :description "Invalid lifecycle, unavailable capability, and failed operational state."}
+   {:ex/class :ex.class/host
+    :description "Native process, command, runtime, platform, and host-boundary failures."}
+   {:ex/class :ex.class/internal
+    :description "Unclassified invariant and implementation failures requiring human review."}])
+
+(def +classification-rules+
+  [{:rule :security :ex/class :ex.class/security :confidence :high
+    :cues ["auth" "permission" "forbidden" "unauthorized" "sandbox"
+           "signature" "credential" "token" "trust" "denied"]}
+   {:rule :timeout :ex/class :ex.class/timeout :confidence :high
+    :cues ["timeout" "timed out" "deadline" "expired"]}
+   {:rule :not-found :ex/class :ex.class/not-found :confidence :high
+    :cues ["not found" "missing" "no such" "does not exist" "unknown route"
+           "unknown key" "cannot find" "could not find"]}
+   {:rule :conflict :ex/class :ex.class/conflict :confidence :high
+    :cues ["duplicate" "already exists" "already registered" "conflict"
+           "stale" "already defined" "already active"]}
+   {:rule :limit :ex/class :ex.class/limit :confidence :medium
+    :cues ["out of bounds" "exceeded" "too many" "too large" "too deep"
+           "maximum" "capacity" "limit" "overflow" "underflow"]}
+   {:rule :syntax :ex/class :ex.class/syntax :confidence :medium
+    :cues ["parse" "parser" "syntax" "malformed" "invalid form" "binding"
+           "unexpected token" "reader" "macroexpand" "query form"]}
+   {:rule :database :ex/class :ex.class/database :confidence :medium
+    :cues ["postgres" "database" "transaction" "sql" "table" "jdbc"
+           "datasource" "query failed"]}
+   {:rule :io :ex/class :ex.class/io :confidence :medium
+    :cues ["file" "path" "directory" "socket" "stream" "network" "http"
+           "request" "response" "connection" "read failed" "write failed"]}
+   {:rule :dependency :ex/class :ex.class/dependency :confidence :medium
+    :cues ["dependency" "namespace" "module" "package" "require" "library"
+           "component" "service unavailable"]}
+   {:rule :serialization :ex/class :ex.class/serialization :confidence :medium
+    :cues ["encode" "decode" "serialization" "deserialize" "json" "edn"
+           "wire" "schema" "codec"]}
+   {:rule :argument :ex/class :ex.class/argument :confidence :medium
+    :cues ["invalid" "expects" "expected" "requires" "must be" "cannot be nil"
+           "not valid" "unsupported option" "unknown option" "arity"]}
+   {:rule :host :ex/class :ex.class/host :confidence :medium
+    :cues ["process" "command" "runtime" "native" "platform" "subprocess"
+           "executable" "exit code"]}
+   {:rule :state :ex/class :ex.class/state :confidence :low
+    :cues ["failed" "unable" "unavailable" "closed" "stopped" "not active"
+           "not initialized" "state" "lifecycle"]}])
+
+(def +application-namespaces+
+  {"greenways-ai/greenways-os" {:application :greenways-os
+                                :code/namespace "greenways.ex"
+                                :class/namespace "greenways.class"}
+   "greenways-ai/hestia" {:application :hestia
+                           :code/namespace "hestia.ex"
+                           :class/namespace "hestia.class"}
+   "greenways-ai/historia" {:application :historia
+                             :code/namespace "historia.ex"
+                             :class/namespace "historia.class"}
+   "greenways-ai/hoplite" {:application :hoplite
+                            :code/namespace "hoplite.ex"
+                            :class/namespace "hoplite.class"}
+   "greenways-ai/ignatius" {:application :ignatius
+                             :code/namespace "ignatius.ex"
+                             :class/namespace "ignatius.class"}
+   "greenways-ai/www" {:application :greenways-www
+                        :code/namespace "greenways.ex"
+                        :class/namespace "greenways.class"}
+   "hara-lang/tahto" {:application :tahto
+                       :code/namespace "tahto.ex"
+                       :class/namespace "tahto.class"}
+   "hara-lang/hodos" {:application :hodos
+                       :code/namespace "hodos.ex"
+                       :class/namespace "hodos.class"}})
+
+(defn host-read [file]
+  (let [outcome (sh/run ["/bin/cat" file])]
+    (if (Result/success? outcome)
+      (:stdout (Result/data outcome))
+      (let [error (Result/error-value outcome)
+            data (ex-data error)]
+        (if (and (map? data) (has? data :exit))
+          (throw (ex :tool.migrate/catalog-read
+                     {:ex/message "Cannot read ex-info catalog" :path file}))
+          (throw error))))))
+
+(defn host-write [file text]
+  (let [process (Process/spawn ["/usr/bin/tee" file])]
+    (Process/write process (str/encode-utf8 text))
+    (Process/close-input process)
+    (let [values (deref (promise/all [(Process/stdout process)
+                                      (Process/stderr process)
+                                      (Process/wait process)]))]
+      (if (= 0 (nth values 2))
+        file
+        (throw (ex :tool.migrate/catalog-write
+                   {:ex/message "Cannot write classified ex-info catalog"
+                    :path file
+                    :stderr (str/decode-utf8 (nth values 1))}))))))
+
+(defn render-edn [value]
+  (cond
+    (map? value)
+    (str "{"
+         (str/join
+          " "
+          (map (fn [entry]
+                 (str (render-edn (first entry)) " "
+                      (render-edn (second entry))))
+               (sort-by (fn [entry] (pr-str (first entry))) (vec value))))
+         "}")
+
+    (vector? value)
+    (str "[" (str/join " " (map render-edn value)) "]")
+
+    :else
+    (pr-str value)))
+
+(defn classification-text [site]
+  (str/lower-case
+   (str (:legacy/message site) " "
+        (:legacy/error-code site) " "
+        (:source/path site) " "
+        (get-in site [:context/definition :name]) " "
+        (:source/form site))))
+
+(defn matching-rule [site]
+  (let [text (classification-text site)]
+    (first
+     (filter
+      (fn [rule]
+        (not
+         (empty?
+          (filter (fn [cue] (str/includes? text cue)) (:cues rule)))))
+      +classification-rules+))))
+
+(defn application-ownership [site]
+  (if (= :generated (:source/role site))
+    nil
+    (get +application-namespaces+ (:source/repository site))))
+
+(defn classification-leaf [base-class]
+  (if (= :ex.class/internal base-class)
+    "generic"
+    (name base-class)))
+
+(defn application-code [site base-class ownership]
+  (cond
+    (and ownership (= :ex.class/internal base-class))
+    (keyword (:code/namespace ownership) (classification-leaf base-class))
+
+    (or ownership (= "hara-lang/hara" (:source/repository site)))
+    (keyword "hara" (classification-leaf base-class))
+
+    :else
+    (:ex/code site)))
+
+(defn application-class [base-class ownership]
+  (if (and ownership (= :ex.class/internal base-class))
+    (keyword (:class/namespace ownership) (classification-leaf base-class))
+    base-class))
+
+(defn classify-site [site]
+  (if (= :approved (:review/status site))
+    (assoc site
+           :classification/type (:ex/class site)
+           :classification/base-type (:ex/class site)
+           :classification/application nil
+           :classification/rule :reviewed
+           :classification/confidence :reviewed
+           :classification/evidence "Existing reviewed ledger assignment")
+    (let [rule (matching-rule site)
+          base-class (if rule (:ex/class rule) :ex.class/internal)
+          ownership (application-ownership site)
+          class (application-class base-class ownership)]
+      (assoc site
+             :ex/code (application-code site base-class ownership)
+             :ex/class class
+             :review/status :inferred
+             :classification/type class
+             :classification/base-type base-class
+             :classification/application (if ownership (:application ownership) nil)
+             :classification/rule (if rule (:rule rule) :fallback)
+             :classification/confidence (if rule (:confidence rule) :low)
+             :classification/evidence
+             (if rule
+               (str "Matched ordered cues for " (:rule rule))
+               "No ordered cue matched; human classification required")))))
+
+(defn classification-counts [sites]
+  (reduce
+   (fn [output site]
+     (let [class (:classification/type site)]
+       (assoc output class (inc (get output class 0)))))
+   {}
+   sites))
+
+(defn classify-catalog [catalog]
+  (let [sites (mapv classify-site (:catalog/sites catalog))]
+    (assoc catalog
+           :catalog/version 2
+           :classification/types +classification-types+
+           :classification/rules +classification-rules+
+           :classification/application-namespaces +application-namespaces+
+           :classification/summary
+           {:reviewed (count (filter (fn [site]
+                                       (= :reviewed (:classification/confidence site)))
+                                     sites))
+            :inferred (count (filter (fn [site]
+                                       (= :inferred (:review/status site)))
+                                     sites))
+            :by-class (classification-counts sites)}
+           :catalog/sites sites)))
+
+(defn run
+  ([] (run "write"))
+  ([mode]
+   (let [hara-root (OS/cwd)
+         workspace (path/parent (path/parent hara-root))
+         input (path/join workspace "ex-info-catalog.edn")
+         output (path/join workspace "ex-info-catalog-classified.edn")
+         classified (classify-catalog (Edn/read (host-read input)))
+         rendered (str (render-edn classified) "\n")]
+     (cond
+       (= mode "write")
+       (do (host-write output rendered)
+           {:mode :write :input input :output output})
+
+       (= mode "verify")
+       (if (= rendered (host-read output))
+         {:mode :verify :input input :output output :valid true}
+         (throw (ex :tool.migrate/catalog-stale
+                    {:ex/message "Classified ex-info catalog is stale"
+                     :path output})))
+
+       :else
+       (throw (ex :tool.migrate/catalog-mode
+                  {:ex/message "Classification mode must be write or verify"
+                   :mode mode}))))))
+
+(run)

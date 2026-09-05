@@ -1,0 +1,381 @@
+(ns std.lib.time
+  (:config {:override [format parse second]}))
+
+(defstruct Instant [millisecond])
+(defstruct Duration [millisecond])
+(defstruct DateTime
+  [year month day hour minute second millisecond offset-minutes])
+
+(def ^:private milliseconds-per-minute 60000)
+(def ^:private milliseconds-per-day 86400000)
+(def ^:private duration-units
+  {:weeks 604800000 :days 86400000 :hours 3600000
+   :minutes 60000 :seconds 1000 :milliseconds 1})
+
+(defn- fail [message data] (throw (ex :generic data :ex/message message)))
+
+(defn instant? [value] (instance? Instant value))
+(defn duration? [value] (instance? Duration value))
+(defn datetime? [value] (instance? DateTime value))
+
+(defn instant [millisecond]
+  (if (long? millisecond)
+    (Instant millisecond)
+    (fail "instant expects integer milliseconds" {:value millisecond})))
+
+(defn duration
+  [value]
+  (cond (duration? value) value
+        (long? value) (Duration value)
+        (map? value)
+        (Duration
+         (reduce (fn [total entry]
+                   (let [unit (key entry)
+                         amount (val entry)
+                         scale (get duration-units unit)]
+                     (if (and scale (long? amount))
+                       (+ total (* scale amount))
+                       (fail "duration expects fixed integer units"
+                             {:unit unit :value amount}))))
+                 0 value))
+        :else (fail "duration expects milliseconds or a fixed-unit map"
+                    {:value value})))
+
+(defn leap-year?
+  [year]
+  (and (= 0 (mod year 4))
+       (or (not= 0 (mod year 100)) (= 0 (mod year 400)))))
+
+(defn days-in-month
+  [year month]
+  (case month
+    1 31 2 (if (leap-year? year) 29 28) 3 31 4 30
+    5 31 6 30 7 31 8 31 9 30 10 31 11 30 12 31
+    (fail "month must be between 1 and 12" {:month month})))
+
+(defn- valid-offset? [value]
+  (and (long? value) (<= -1080 value) (<= value 1080)))
+
+(defn- make-civil
+  [value]
+  (let [year (:year value)
+        month (:month value)
+        day (:day value)
+        hour (or (:hour value) 0)
+        minute (or (:minute value) 0)
+        second-value (or (:second value) 0)
+        millisecond (or (:millisecond value) 0)
+        offset (or (:offset-minutes value) 0)]
+    (if-not (and (long? year) (long? month) (long? day)
+                 (long? hour) (long? minute) (long? second-value)
+                 (long? millisecond) (valid-offset? offset))
+      (fail "datetime fields must be integers" {:value value})
+      (if-not (and (<= 1 month) (<= month 12)
+                   (<= 1 day) (<= day (days-in-month year month))
+                   (<= 0 hour) (< hour 24)
+                   (<= 0 minute) (< minute 60)
+                   (<= 0 second-value) (< second-value 60)
+                   (<= 0 millisecond) (< millisecond 1000))
+        (fail "datetime fields are outside their valid ranges" {:value value})
+        (DateTime year month day hour minute second-value millisecond offset)))))
+
+(defn datetime [value] (make-civil value))
+
+(defn now [] (instant (time-ms)))
+(defn epoch [] (instant 0))
+(defn elapsed-ns [] (time-ns))
+
+(defn to-long [value]
+  (cond (instant? value) (:millisecond value)
+        (duration? value) (:millisecond value)
+        :else (fail "to-long expects an Instant or Duration" {:value value})))
+
+(defn from-long [value] (instant value))
+
+(defn- floor-div [value divisor]
+  (let [quotient (quot value divisor)
+        remainder (rem value divisor)]
+    (if (and (< remainder 0) (> divisor 0)) (dec quotient) quotient)))
+
+(defn- days-from-civil [year month day]
+  (let [adjusted-year (- year (if (<= month 2) 1 0))
+        era (floor-div adjusted-year 400)
+        year-of-era (- adjusted-year (* era 400))
+        shifted-month (+ month (if (> month 2) -3 9))
+        day-of-year (+ (quot (+ (* 153 shifted-month) 2) 5) (dec day))
+        day-of-era (+ (* year-of-era 365) (quot year-of-era 4)
+                       (- (quot year-of-era 100)) day-of-year)]
+    (- (+ (* era 146097) day-of-era) 719468)))
+
+(defn- civil-from-days [days]
+  (let [shifted (+ days 719468)
+        era (floor-div shifted 146097)
+        day-of-era (- shifted (* era 146097))
+        year-of-era (quot (- day-of-era
+                             (quot day-of-era 1460)
+                             (- (quot day-of-era 36524))
+                             (quot day-of-era 146096)) 365)
+        year (+ year-of-era (* era 400))
+        day-of-year (- day-of-era
+                       (+ (* 365 year-of-era) (quot year-of-era 4)
+                          (- (quot year-of-era 100))))
+        month-prime (quot (+ (* 5 day-of-year) 2) 153)
+        day (inc (- day-of-year (quot (+ (* 153 month-prime) 2) 5)))
+        month (+ month-prime (if (< month-prime 10) 3 -9))]
+    [(+ year (if (<= month 2) 1 0)) month day]))
+
+(defn datetime->instant [value]
+  (if (instant? value)
+    value
+    (if (datetime? value)
+      (instant
+       (- (+ (* (days-from-civil (:year value) (:month value) (:day value))
+                milliseconds-per-day)
+             (* (:hour value) 3600000)
+             (* (:minute value) 60000)
+             (* (:second value) 1000)
+             (:millisecond value))
+          (* (:offset-minutes value) milliseconds-per-minute)))
+      (fail "datetime->instant expects a DateTime" {:value value}))))
+
+(defn instant->datetime
+  ([value] (instant->datetime value 0))
+  ([value offset-minutes]
+   (if-not (valid-offset? offset-minutes)
+     (fail "offset must be integer minutes between -1080 and 1080"
+           {:offset-minutes offset-minutes})
+     (let [instant-value (if (instant? value) value (datetime->instant value))
+           local-ms (+ (:millisecond instant-value)
+                       (* offset-minutes milliseconds-per-minute))
+           days (floor-div local-ms milliseconds-per-day)
+           day-ms (- local-ms (* days milliseconds-per-day))
+           civil (civil-from-days days)
+           hour (quot day-ms 3600000)
+           hour-rest (rem day-ms 3600000)
+           minute (quot hour-rest 60000)
+           minute-rest (rem hour-rest 60000)
+           second-value (quot minute-rest 1000)]
+       (DateTime (nth civil 0) (nth civil 1) (nth civil 2)
+                 hour minute second-value (rem minute-rest 1000)
+                 offset-minutes)))))
+
+(defn to-map [value]
+  (if (or (instant? value) (duration? value) (datetime? value))
+    (into {} value)
+    (fail "to-map expects a time value" {:value value})))
+
+(defn from-map [value] (datetime value))
+
+(defn to-vector
+  ([value] (to-vector value [:year :month :day :hour :minute :second :millisecond]))
+  ([value fields]
+   (let [date-value (if (datetime? value) value (instant->datetime value))]
+     (mapv (fn [field] (get date-value field)) fields))))
+
+(defn year [value] (:year (if (datetime? value) value (instant->datetime value))))
+(defn month [value] (:month (if (datetime? value) value (instant->datetime value))))
+(defn day [value] (:day (if (datetime? value) value (instant->datetime value))))
+(defn hour [value] (:hour (if (datetime? value) value (instant->datetime value))))
+(defn minute [value] (:minute (if (datetime? value) value (instant->datetime value))))
+(defn second [value] (:second (if (datetime? value) value (instant->datetime value))))
+(defn millisecond [value] (:millisecond value))
+(defn offset-minutes [value] (if (datetime? value) (:offset-minutes value) nil))
+
+(defn day-of-week [value]
+  (let [date-value (if (datetime? value) value (instant->datetime value))]
+    (inc (mod (+ (days-from-civil (:year date-value) (:month date-value) (:day date-value)) 3) 7))))
+
+(defn has-timezone? [value] (datetime? value))
+(defn get-timezone [value] (offset-minutes value))
+(defn with-offset [value offset] (instant->datetime (datetime->instant value) offset))
+(defn with-timezone [value offset] (with-offset value offset))
+
+(defn equal [left right & more]
+  (apply = (map (fn [value] (:millisecond (datetime->instant value)))
+                (concat [left right] more))))
+
+(defn before [left right & more]
+  (apply < (map (fn [value] (:millisecond (datetime->instant value)))
+                (concat [left right] more))))
+
+(defn after [left right & more]
+  (apply > (map (fn [value] (:millisecond (datetime->instant value)))
+                (concat [left right] more))))
+
+(defn plus [value amount]
+  (if (and (instant? value) (duration? amount))
+    (instant (+ (:millisecond value) (:millisecond amount)))
+    (fail "plus expects an Instant and Duration" {:value value :amount amount})))
+
+(defn minus [left right]
+  (cond (and (instant? left) (duration? right))
+        (instant (- (:millisecond left) (:millisecond right)))
+        (and (instant? left) (instant? right))
+        (duration (- (:millisecond left) (:millisecond right)))
+        :else (fail "minus expects Instant/Duration or Instant/Instant"
+                    {:left left :right right})))
+
+(defn- shift-months [value amount]
+  (let [month-index (+ (* (:year value) 12) (dec (:month value)) amount)
+        next-year (floor-div month-index 12)
+        next-month (inc (- month-index (* next-year 12)))
+        next-day (min (:day value) (days-in-month next-year next-month))]
+    (assoc value :year next-year :month next-month :day next-day)))
+
+(defn adjust [value changes]
+  (if-not (datetime? value)
+    (fail "adjust expects a DateTime" {:value value})
+    (let [months (+ (or (:months changes) 0) (* 12 (or (:years changes) 0)))
+          shifted (shift-months value months)
+          fixed (duration (select-keys changes
+                           [:weeks :days :hours :minutes :seconds :milliseconds]))
+          adjusted (instant->datetime (plus (datetime->instant shifted) fixed)
+                                (:offset-minutes shifted))]
+      (datetime
+       (merge (to-map adjusted)
+              (select-keys changes
+                           [:year :month :day :hour :minute :second
+                            :millisecond :offset-minutes]))))))
+
+(defn- value-index [values target]
+  (loop [index 0]
+    (cond (= index (count values)) nil
+          (= target (nth values index)) index
+          :else (recur (inc index)))))
+
+(defn truncate [value field]
+  (if-not (datetime? value)
+    (fail "truncate expects a DateTime" {:value value})
+    (let [defaults {:month 1 :day 1 :hour 0 :minute 0 :second 0 :millisecond 0}
+          fields [:year :month :day :hour :minute :second :millisecond]
+          index (value-index fields field)]
+      (if (nil? index)
+        (fail "unsupported truncate field" {:field field})
+        (datetime
+         (reduce (fn [output item]
+                   (if (> (first item) index)
+                     (assoc output (nth item 1) (get defaults (nth item 1)))
+                     output))
+                 (to-map value)
+                 (map-indexed vector fields)))))))
+
+(defn latest [left right & more]
+  (last (sort-by (fn [value] (:millisecond (datetime->instant value)))
+                 (concat [left right] more))))
+
+(defn earliest [left right & more]
+  (first (sort-by (fn [value] (:millisecond (datetime->instant value)))
+                  (concat [left right] more))))
+
+(defn- pad [value width]
+  (let [text (str value)]
+    (loop [output text]
+      (if (>= (str/length output) width) output (recur (str "0" output))))))
+
+(defn- offset-text [offset colon?]
+  (let [sign (if (< offset 0) "-" "+")
+        magnitude (if (< offset 0) (- offset) offset)
+        hours (pad (quot magnitude 60) 2)
+        minutes (pad (rem magnitude 60) 2)]
+    (str sign hours (if colon? ":" "") minutes)))
+
+(defn- token-value [value token]
+  (case token
+    "yyyy" (pad (:year value) 4)
+    "MM" (pad (:month value) 2)
+    "dd" (pad (:day value) 2)
+    "HH" (pad (:hour value) 2)
+    "mm" (pad (:minute value) 2)
+    "ss" (pad (:second value) 2)
+    "SSS" (pad (:millisecond value) 3)
+    "Z" (offset-text (:offset-minutes value) false)
+    "XXX" (if (= 0 (:offset-minutes value)) "Z"
+              (offset-text (:offset-minutes value) true))
+    nil))
+
+(def ^:private pattern-tokens ["yyyy" "SSS" "XXX" "MM" "dd" "HH" "mm" "ss" "Z"])
+
+(defn- token-at [pattern index]
+  (first (filter (fn [token]
+                   (and (<= (+ index (str/length token)) (str/length pattern))
+                        (= token (str/slice pattern index (+ index (str/length token))))))
+                 pattern-tokens)))
+
+(defn format
+  ([value pattern] (format value pattern {}))
+  ([value pattern options]
+   (let [date-value (cond (datetime? value) value
+                          (instant? value) (instant->datetime value (or (:offset-minutes options) 0))
+                          :else (fail "format expects an Instant or DateTime" {:value value}))]
+     (loop [index 0 output "" quoted false]
+       (if (= index (str/length pattern))
+         output
+         (let [character (str/char-at pattern index)]
+           (cond (= character \') (recur (inc index) output (not quoted))
+                 quoted (recur (inc index) (str output (str character)) quoted)
+                 :else (let [token (token-at pattern index)]
+                         (if token
+                           (recur (+ index (str/length token))
+                                  (str output (token-value date-value token)) false)
+                           (recur (inc index) (str output (str character)) false))))))))))
+
+(defn format-iso [value]
+  (std.lib.time/format value "yyyy-MM-dd'T'HH:mm:ss.SSSXXX"))
+
+(defn- digit? [character] (not= -1 (str/index-of "0123456789" (str character))))
+
+(defn- parse-digits [source index width field]
+  (if (> (+ index width) (str/length source))
+    (fail "time text ended inside a field" {:field field :index index})
+    (let [text (str/slice source index (+ index width))]
+      (if (every? digit? (map (fn [position] (str/char-at text position)) (range width)))
+        [(reduce (fn [number position]
+                   (+ (* number 10)
+                      (str/index-of "0123456789"
+                                    (str (str/char-at text position)))))
+                 0 (range width))
+         (+ index width)]
+        (fail "time field contains non-digits" {:field field :text text})))))
+
+(defn- parse-offset [source]
+  (if (= \Z (str/char-at source 23))
+    0
+    (let [hour (first (parse-digits source 24 2 :offset-hour))
+          minute (first (parse-digits source 27 2 :offset-minute))]
+      (if (or (> hour 18) (> minute 59) (and (= hour 18) (not= minute 0)))
+        (fail "ISO offset is outside its valid range" {:source source})
+        (* (if (= \- (str/char-at source 23)) -1 1)
+           (+ (* 60 hour) minute))))))
+
+(defn parse
+  ([source pattern] (std.lib.time/parse source pattern {}))
+  ([source pattern options]
+   (if-not (= pattern "yyyy-MM-dd'T'HH:mm:ss.SSSXXX")
+     (fail "parse currently supports the canonical ISO pattern"
+           {:pattern pattern})
+     (if-not (or (= 24 (str/length source)) (= 29 (str/length source)))
+       (fail "ISO time text must end in Z or a signed offset" {:source source})
+       (if-not (and (= \- (str/char-at source 4))
+                    (= \- (str/char-at source 7))
+                    (= \T (str/char-at source 10))
+                    (= \: (str/char-at source 13))
+                    (= \: (str/char-at source 16))
+                    (= \. (str/char-at source 19))
+                    (or (= \Z (str/char-at source 23))
+                        (and (= 29 (str/length source))
+                             (or (= \+ (str/char-at source 23))
+                                 (= \- (str/char-at source 23)))
+                             (= \: (str/char-at source 26)))))
+         (fail "ISO time text does not match the canonical pattern" {:source source})
+         (make-civil
+          {:year (first (parse-digits source 0 4 :year))
+           :month (first (parse-digits source 5 2 :month))
+           :day (first (parse-digits source 8 2 :day))
+           :hour (first (parse-digits source 11 2 :hour))
+           :minute (first (parse-digits source 14 2 :minute))
+           :second (first (parse-digits source 17 2 :second))
+           :millisecond (first (parse-digits source 20 3 :millisecond))
+           :offset-minutes (parse-offset source)}))))))
+
+(defn parse-iso [source]
+  (datetime->instant (std.lib.time/parse source "yyyy-MM-dd'T'HH:mm:ss.SSSXXX")))

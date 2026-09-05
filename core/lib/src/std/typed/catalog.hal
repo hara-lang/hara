@@ -1,0 +1,660 @@
+;; Portable identity and exact dependency coordinates for named std.typed schemas.
+(ns std.typed.catalog
+  (:require [std.typed.registry :as registry]
+            [std.typed.schema :as schema])
+  (:config {:override [resolve]}))
+
+(def +catalog-type+ :std.typed.catalog/catalog)
+(def +hash-format+ :std.typed.schema/catalog-v2)
+(def +semantic-property-keys+
+  #{:min-count :max-count :pattern :qualified :distinct
+    :closed :optional :status :error-code})
+(def +option-keys+ #{:aliases :refers :parents})
+
+(defstruct SchemaCatalog [entries registry dependencies options])
+
+(defn- catalog-error
+  [message data]
+  (throw
+   (ex :argument
+       (assoc data :type :std.typed.catalog/invalid-catalog)
+       :ex/message message)))
+
+(defn ^{:schema [:fn [:any] :bool]}
+  catalog?
+  "Returns true when value is an immutable identified schema catalog."
+  [value]
+  (instance? std.typed.catalog/SchemaCatalog value))
+
+(defn- require-map
+  [value label]
+  (if (map? value)
+    value
+    (catalog-error (str label " must be a map")
+                   {:label label :value value})))
+
+(defn- canonical-id
+  [value]
+  (cond
+    (and (keyword? value) (namespace value)) value
+    (and (symbol? value) (namespace value))
+    (keyword (namespace value) (name value))
+    :else
+    (catalog-error
+     ":schema/id must be a qualified keyword or symbol"
+     {:schema/id value})))
+
+(defn- id-symbol
+  [id]
+  (symbol (namespace id) (str/pascal-case (name id))))
+
+(defn- symbol-id
+  [value]
+  (if (and (symbol? value) (namespace value))
+    (keyword (namespace value) (str/spear-case (name value)))
+    (catalog-error "schema dependency must be a qualified symbol"
+                   {:dependency value})))
+
+(defn- semantic-properties
+  [properties]
+  (reduce-kv
+   (fn [output key value]
+     (if (has? +semantic-property-keys+ key)
+       (assoc output key value)
+       output))
+   {}
+   (or properties {})))
+
+(declare semantic-value canonical-value)
+
+(defn- semantic-value
+  [value]
+  (cond
+    (map? value)
+    (reduce-kv
+     (fn [output key item]
+       (if (= key :properties)
+         (let [properties (semantic-properties item)]
+           (if (empty? properties)
+             output
+             (assoc output key (semantic-value properties))))
+         (assoc output key (semantic-value item))))
+     {}
+     value)
+
+    (vector? value)
+    (vec (map semantic-value value))
+
+    (tuple? value)
+    (apply tuple (map semantic-value value))
+
+    (set? value)
+    (set (map semantic-value value))
+
+    (list? value)
+    (apply list (map semantic-value value))
+
+    :else value))
+
+(defn- canonical-value
+  [value]
+  (cond
+    (map? value)
+    [:map
+     (vec
+      (map
+       (fn [entry]
+         [(canonical-value (key entry))
+          (canonical-value (val entry))])
+       (sort-by
+        (fn [entry]
+          (pr-str (canonical-value (key entry))))
+        (seq value))))]
+
+    (vector? value)
+    [:vector (vec (map canonical-value value))]
+
+    (tuple? value)
+    [:tuple (vec (map canonical-value value))]
+
+    (set? value)
+    (let [items (vec (map canonical-value value))]
+      [:set (vec (sort-by (fn [item] (pr-str item)) items))])
+
+    (list? value)
+    [:list (vec (map canonical-value value))]
+
+    (or (nil? value)
+        (boolean? value)
+        (string? value)
+        (char? value)
+        (number? value)
+        (keyword? value)
+        (symbol? value))
+    [:scalar value]
+
+    :else
+    (catalog-error
+     "schema catalog hash input contains a non-portable value"
+     {:value value})))
+
+(defn- canonical-hash
+  [id normalized]
+  (let [input
+        [+hash-format+
+         id
+         (canonical-value (semantic-value normalized))]]
+    (str "sha256:"
+         (Crypto/sha256
+          (str/encode-utf8 (pr-str input))))))
+
+(defn- require-entry
+  [entry]
+  (let [entry (require-map entry "schema catalog entry")]
+    (if (not (has? entry :schema/id))
+      (catalog-error "schema catalog entry requires :schema/id"
+                     {:entry entry}))
+    (if (has? entry :schema/version)
+      (catalog-error "schema catalog entries do not support :schema/version"
+                     {:entry entry}))
+    (if (not (has? entry :schema/form))
+      (catalog-error "schema catalog entry requires :schema/form"
+                     {:entry entry}))
+    (assoc entry :schema/id (canonical-id (:schema/id entry)))))
+
+(defn- group-entries
+  [entries]
+  (reduce
+   (fn [output raw-entry]
+     (let [entry (require-entry raw-entry)
+           id (:schema/id entry)]
+       (if (has? output id)
+         (catalog-error "duplicate schema catalog id"
+                        {:schema/id id}))
+       (assoc output id entry)))
+   {}
+   entries))
+
+(defn- entry-forms
+  [grouped]
+  (reduce-kv
+   (fn [output id entry]
+     (assoc output (id-symbol id) (:schema/form entry)))
+   {}
+   grouped))
+
+(defn- require-options
+  [options]
+  (let [options (require-map options "schema catalog options")
+        unknown
+        (vec
+         (filter (fn [key] (not (has? +option-keys+ key)))
+                 (keys options)))]
+    (if (not (empty? unknown))
+      (catalog-error "unsupported schema catalog options"
+                     {:options unknown}))
+    options))
+
+(defn- entry-registry
+  [base options id]
+  (registry/registry
+   {}
+   {:namespace (symbol (namespace id))
+    :aliases (get options :aliases {})
+    :refers (get options :refers {})
+    :parents
+    (vec
+     (concat [base]
+             (get options :parents [])))}))
+
+(defn- hash-entry
+  [base options entry]
+  (let [normalized
+        (schema/normalize-with
+         (:schema/form entry)
+         (entry-registry base options (:schema/id entry)))
+        hash (canonical-hash (:schema/id entry) normalized)
+        supplied (get entry :schema/hash nil)]
+    (if (and supplied (not= supplied hash))
+      (catalog-error "supplied :schema/hash does not match canonical schema"
+                     {:schema/id (:schema/id entry)
+                      :schema/hash supplied
+                      :schema/expected-hash hash}))
+    (assoc entry
+           :schema/hash hash
+           :schema/coordinate
+           [:schema (:schema/id entry) hash]
+           :schema/normal normalized)))
+
+(defn- hash-entries
+  [base options grouped]
+  (reduce-kv
+   (fn [output id entry]
+     (assoc output id (hash-entry base options entry)))
+   {}
+   grouped))
+
+(defn- exact-entry
+  [grouped id]
+  (get grouped (canonical-id id)))
+
+(defn- coordinate-entry
+  [grouped coordinate]
+  (if (and (vector? coordinate)
+           (= 3 (count coordinate))
+           (= :schema (first coordinate)))
+    (let [entry (exact-entry grouped (second coordinate))]
+      (if (and entry (= (:schema/hash entry) (nth coordinate 2)))
+        entry
+        nil))
+    nil))
+
+(defn- dependency-coordinate
+  [grouped reference owner]
+  (let [id (symbol-id reference)
+        target (get grouped id nil)]
+    (if target
+      (:schema/coordinate target)
+      (catalog-error "identified schema dependency is not in the catalog"
+                     {:schema/id (:schema/id owner)
+                      :dependency reference}))))
+
+(defn- dependency-index
+  [grouped]
+  (reduce-kv
+   (fn [output _ entry]
+     (let [references (schema/reference-names (:schema/normal entry))
+           dependencies
+           (set
+            (map (fn [reference]
+                   (dependency-coordinate grouped reference entry))
+                 references))]
+       (assoc output (:schema/coordinate entry) dependencies)))
+   {}
+   grouped))
+
+(declare dependency-components)
+
+(defn ^{:schema [:function
+                 [:fn [:vector] :any]
+                 [:fn [:vector :map] :any]]}
+  catalog
+  "Creates an immutable catalog of identified schema entries.
+
+   Each entry requires a qualified :schema/id and :schema/form. Hashes are
+   SHA-256 over the canonical semantic form and the catalog hash epoch.
+   References are qualified in the entry's own namespace and pinned to exact
+   catalog coordinates."
+  ([entries]
+   (catalog entries {}))
+  ([entries options]
+   (let [entries (if (vector? entries)
+                   entries
+                   (catalog-error "schema catalog entries must be a vector"
+                                  {:entries entries}))
+         options (require-options options)
+         raw-grouped (group-entries entries)
+         base (registry/registry (entry-forms raw-grouped))
+         grouped (hash-entries base options raw-grouped)
+         dependencies (dependency-index grouped)
+         visible-registry
+         (registry/composite
+          (vec
+           (concat [base]
+                   (get options :parents []))))]
+     (let [catalog-value
+           (std.typed.catalog/SchemaCatalog
+            grouped visible-registry dependencies options)]
+       (dependency-components catalog-value)
+       catalog-value))))
+
+(defn ^{:schema [:fn [:any :any] :any]}
+  lookup
+  "Returns the unique entry for id."
+  ([catalog-value id]
+   (let [catalog-value
+         (if (catalog? catalog-value)
+           catalog-value
+           (catalog-error "lookup expects a schema catalog"
+                          {:catalog catalog-value}))
+         entry (exact-entry (:entries catalog-value) id)]
+     entry)))
+
+(defn ^{:schema [:fn [:any :any] :vector]}
+  coordinate
+  "Returns the exact [kind id hash] coordinate for a catalog entry."
+  [catalog-value id]
+  (let [entry (lookup catalog-value id)]
+    (if entry
+      (:schema/coordinate entry)
+      (catalog-error "schema catalog coordinate is unresolved"
+                     {:schema/id id}))))
+
+(defn ^{:schema [:fn [:any :vector] :any]}
+  resolve
+  "Resolves an exact schema coordinate, rejecting stale or mismatched hashes."
+  [catalog-value schema-coordinate]
+  (if (not (catalog? catalog-value))
+    (catalog-error "resolve expects a schema catalog"
+                   {:catalog catalog-value}))
+  (let [entry (coordinate-entry (:entries catalog-value) schema-coordinate)]
+    (if entry
+      entry
+      (catalog-error "schema catalog coordinate is unresolved"
+                     {:schema/coordinate schema-coordinate}))))
+
+(defn ^{:schema [:fn [:any] :map]}
+  schema-registry
+  "Returns the ordinary registry view used for existing symbol references."
+  [catalog-value]
+  (if (catalog? catalog-value)
+    (:registry catalog-value)
+    (catalog-error "schema-registry expects a schema catalog"
+                   {:catalog catalog-value})))
+
+(defn ^{:schema [:fn [:any :vector] :vector]}
+  dependencies
+  "Returns deterministic direct exact dependency coordinates."
+  [catalog-value schema-coordinate]
+  (if (not (catalog? catalog-value))
+    (catalog-error "dependencies expects a schema catalog"
+                   {:catalog catalog-value}))
+  (vec
+   (sort-by
+    (fn [coordinate-value] (pr-str coordinate-value))
+    (seq (get (:dependencies catalog-value) schema-coordinate #{})))))
+
+(defn- sort-portable
+  [values]
+  (vec (sort-by (fn [value] (pr-str value)) (seq values))))
+
+(defn- require-catalog-value
+  [catalog-value operation]
+  (if (catalog? catalog-value)
+    catalog-value
+    (catalog-error (str operation " expects a schema catalog")
+                   {:catalog catalog-value
+                    :operation operation})))
+
+(defn- require-coordinate-vector
+  [catalog-value schema-coordinates operation]
+  (if (not (vector? schema-coordinates))
+    (catalog-error (str operation " expects a vector of exact schema coordinates")
+                   {:schema/coordinates schema-coordinates
+                    :operation operation}))
+  (doseq [schema-coordinate schema-coordinates]
+    (resolve catalog-value schema-coordinate))
+  schema-coordinates)
+
+(defn- dependency-graph
+  [catalog-value schema-coordinates]
+  (let [resolved (deps-resolve catalog-value schema-coordinates)]
+    (reduce
+     (fn [output schema-coordinate]
+       (assoc output
+              schema-coordinate
+              (set (get (:graph resolved) schema-coordinate #{}))))
+     {}
+     (sort-portable (:all resolved)))))
+
+(defn- strongly-connected-components
+  [graph]
+  (let [next-index (atom 0)
+        indexes (atom {})
+        lows (atom {})
+        stack (atom [])
+        active (atom #{})
+        output (atom [])]
+    (letfn
+     [(visit
+       [node]
+       (let [index (deref next-index)]
+         (swap! next-index inc)
+         (swap! indexes assoc node index)
+         (swap! lows assoc node index)
+         (swap! stack conj node)
+         (swap! active conj node))
+       (doseq [dependency (sort-portable (get graph node #{}))]
+         (if (not (has? (deref indexes) dependency))
+           (do
+             (visit dependency)
+             (swap!
+              lows
+              assoc
+              node
+              (min (get (deref lows) node)
+                   (get (deref lows) dependency))))
+           (if (has? (deref active) dependency)
+             (swap!
+              lows
+              assoc
+              node
+              (min (get (deref lows) node)
+                   (get (deref indexes) dependency))))))
+       (if (= (get (deref lows) node)
+              (get (deref indexes) node))
+         (loop [members []]
+           (let [current-stack (deref stack)
+                 member (last current-stack)
+                 remaining (vec (butlast current-stack))]
+             (reset! stack remaining)
+             (swap!
+              active
+              (fn [values]
+                (dissoc values member)))
+             (let [members (conj members member)]
+               (if (= member node)
+                 (swap! output conj (sort-portable members))
+                 (recur members)))))))]
+     (doseq [node (sort-portable (keys graph))]
+       (if (not (has? (deref indexes) node))
+         (visit node))))
+    (vec
+     (sort-by
+      (fn [members] (pr-str members))
+      (deref output)))))
+
+(defn- component-id
+  [members]
+  (str
+   "sha256:"
+   (Crypto/sha256
+    (str/encode-utf8
+     (pr-str
+      [:std.typed.catalog/component-v2 members])))))
+
+(defn- component-owners
+  [component-members]
+  (reduce
+   (fn [output members]
+     (let [id (component-id members)]
+       (reduce
+        (fn [owners schema-coordinate]
+          (assoc owners schema-coordinate id))
+        output
+        members)))
+   {}
+   component-members))
+
+(defn- recursive-component?
+  [graph members]
+  (or
+   (> (count members) 1)
+   (and
+    (= 1 (count members))
+    (has? (get graph (first members) #{})
+          (first members)))))
+
+(defn- reference-only-cycle?
+  [catalog-value graph members]
+  (and
+   (recursive-component? graph members)
+   (every?
+    (fn [schema-coordinate]
+      (= :reference
+         (:kind
+          (:schema/normal
+           (resolve catalog-value schema-coordinate)))))
+    members)))
+
+(defn- component-dependency-ids
+  [graph owners id members]
+  (sort-portable
+   (reduce
+    (fn [output schema-coordinate]
+      (reduce
+       (fn [dependencies dependency]
+         (let [dependency-id (get owners dependency)]
+           (if (= id dependency-id)
+             dependencies
+             (conj dependencies dependency-id))))
+       output
+       (get graph schema-coordinate #{})))
+    #{}
+    members)))
+
+(defn- component-record
+  [catalog-value graph owners members]
+  (let [id (get owners (first members))
+        recursive? (recursive-component? graph members)]
+    (if (reference-only-cycle? catalog-value graph members)
+      (catalog-error
+       "schema catalog contains a reference-only cycle"
+       {:finding/type :std.typed.schema/cyclic-reference
+        :cycle/type :std.typed.catalog/reference-only-cycle
+        :schema/coordinates members}))
+    {:component/id id
+     :component/members members
+     :component/recursive? recursive?
+     :component/dependencies
+     (component-dependency-ids graph owners id members)}))
+
+(defn- component-graph
+  [components]
+  (reduce
+   (fn [output component]
+     (assoc output
+            (:component/id component)
+            (set (:component/dependencies component))))
+   {}
+   components))
+
+(defn- dependency-first-component-order
+  [graph]
+  (loop [remaining graph
+         ordered []]
+    (if (empty? remaining)
+      ordered
+      (let [ready
+            (sort-portable
+             (filter
+              (fn [component]
+                (empty? (get remaining component #{})))
+              (keys remaining)))]
+        (if (empty? ready)
+          (catalog-error
+           "schema catalog component graph contains a cycle"
+           {:component/graph remaining
+            :component/order ordered}))
+        (let [ready-set (set ready)
+              next-remaining
+              (reduce-kv
+               (fn [output component dependencies]
+                 (if (has? ready-set component)
+                   output
+                   (assoc output
+                          component
+                          (difference dependencies ready-set))))
+               {}
+               remaining)]
+          (recur next-remaining
+                 (vec (concat ordered ready))))))))
+
+(defn ^{:schema [:function
+                 [:fn [:any] :vector]
+                 [:fn [:any :vector] :vector]]}
+  dependency-components
+  "Returns deterministic dependency-first strongly connected components.
+
+   Structural recursion is represented as a recursive component. A cycle made
+   only of reference aliases is rejected as an invalid registry-style cycle."
+  ([catalog-value]
+   (let [catalog-value
+         (require-catalog-value catalog-value "dependency-components")]
+     (dependency-components catalog-value (dep-keys catalog-value))))
+  ([catalog-value schema-coordinates]
+   (let [catalog-value
+         (require-catalog-value catalog-value "dependency-components")
+         schema-coordinates
+         (require-coordinate-vector
+          catalog-value
+          schema-coordinates
+          "dependency-components")
+         graph (dependency-graph catalog-value schema-coordinates)
+         members (strongly-connected-components graph)
+         owners (component-owners members)
+         components
+         (vec
+          (map
+           (fn [component-members]
+             (component-record
+              catalog-value graph owners component-members))
+           members))
+         by-id
+         (reduce
+          (fn [output component]
+            (assoc output (:component/id component) component))
+          {}
+          components)
+         order
+         (dependency-first-component-order
+          (component-graph components))]
+     (vec
+      (map
+       (fn [id] (get by-id id))
+       order)))))
+
+(defn ^{:schema [:function
+                 [:fn [:any] :vector]
+                 [:fn [:any :vector] :vector]]}
+  dependency-order
+  "Returns exact schema coordinates in dependency-first component order.
+
+   Members of one recursive component use deterministic coordinate ordering."
+  ([catalog-value]
+   (let [catalog-value
+         (require-catalog-value catalog-value "dependency-order")]
+     (dependency-order catalog-value (dep-keys catalog-value))))
+  ([catalog-value schema-coordinates]
+   (reduce
+    (fn [output component]
+      (into output (:component/members component)))
+    []
+    (dependency-components catalog-value schema-coordinates))))
+
+(defn ^{:schema [:fn [:any :vector] :vector]}
+  dependency-closure
+  "Returns every exact transitive dependency of one schema coordinate.
+
+   The selected coordinate itself is excluded; mutually recursive peers remain
+   present because they are separate exact entries in the same component."
+  [catalog-value schema-coordinate]
+  (let [catalog-value
+        (require-catalog-value catalog-value "dependency-closure")
+        _ (resolve catalog-value schema-coordinate)]
+    (vec
+     (filter
+      (fn [candidate]
+        (not= candidate schema-coordinate))
+      (dependency-order catalog-value [schema-coordinate])))))
+
+(extend-type SchemaCatalog IDeps
+  (dep-get [catalog-value schema-coordinate]
+    (coordinate-entry (:entries catalog-value) schema-coordinate))
+  (dep-entries [catalog-value schema-coordinate]
+    (get (:dependencies catalog-value) schema-coordinate #{}))
+  (dep-keys [catalog-value]
+    (vec
+     (sort-by
+      (fn [schema-coordinate] (pr-str schema-coordinate))
+      (keys (:dependencies catalog-value))))))

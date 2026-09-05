@@ -1,0 +1,78 @@
+(ns std.block.layout.estimate)
+
+(def ^:dynamic *readable-len* 30)
+
+(defn get-max-width
+  "gets the max width of whole form"
+  {:added "4.0"}
+  [form]
+  (letfn [(separator-width
+           [value]
+           (cond
+            (map? value)
+            (+
+             (max 0 (dec (count value)))
+             (reduce + 0 (map separator-width (mapcat identity (seq value)))))
+            (or (vector? value) (set? value) (seq? value))
+            (reduce + 0 (map separator-width value))
+            :else
+            0))]
+    (+ (count (pr-str form)) (separator-width form))))
+
+(defn get-max-width-children
+  "gets the max with of the children"
+  {:added "4.0"}
+  [children]
+  (let [child-widths (map get-max-width children)]
+    (+ (apply + child-widths)
+       (dec (count child-widths)))))
+
+;;
+;;
+;;
+
+(defn estimate-multiline-basic
+  "does basic estimation"
+  {:added "4.0"}
+  [form migration-map-param-1]
+  (let [readable-len (if (has? migration-map-param-1 :readable-len)
+                       (get migration-map-param-1 :readable-len)
+                       (or (:readable-len (meta form)) *readable-len*))]
+    (> (get-max-width form) readable-len)))
+
+(defn estimate-multiline-data
+  "estimation for maps and sets"
+  {:added "4.0"}
+  [form opts]
+  (estimate-multiline-basic form opts))
+
+(defn estimate-multiline-vector
+  "estimation for vectors"
+  {:added "4.0"}
+  [form opts]
+  (estimate-multiline-basic form opts))
+
+(declare estimate-multiline)
+
+(defn estimate-multiline-list
+  "estimates if special forms are multilined"
+  {:added "4.0"}
+  [form opts]
+  (or (estimate-multiline-basic form opts)
+    (boolean (first (filter (fn [migration-argument-0] (estimate-multiline migration-argument-0 opts))
+                      form)))))
+
+(defn estimate-multiline
+  "creates multiline function"
+  {:added "4.0"}
+  [form opts]
+  (cond (and (coll? form) (empty? form))
+    false
+    (form? form)
+    (estimate-multiline-list form opts)
+    (vector? form)
+    (estimate-multiline-vector form opts)
+    (or (map? form) (set? form))
+    (estimate-multiline-data form opts)
+    :else
+    (boolean (estimate-multiline-basic form opts))))

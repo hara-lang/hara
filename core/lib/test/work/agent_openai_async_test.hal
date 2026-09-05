@@ -1,0 +1,42 @@
+(ns work.agent-openai-async-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.agent :as agent]
+            [work.agent.openai :as openai]))
+
+(fact "Promise-returning OpenAI transports compose through checkpointable model Work"
+  (let [transport-count (atom 0)
+        client
+        (agent/openai-client
+         {:model "gpt-5"
+          :transport
+          (fn [request]
+            (swap! transport-count inc)
+            (promise
+             (fn []
+               {:status 200
+                :body
+                (Json/write
+                 (openai/wire-value
+                  {:id "async-response"
+                   :status "completed"
+                   :output
+                   [{:type "message"
+                     :role "assistant"
+                     :content
+                     [{:type "output_text"
+                       :text "async complete"}]}]}))})))})
+        async-agent
+        {:agent/id :async-agent
+         :agent/driver
+         (agent/openai-driver
+          {:client client
+           :max-turns 2})}
+        driven (agent/drive async-agent "Complete asynchronously")
+        result (work/run driven nil)]
+    [(:op (work/work-spec driven))
+     result
+     (deref transport-count)])
+  => [:bind "async complete" 1])
+
+(pr-str (run '[work.agent-openai-async-test]))

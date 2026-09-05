@@ -1,0 +1,140 @@
+(ns code.query.common-test
+  (:require [code.query.common :refer :all]
+    [std.lib.encode.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+^{:refer code.query.common/any :added "3.0"}
+(Test/run
+ [{:expected true :name "returns true for any value #1" :test (fn [] (any nil))}
+  {:name "returns true for any value #2"
+   :test (fn [] (any (quote _)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer code.query.common/none :added "3.0"}
+(Test/run
+ [{:name "returns false for any value #1"
+   :test (fn [] (none nil))
+   :expected false}
+  {:name "returns false for any value #2"
+   :test (fn [] (none (quote _)))
+   :expected false}]
+ migration-test-check)
+
+^{:refer code.query.common/expand-meta :added "3.0"}
+(Test/run
+ [{:name "separates out the meta into individual flags #1"
+   :test (fn [] (meta (expand-meta (with-meta (list) {:? true}))))
+   :expected {:? true}}
+  {:name "separates out the meta into individual flags #2"
+   :test (fn [] (meta (expand-meta (with-meta (list) {:+%? true}))))
+   :expected {:% true :+ true :? true}}]
+ migration-test-check)
+
+^{:refer code.query.common/cursor? :added "3.0"}
+(Test/run
+ [{:name "checks if element is `|` #1"
+   :test (fn [] (cursor? (quote |)))
+   :expected true}
+  {:name "checks if element is `|` #2"
+   :test (fn [] (cursor? (quote _)))
+   :expected false}]
+ migration-test-check)
+
+^{:refer code.query.common/insertion? :added "3.0"}
+(Test/run
+ [{:name "checks if element has an insert meta #1"
+   :test (fn [] (insertion? (with-meta (quote a) {:+ true})))
+   :expected true}
+  {:name "checks if element has an insert meta #2"
+   :test (fn [] (insertion? (quote a)))
+   :expected false}]
+ migration-test-check)
+
+^{:refer code.query.common/deletion? :added "3.0"}
+(Test/run
+ [{:name "checks if element has a delete meta #1"
+   :test (fn [] (deletion? (with-meta (quote a) {:- true})))
+   :expected true}
+  {:name "checks if element has a delete meta #2"
+   :test (fn [] (deletion? (quote a)))
+   :expected false}]
+ migration-test-check)
+
+^{:refer code.query.common/prewalk :added "3.0"}
+(Test/run
+ [{:name "applies a function to elements in a depth-first, pre-order traversal, modifying them eagerly"
+   :test (fn [] (prewalk (fn [x] (if (number? x) (* x x) x)) (quote (1 (2 (3 4)) 5))))
+   :expected (quote (1 (4 (9 16)) 25))}]
+ migration-test-check)
+
+^{:refer code.query.common/remove-items :added "3.0"}
+(Test/run
+ [{:name "removes items from a form matching the predicate #1"
+   :test (fn [] (remove-items #{1} (quote (1 2 3 4))))
+   :expected (quote (2 3 4))}
+  {:name "removes items from a form matching the predicate #2"
+   :test (fn [] (remove-items #{1} (quote (1 (1 (1 (1)))))))
+   :expected (quote (((()))))}]
+ migration-test-check)
+
+^{:refer code.query.common/prepare-deletion :added "3.0"}
+(Test/run
+ [{:name "removes extraneous symbols for deletion walk #1"
+   :test (fn [] (prepare-deletion (quote (+ a 2))))
+   :expected (quote (+ a 2))}
+  {:name "removes extraneous symbols for deletion walk #2"
+   :test (fn []
+             (prepare-deletion (list (quote +) (with-meta (quote a) {:+ true}) (quote |) (quote 2))))
+   :expected (quote (+ 2))}]
+ migration-test-check)
+
+^{:refer code.query.common/prepare-insertion :added "3.0"}
+(Test/run
+ [{:name "removes extraneous symbols from a form in preparation for an insertion operation #1"
+   :test (fn [] (prepare-insertion (quote (+ a 2))))
+   :expected (quote (+ a 2))}
+  {:name "removes extraneous symbols from a form in preparation for an insertion operation #2"
+   :test (fn []
+             (prepare-insertion (list (quote +)
+                                      (with-meta (quote a) {:+ true}) (quote |)
+                                      (with-meta (quote b) {:- true}) (quote 2))))
+   :expected (quote (+ a 2))}]
+ migration-test-check)
+
+^{:refer code.query.common/prepare-query :added "3.0"}
+(Test/run
+ [{:name "removes extraneous symbols for query walk"
+   :test (fn []
+             (prepare-query (list (quote +)
+                                  (with-meta (quote a) {:+ true}) (quote |)
+                                  (with-meta (quote b) {:- true}) (quote 2))))
+   :expected (quote (+ 2))}]
+ migration-test-check)
+
+^{:refer code.query.common/find-index :added "3.0"}
+(Test/run
+ [{:name "returns the index of the first occurrence"
+   :test (fn [] (find-index #{2} (quote (1 2 3 4))))
+   :expected 1}]
+ migration-test-check)
+
+^{:refer code.query.common/finto :added "3.0"}
+(Test/run
+ [{:name "into but the right way for lists"
+   :test (fn [] (finto () (quote (1 2 3))))
+   :expected (quote (1 2 3))}]
+ migration-test-check)

@@ -1,0 +1,43 @@
+(ns lang.base.v1.grammar-spec-test
+  (:use code.test)
+  (:require [lang.base.v1.grammar-spec :as spec]))
+
+(fact "V1 owns a complete materialized operator snapshot in named groups"
+  [(count spec/+features+)
+   (count spec/+feature-groups+)
+   (count spec/+feature-group-data+)
+   (take 3 spec/+feature-group-names+)
+   (take-last 5 spec/+feature-group-names+)
+   (boolean (get spec/+features+ :x-add))]
+  => [301 43 43
+      '[+op-builtin+ +op-builtin-global+ +op-builtin-module+]
+      '[+xtalk-common+ +xtalk-functional+ +xtalk-language-specific+
+        +xtalk-hara.lang-link-specific+ +xtalk-runtime-specific+]
+      true])
+
+(fact "V1 records exact materialization inputs"
+  [(mapv (fn [input] (str (:source input))) spec/+migration-inputs+)
+   (mapv :fingerprint spec/+migration-inputs+)]
+  => [["lang.common.grammar-spec"
+       "lang.common.grammar-macro"
+       "lang.common.grammar-xtalk"]
+      ["djb2:1675029460" "djb2:2718165669" "djb2:4048472753"]])
+
+(fact "the checked-in V1 snapshot has its stable content identity"
+  [spec/+fingerprint+ (spec/snapshot-valid?)]
+  => ["djb2:2219895603" true])
+
+^{:refer lang.base.v1.grammar-spec/extend :added "4.1"}
+(fact "V1 extension remains explicit and checked"
+  (let [extended
+        (spec/extend
+         {:v1-test {:op :v1-test :symbol (set ['v1:test]) :emit :unit}})]
+    [(count extended) (:op (get extended :v1-test))])
+  => [302 :v1-test])
+
+^{:refer lang.base.v1.grammar-spec/overwrite :added "4.1"}
+(fact "V1 overwrite remains explicit and checked"
+  (:raw (get (spec/overwrite {:add {:raw "PLUS"}}) :add))
+  => "PLUS")
+
+(pr-str (run {:namespace "lang.base.v1.grammar-spec-test"}))

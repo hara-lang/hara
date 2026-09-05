@@ -1,0 +1,288 @@
+(ns work.base.receipt-test
+  (:require
+            [work.base :as work]
+            [work.provider.memory :as memory]))
+
+(def receipt-work
+  (work/chain
+   {:id :receipt-flow}
+   [(work/step
+     :increment
+     (fn [input context]
+       (inc input)))
+    (work/step
+     :double
+     (fn [input context]
+       (* input 2)))]))
+
+(def bind-receipt-work
+  (work/bind
+   {:id :bind-receipt-flow}
+   (work/step
+    :bind-increment
+    (fn [input context]
+      (inc input)))
+   (work/pure
+    :bind-select
+    (fn [value context]
+      (work/step
+       :bind-double
+       (fn [selected selected-context]
+         (* selected 2)))))))
+
+(defn receipt-by-kind
+  [entries kind]
+  (reduce
+   (fn [found entry]
+     (if (and (nil? found)
+              (= kind (:outbox/kind entry)))
+       entry
+       found))
+   nil
+   entries))
+
+(defn contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= value candidate)))
+   false
+   (or values [])))
+
+(defn fake-provider
+  [provider-id state fail-first-create?]
+  {:provider/role :work/receipt
+   :provider/id provider-id
+   :provider/capabilities #{:idempotent :retryable}
+   :provider/retry {:maximum-attempts 2}
+   :provider/operations
+   {:publish
+    (fn [envelope]
+      (let [id (:receipt/id envelope)
+            current (deref state)
+            existing (get-in current [:payloads id])
+            attempt (inc (or (get-in current [:attempts id]) 0))]
+        (if (and existing (not= existing envelope))
+          (throw
+           (ex-info "fake publisher idempotency conflict"
+                    {:receipt/id id})))
+        (swap!
+         state
+         (fn [data]
+           (assoc-in
+            (assoc-in data [:payloads id] envelope)
+            [:attempts id]
+            attempt)))
+        (if (and fail-first-create?
+                 (= :work/run-created (:receipt/kind envelope))
+                 (= 1 attempt))
+          (throw (ex-info "transient fake publisher outage"
+                          {:receipt/id id}))
+          (do
+            (swap!
+             state
+             (fn [data]
+               (if (contains-value? (:published data) id)
+                 data
+                 (assoc data
+                        :published
+                        (conj (vec (or (:published data) [])) id)))))
+            {:receipt/status :published
+             :provider/receipt-root [:fake/receipt id]}))))}})
+
+(def disabled-runtime (work/durable-runtime))
+(def disabled-reference
+  (work/start disabled-runtime
+              receipt-work
+              3
+              {:id "disabled-receipts"}))
+(def disabled-receipts
+  (work/receipts disabled-runtime disabled-reference))
+
+(def bind-receipt-runtime (work/durable-runtime))
+(def bind-receipt-reference
+  (work/start bind-receipt-runtime
+              bind-receipt-work
+              3
+              {:id "bind-receipts"}))
+(def bind-receipts
+  (work/receipts bind-receipt-runtime bind-receipt-reference))
+
+(def failed-runtime (work/durable-runtime))
+(def failed-reference
+  (work/start
+   failed-runtime
+   (work/step
+    :receipt-failure
+    (fn [input context]
+      (throw (ex-info "receipt test failure" {:input input}))))
+   3
+   {:id "failed-receipts"}))
+(def failed-receipts
+  (work/receipts failed-runtime failed-reference))
+
+(def retry-state (atom {:attempts {} :payloads {} :published []}))
+(def retry-runtime
+  (work/durable-runtime
+   {:receipt (fake-provider :fake-retry retry-state true)}))
+(def retry-reference
+  (work/start retry-runtime
+              receipt-work
+              3
+              {:id "retry-receipts"}))
+(def retry-before (work/receipts retry-runtime retry-reference))
+(def retry-first-publication
+  (work/publish-receipts retry-runtime retry-reference))
+(def retry-after (work/receipts retry-runtime retry-reference))
+(def retry-second-publication
+  (work/publish-receipts retry-runtime retry-reference))
+(def retry-create
+  (receipt-by-kind retry-after :work/run-created))
+
+(def restart-store (memory/memory-store))
+(def restart-ready (atom false))
+
+(defn restart-provider
+  []
+  {:provider/role :work/receipt
+   :provider/id :fake-restart
+   :provider/capabilities #{:retryable}
+   :provider/retry {:maximum-attempts 1}
+   :provider/operations
+   {:publish
+    (fn [envelope]
+      (if (deref restart-ready)
+        {:receipt/status :published
+         :provider/receipt-root
+         [:restart/receipt (:receipt/id envelope)]}
+        (throw
+         (ex-info "publisher process unavailable"
+                  {:receipt/id (:receipt/id envelope)}))))}})
+
+(def restart-runtime-one
+  (work/durable-runtime
+   {:store restart-store
+    :receipt (restart-provider)}))
+(def restart-reference
+  (work/start restart-runtime-one
+              receipt-work
+              4
+              {:id "restart-receipts"}))
+(def restart-first-publication
+  (work/publish-receipts restart-runtime-one restart-reference))
+(def restart-status-before
+  (work/receipt-status restart-runtime-one restart-reference))
+
+(reset! restart-ready true)
+
+(def restart-runtime-two
+  (work/durable-runtime
+   {:store restart-store
+    :receipt (restart-provider)}))
+(def restart-second-publication
+  (work/publish-receipts restart-runtime-two restart-reference))
+(def restart-status-after
+  (work/receipt-status restart-runtime-two restart-reference))
+
+(def rejected-runtime
+  (work/durable-runtime
+   {:receipt
+    {:provider/role :work/receipt
+     :provider/id :fake-rejected
+     :provider/capabilities #{:idempotent}
+     :provider/operations
+     {:publish
+      (fn [envelope]
+        {:receipt/status :rejected
+         :receipt/reason "stale canonical action"})}}}))
+(def rejected-reference
+  (work/start rejected-runtime
+              receipt-work
+              5
+              {:id "rejected-receipts"}))
+(def rejected-publication
+  (work/publish-receipts rejected-runtime rejected-reference))
+(def rejected-receipts
+  (work/receipts rejected-runtime rejected-reference))
+
+(defn all-rejected?
+  [entries]
+  (reduce
+   (fn [valid entry]
+     (and valid
+          (= :rejected (:receipt/status entry))
+          (= "stale canonical action"
+             (get-in entry [:outbox/ack :receipt/reason]))))
+   true
+   entries))
+
+(def results
+  [(test-check
+    "durable execution commits provider-neutral receipt intents while publication is disabled"
+    [(work/result disabled-runtime disabled-reference)
+     (vec (map (fn [entry] (:outbox/kind entry)) disabled-receipts))
+     (work/receipt-status disabled-runtime disabled-reference)]
+    [8
+     [:work/run-created
+      :work/run-started
+      :work/checkpoint
+      :work/checkpoint
+      :work/run-completed]
+     :pending])
+
+   (test-check
+    "runtime-produced Work uses ordinary step and run receipt intents"
+    [(work/result bind-receipt-runtime bind-receipt-reference)
+     (vec (map (fn [entry] (:outbox/kind entry)) bind-receipts))
+     (work/receipt-status bind-receipt-runtime bind-receipt-reference)]
+    [8
+     [:work/run-created
+      :work/run-started
+      :work/checkpoint
+      :work/checkpoint
+      :work/run-completed]
+     :pending])
+
+   (test-check
+    "failed durable execution commits a terminal failed receipt intent"
+    [(work/status failed-runtime failed-reference)
+     (vec (map (fn [entry] (:outbox/kind entry)) failed-receipts))]
+    [:failed
+     [:work/run-created
+      :work/run-started
+      :work/run-failed]])
+
+   (test-check
+    "the fake publisher retries once, publishes idempotently, and does not redeliver acknowledgements"
+    [(work/result retry-runtime retry-reference)
+     (count retry-before)
+     (count retry-first-publication)
+     (count retry-second-publication)
+     (count (:published (deref retry-state)))
+     (count (keys (:payloads (deref retry-state))))
+     (get-in (deref retry-state)
+             [:attempts (:receipt/id (:outbox/payload retry-create))])
+     (work/receipt-status retry-runtime retry-reference)
+     (:run/receipt-status
+      (work/run-record retry-runtime retry-reference))]
+    [8 5 5 0 5 5 2 :published :published])
+
+   (test-check
+    "claimed pending receipts survive a publisher process restart"
+    [(count restart-first-publication)
+     restart-status-before
+     (count restart-second-publication)
+     restart-status-after
+     (work/result restart-runtime-two restart-reference)]
+    [5 :pending 5 :published 10])
+
+   (test-check
+    "canonical rejection keeps the operational receipt and exact reason"
+    [(count rejected-publication)
+     (work/receipt-status rejected-runtime rejected-reference)
+     (all-rejected? rejected-receipts)
+     (:run/receipt-status
+      (work/run-record rejected-runtime rejected-reference))]
+    [5 :rejected true :rejected])])
+
+results

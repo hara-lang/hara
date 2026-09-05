@@ -1,0 +1,211 @@
+(ns std.dom.common
+  (:require [std.dom.type :as type]))
+
+(def ^{:dynamic true} *current-dom* nil)
+(def ^{:dynamic true} *local-dom* nil)
+
+(defmutable Dom [tag props item parent handler shadow cache extra])
+
+(defn dom? [value]
+  (instance? Dom value))
+
+(defn dom-field-set
+  [dom key value]
+  (case key
+    :tag     (set! (field dom :tag)     value)
+    :props   (set! (field dom :props)   value)
+    :item    (set! (field dom :item)    value)
+    :parent  (set! (field dom :parent)  value)
+    :handler (set! (field dom :handler) value)
+    :shadow  (set! (field dom :shadow)  value)
+    :cache   (set! (field dom :cache)   value)
+    :extra   (set! (field dom :extra)   value)
+    (throw (ex :generic {:field key} :ex/message "Unknown DOM field")))
+  dom)
+
+(defn dom-fields-set
+  [dom entries]
+  (reduce (fn [dom [key value]] (dom-field-set dom key value)) dom entries))
+
+(defn dom-copy
+  ([target source]
+   (dom-copy target source [:tag :props :item :parent :handler :shadow :cache :extra]))
+  ([target source keys]
+   (reduce (fn [target key]
+             (dom-field-set target key (get source key)))
+           target
+           keys)))
+
+(defn dom-metaprops
+  [dom]
+  (type/metaprops (:tag dom)))
+
+(defn dom-metatype
+  [dom]
+  (:metatype (dom-metaprops dom)))
+
+(defn dom-metaclass [dom]
+  (:metaclass (dom-metaprops dom)))
+
+(defn component? [dom] (= :dom/component (dom-metatype dom)))
+(defn element? [dom] (= :dom/element (dom-metatype dom)))
+(defn value? [dom] (= :dom/value (dom-metatype dom)))
+(defn dom-item [dom] (:item dom))
+(defn dom-item? [dom] (boolean (:item dom)))
+
+(defn dom-top [dom]
+  (if-let [parent (:parent dom)]
+    (dom-top parent)
+    dom))
+
+(defn dom-split-props
+  ([props] (dom-split-props props #{"on"} ["on" nil]))
+  ([props lookup select]
+   (let [groups (reduce (fn [output key]
+                          (let [group (get lookup (namespace key))]
+                            (update-in output [group]
+                                       (fn [values] (conj (or values #{}) key)))))
+                        {}
+                        (keys props))
+         result (reduce-kv (fn [output group keys]
+                             (assoc output group (select-keys props keys)))
+                           {}
+                           groups)]
+     (mapv result select))))
+
+(defn props-apply [props action]
+  (letfn [(prop-apply [value]
+            (cond (dom? value) (action value)
+                  (sequential? value) (mapv prop-apply value)
+                  :else value))]
+    (map-vals prop-apply props)))
+
+(defn dom-new
+  ([] (dom-new nil))
+  ([value]
+   (cond (keyword? value) (dom-new value nil)
+         (map? value) (let [{:keys [tag props item parent handler shadow cache extra]} value]
+                        (dom-new tag props item parent handler shadow cache extra))))
+  ([tag props] (dom-new tag props nil nil nil nil nil nil))
+  ([tag props item parent handler shadow cache extra]
+   (if-not (type/metaprops tag)
+     (throw (ex :generic {:tag tag} :ex/message "No tag available")))
+   (Dom tag props item parent handler shadow cache extra)))
+
+(defn dom-children [dom]
+  (let [tag (:tag dom)
+        props (:props dom)]
+    (if-let [metaprops (type/metaprops tag)]
+      (let [{:keys [key none single] :or {key :children}} (:children metaprops)
+            children (cond none ()
+                           single [(get props key)]
+                           :else (vec (get props key)))]
+        {:key key :children children})
+      (throw (ex :not-found {:tag tag} :ex/message "Cannot find tag")))))
+
+(defn children->props [children tag]
+  (if-let [children (seq children)]
+    (let [{:keys [key single none] :or {key :children}}
+          (:children (type/metaprops tag))]
+      (cond none nil
+            single (if-let [child (first children)] {key child})
+            :else {key (vec children)}))))
+
+(defn dom-create
+  ([tag] (dom-create tag {}))
+  ([tag props] (dom-create tag props nil))
+  ([tag props children]
+   (let [[extra props] (dom-split-props props #{"dom"} ["dom" nil])
+         props (merge props (children->props children tag))
+         dom (dom-new tag props)]
+     (props-apply (:props dom)
+                  (fn [child] (dom-field-set child :parent dom)))
+     (dom-field-set dom :extra extra))))
+
+(declare dom-format dom-equal?)
+
+(defn dom-format [dom]
+  (let [tag (:tag dom)
+        props (:props dom)
+        format-value (fn [value] (if (dom? value) (dom-format value) value))
+        {:keys [key children]} (dom-children dom)
+        status (if (:item dom) :+ :-)
+        children (map format-value children)
+        props (map-vals (fn [value]
+                          (if (sequential? value)
+                            (mapv format-value value)
+                            (format-value value)))
+                        (dissoc props key))]
+    (if (empty? props)
+      (apply vector status tag children)
+      (apply vector status tag props children))))
+
+(defn dom-tags-equal? [left right]
+  (and (dom? left) (dom? right) (= (:tag left) (:tag right))))
+
+(defn dom-props-equal? [left right]
+  (let [left-keys (set (keys left))
+        right-keys (set (keys right))]
+    (and (= left-keys right-keys)
+         (every? true?
+                 (map (fn [key] (dom-equal? (get left key) (get right key)))
+                      left-keys)))))
+
+(defn dom-equal? [left right]
+  (cond (dom-tags-equal? left right)
+        (dom-props-equal? (:props left) (:props right))
+
+        (and (sequential? left) (sequential? right))
+        (and (= (count left) (count right))
+             (every? true? (map dom-equal? left right)))
+
+        :else (= left right)))
+
+(defn dom-clone [dom]
+  (Dom (:tag dom) (:props dom) (:item dom) (:parent dom)
+       (:handler dom) (:shadow dom) (:cache dom) (:extra dom)))
+
+(defn dom-vector? [value]
+  (and (vector? value)
+       (let [head (first value)]
+         (or (and (keyword? head) (boolean (namespace head)))
+             (fn? head)))
+       (not (:data (meta value)))))
+
+(defn dom-compile
+  ([form] (dom-compile form dom-create))
+  ([[tag props-or-child & children] create-fn]
+   (let [[props children] (cond (nil? props-or-child) [{} children]
+                                (map? props-or-child) [props-or-child children]
+                                :else [{} (cons props-or-child children)])]
+     (letfn [(compile-value [value]
+               (cond (dom-vector? value) (dom-compile value create-fn)
+                     (vector? value) (mapv compile-value value)
+                     :else value))]
+       (create-fn tag (map-vals compile-value props) (mapv compile-value children))))))
+
+(def ^{:dynamic true} *dom-handler*
+  (fn [dom event]
+    (println "Unhandled DOM event:" event)))
+
+(defn dom-attach [dom handler]
+  (dom-field-set dom :handler handler))
+
+(defn dom-detach [dom]
+  (dom-field-set dom :handler nil))
+
+(defn dom-trigger [dom event]
+  (let [handler (:handler dom)
+        parent (:parent dom)]
+    (if handler
+      (handler dom event)
+      (if parent
+        (dom-trigger parent event)
+        (*dom-handler* dom event)))))
+
+(defn dom-assert [props required]
+  (reduce (fn [_ key]
+            (if-not (get props key)
+              (throw (ex :dependency {:props props :key key} :ex/message "Key required"))))
+          nil
+          required))

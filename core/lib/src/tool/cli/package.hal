@@ -1,0 +1,155 @@
+(ns tool.cli.package
+  (:require [tool.cli.model :as model]
+            [tool.cli.native :as native]
+            [tool.cli.tap :as tap]
+            [work.base :as work]))
+
+(def +route-operations+
+  {:tool.cli.route/package-check :check
+   :tool.cli.route/package-build :build
+   :tool.cli.route/package-inspect :inspect
+   :tool.cli.route/package-install :install
+   :tool.cli.route/package-publish :publish
+   :tool.cli.route/package-registry :registry
+   :tool.cli.route/package-status :status
+   :tool.cli.route/package-search :search
+   :tool.cli.route/package-info :info
+   :tool.cli.route/package-yank :yank
+   :tool.cli.route/package-harp :harp})
+
+(defn operation-request [request]
+  (if (= :tool.cli.route/package (:request/route request))
+    (let [arguments (:request/arguments request)]
+      (if (empty? arguments)
+        (throw (ex :io {} :ex/message "package requires check, build, inspect, install, publish, registry, status, search, info, yank, or harp"))
+        {:operation (keyword (first arguments))
+         :arguments (vec (rest arguments))}))
+    {:operation (get +route-operations+ (:request/route request))
+     :arguments (:request/arguments request)}))
+
+(defn selected-path [request arguments operation]
+  (if (> (count arguments) 1)
+    (throw (ex :io {:arguments arguments} :ex/message (str "package " (name operation) " accepts at most one path")))
+    (or (first arguments)
+        (:project (:request/options request))
+        (:request/project request)
+        (:request/cwd request)
+        ".")))
+
+(defn check-command [request arguments]
+  (let [path (selected-path request arguments :check)
+        result (native/package-check path)]
+    (model/success
+     result
+     [(model/message
+       (str "package check: " (:identity result) " " (:version result) "\n"))])))
+
+(defn build-command [request arguments]
+  (let [parsed (tap/parse-arguments arguments)
+        path (selected-path request (:positionals parsed) :build)
+        output-directory (get (:options parsed) :out-dir)
+        output-path (get (:options parsed) :output)
+        package-name (get (:options parsed) :package)
+        profile (get (:options parsed) :profile)
+        _ (if (and output-directory output-path)
+            (throw (ex :syntax {} :ex/message "--out-dir and --output cannot be combined"))
+            nil)
+        metadata (if output-directory (native/package-check path) nil)
+        output (native/package-build
+                path
+                (or output-path
+                    (if output-directory
+                      (File/join
+                       output-directory
+                       (str (str/replace (:identity metadata) "/" "-")
+                            "-" (:version metadata) ".harp"))
+                      nil))
+                package-name
+                profile)]
+    (model/success {:package/archive output}
+                   [(model/message (str "package build: " output "\n"))])))
+
+(defn one-path [arguments operation]
+  (if (= 1 (count arguments))
+    (first arguments)
+    (throw (ex :io {:arguments arguments} :ex/message (str "package " (name operation) " requires one path")))))
+
+(defn inspect-command [arguments]
+  (let [path (one-path arguments :inspect)
+        manifest (native/package-inspect path)]
+    (model/success {:package/manifest manifest}
+                   [(model/message (str manifest "\n"))])))
+
+(defn install-command [request arguments]
+  (let [path (selected-path request arguments :install)
+        installed (native/package-install path)]
+    (model/success {:package/root installed}
+                   [(model/message (str "package install: " installed "\n"))])))
+
+(defn parsed-arguments [arguments allow-dry-run]
+  (let [dry-run (reduce (fn [found value]
+                          (or found (= value "--dry-run")))
+                        false
+                        arguments)
+        filtered (if allow-dry-run
+                   (vec (filter (fn [value] (not= value "--dry-run")) arguments))
+                   (vec arguments))]
+    (if (and dry-run (not allow-dry-run))
+      (throw (ex :syntax {} :ex/message "--dry-run is only valid for package publish"))
+      nil)
+    {:dry-run dry-run :parsed (tap/parse-arguments filtered)}))
+
+(defn publish-command [request arguments]
+  (let [values (parsed-arguments arguments true)
+        parsed (:parsed values)
+        positionals (:positionals parsed)]
+    (if (> (count positionals) 1)
+      (throw (ex :io {} :ex/message "package publish accepts at most one path"))
+      nil)
+    (let [path (or (first positionals)
+                   (:project (:request/options request))
+                   (:request/project request)
+                   (:request/cwd request)
+                   ".")
+          tap-name (get (:options parsed) :tap "hara")
+          output (native/package-publish (str path) (str tap-name) (:dry-run values))]
+      (model/success {:package/publication output}
+                     [(model/message (str output "\n"))]))))
+
+(defn registry-command [arguments]
+  (let [values (parsed-arguments arguments false)
+        parsed (:parsed values)
+        positionals (:positionals parsed)]
+    (if (not= positionals ["verify-request"])
+      (throw (ex :io {} :ex/message "package registry requires verify-request --request PATH --identity PATH"))
+      nil)
+    (let [request-path (tap/require-option parsed :request)
+          identity-path (first (tap/require-option parsed :identity))
+          output (native/package-registry-verify
+                  (str request-path) (str identity-path))]
+      (model/success {:package/registry-verification output}
+                     [(model/message (str output "\n"))]))))
+
+(defn unavailable [operation]
+  (throw (ex :dependency {:operation operation} :ex/message (str "unavailable: hara package " (name operation)
+               " requires the reviewed registry and identity client"))))
+
+(defn execute [request]
+  (let [resolved (operation-request request)
+        operation (:operation resolved)
+        arguments (:arguments resolved)]
+    (cond
+      (= operation :check) (check-command request arguments)
+      (= operation :build) (build-command request arguments)
+      (= operation :inspect) (inspect-command arguments)
+      (= operation :install) (install-command request arguments)
+      (= operation :publish) (publish-command request arguments)
+      (= operation :registry) (registry-command arguments)
+      :else (unavailable operation))))
+
+(def +command-work+
+  (work/step {:id 'tool.cli/package :version 1}
+             (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run work/default-host +command-work+ request))

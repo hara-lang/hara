@@ -1,0 +1,61 @@
+(ns code.manage-scaffold-added-test
+  (:require [code.manage :as manage]
+            [code.manage.unit.scaffold :as scaffold]
+            [work.base :as work]))
+
+(def source-unit
+  {:path "src/demo/core.hal"
+   :source
+   "(ns demo.core)\n\n(defn answer [] 42)\n(defn- hidden [] nil)\n"})
+
+(defn batch-edit
+  [batch]
+  (get-in batch
+          [:results 0
+           :item/value
+           :data]))
+
+(def default-edit
+  (batch-edit
+   (work/run
+    (work/local-runtime)
+    manage/scaffold
+    {:units [source-unit]})))
+
+(def override-edit
+  (batch-edit
+   (work/run
+    (work/local-runtime)
+    manage/scaffold
+    {:units [source-unit]
+     :options {:added "4.2"}})))
+
+(def results
+  [(test-check
+    "scaffold always emits refer and added metadata"
+    [scaffold/+default-added+
+     (:path default-edit)
+     (:functions default-edit)
+     (str/includes?
+      (:after default-edit)
+      "^{:refer demo.core/answer :added \"0.1\"}")
+     (str/includes?
+      (:after default-edit)
+      "demo.core/hidden")]
+    ["0.1"
+     "test/demo/core_test.hal"
+     ["answer"]
+     true
+     false])
+
+   (test-check
+    "explicit added metadata overrides the project default"
+    [(scaffold/added-version {:version "3.7"})
+     (scaffold/added-version {:version "3.7"
+                              :added "4.2"})
+     (str/includes?
+      (:after override-edit)
+      "^{:refer demo.core/answer :added \"4.2\"}")]
+    ["3.7" "4.2" true])])
+
+results

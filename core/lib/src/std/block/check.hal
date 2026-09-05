@@ -1,0 +1,134 @@
+(ns std.block.check)
+
+(def *boundaries*
+  (set [\" \\ \' \( \) \: \; \@ \[ \] \^ \` \{ \} \~ nil]))
+
+(def ^:dynamic *linebreaks*
+  #{\newline \return \formfeed})
+
+(def ^:dynamic *delimiters*
+  #{\} \] \) \( \[ \{})
+
+(defn boundary?
+  "returns whether a char is of a boundary type\n \n   (boundary? (first \\\"[\\\")) => true\n \n   (boundary? (first \\\"\\\\\\\"\\\")) => true"
+  {:added "3.0"}
+  [c]
+  (or (nil? c) (has? *boundaries* c)))
+
+(defn whitespace?
+  "returns whether a char is of a whitespace type\n \n   (whitespace? \\\\space) => true"
+  {:added "3.0"}
+  [c]
+  (has? #{\space \tab \newline \return \formfeed} c))
+
+(defn comma?
+  "returns whether a char is a comma\n \n   (comma? (first \\\",\\\")) => true"
+  {:added "3.0"}
+  [c]
+  (= c \,))
+
+(defn linebreak?
+  "returns whether a char is a linebreak type\n \n   (linebreak? \\\\newline) => true"
+  {:added "3.0"}
+  [c]
+  (has? *linebreaks* c))
+
+(defn delimiter?
+  "check for delimiter char\n \n   (delimiter? (first \\\")\\\")) => true"
+  {:added "3.0"}
+  [c]
+  (has? *delimiters* c))
+
+(defn voidspace?
+  "determines if an input is a void input\n \n   (voidspace? \\\\newline)\n   => true"
+  {:added "3.0"}
+  [c]
+  (or (whitespace? c) (comma? c)))
+
+(defn linetab?
+  "checs if character is a tab\n \n   (linetab? (first \\\"\\\\t\\\"))\n   => true"
+  {:added "3.0"}
+  [c]
+  (= c \tab))
+
+(defn linespace?
+  "returs whether a char is a linespace type\n \n   (linespace? \\\\space) => true"
+  {:added "3.0"}
+  [c]
+  (and (whitespace? c) (not (linebreak? c)) (not (linetab? c))))
+
+(defn voidspace-or-boundary?
+  "check for void or boundary type\n \n   (->> (map voidspace-or-boundary? (concat *boundaries*\n                                            *linebreaks*))\n        (every? true?))\n   => true"
+  {:added "3.0"}
+  [c]
+  (or (voidspace? c) (boundary? c)))
+
+(def ^:dynamic *void-checks*
+  {:eof       nil?
+   :linetab   linetab?
+   :linebreak linebreak?
+   :comma     comma?
+   :delimiter delimiter?
+   :linespace linespace?})
+
+(def *token-checks*
+  {:number  number?
+   :symbol  symbol?
+   :string  string?
+   :keyword keyword?
+   :nil     nil?
+   :boolean boolean?
+   :char    char?})
+
+(def *collection-checks*
+  {:list form? :map map? :set set? :vector vector?})
+
+(defn tag
+  "takes a set of checks and returns the key\n \n   (tag *void-checks* \\\\space)\n   => :linespace\n \n   (tag *collection-checks* [])\n   => :vector"
+  {:added "3.0"}
+  [checks input]
+  (reduce-kv (fn [out tag check] (if out out (if (check input) tag nil)))
+    nil
+    checks))
+
+(defn void-tag
+  "returns the tag associated with input\n \n   (void-tag \\\\newline)\n   => :linebreak"
+  {:added "3.0"}
+  [ch]
+  (tag *void-checks* ch))
+
+(defn void?
+  "determines if an input is a void input\n \n   (void? \\\\newline)\n   => true"
+  {:added "3.0"}
+  [ch]
+  (boolean (void-tag ch)))
+
+(defn token-tag
+  "returns the tag associated with the input\n \n   (token-tag 'hello)\n   => :symbol"
+  {:added "3.0"}
+  [form]
+  (tag *token-checks* form))
+
+(defn token?
+  "determines if an input is a token\n \n   (token? 3/4)\n   => true"
+  {:added "3.0"}
+  [form]
+  (boolean (token-tag form)))
+
+(defn collection-tag
+  "returns th tag associated with the input\n \n   (collection-tag [])\n   => :vector"
+  {:added "3.0"}
+  [form]
+  (tag *collection-checks* form))
+
+(defn collection?
+  "determines if an input is a token\n \n   (collection? {})\n   => true"
+  {:added "3.0"}
+  [form]
+  (boolean (collection-tag form)))
+
+(defn comment?
+  "determines if an input is a comment string\n \n   (comment? \\\"hello\\\")\n   => false\n \n   (comment? \\\";hello\\\")\n   => true"
+  {:added "3.0"}
+  [s]
+  (and (string? s) (String/starts-with? s ";")))

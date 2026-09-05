@@ -1,0 +1,75 @@
+(ns std.stream.common-test
+  (:require [std.stream.common :as common]))
+
+(def results
+  (Test/run
+    [{:name "recognises native and managed streams"
+      :test (fn []
+              [(stream? (stream (fn [] nil)))
+               (stream? (common/from-iterator [1]))
+               (stream? [1])])
+      :expected [true true false]}
+     {:name "bridges iterators and composes transforms"
+      :test (fn []
+              (deref
+                (common/collect
+                  (common/take 3
+                    (common/filter odd?
+                      (common/map inc (common/from-iterator [0 1 2 3 4 5])))))))
+      :expected [1 3 5]}
+     {:name "unfold accepts promised steps"
+      :test (fn []
+              (deref
+                (common/collect
+                  (common/unfold
+                    (fn [index]
+                      (promise/from
+                        (if (< index 3) [index (inc index)] nil)))
+                    0))))
+      :expected [0 1 2]}
+     {:name "reduces asynchronously"
+      :test (fn []
+              (deref (common/reduce + 10 (common/from-iterator [1 2 3]))))
+      :expected 16}
+     {:name "rejects nil stream items"
+      :test (fn []
+              (try
+                (do
+                  (deref (common/next
+                           (stream (fn [] (co/yield nil)))))
+                  false)
+                (catch Throwable error true)))
+      :expected true}
+     {:name "supports selection and grouping combinators"
+      :test (fn []
+              [(deref (common/collect
+                       (common/drop 2 (common/from-iterator [1 2 3 4]))))
+               (deref (common/collect
+                       (common/take-while odd? (common/from-iterator [1 3 4 5]))))
+               (deref (common/collect
+                       (common/partition-all 2 (common/from-iterator [1 2 3]))))])
+      :expected [[3 4] [1 3] [[1 2] [3]]]}
+     {:name "combines streams deterministically"
+      :test (fn []
+              [(deref (common/collect
+                       (common/concat (common/from-iterator [1 2])
+                                      (common/from-iterator [3]))))
+               (deref (common/collect
+                       (common/zip (common/from-iterator [1 2])
+                                   (common/from-iterator [:a :b]))))
+               (deref (common/collect
+                       (common/interleave (common/from-iterator [1 2])
+                                          (common/from-iterator [:a :b]))))])
+      :expected [[1 2 3] [[1 :a] [2 :b]] [1 :a 2 :b]]}
+     {:name "supports terminal operations"
+      :test (fn []
+              [(deref (common/first (common/from-iterator [1 2 3])))
+               (deref (common/last (common/from-iterator [1 2 3])))
+               (deref (common/count (common/from-iterator [1 2 3])))
+               (deref (common/some (fn [value] (if (= value 2) :found nil))
+                                   (common/from-iterator [1 2 3])))
+               (deref (common/every? odd? (common/from-iterator [1 3 5])))
+               (deref (common/find even? (common/from-iterator [1 3 4 5])))])
+      :expected [1 3 3 :found true 4]}]))
+
+results

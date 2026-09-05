@@ -1,0 +1,47 @@
+(ns tool.cli.project-command-test
+  (:require [tool.cli.project-command :as command]
+            ))
+
+[(test-check "project names retain the native CLI contract"
+              [(command/valid-name? "hello-app")
+               (command/valid-name? "Hello")
+               (command/valid-name? "")]
+              [true false false])
+  (test-check "dependency coordinates split at their final range marker"
+              [(command/split-coordinate "hara:hara/graph@^1.2.0")
+               (command/normalize-coordinate "official:hara/graph")
+               (command/normalize-coordinate "hara/graph")]
+              [["hara:hara/graph" "^1.2.0"]
+               "hara:hara/graph"
+               "hara:hara/graph"])
+  (test-check "project sync modes are Hara-owned"
+              [(command/sync-mode
+                {:request/arguments [] :request/options {:offline true}})
+               (command/sync-mode
+                {:request/arguments ["--locked"] :request/options {}})]
+              [:offline :locked])
+  (test-check
+   "project builds hand the normalized plan to the native analyzer"
+   (let [result
+         (command/build-analysis-result
+          {:project/id 'demo-app
+           :project/version "0.1.0"
+           :profile/name :production
+           :profile/language :hara
+           :profile/main 'app.main
+           :build/tree-shake true
+           :build/entrypoints ['app.main/start]
+           :build/default-entrypoint 'app.main/start
+           :build/keep-vars []
+           :build/keep-namespaces []
+           :build/output-bundle "target/demo-app-production.hbx"
+           :build/output-report "target/demo-app-production.shake.edn"})
+         argument (first (get-in result [:result/data :host/arguments]))]
+     [(:result/outcome result)
+      (:result/exit result)
+      (get-in result [:result/data :host/action])
+      (count (get-in result [:result/data :host/arguments]))
+      (str/includes? argument ":build/entrypoints [app.main/start]")
+      (str/includes? argument
+                     ":build/default-entrypoint app.main/start")])
+   [:tool.cli.outcome/success 0 :production-analyze 1 true true])]

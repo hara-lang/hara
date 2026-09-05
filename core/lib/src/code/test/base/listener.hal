@@ -1,0 +1,71 @@
+(ns code.test.base.listener
+  (:require [code.test.base.print :as print]
+            [code.test.result :as comparison]))
+
+(defn result-function [result]
+  (or (get-in (Result/context result) [:test :name])
+      (get-in result [:meta :refer])
+      (get-in result [:meta :function])
+      (:function result)))
+
+(defn result-name [result]
+  (or (result-function result)
+      (get-in result [:meta :desc])
+      (get-in result [:meta :id])
+      (:name result)))
+
+(defn summarise-verify [result]
+  {:status (if (comparison/passed? result)
+             :success
+             (if (Result/error? result) :error :failed))
+   :name (result-name result)
+   :path (get-in (Result/context result) [:test :meta :path])
+   :line (get-in (Result/context result) [:test :meta :line])
+   :expected (comparison/expected result)
+   :actual (comparison/actual result)
+   :error (if (Result/error? result)
+            (ex-message (Result/error-value result))
+            nil)})
+
+(defn summarise-evaluate [result]
+  {:status (Result/status result)
+   :name (result-name result)
+   :path (get-in (Result/context result) [:test :meta :path])
+   :line (get-in (Result/context result) [:test :meta :line])
+   :error (if (Result/error? result)
+            (ex-message (Result/error-value result))
+            nil)
+   :data (if (Result/success? result) (Result/data result) nil)})
+
+(defn form-printer [result]
+  (let [summary (summarise-evaluate result)]
+    (cond (= :error (:status summary)) (print/print-throw summary)
+          (= :timeout (:status summary)) (print/print-timeout summary)
+          :else summary)))
+
+(defn check-printer [result]
+  (let [summary (summarise-verify result)]
+    (cond (= :success (:status summary)) summary
+          (= :timeout (:status summary)) (print/print-timeout summary)
+          :else (print/print-failed summary))))
+
+(defn form-error-accumulator [result]
+  (if (Result/error? result) result nil))
+
+(defn check-error-accumulator [result]
+  (if (comparison/passed? result) nil (summarise-verify result)))
+
+(defn fact-printer [result]
+  (print/print-fact result))
+
+(defn fact-accumulator [result]
+  {:name (:name result) :status (:status result) :checks (:checks result)})
+
+(defn bulk-printer [result]
+  (print/print-summary result))
+
+(defn install-listeners []
+  {:form form-printer
+   :check check-printer
+   :fact fact-printer
+   :bulk bulk-printer})

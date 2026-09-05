@@ -1,0 +1,485 @@
+(ns work.base.execution.task-redirection-test
+  (:require 
+            [work.base :as work]
+            [work.provider.inline :as inline]
+            [work.provider.memory :as memory]
+            [work.provider.profile :as profile]
+            [work.flow.task.report :as report]
+            [work.flow.task.engine :as task]))
+
+(def task-work
+  (task/template
+   {:id :example/task
+    :version 1
+    :item
+    {:list (fn [input context] (:values input))
+     :pre (fn [value] (+ value 1))
+     :run (fn [value context]
+            (if (= value 3)
+              {:status :warn :data value}
+              (* value 2)))}
+    :summary
+    {:aggregate
+     {:sum {:select (fn [record] (:data record))
+            :reduce +
+            :initial 0}}}
+    :report {:title "EXAMPLE TASK"}
+    :return {:select :all :package :map}}))
+
+(def observer (work/recording-observer))
+(def runtime (work/local-runtime {:observer observer}))
+(def output
+  (work/run runtime task-work {:values [1 2 3] :selector :all}))
+
+(def provider-profiles
+  [(profile/profile (inline/inline-executor))
+   (profile/profile (memory/memory-store))
+   (profile/profile
+    {:provider/role :work/store
+     :provider/id :postgres
+     :provider/capabilities #{:runs :transactions}})])
+
+(def report-document
+  (report/add-section
+   (report/document :example/report
+                    {:profile {:title "EXAMPLE" :sections [:summary]}})
+   (report/section :summary :summary [{:items 3}])))
+
+(def task-events
+  (vec (map (fn [event] (:event event))
+            (work/observer-events observer))))
+
+(def main-arity-results
+  [((task/main-function
+     (fn [input & arguments]
+       (+ input (reduce + 0 arguments)))
+     1)
+    1 {:p 2} {:l 3} {:e 4} [5])
+   ((task/main-function
+     (fn [input params & arguments]
+       (+ input (:p params) (reduce + 0 arguments)))
+     2)
+    1 {:p 2} {:l 3} {:e 4} [5])
+   ((task/main-function
+     (fn [input params environment & arguments]
+       (+ input
+          (:p params)
+          (:e environment)
+          (reduce + 0 arguments)))
+     3)
+    1 {:p 2} {:l 3} {:e 4} [5])
+   ((task/main-function
+     (fn [input params lookup environment & arguments]
+       (+ input
+          (:p params)
+          (:l lookup)
+          (:e environment)
+          (reduce + 0 arguments)))
+     4)
+    1 {:p 2} {:l 3} {:e 4} [5])])
+
+(def installed-defaults
+  (task/install-defaults
+   :example/legacy
+   {:params {:scale 2
+             :nested {:left 1}}
+    :main {:argcount 4}
+    :report {:title "LEGACY TASK"}}))
+
+(def legacy-definition
+  {:type :example/legacy
+   :id :example/legacy-task
+   :params {:nested {:right 2}}
+   :construct
+   {:input (fn [definition] 5)
+    :environment
+    (fn [configuration]
+      {:offset (:offset configuration)})
+    :lookup
+    (fn [definition configuration]
+      {:bias (:bias configuration)})}
+   :main
+   {:args-required? true
+    :fn
+    (fn [input params lookup environment & arguments]
+      (+ (* input (:scale params))
+         (:bias lookup)
+         (:offset environment)
+         (reduce + 0 arguments)))}
+   :item
+   {:display (fn [value] (str "value=" value))}
+   :return {:select :all :package :map}})
+
+(def normalised-legacy
+  (task/normalise-definition legacy-definition))
+
+(def legacy-work
+  (task/template legacy-definition))
+
+(def callable-legacy-work
+  (task/template
+   (assoc legacy-definition
+          :return {:select :results :package :vector})))
+
+(def callable-legacy-output
+  [(callable-legacy-work
+    {:scale 3 :offset 2 :bias 4}
+    :args 7)
+   (callable-legacy-work
+    5
+    {:scale 3}
+    {:bias 4}
+    {:offset 2}
+    :args 7)])
+
+(def legacy-output
+  (work/run
+   (work/local-runtime)
+   legacy-work
+   (task/request
+    {:params {:scale 3
+              :offset 2
+              :bias 4}
+     :args [7]})))
+
+(def selector-work
+  (task/template
+   {:id :example/foundation-selector
+    :construct
+    {:environment (fn [configuration] {})
+     :lookup
+     (fn [definition configuration]
+       {:items ["code.test" "spirit.common"]})}
+    :main {:argcount 1 :fn identity}
+    :item
+    {:list
+     (fn [lookup environment]
+       (:items lookup))}
+    :return {:select :results :package :vector}}))
+
+(def selector-output
+  (work/run
+   (work/local-runtime)
+   selector-work
+   (task/request {:selector "code"})))
+
+(def summary-clock-value (atom 0))
+(defn summary-clock
+  []
+  (swap! summary-clock-value inc))
+
+(def result-summary-work
+  (task/template
+   {:id :example/result-summary
+    :item
+    {:list (fn [input context] (:values input))
+     :run
+     (fn [value context]
+       (if (= 0 value)
+         {:status :warn :data value}
+         {:status :return
+          :data {:name (str "v" value)
+                 :score value}}))
+     :output
+     (fn [data]
+       (str "item/" (:score data)))}
+    :warning
+    {:output (fn [data] (str "warning/" data))}
+    :result
+    {:keys
+     [[:name (fn [data] (:name data))]
+      [:score (fn [data] (:score data))]]
+     :format
+     {:score
+      (fn [value params]
+        (str value (:suffix params)))}
+     :sort-by :score
+     :output (fn [data] (* 10 (:score data)))
+     :columns [{:key :name :label "NAME"}
+               {:key :score :label "SCORE"}]}
+    :summary
+    {:aggregate
+     {:score-total
+      {:select (fn [record] (:score record))
+       :reduce +
+       :initial 0}}
+     :finalise
+     (fn [summary records results]
+       (assoc summary
+              :record-count (count records)
+              :first-score (:score (first results))))
+     :annotations
+     (fn [summary records results]
+       [(str "Processed " (:record-count summary) " records")])}
+    :report {:title "RESULT SUMMARY"}
+    :return {:select :all :package :map}}))
+
+(def result-summary-output
+  (work/run
+   (work/local-runtime)
+   result-summary-work
+   (task/request
+    {:input {:values [3 0 1 2]}
+     :params {:suffix " pts"}})
+   {:context {:clock/now summary-clock}}))
+
+(def package-definition
+  {:item
+   {:list (fn [input context] (:values input))
+    :run (fn [value context] (* 2 value))
+    :output (fn [data] (str "item-" data))}
+   :result
+   {:output (fn [data] (+ data 100))}})
+
+(def map-package-work
+  (task/template
+   (merge package-definition
+          {:id :example/map-package
+           :return {:select [:items :results]
+                    :package :map}})))
+
+(def vector-package-work
+  (task/template
+   (merge package-definition
+          {:id :example/vector-package
+           :return {:select :results
+                    :package :vector}})))
+
+(def records-package-work
+  (task/template
+   (merge package-definition
+          {:id :example/records-package
+           :return {:select :results
+                    :package :records}})))
+
+(def map-package-output
+  (work/run (work/local-runtime)
+            map-package-work
+            {:values [3 1]}))
+
+(def vector-package-output
+  (work/run (work/local-runtime)
+            vector-package-work
+            {:values [3 1]}))
+
+(def records-package-output
+  (work/run (work/local-runtime)
+            records-package-work
+            {:values [3 1]}))
+
+(def _removed-defaults
+  (task/uninstall-defaults :example/legacy))
+
+(def ordered-completion-definition
+  (task/normalise-definition
+   {:id :example/ordered-completion
+    :item {:run (fn [value context] value)}
+    :report {:sections [:results]}
+    :return {:select :all :package :map}}))
+
+(def ordered-completion-bundle
+  (task/prepare-bundle
+   ordered-completion-definition
+   {:input {:task/params {}}
+    :items [{:item/id :first} {:item/id :second} {:item/id :third}]
+    :results
+    [{:item/id :third
+      :item/value {:item/id :third :item/index 2
+                   :status :return :data 3}}
+     {:item/id :first
+      :item/value {:item/id :first :item/index 0
+                   :status :return :data 1}}
+     {:item/id :second
+      :item/value {:item/id :second :item/index 1
+                   :status :return :data 2}}]}
+   {}))
+
+(def ordered-completion-report
+  (task/task-report ordered-completion-definition
+                    ordered-completion-bundle))
+
+(def results
+  [(test-check
+    "provider descriptors expose explicit baseline and extension tiers"
+    (vec
+     (map
+      (fn [provider]
+        [(:provider/api provider)
+         (:provider/tier provider)
+         (:provider/id provider)])
+      provider-profiles))
+    [[:std.work.executor/v1 :baseline :inline]
+     [:std.work.store/v1 :baseline :memory]
+     [:std.work.store/v1 :extension :postgres]])
+
+   (test-check
+    "report documents remain structured portable data"
+    [(report/report? report-document)
+     (:report/title report-document)
+     (:report/annotations report-document)
+     (:section/entries (report/section-by-id report-document :summary))]
+    [true "EXAMPLE" [] [{:items 3}]])
+
+   (test-check
+    "the task template compiles to an ordinary work graph"
+    [(task/task-work? task-work)
+     (:op (work/work-spec task-work))
+     (:id (work/work-spec task-work))]
+    [true :chain :example/task])
+
+   (test-check
+    "the task template lists, selects, runs, groups, aggregates, reports and packages"
+    [(:items output)
+     (vec (map (fn [record] (:data record)) (:results output)))
+     (vec (map (fn [record] (:data record)) (:warnings output)))
+     (:summary output)
+     (:report/status (:report output))
+     (count (:report/sections (:report output)))]
+    [[1 2 3]
+     [4 8]
+     [3]
+     {:items 3 :results 2 :warnings 1 :errors 0
+      :sum 12 :cumulative 0 :elapsed 0}
+     :warning
+     5])
+
+   (test-check
+    "task stage events are committed through the ordinary observer path"
+    [(not (nil? (first (filter (fn [event] (= :task/run-started event)) task-events))))
+     (not (nil? (first (filter (fn [event] (= :task/item-completed event)) task-events))))
+     (not (nil? (first (filter (fn [event] (= :task/summary-ready event)) task-events))))
+     (not (nil? (first (filter (fn [event] (= :task/run-completed event)) task-events))))]
+    [true true true true])
+
+   (test-check
+    "Foundation-style main functions adapt explicit arities one through four"
+    main-arity-results
+    [6 8 12 15])
+
+   (test-check
+    "typed defaults merge recursively before a task definition is compiled"
+    [(:task/type normalised-legacy)
+     (:params normalised-legacy)
+     (get-in normalised-legacy [:main :argcount])
+     (get-in normalised-legacy [:report :title])]
+    [:example/legacy
+     {:scale 2 :nested {:left 1 :right 2}}
+     4
+     "LEGACY TASK"])
+
+   (test-check
+    "task requests restore input, environment, lookup, params and additional arguments"
+    [(:data (first (:results legacy-output)))
+     (:item/display (first (:results legacy-output)))]
+    [28 "value=28"])
+
+   (test-check
+    "compiled tasks retain the historical four-argument callable convention"
+    callable-legacy-output
+    [[[5 28]] [[5 28]]])
+
+   (test-check
+    "Foundation-style item lists receive lookup and environment before selection"
+    selector-output
+    [["code.test" "code.test"]])
+
+   (test-check
+    "derived results are ordered canonically while report rows apply formatters"
+    [(vec (map (fn [record] (:score record))
+               (:results result-summary-output)))
+     (vec
+      (map
+       (fn [record] [(:name record) (:score record)])
+       (:result-rows result-summary-output)))
+     (:data (first (:warning-rows result-summary-output)))]
+    [[1 2 3]
+     [["v1" "1 pts"]
+      ["v2" "2 pts"]
+      ["v3" "3 pts"]]
+     "warning/0"])
+
+   (test-check
+    "summary finalisation, timings, and annotations are stable report data"
+    [(:summary result-summary-output)
+     (:annotations result-summary-output)
+     (:report/annotations (:report result-summary-output))
+     (:report/status (:report result-summary-output))
+     (vec
+      (map
+       (fn [record] [(:name record) (:score record)])
+       (:section/entries
+        (report/section-by-id
+         (:report result-summary-output)
+         :results))))]
+    [{:items 4 :results 3 :warnings 1 :errors 0
+      :score-total 6 :record-count 4 :first-score 1
+      :cumulative 4 :elapsed 9}
+     ["Processed 4 records"]
+     ["Processed 4 records"]
+     :warning
+     [["v1" "1 pts"]
+      ["v2" "2 pts"]
+      ["v3" "3 pts"]]])
+
+   (test-check
+    "reports preserve selected input order for out-of-order completion records"
+    [(vec (map (fn [record] (:item/id record))
+               (:records ordered-completion-bundle)))
+     (vec (map (fn [record] (:item/id record))
+               (:section/entries
+                (report/section-by-id ordered-completion-report :results))))]
+    [[:first :second :third]
+     [:first :second :third]])
+
+   (test-check
+    "item and result output projections package map and vector returns faithfully"
+    [map-package-output
+     vector-package-output
+     (vec (map (fn [record] (:item/id record))
+               records-package-output))]
+    [{:items {3 "item-6" 1 "item-2"}
+      :results {3 106 1 102}}
+     [[3 106] [1 102]]
+     [3 1]])
+
+   (test-check
+    "the parity ledger advances result and summary behavior without hiding render work"
+    [(task/feature-status :item/output)
+     (task/feature-status :result/ignore-derived-format-order)
+     (task/feature-status :summary/finalise)
+     (task/feature-status :summary/elapsed-cumulative)
+     (task/feature-status :summary/annotations)
+     (task/feature-status :return/map-vector-packaging)
+     (task/feature-status :report/plain-terminal-renderers)
+     (task/feature-status :execution/deterministic-report-order)
+     (task/feature-status :execution/random)
+     (count (task/incomplete-features))]
+    [:implemented :implemented :implemented :implemented
+     :implemented :implemented :implemented :implemented
+     :intentional-change 0])
+
+   (test-check "required additional arguments fail before item execution"
+    (try (do (work/run
+     (work/local-runtime)
+     legacy-work
+     (task/request
+      {:params {:scale 3
+                :offset 2
+                :bias 4}})) false)
+         (catch Throwable error true))
+    true)
+
+   (test-check "task definitions reject main argcounts outside one through four"
+    (try (do (task/template
+     {:id :invalid/argcount
+      :main {:argcount 5
+             :fn identity}}) false)
+         (catch Throwable error true))
+    true)
+
+   (test-check "task definitions cannot omit their executable item stage"
+    (try (do (task/template {:id :invalid/task}) false)
+         (catch Throwable error true))
+    true)])
+
+results

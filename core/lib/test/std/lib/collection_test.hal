@@ -1,0 +1,179 @@
+(ns std.lib.collection-test
+  (:require [std.lib.collection :as collection]))
+
+(def results
+  [(test-check
+    "constructs the specialised persistent collection families"
+    [(type (collection/deque 1 2))
+     (type (collection/ordered-map :a 1))
+     (type (collection/ordered-set 1))
+     (type (collection/priority-map :a 2))
+     (type (collection/queue 1))
+     (type (collection/sorted-map :b 2 :a 1))
+     (type (collection/sorted-set 2 1))
+     (type (collection/trie "alpha" 7))]
+    [:hara/Deque
+     :hara/OrderedMap
+     :hara/OrderedSet
+     :hara/PriorityMap
+     :hara/Queue
+     :hara/SortedMap
+     :hara/SortedSet
+     :hara/Trie])
+
+   (test-check
+    "recognises each specialised collection family"
+    [(collection/deque? (collection/deque))
+     (collection/ordered-map? (collection/ordered-map))
+     (collection/ordered-set? (collection/ordered-set))
+     (collection/priority-map? (collection/priority-map))
+     (collection/queue? (collection/queue))
+     (collection/sorted-map? (collection/sorted-map))
+     (collection/sorted-set? (collection/sorted-set))
+     (collection/trie? (collection/trie))
+     (collection/deque? [])
+     (collection/priority-map? {})]
+    [true true true true true true true true false false])
+
+   (test-check
+    "supports persistent deque operations at both ends"
+    (let [value (collection/deque 1 2 3)]
+      [(collection/peek-first value) (collection/peek-last value)
+       (collection/push-first value 0) (collection/push-last value 4)
+       (collection/pop-first value) (collection/pop-last value)
+       (assoc value 1 9) value])
+    [1 3 [0 1 2 3] [1 2 3 4] [2 3] [1 2] [1 9 3] [1 2 3]])
+
+   (test-check
+    "orders priority maps with stable insertion-order ties"
+    (let [value (collection/priority-map :a 2 :b 1 :c 1)]
+      [(keys value) (collection/peek-first value) (collection/peek-last value)
+       (keys (assoc value :b 1)) (keys (assoc value :b 2))
+       (keys (collection/pop-first value)) (keys (collection/pop-last value))
+       (get value :b)])
+    [[:b :c :a] [:b 1] [:a 2] [:b :c :a] [:c :a :b]
+     [:c :a] [:b :c] 1])
+
+   (test-check
+    "preserves collection-specific behaviour"
+    [(keys (collection/ordered-map :b 2 :a 1))
+     (keys (collection/sorted-map :b 2 :a 1))
+     (nth (collection/queue 4 5 6) 1)
+     (get (collection/trie "alpha" 7) "alpha")]
+    [[:b :a] [:a :b] 5 7])
+
+   (test-check "rejects non-string trie keys" (try (do (collection/trie :alpha 7) false) (catch Throwable test_error__ true)) true)
+
+   (test-check "does not expose specialised constructors unqualified" (try (do (ordered-map) false) (catch Throwable test_error__ true)) true)
+
+   (test-check "does not expose specialised constructors from std.foundation" (try (do (std.foundation/ordered-map) false) (catch Throwable test_error__ true)) true)
+
+   (test-check
+    "transforms values through a compiled literal path"
+    [(collection/transform {:a {:b 1}} [:a :b] inc)
+     (collection/transform {"a" 1} ["a"] inc)
+     (collection/transform [10 20] [1] inc)
+     (collection/transform [{:items [1 2]} {:items [3]}] [:each :items :each] inc)
+     (collection/transform {:a {:x 1 :y 2}} [:a :map-vals] inc)
+     (collection/transform {:a 1} [:map-keys] name)
+     (collection/transform [1 2 3] [:first] inc)
+     (collection/transform [1 2 3] [:last] inc)
+     (collection/transform {:a [1 {:b 2}]} [:walk number?] inc)
+     (collection/transform [1 2 3 4] [:each even?] (fn [x] (* x 10)))
+     (collection/transform 1 [] (fn [x] (+ x 9)))]
+    [{:a {:b 2}}
+     {"a" 2}
+     [10 21]
+     [{:items [2 3]} {:items [4]}]
+     {:a {:x 2 :y 3}}
+     {"a" 1}
+     [2 2 3]
+     [1 2 4]
+     {:a [2 {:b 3}]}
+     [1 20 3 40]
+     10])
+
+   (test-check
+    "selects values through a compiled literal path"
+    [(collection/select {:a {:b 1}} [:a :b])
+     (collection/select {"a" 1} ["a"])
+     (collection/select [10 20] [1])
+     (collection/select [{:items [1 2]} {:items [3]}] [:each :items :each])
+     (collection/select {:a {:x 1}} [:a :map-vals])
+     (collection/select {:a 1} [:map-keys])
+     (collection/select [1 2 3] [:last])
+     (collection/select {:a [1 {:b 2}]} [:walk number?])
+     (collection/select [1 2 3 4] [:each even?])
+     (collection/select [] [:each])]
+    [[1]
+     [1]
+     [20]
+     [1 2 3]
+     [1]
+     [:a]
+     [3]
+     [1 2]
+     [2 4]
+     []])
+
+   (test-check
+    "replaces addressed values through setval"
+    [(collection/setval {:a {:b 1}} [:a :b] 9)
+     (collection/setval [1 2] [:each] 0)]
+    [{:a {:b 9}} [0 0]])
+
+   (test-check
+    "rejects malformed paths at macroexpansion"
+    [(try (do (macroexpand (quote (collection/select {:a 1} :a))) false)
+          (catch Throwable test_error__ true))
+     (try (do (macroexpand (quote (collection/select {} [:walk]))) false)
+          (catch Throwable test_error__ true))
+     (try (do (macroexpand (quote (collection/transform {} [:walk :a] inc))) false)
+          (catch Throwable test_error__ true))
+     (try (do (macroexpand (quote (collection/select {} [1.5]))) false)
+          (catch Throwable test_error__ true))]
+    [true true true true])
+
+   (test-check
+    "traverses entries, sets, and whole trees"
+    [(collection/transform {:a 1} [:map-entries] (fn [e] [(name (key e)) (inc (val e))]))
+     (collection/select {:a 1} [:map-entries 0])
+     (collection/transform #{1 2} [:set] inc)
+     (collection/select #{1} [:set])
+     (collection/select [1 [2]] [:tree])
+     (collection/transform 1 [:tree] inc)]
+    [{"a" 2}
+     [:a]
+     #{2 3}
+     [1]
+     [1 2 [2] [1 [2]]]
+     2])
+
+   (test-check
+    "guards, views, and multi-branch navigation"
+    [(collection/select [1 2 3] [:each :when odd?])
+     (collection/transform [1 2 3] [:each :when odd?] (fn [x] (* x 10)))
+     (collection/select [1 2 3] [:each :unless even?])
+     (collection/select {:a 2} [:a (view inc)])
+     (collection/transform {:a 2} [:a (view inc)] (fn [x] (* x 10)))
+     (collection/select {:a {:x 1} :b {:x 2}} [:multi [:a :x] [:b :x]])
+     (collection/transform {:a {:x 1} :b {:x 2}} [:multi [:a :x] [:b :x]] inc)]
+    [[1 3]
+     [10 2 30]
+     [1 3]
+     [3]
+     {:a 30}
+     [1 2]
+     {:a {:x 2} :b {:x 3}}])
+
+   (test-check
+    "rejects malformed guard and multi steps at macroexpansion"
+    [(try (do (macroexpand (quote (collection/select {} [:when :a]))) false)
+          (catch Throwable test_error__ true))
+     (try (do (macroexpand (quote (collection/select {} [:multi :a]))) false)
+          (catch Throwable test_error__ true))
+     (try (do (macroexpand (quote (collection/select {} [[1.5]]))) false)
+          (catch Throwable test_error__ true))]
+    [true true true])])
+
+results

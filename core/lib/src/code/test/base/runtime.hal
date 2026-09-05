@@ -1,0 +1,233 @@
+(ns code.test.base.runtime
+  (:config {:override [eval-in-ns]}))
+
+;; Fact registration and Foundation-compatible namespace state are owned here.
+;; The root code.test namespace is a facade over these operations.
+(def +registry+ (atom {}))
+(def +globals+ (atom {}))
+(def +links+ (atom {}))
+(def +flags+ (atom {}))
+;; Native test loading preserves form registration order even when it does not
+;; attach parser spans to macro metadata.
+(def +registration-order+ (atom 0))
+
+(defn fact-registry-key
+  [namespace name]
+  (pointer {:context :test
+            :id :test
+            :namespace (str namespace)
+            :name (str name)}))
+
+(defn clear-namespace-state
+  [state namespace]
+  (loop [output state
+         remaining (keys state)]
+    (if (seq remaining)
+      (let [key (first remaining)]
+        (recur (if (= namespace (:namespace key))
+                 (dissoc output key)
+                 output)
+               (rest remaining)))
+      output)))
+
+(defn registry-register
+  [registry fact]
+  (do
+    (swap! registry
+           (fn [state]
+             (assoc state
+                    (fact-registry-key (:namespace fact) (:name fact))
+                    fact)))
+    fact))
+
+(defn registry-remove
+  [registry namespace name]
+  (let [key (fact-registry-key namespace name)
+        found (get (deref registry) key)]
+    (swap! registry (fn [state] (dissoc state key)))
+    found))
+
+(defn registry-clear
+  [registry namespace]
+  (if namespace
+    (swap! registry clear-namespace-state namespace)
+    (reset! registry {})))
+
+(defn registry-facts
+  [registry]
+  (vec (vals (deref registry))))
+
+(defn registry-find
+  [registry namespace name]
+  (get (deref registry) (fact-registry-key namespace name)))
+
+(defn register
+  "Registers a fact in the current namespace."
+  ([name function]
+   (register name function {}))
+  ([name function metadata]
+   (let [metadata (or metadata {})
+         metadata (if (has? metadata :test/order)
+                    metadata
+                    (assoc metadata
+                           :test/order
+                           (swap! +registration-order+ inc)))]
+     (registry-register
+      +registry+
+      {:namespace (or (:test/namespace metadata)
+                      (ns-current))
+       :name name
+       :function function
+       :meta metadata}))))
+
+(defn remove-fact
+  "Removes a fact from namespace, defaulting to the current namespace."
+  ([name]
+   (remove-fact (ns-current) name))
+  ([namespace name]
+   (registry-remove +registry+ namespace name)))
+
+(defn purge-facts
+  "Clears facts from namespace, defaulting to the current namespace."
+  ([] (purge-facts (ns-current)))
+  ([namespace]
+   (registry-clear +registry+ namespace)))
+
+(defn purge-all
+  "Foundation compatibility name for namespace-scoped purging."
+  ([] (purge-facts))
+  ([namespace] (purge-facts namespace)))
+
+(defn purge-registry
+  "Clears the complete fact registry."
+  []
+  (do
+    (registry-clear +registry+ nil)
+    (reset! +registration-order+ 0)))
+
+(defn tests
+  "Returns all registered fact records."
+  []
+  (registry-facts +registry+))
+
+(defn registry
+  "Returns the registry snapshot keyed by canonical fact pointers."
+  []
+  (deref +registry+))
+
+(defn get-fact
+  "Returns a fact by namespace and name."
+  ([name] (get-fact (ns-current) name))
+  ([namespace name]
+   (registry-find +registry+ namespace name)))
+
+(defn all-facts
+  ([] (registry))
+  ([namespace]
+   (reduce (fn [output fact]
+             (if (= namespace (:namespace fact))
+               (assoc output (:name fact) fact)
+               output))
+           {}
+           (tests))))
+
+(defn list-facts
+  ([] (keys (all-facts (ns-current))))
+  ([namespace] (keys (all-facts namespace))))
+
+(defn get-global
+  ([] (get-global (ns-current)))
+  ([namespace] (get (deref +globals+) namespace))
+  ([namespace key & more]
+   (let [path
+         (loop [remaining (vec more)
+                output [key]]
+           (if (empty? remaining)
+             output
+             (recur (vec (rest remaining))
+                    (conj output (first remaining)))))]
+     (get-in (get-global namespace) path))))
+
+(defn set-global
+  ([value] (set-global (ns-current) value))
+  ([namespace value]
+   (swap! +globals+ assoc namespace value)
+   value))
+
+(defn update-global
+  ([function] (update-global (ns-current) function))
+  ([namespace function & arguments]
+   (apply swap! +globals+ update namespace function arguments)
+   (get-global namespace)))
+
+(defn list-links
+  ([] (list-links (ns-current)))
+  ([namespace] (get (deref +links+) namespace)))
+
+(defn clear-links
+  ([] (clear-links (ns-current)))
+  ([namespace]
+   (swap! +links+ assoc namespace nil)
+   nil))
+
+(defn add-link
+  ([link] (add-link (ns-current) link))
+  ([namespace link]
+   (swap! +links+ update namespace
+          (fn [links] (conj (or links #{}) link)))
+   (list-links namespace)))
+
+(defn remove-link
+  ([link] (remove-link (ns-current) link))
+  ([namespace link]
+   (swap! +links+ update namespace
+          (fn [links] (difference (or links #{}) #{link})))
+   (list-links namespace)))
+
+(defn parse-args
+  [namespace id argument more]
+  [namespace id (conj (vec more) argument)])
+
+(defn set-fact
+  ([id data] (set-fact (ns-current) id data))
+  ([namespace id data]
+   (swap! +registry+ assoc (fact-registry-key namespace id) data)
+   [namespace id]))
+
+(defn set-in-fact
+  ([id path data] (set-in-fact (ns-current) id path data))
+  ([namespace id path data]
+   (let [fact (get-fact namespace id)]
+     (set-fact namespace id (assoc-in fact path data)))))
+
+(defn get-flag
+  ([id flag] (get-flag (ns-current) id flag))
+  ([namespace id flag]
+   (if (get-in (deref +flags+) [namespace id flag]) true false)))
+
+(defn set-flag
+  ([id flag value] (set-flag (ns-current) id flag value))
+  ([namespace id flag value]
+   (swap! +flags+ assoc-in [namespace id flag] value)
+   value))
+
+(defn update-fact
+  ([id function] (update-fact (ns-current) id function))
+  ([namespace id function & arguments]
+   (let [value (apply function
+                      (get-fact namespace id)
+                      arguments)]
+     (set-fact namespace id value)
+     value)))
+
+(defn eval-in-ns [namespace function] (function))
+(defn teardown-fact [fact] (if (:teardown fact) ((:teardown fact)) nil))
+(defn setup-fact [fact] (if (:setup fact) ((:setup fact)) nil))
+(defn exec-thunk [thunk] (thunk))
+(defn exec-slim [fact] ((:function fact) {}))
+(defn no-dots [value] value)
+(defn fact-id [fact] (or (:id fact) (:name fact)))
+(defn find-fact
+  ([id] (get-fact id))
+  ([namespace id] (get-fact namespace id)))
+(defn run-op [operation fact] (operation fact))

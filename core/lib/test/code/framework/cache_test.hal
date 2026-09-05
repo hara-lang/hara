@@ -1,0 +1,41 @@
+(ns code.framework.cache-test
+  (:use code.test)
+  (:require [code.framework.cache :as cache]
+            [std.block.base :as block]
+            [std.block.parse :as parse]
+            [std.fs :as fs]
+            [std.fs.path :as path]))
+
+(def test-root (fs/temp-directory "/" {:prefix "framework-cache-"}))
+(def source-path (path/join test-root "source.hal"))
+(def cache-dir (path/join test-root "cache"))
+(def memory (atom {}))
+(def loaded (atom false))
+(def sample
+  {'demo {'value {:test {:code (vec (block/block-children
+                                     (parse/parse-root "(+ 1 2)")))}}}})
+
+(fact "cache persists blocks and invalidates exact same-size rewrites"
+  (binding [cache/*memory-loaded* loaded]
+    (cache/write-text source-path "one")
+    (cache/update 'demo source-path sample memory cache-dir ".cache")
+    (let [fresh (atom {})
+          _ (reset! loaded false)
+          cached (cache/fetch 'demo source-path fresh cache-dir)
+          text (-> cached (get-in ['demo 'value :test :code]) first block/block-string)
+          _ (cache/write-text source-path "two")]
+      [text (nil? (cache/fetch 'demo source-path fresh cache-dir))]))
+  => ["(+ 1 2)" true])
+
+(fact "purge clears memory and initialization state"
+  (binding [cache/*memory-loaded* loaded]
+    (cache/purge memory)
+    [(deref memory) (deref loaded)])
+  => [{} false])
+
+(fact "cache fixture cleans up its mounted filesystem"
+  (do (fs/delete test-root {:recursive? true :missing-ok? true})
+      (fs/exists? test-root))
+  => false)
+
+(pr-str (run '[code.framework.cache-test]))

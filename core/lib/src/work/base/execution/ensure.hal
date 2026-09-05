@@ -1,0 +1,133 @@
+(ns work.base.execution.ensure
+  (:require [work.base.model :as base]
+            [work.base.frame :as frame]
+            [work.base.result :as result]))
+
+(defn required-work
+  [spec key]
+  (let [work (get spec key)]
+    (if work
+      work
+      (throw
+       (ex :dependency {:operation (:op spec)
+                 :child key
+                 :work/id (:id spec)} :ex/message "Work scope requires a child")))))
+
+(defn cleanup-input
+  [input status value error]
+  {:work/input input
+   :work/body-status status
+   :work/body-result value
+   :work/body-error (if error (str error) nil)})
+
+(defn run-cleanup
+  [execute runtime cleanup-frame cleanup input]
+  (result/then
+   (frame/emit runtime cleanup-frame :work/cleanup-started
+                {:cleanup/id (frame/node-id (base/work-spec-map cleanup))})
+   (fn [_]
+     (result/attempt
+      (fn []
+        (result/then
+         (execute runtime cleanup-frame cleanup input)
+         (fn [value]
+           (result/then
+            (frame/emit runtime cleanup-frame :work/cleanup-completed
+                         {:cleanup/id
+                          (frame/node-id (base/work-spec-map cleanup))})
+            (fn [_]
+              {:status :completed
+               :result value})))))
+      (fn [error]
+        (result/then
+         (frame/emit runtime cleanup-frame :work/cleanup-failed
+                      {:cleanup/id
+                       (frame/node-id (base/work-spec-map cleanup))
+                       :error (str error)})
+         (fn [_]
+           {:status :failed
+            :error error})))))))
+
+(defn successful-ensure-result
+  [spec input body-result cleanup-outcome]
+  (if (= :outcome (:return spec))
+    {:work/input input
+     :work/body {:status :completed
+                 :result body-result}
+     :work/cleanup {:status :completed
+                    :result (:result cleanup-outcome)}}
+    body-result))
+
+(defn run-body
+  [execute runtime body-frame body input]
+  (result/attempt
+   (fn []
+     (result/then
+      (execute runtime body-frame body input)
+      (fn [value]
+        {:status :completed
+         :result value})))
+   (fn [error]
+     {:status :failed
+      :error error})))
+
+(defn finish-ensure
+  [runtime frame spec input body-outcome cleanup-outcome]
+  (let [body-completed (= :completed (:status body-outcome))]
+    (cond
+      (and (not body-completed)
+           (= :failed (:status cleanup-outcome)))
+      (throw
+       (ex :state {:body/error (str (:error body-outcome))
+                 :cleanup/error (str (:error cleanup-outcome))} :ex/message "Work body and cleanup both failed"))
+
+      (not body-completed)
+      (throw (:error body-outcome))
+
+      (= :failed (:status cleanup-outcome))
+      (throw (:error cleanup-outcome))
+
+      :else
+      (result/then
+       (frame/assert-running runtime frame)
+       (fn [_]
+         (successful-ensure-result spec
+                                   input
+                                   (:result body-outcome)
+                                   cleanup-outcome))))))
+
+(defn run-ensure
+  [execute runtime frame spec input]
+  (let [body (required-work spec :work)
+        cleanup (required-work spec :cleanup)
+        body-spec (base/work-spec-map body)
+        cleanup-spec (base/work-spec-map cleanup)
+        body-frame (frame/child-frame frame :ensure :body body-spec)
+        cleanup-frame
+        (assoc (frame/child-frame frame :ensure :cleanup cleanup-spec)
+               :work/cleanup? true)]
+    (result/then
+     (run-body execute runtime body-frame body input)
+     (fn [body-outcome]
+       (let [body-completed (= :completed (:status body-outcome))]
+         (result/then
+          (run-cleanup
+           execute
+           runtime
+           cleanup-frame
+           cleanup
+           (cleanup-input input
+                          (:status body-outcome)
+                          (if body-completed
+                            (:result body-outcome)
+                            nil)
+                          (if body-completed
+                            nil
+                            (:error body-outcome))))
+          (fn [cleanup-outcome]
+            (finish-ensure runtime
+                           frame
+                           spec
+                           input
+                           body-outcome
+                           cleanup-outcome))))))))

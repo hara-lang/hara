@@ -1,0 +1,370 @@
+(ns lang.typed.xtalk-parse
+  (:require [lang.core.script :as script]
+            [lang.typed.xtalk-common :as types]))
+
+(declare merge-spec-inputs)
+
+(defn rest-arg-form?
+  [form]
+  (and (seq? form)
+       (= 2 (count form))
+       (= :.. (first form))
+       (symbol? (second form))))
+
+(defn rest-arg-type
+  []
+  {:kind :array
+   :item types/+unknown-type+
+   :rest true})
+
+(defn arg-from-inline-form
+  [form ctx]
+  (when (and (not (rest-arg-form? form))
+             (seq? form)
+             (= 2 (count form))
+             (symbol? (second form)))
+    (let [[type-form sym] form]
+      (when (or (keyword? type-form)
+                (vector? type-form)
+                (and (symbol? type-form)
+                     (types/likely-type-symbol? type-form)))
+        (types/make-arg sym
+                        (types/normalize-type type-form ctx)
+                        [])))))
+
+(defn arg-declared-type
+  [sym ctx]
+  (when-let [ret (get (meta sym) :-)]
+    (types/normalize-return-meta ret ctx)))
+
+(defn binding-symbols
+  [form]
+  (cond
+    (symbol? form)
+    (if (#{'& 'as} form)
+      []
+      [form])
+
+    (vector? form)
+    (mapcat binding-symbols form)
+
+    (map? form)
+    (mapcat binding-symbols
+            (concat (keys form) (vals form)))
+
+    (seq? form)
+    (mapcat binding-symbols form)
+
+    :else
+    []))
+
+(defn parse-fn-inputs
+  [args-form ctx]
+  (loop [out []
+         pending nil
+         remaining (seq args-form)]
+    (let [item (first remaining)
+          more (seq (rest remaining))]
+      (cond
+        (nil? item)
+        (if pending
+          (throw (ex :security {:pending pending
+                           :args args-form} :ex/message "Dangling type token in function args"))
+          out)
+
+        pending
+        (if (symbol? item)
+          (recur (conj out (types/make-arg item pending []))
+                 nil
+                 more)
+          (throw (ex :security {:pending pending
+                           :item item
+                           :args args-form} :ex/message "Expected symbol after typed arg token")))
+
+        (rest-arg-form? item)
+        (if (seq more)
+          (throw (ex :syntax {:item item
+                           :args args-form} :ex/message "Rest argument must be final"))
+          (recur (conj out
+                       (types/make-arg (second item)
+                                       (rest-arg-type)
+                                       [:rest]))
+                 nil
+                 nil))
+
+        (= '& item)
+        (let [rest-target (first more)
+              syms (binding-symbols rest-target)]
+          (recur (into out
+                       (map #(types/make-arg % types/+unknown-type+ [])
+                            syms))
+                 nil
+                 nil))
+
+        (arg-from-inline-form item ctx)
+        (recur (conj out (arg-from-inline-form item ctx))
+               nil
+               more)
+
+        (symbol? item)
+        (let [declared (arg-declared-type item ctx)]
+          (if (and more
+                   (types/likely-type-symbol? item)
+                   (symbol? (first more)))
+            (recur out
+                   (types/normalize-type item ctx)
+                   more)
+            (recur (conj out
+                         (types/make-arg item
+                                         (or declared types/+unknown-type+)
+                                         []))
+                   nil
+                   more)))
+
+        (or (keyword? item)
+            (and (vector? item)
+                 (symbol? (first more))))
+        (recur out
+               (types/normalize-type item ctx)
+               more)
+
+        (or (vector? item)
+            (map? item))
+        (recur (into out
+                     (map #(types/make-arg % types/+unknown-type+ [])
+                          (binding-symbols item)))
+               nil
+               more)
+
+        :else
+        (throw (ex :syntax {:item item
+                         :args args-form} :ex/message "Unsupported function arg form"))))))
+
+(defn parse-decl-preamble
+  [items form-sym]
+  (let [[docstring items]
+        (if (string? (first items))
+          [(first items) (rest items)]
+          [nil items])
+        [attr-map items]
+        (if (and (map? (first items))
+                 (seq (rest items)))
+          [(first items) (rest items)]
+          [nil items])]
+    (when (and attr-map (has? attr-map :schema))
+      (throw
+       (ex :syntax {:symbol form-sym
+                    :schema (:schema attr-map)}
+           :ex/message ":schema must be attached to the declaration symbol")))
+    {:docstring docstring
+     :attr-map attr-map
+     :items items
+     :binding-meta (or (meta form-sym) {})
+     :meta (cond-> (merge attr-map (meta form-sym))
+             docstring (assoc :docstring docstring))}))
+
+(defn parse-callable-items
+  [items]
+  (cond
+    (vector? (first items))
+    [(first items) (rest items)]
+
+    (and (seq? (first items))
+         (vector? (ffirst items)))
+    [(ffirst items) (rest (first items))]
+
+    :else
+    [(first items) (rest items)]))
+
+(defn declaration-schema
+  [binding-meta ctx]
+  (when (has? binding-meta :schema)
+    (types/normalize-type (:schema binding-meta) ctx)))
+
+(defn function-schema
+  [ns-sym fn-sym meta ctx]
+  (when-let [schema (declaration-schema meta ctx)]
+    (if (= :fn (:kind schema))
+      (types/make-spec-def ns-sym fn-sym schema meta)
+      (throw
+       (ex :syntax {:symbol fn-sym
+                    :schema (:schema meta)}
+           :ex/message "defn.xt :schema must be a function type")))))
+
+(defn parse-fragment-spec
+  [entry aliases]
+  (let [form (:form entry)
+        fn-sym (second form)
+        metadata (merge (or (meta fn-sym) {})
+                        (select-keys entry [:- :public :standalone
+                                            :docstring :added]))
+        ctx {:ns (:module entry)
+             :aliases aliases}]
+    (function-schema (:module entry) fn-sym metadata ctx)))
+
+(defn parse-defn
+  [form ns-sym aliases]
+  (let [[def-op fn-sym & more] form
+        {:keys [meta binding-meta items]} (parse-decl-preamble more fn-sym)
+        [args-form body] (parse-callable-items items)
+        ctx {:ns ns-sym
+             :aliases aliases}
+        spec (function-schema ns-sym fn-sym binding-meta ctx)
+        inputs (parse-fn-inputs args-form ctx)
+        output (if spec
+                 (get-in spec [:type :output])
+                 (if-let [ret (get meta :-)]
+                   (types/normalize-return-meta ret ctx)
+                   types/+unknown-type+))]
+    (types/make-fn-def
+     ns-sym
+     fn-sym
+     (if spec
+       (merge-spec-inputs inputs (get-in spec [:type :inputs]))
+       inputs)
+     output
+     (assoc meta
+            :aliases aliases
+            :generator (= "defgen" (name def-op)))
+     body
+     spec)))
+
+(defn parse-defvalue
+  [form ns-sym aliases]
+  (let [[_ value-sym & more] form
+        {:keys [meta binding-meta items]} (parse-decl-preamble more value-sym)
+        ctx {:ns ns-sym
+             :aliases aliases}
+        schema (declaration-schema binding-meta ctx)
+        raw-value (first items)
+        _ (when (and schema (nil? raw-value))
+            (throw
+             (ex :syntax {:symbol value-sym
+                          :schema (:schema binding-meta)}
+                 :ex/message
+                 "Schema-only declarations use (def Name (schema ...))")))
+        spec (when schema
+               (types/make-spec-def ns-sym value-sym schema meta))
+        value (types/make-value-def
+               ns-sym
+               value-sym
+               (or schema
+                   (if-let [ret (get meta :-)]
+                     (types/normalize-return-meta ret ctx)
+                     types/+unknown-type+))
+               (assoc meta :aliases aliases :def true)
+               raw-value
+               spec)]
+    value))
+
+(defn merge-spec-inputs
+  [inputs spec-inputs]
+  (if (= (count inputs) (count spec-inputs))
+    (mapv (fn [arg spec-type]
+            (if (= (:type arg) types/+unknown-type+)
+              (assoc arg :type spec-type)
+              arg))
+          inputs
+          spec-inputs)
+    inputs))
+
+(defn module-aliases
+  [module]
+  (dissoc (or (:link module) {}) '-))
+
+(defn portable-schema-surface?
+  "Returns true for schema surfaces in the cross-language :xt vocabulary."
+  [surface]
+  (or (and (keyword? surface)
+           (= "xt" (namespace surface)))
+      (and (vector? surface)
+           (keyword? (first surface))
+           (or (= "xt" (namespace (first surface)))
+               (has? #{:and :array :dict :fn :maybe :or :record :tuple :vector}
+                     (first surface))))))
+
+(defn parse-module-schema
+  [ns-sym aliases pair]
+  (let [schema-id (first pair)
+        surface (second pair)
+        schema-name (symbol (name schema-id))]
+    (when (and (symbol? schema-id)
+               (portable-schema-surface? surface)
+               (or (nil? (namespace schema-id))
+                   (= (str ns-sym) (namespace schema-id))))
+      (try
+        (types/make-spec-def
+         ns-sym
+         schema-name
+         (types/normalize-type surface {:ns ns-sym :aliases aliases})
+         {:schema surface
+          :sidecar true})
+        (catch Throwable error nil)))))
+
+(defn module-schema-specs
+  [ns-sym module aliases]
+  (let [schemas (:schema module)]
+    (if (map? schemas)
+      (vec
+       (keep
+        (fn [schema-id]
+          (parse-module-schema ns-sym aliases
+                               [schema-id (get schemas schema-id)]))
+        (sort-by str (keys schemas))))
+      [])))
+
+(defn analyze-module-raw
+  [ns-sym]
+  (let [module (get (deref script/+modules+) ns-sym)]
+    (when (nil? module)
+      (throw (ex :not-found {:ns ns-sym
+                       :available (sort-by str
+                                           (keys (deref script/+modules+)))} :ex/message "Tahto script module not found")))
+    (script/refresh-module-schemas ns-sym)
+    (let [module (get (deref script/+modules+) ns-sym)
+          schema-ns (script/module-source-symbol ns-sym)
+          aliases (module-aliases module)
+          module-specs (module-schema-specs schema-ns module aliases)
+          fragment-specs (->> (:fragment module)
+                              vals
+                              (sort-by (comp str :id))
+                              (keep #(parse-fragment-spec % aliases))
+                              vec)
+          entries (->> (:code module)
+                       vals
+                       (sort-by (comp str :id)))
+      declarations
+      (reduce
+       (fn [out entry]
+             (let [form (:form entry)
+                   op-key (:op-key entry)]
+               (cond
+                 (#{:defn :defgen} op-key)
+                 (update out :functions conj
+                         (parse-defn form ns-sym aliases))
+
+                 (#{:def :defglobal} op-key)
+                 (update out :values conj
+                         (parse-defvalue form ns-sym aliases))
+
+                 :else
+                 out)))
+           {:functions []
+            :specs []
+            :values []}
+           entries)]
+      {:ns ns-sym
+       :aliases aliases
+       :specs (vec (sort-by :name
+                            (concat module-specs
+                                    fragment-specs
+                                    (:specs declarations))))
+       :functions (:functions declarations)
+       :macros []
+       :values (:values declarations)})))
+
+(defn analyze-module
+  [ns-sym]
+  (analyze-module-raw ns-sym))
+
+(def analyze-namespace analyze-module)

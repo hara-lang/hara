@@ -1,0 +1,87 @@
+(ns code.test-checker-test
+  (:require [code.test.checker.collection :as collection]
+            [code.test.checker.common :as common]
+            [code.test.checker.diff :as diff]
+            [code.test.checker.logic :as logic]))
+
+(def captured nil)
+(def exact-checker (common/exactly 42))
+(def capture-checker (common/capture nil captured))
+(defstruct AssociativeSample [a b])
+(def thrown-result
+  (ex-info "boom" {:kind :expected :code 7}))
+
+(def results
+  [(test-check "Checker values are callable and first-class"
+               [(common/checker? exact-checker)
+                (exact-checker 42)
+                (exact-checker 41)
+                (type exact-checker)]
+               [true true false :code.test.checker.common.Checker])
+
+   (test-check "verification returns native Result booleans"
+               (let [result (common/verify exact-checker 42)]
+                 [(Result/status result)
+                  (Result/data result)
+                  (get-in (Result/context result) [:test :actual])
+                  (get-in (Result/context result) [:test :expected])])
+               [:success true 42 42])
+
+   (test-check "common checkers cover transforms, types, refs, and regexps"
+               [((common/exactly 4 count) [1 2 3 4])
+                ((common/approx 10.0 0.01) 10.001)
+                ((common/satisfies :hara/Integer) 42)
+                ((common/satisfies #{1 2 3}) 2)
+                ((common/satisfies (read-string "#\"ell\"")) "hello")
+                ((common/stores 7) (atom 7))]
+               [true true true true true true])
+
+   (test-check "exception checkers retain type, message, and data semantics"
+               [((common/throws) thrown-result)
+                ((common/throws :hara/Error "boom") thrown-result)
+                ((collection/throws-info {:kind :expected}) thrown-result)]
+               [true true true])
+
+   (test-check "contains implements contiguous, gaps, permutation, and full matching"
+               [((collection/contains [1 3]) [0 1 3 4])
+                ((collection/contains [1 3]) [0 1 2 3])
+                ((collection/contains [1 3] :gaps-ok) [0 1 2 3])
+                ((collection/contains [1 3] :in-any-order) [0 3 1 4])
+                ((collection/contains [1 3] :in-any-order :gaps-ok) [3 0 1])
+                ((collection/contains [1 1] :gaps-ok) [1])]
+               [true false true true true false])
+
+   (test-check "contains uses associative lookup for maps and structs"
+               [((collection/contains {:a 1}) {:a 1 :b 2})
+                ((collection/contains {:a 1}) (AssociativeSample 1 2))
+                ((collection/contains {:a 1}) (AssociativeSample 2 1))]
+               [true true false])
+
+   (test-check "just and nested collection forms preserve strictness"
+               [((collection/just {:a 1}) {:a 1})
+                ((collection/just {:a 1}) {:a 1 :b 2})
+                ((collection/contains-in {:a {:b [1 3]}})
+                 {:a {:b [0 1 3 4] :extra true}})
+                ((collection/just-in {:a {:b [1 3]}})
+                 {:a {:b [1 3]}})]
+               [true false true true])
+
+   (test-check "logic checkers compose canonical verification"
+               [((logic/is-not even?) 3)
+                ((logic/any even? 3) 3)
+                ((logic/all number? odd?) 3)]
+               [true true true])
+
+   (test-check "capture stores the checked value"
+               [(capture-checker 99) captured]
+               [true 99])
+
+   (test-check "checker-aware map and sequence diffs retain Foundation shape"
+               [(diff/diff-map {:a 1} {:a 2})
+                (diff/diff-map {:a even?} {:a 2})
+                (diff/diff-seq [1 2 3] [1 2 4])]
+               [{:> {[:a] {:expect 1 :actual 2}}}
+                nil
+                [[:- 2 1] [:+ 2 [4]]]])])
+
+results

@@ -1,0 +1,271 @@
+(ns work.base.frame
+  (:require [work.base.model :as base]
+            [work.base.receipt :as receipt]
+            [work.base.result :as result]
+            [work.base.store :as store]))
+
+(defn native-runtime?
+  [runtime]
+  (= :native (base/runtime-mode runtime)))
+
+(defn node-id
+  ([spec]
+   (node-id spec (:op spec)))
+  ([spec fallback]
+   (or (:id spec) fallback)))
+
+(defn child-frame
+  ([frame relation child-spec]
+   (assoc frame
+          :node/path
+          (conj (conj (:node/path frame) relation)
+                (node-id child-spec))))
+  ([frame relation slot child-spec]
+   (assoc frame
+          :node/path
+          (conj
+           (conj (conj (:node/path frame) relation) slot)
+           (node-id child-spec)))))
+
+(defn item-frame
+  [frame item-id]
+  (let [path (conj (vec (or (:item/path frame) [])) item-id)]
+    (assoc frame
+           :item/path path
+           :item/id (if (= 1 (count path))
+                      item-id
+                      path))))
+
+(defn leaf-frame
+  [frame spec]
+  (if (empty? (:node/path frame))
+    (assoc frame :node/path [(:op spec) (node-id spec)])
+    frame))
+
+(defn checkpoint-key
+  [frame]
+  [(:run/id frame)
+   (:work/root frame)
+   (:node/path frame)
+   (:item/id frame)])
+
+(defn event-record
+  [frame event data]
+  (let [record
+        (merge {:event event
+                :run/id (:run/id frame)
+                :work/root (:work/root frame)
+                :node/path (:node/path frame)
+                :item/id (:item/id frame)}
+               (or data {}))
+        options (:options frame)]
+    (if (and options (has? options :capability/generation))
+      (assoc record :capability/generation
+             (:capability/generation options))
+      record)))
+
+(defn notify-event
+  [runtime event]
+  (let [observer (base/runtime-observer runtime)]
+    (if observer
+      (try
+        (base/observer-emit observer event)
+        (catch Throwable error nil))))
+  event)
+
+(defn notify-events
+  [runtime events]
+  (reduce
+   (fn [notified event]
+     (notify-event runtime event)
+     (inc notified))
+   0
+   (or events [])))
+
+(defn transact
+  [runtime frame changes]
+  (let [store-provider (base/runtime-store runtime)]
+    (result/then
+     (store/load-run store-provider (:run/id frame))
+     (fn [run]
+       (let [derived
+             (if (store/capability? store-provider :outbox)
+               (receipt/transition-receipts run changes)
+               [])
+             changes
+             (if (empty? derived)
+               changes
+               (assoc
+                changes
+                :transition/run-updates
+                (assoc (or (:transition/run-updates changes) {})
+                       :run/receipt-status :pending)
+                :transition/outbox
+                (receipt/append-values
+                 (vec (or (:transition/outbox changes) []))
+                 derived)))]
+         (result/then
+          (store/transact-current
+           store-provider
+           (:run/id frame)
+           changes)
+          (fn [committed]
+            ;; Observers see only records that the store returned as committed.
+            (notify-events runtime (:transition/events committed))
+            committed)))))))
+
+(defn emit
+  [runtime frame event data]
+  (let [record (event-record frame event data)]
+    (cond
+      (native-runtime? runtime)
+      (do
+        ;; Promise continuations may resume after the native host has left its
+        ;; callback context.  The host owns the lifecycle events in that
+        ;; phase; the portable receipt hook still receives the record below.
+        (if (Work/current-run)
+          (Work/emit event record)
+          nil)
+        (let [call (:work/capability-call (base/runtime-hooks runtime))]
+          (if call
+            (try
+              (call :work/receipts :record [record])
+              (catch error nil))
+            nil))
+        record)
+
+      (nil? (base/runtime-store runtime))
+      (notify-event runtime record)
+
+      :else
+      (result/then
+       (transact runtime
+                  frame
+                  {:transition/events [record]})
+       (fn [committed]
+         (first (:transition/events committed)))))))
+
+(defn leaf-context
+  ([frame]
+   (merge (or (:context frame) {})
+          {:run/id (:run/id frame)
+           :work/root (:work/root frame)
+           :work/version (:work/version frame)
+           :node/path (:node/path frame)
+           :item/id (:item/id frame)
+           :item/path (or (:item/path frame) [])
+           :work/cleanup? (if (:work/cleanup? frame) true false)
+           :work/options (:options frame)}))
+  ([runtime frame]
+   (assoc
+    (leaf-context frame)
+    :work/emit
+    (fn [event data]
+      (emit runtime frame event data)))))
+
+(defn cancelled?
+  [runtime frame]
+  (cond
+    (native-runtime? runtime)
+    (Work/cancelled?)
+
+    (nil? (base/runtime-store runtime))
+    false
+
+    :else
+    (result/then
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load
+                   :run/id (:run/id frame)})
+     (fn [run]
+       (= :cancelled (:run/status run))))))
+
+(defn assert-running
+  [runtime frame]
+  (if (and (native-runtime? runtime)
+           (not (:work/cleanup? frame)))
+    (Work/check-cancelled)
+    (result/then
+     (cancelled? runtime frame)
+     (fn [cancelled]
+       (if (and (not (:work/cleanup? frame)) cancelled)
+         (throw
+          (ex :generic {:run/id (:run/id frame)} :ex/message "Work run has been cancelled")))
+       nil))))
+
+(defn explicit-item?
+  [item]
+  (and (map? item)
+       (not (nil? (:item/id item)))
+       (has? item :item/value)))
+
+(defn asserted-item
+  [id value item index]
+  (if (nil? id)
+    (throw
+     (ex :argument {:item item
+               :index index} :ex/message "Work item identity cannot be nil")))
+  {:item/id id
+   :item/value value})
+
+(defn normalise-item
+  [runtime options item index]
+  (cond
+    (explicit-item? item)
+    (asserted-item (:item/id item)
+                   (:item/value item)
+                   item
+                   index)
+
+    (:item-key options)
+    (asserted-item ((:item-key options) item)
+                   item
+                   item
+                   index)
+
+    (not (base/durable? runtime))
+    {:item/id index
+     :item/value item}
+
+    :else
+    (throw
+     (ex :dependency {:item item
+       :index index} :ex/message "Durable collection work requires :item/id or an :item-key function"))))
+
+(defn manifest-contains-id?
+  [manifest item-id]
+  (reduce
+   (fn [found item]
+     (or found (= item-id (:item/id item))))
+   false
+   manifest))
+
+(defn normalise-manifest
+  [runtime options values]
+  (let [values (vec values)]
+    (loop [index 0
+           output []]
+      (if (= index (count values))
+        output
+        (let [item
+              (normalise-item runtime
+                              options
+                              (nth values index)
+                              index)]
+          (if (manifest-contains-id? output (:item/id item))
+            (throw
+             (ex :conflict {:item/id (:item/id item)
+                       :index index} :ex/message "Work manifest contains duplicate :item/id"))
+            (recur (inc index)
+                   (conj output item))))))))
+
+(defn manifest-values
+  [manifest]
+  (vec (map (fn [item] (:item/value item)) manifest)))
+
+;; ---------------------------------------------------------------------------
+;; Node handlers
+;;
+;; A handler receives the recursive execute function first. Optional
+;; capabilities can therefore add new operations without adding protocols.
+;; ---------------------------------------------------------------------------

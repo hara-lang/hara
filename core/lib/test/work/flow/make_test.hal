@@ -1,0 +1,108 @@
+(ns work.flow.make-test
+  (:require [work.flow :as flow]
+            [work.flow.make :as make]
+            [work.base :as work :refer [def.work]]))
+
+(defn test-check
+  [name actual expected]
+  {:name name
+   :actual actual
+   :expected expected
+   :pass (= actual expected)})
+
+(def installed-triggers
+  (atom []))
+
+(def removed-triggers
+  (atom []))
+
+(defn install-trigger
+  [make-host trigger]
+  (swap! installed-triggers conj trigger)
+  {:trigger trigger})
+
+(defn remove-trigger
+  [make-host receipt]
+  (swap! removed-triggers conj (:trigger receipt))
+  receipt)
+
+(defn compile-entry
+  [definition entry input context]
+  {:entry (:id entry)
+   :input input
+   :root (:root definition)})
+
+(def.work +project+
+  [:make]
+  {:root "."
+   :trigger-policy :manual
+   :compile-entry compile-entry
+   :default [{:id :assets}]
+   :sections
+   {:docs [{:id :guide}]
+    :release [{:id :bundle}]}
+   :triggers ['app.core]
+   :trigger/install install-trigger
+   :trigger/remove remove-trigger})
+
+(def first-project +project+)
+
+(def.work +project+
+  [:make]
+  {:root "."
+   :trigger-policy :manual
+   :compile-entry compile-entry
+   :default [{:id :assets}
+             {:id :metadata}]
+   :sections
+   {:docs [{:id :guide}]}
+   :triggers ['app.core 'app.site]
+   :trigger/install install-trigger
+   :trigger/remove remove-trigger})
+
+(def results
+  [(test-check
+    "def.work creates an immutable plan inside a live host"
+    [(make/host? +project+)
+     (vec (sort (keys (make/targets +project+))))
+     (:op (work/work-spec (make/target-work +project+ :default)))]
+    [true [:default :docs] :chain])
+
+   (test-check
+    "make redefinition preserves host identity and increments revision"
+    [(= first-project +project+)
+     (make/revision +project+)
+     (= +project+
+        (flow/definition
+         'work.flow.make-test/+project+))]
+    [true 2 true])
+
+   (test-check
+    "family-specific make declarations are removed"
+    (nil? (resolve 'work.flow.make/def.make))
+    true)
+
+   (test-check
+    "filtered make directives compile a fresh ordinary work graph"
+    (let [target
+          (make/target-work +project+ [:default :metadata])
+          children (:children (work/work-spec target))]
+      [(count children)
+       (:make/target (work/work-spec target))])
+    [5 :default])
+
+   (test-check
+    "make trigger lifecycle is explicit for a manual profile"
+    (do
+      (make/start +project+)
+      (let [started [(make/status +project+)
+                     (deref installed-triggers)]]
+        (make/stop +project+)
+        [started
+         (make/status +project+)
+         (deref removed-triggers)]))
+    [[:running ['app.core 'app.site]]
+     :stopped
+     ['app.core 'app.site]])])
+
+results

@@ -1,0 +1,86 @@
+(ns std.typed.catalog.document-test
+  (:use code.test)
+  (:require [std.typed.catalog :as catalog]
+            [std.typed.catalog.document :as document]))
+
+(def +catalog+
+  (catalog/catalog
+   [{:schema/id :fixture/value
+     :schema/form :int}]))
+
+(def +entry+ (catalog/lookup +catalog+ :fixture/value))
+(def +coordinate+ (catalog/coordinate +catalog+ :fixture/value))
+(def +component+ (first (catalog/dependency-components +catalog+ [+coordinate+])))
+(def +wire-coordinate+
+  ["schema" "fixture/value" (:schema/hash +entry+)])
+
+(def +document+
+  {"catalog/format" "std.typed.catalog/2"
+   "catalog/hash-epoch" "std.typed.schema/catalog-v2"
+   "catalog/component-epoch" "std.typed.catalog/component-v2"
+   "catalog/provenance"
+   {"repository" "hara-lang/hara"
+    "revision" "0123456789abcdef0123456789abcdef01234567"
+    "sources" ["01-lang/011-typed-catalog/draft/conformance/catalog-v2.json"]}
+   "catalog/entries"
+   [{"schema/id" "fixture/value"
+     "schema/hash" (:schema/hash +entry+)
+     "schema/coordinate" +wire-coordinate+
+     "schema/form" (pr-str (:schema/form +entry+))
+     "schema/normal" (pr-str (:schema/normal +entry+))
+     "schema/dependencies" []}]
+   "catalog/components"
+   [{"component/id" (:component/id +component+)
+     "component/members" [+wire-coordinate+]
+     "component/recursive?" false
+     "component/dependencies" []}]
+   "catalog/component-order" [(:component/id +component+)]
+   "catalog/document-digest"
+   "sha256:0000000000000000000000000000000000000000000000000000000000000000"})
+
+^{:refer std.typed.catalog.document/verify}
+(fact "verifies exact catalog entries and rejects forged semantic evidence"
+  (let [verified (document/verify +document+)
+        verification (:verification verified)
+        stale-normal
+        (assoc-in +document+
+                  ["catalog/entries" 0 "schema/normal"]
+                  ":str")
+        stale-result
+        (try
+          (document/verify stale-normal)
+          nil
+          (catch Throwable error
+            (ex-data error)))
+        versioned-coordinate
+        (assoc-in +document+
+                  ["catalog/entries" 0 "schema/coordinate"]
+                  ["schema" "fixture/value" 1 (:schema/hash +entry+)])
+        coordinate-result
+        (try
+          (document/verify versioned-coordinate)
+          nil
+          (catch Throwable error
+            (ex-data error)))]
+    [(= :verified (:status verification))
+     (= 1 (:catalog/entry-count verification))
+     (= 1 (:catalog/component-count verification))
+     (= +coordinate+ (first (:catalog/coordinates verification)))
+     (= :std.typed.catalog.document/schema-normal-mismatch
+        (:finding/type stale-result))
+     (= :std.typed.catalog.document/coordinate-invalid
+        (:finding/type coordinate-result))])
+  => [true true true true true true])
+
+^{:refer std.typed.catalog.document/verify-json}
+(fact "reads the wire JSON projection without changing exact links"
+  (let [verified (document/verify-json (Json/write +document+))
+        verification (:verification verified)]
+    [(= :verified (:status verification))
+     (= +coordinate+ (first (:catalog/coordinates verification)))
+     (= (:component/id +component+)
+        (first (:catalog/component-order verification)))
+     (= "std.typed.catalog/2" (:catalog/format verification))])
+  => [true true true true])
+
+(pr-str (run '[std.typed.catalog.document-test]))

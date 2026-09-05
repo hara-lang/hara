@@ -1,0 +1,46 @@
+(ns lang.common.preprocess-assign-test
+  (:use code.test)
+  (:require [lang.common.preprocess-assign :as assign]))
+
+(def modules
+  {'L.core {:code {'identity-fn {:id 'identity-fn}}}})
+
+(def options
+  '{:module {:id app.core :link {u L.core}}})
+
+^{:refer lang.common.preprocess-assign/process-inline-assignment :added "4.1"}
+(fact "resolves explicitly inline assignments"
+  (let [form
+        (assign/process-inline-assignment
+         '(var a := (u/identity-fn 1) :inline)
+         modules options true)]
+    [form (select-keys (meta (last form)) [:assign/inline])])
+  => '[(var a := (L.core/identity-fn 1)) {:assign/inline true}])
+
+^{:refer lang.common.preprocess-assign/process-template-assignment :added "4.1"}
+(fact "rewrites value-block macros in assignment position"
+  (let [grammar
+        {:reserved
+         {':= {:emit :assign}
+          'value-block
+          {:emit :macro
+           :op :var-value-block
+           :macro (fn [_] '(do (return 1)))
+           :value/standalone true
+           :op-spec {:allow-blocks true}}}}]
+    (assign/process-template-assignment
+     '(:= result (value-block)) grammar {} {}))
+  => '(do (:= result 1)))
+
+^{:refer lang.common.preprocess-assign/protect-reserved-head :added "4.1"}
+(fact "protects reserved heads without losing form metadata"
+  (let [out
+        (assign/protect-reserved-head
+         (with-meta '(return value) {:line 10}))]
+    [(assign/protected-head? (first out))
+     (assign/unwrap-protected-head (first out))
+     (rest out)
+     (meta out)])
+  => '[true return (value) {:line 10}])
+
+(run {:namespace "lang.common.preprocess-assign-test"})

@@ -1,0 +1,270 @@
+(ns code.manage.unit.template
+  (:config {:override [task]})
+  (:require [code.framework :as framework]
+            [work.base :as work]
+            [work.flow.task :as task-template]))
+
+(def schema-id "code.manage.task/0-alpha")
+
+(defn operation-id
+  [operation]
+  (keyword (str "code.manage/" (name operation))))
+
+(defn code-unit?
+  [value]
+  (and (map? value)
+       (has? value :path)
+       (has? value :source)))
+
+(defn unit-namespace
+  "Returns the declared namespace used as the task item selector."
+  [unit]
+  (or (:namespace unit)
+      (try
+        (let [namespace (framework/namespace-name (:source unit))]
+          (if namespace (symbol namespace) nil))
+        (catch error nil))
+      (:path unit)
+      (:name unit)))
+
+(defn task-input-units
+  [input]
+  (cond
+    (and (map? input) (has? input :units))
+    (vec (or (:units input) []))
+
+    (and (map? input) (has? input :unit))
+    [(:unit input)]
+
+    (code-unit? input)
+    [input]
+
+    (vector? input)
+    input
+
+    (nil? input)
+    []
+
+    :else
+    [input]))
+
+(defn task-input-options
+  [input defaults]
+  (merge
+   (or defaults {})
+   (if (and (map? input) (has? input :options))
+     (or (:options input) {})
+     {})))
+
+(defn task-item
+  [unit options]
+  (let [namespace (unit-namespace unit)]
+    {:item/id namespace
+     :item/value
+     {:code.manage/unit
+      (if (and namespace (nil? (:namespace unit)))
+        (assoc unit :namespace namespace)
+        unit)
+      :code.manage/options options
+      :code.manage/namespace namespace
+      :code.manage/path (:path unit)}}))
+
+(defn tasklet-subject-unit
+  [subject]
+  (:code.manage/unit subject))
+
+(defn tasklet-subject-options
+  [subject]
+  (or (:code.manage/options subject) {}))
+
+(defn invoke-tasklet
+  [tasklet argcount unit options]
+  (case argcount
+    1 (tasklet unit)
+    2 (tasklet unit options)
+    (throw
+     (ex :generic {:argcount argcount} :ex/message "code.manage tasklets support one or two arguments"))))
+
+(defn result-record
+  [item]
+  (if (and (map? item) (has? item :item/value))
+    (:item/value item)
+    item))
+
+(defn batch-records
+  [batch]
+  (vec
+   (map result-record
+        (or (:results batch)
+            (:records batch)
+            []))))
+
+(defn result-envelope-key?
+  [key]
+  (or (= key :status)
+      (= "item" (namespace key))))
+
+(defn flattened-result-data
+  [record]
+  (reduce
+   (fn [output entry]
+     (let [key (first entry)]
+       (if (result-envelope-key? key)
+         output
+         (assoc output key (second entry)))))
+   {}
+   record))
+
+(defn legacy-record
+  "Restores the historical :data boundary for map-valued tasklet results."
+  [record]
+  (if (has? record :data)
+    record
+    (assoc record :data (flattened-result-data record))))
+
+(defn legacy-item
+  [record]
+  {:item/id (:item/id record)
+   :item/value (legacy-record record)})
+
+(defn legacy-input-item
+  [record]
+  {:item/id (:item/id record)
+   :item/value (:item/input record)})
+
+(defn legacy-batch
+  [bundle]
+  (let [records (vec (:records bundle))]
+    (assoc bundle
+           :items (vec (map legacy-input-item records))
+           :results (vec (map legacy-item records)))))
+
+(defn finalise-summary
+  [operation summary records results]
+  (assoc summary
+         :operation operation
+         :count (:items summary)))
+
+(defn assert-task
+  [config]
+  (if (not (map? config))
+    (throw
+     (ex :argument {:config config} :ex/message "code.manage task configuration must be a map")))
+  (if (nil? (:operation config))
+    (throw
+     (ex :dependency {} :ex/message "code.manage task requires :operation")))
+  (if (nil? (get-in config [:main :fn]))
+    (throw
+     (ex :dependency {:operation (:operation config)} :ex/message "code.manage task requires :main :fn")))
+  (if (nil? (get-in config [:main :symbol]))
+    (throw
+     (ex :dependency {:operation (:operation config)} :ex/message "code.manage task requires :main :symbol")))
+  config)
+
+(task-template/register-profile
+ :code.manage
+ {:execution {:order :input
+              :parallel false}
+  :return {:select :all
+           :package :map}})
+
+(defn task
+  "Composes one public code.manage task through work.flow.task while
+   retaining the atomic tasklet and compatibility metadata."
+  [raw-config]
+  (let [config (assert-task raw-config)
+        operation (:operation config)
+        id (or (:id config) (operation-id operation))
+        version (or (:version config) 1)
+        tasklet (get-in config [:main :fn])
+        tasklet-symbol (get-in config [:main :symbol])
+        argcount (or (get-in config [:main :argcount]) 2)
+        defaults (or (:params config) {})]
+    (let [definition
+          {:id id
+           :version version
+           :type :code.manage
+           :params defaults
+           :construct (or (:construct config) {})
+           :metadata
+           {:code.manage/schema schema-id
+            :code.manage/operation operation
+            :code.manage/tasklet tasklet-symbol}
+           :invocation {:mode :selector
+                        :selector-key :namespace}
+           :item
+           {:list-mode :input-context
+            :list
+            (fn [input context]
+              (let [options (task-input-options input defaults)]
+                (vec
+                 (map
+                  (fn [unit]
+                    (task-item unit options))
+                  (task-input-units input)))))
+            :run
+            (fn [subject context]
+              (invoke-tasklet
+               tasklet
+               argcount
+               (tasklet-subject-unit subject)
+               (merge
+                (tasklet-subject-options subject)
+                (or (:task/params subject) {}))))}
+           :summary
+           {:finalise
+            (fn [summary records results]
+              (finalise-summary operation summary records results))}
+           :return {:select :all
+                    :package :map}}
+          compiled (task-template/compile definition)
+          normalised (:template/definition
+                      (work/work-spec compiled))]
+      (let [composed
+            (work/chain
+             {:id id
+              :version version
+              :template/schema task-template/schema-id
+              :template/definition normalised
+              :code.manage/schema schema-id
+              :code.manage/operation operation
+              :code.manage/tasklet tasklet-symbol}
+             [compiled
+              (work/pure
+               {:id (keyword
+                     (str "code.manage/"
+                          (name operation)
+                          "-legacy-result"))
+                :version version}
+               (fn [bundle context]
+                 (legacy-batch bundle)))])]
+        (task-template/callable composed normalised)))))
+
+(defn task-definition
+  [work-value]
+  (:template/definition (work/work-spec work-value)))
+
+(defn task?
+  [work-value]
+  (= schema-id
+     (get-in
+      (task-definition work-value)
+      [:metadata :code.manage/schema])))
+
+(defn task-operation
+  [work-value]
+  (get-in
+   (task-definition work-value)
+   [:metadata :code.manage/operation]))
+
+(defn tasklet-reference
+  [work-value]
+  (get-in
+   (task-definition work-value)
+   [:metadata :code.manage/tasklet]))
+
+(defn run-task
+  ([task-value input]
+   (work/run work/default-host task-value input))
+  ([runtime task-value input]
+   (work/run runtime task-value input)))

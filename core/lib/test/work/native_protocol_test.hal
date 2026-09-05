@@ -1,0 +1,111 @@
+(ns work.native-protocol-test
+  (:require [work.base.model :as base]))
+
+(defstruct TestWorkExecutor [value])
+(defstruct TestWorkStore [value])
+(defstruct TestWorkHost [value])
+(defstruct TestWorkRun [id])
+
+(extend-type TestWorkExecutor IWorkExecutor
+  (work-execute [executor request]
+    [:executed request]))
+
+(extend-type TestWorkStore IWorkStore
+  (work-query [store query]
+    [:query query])
+  (work-transact [store transition]
+    [:transact transition]))
+
+(extend-type TestWorkHost IComponent
+  (props [host] {})
+  (status [host] :started)
+  (started? [host] true)
+  (stopped? [host] false)
+  (start [host] host)
+  (stop [host] host)
+  (kill [host] host)
+  (remote? [host] false))
+
+(extend-type TestWorkHost IWorkHost
+  (work-submit [host work input options]
+    [work input options])
+  (work-resolve [host reference]
+    reference))
+
+(extend-type TestWorkRun IWorkRef
+  (work-id [run]
+    (:id run)))
+
+(extend-type TestWorkRun IClosed
+  (closed? [run]
+    true))
+
+(extend-type TestWorkRun IWorkRun
+  (work-status [run]
+    :completed)
+  (work-result [run]
+    nil)
+  (work-events [run options]
+    nil)
+  (work-cancel [run reason]
+    nil))
+
+(def results
+  [(test-check
+    "existing Work and WorkRef values satisfy the native contracts"
+    (let [work (base/work-value {:op :pure :id :native-work})
+          reference (base/work-reference "run-1")]
+      [(satisfies? IWork work)
+       (IWork/work-spec work)
+       (satisfies? IWorkRef reference)
+       (IWorkRef/work-id reference)
+       (base/reference-id reference)])
+    [true
+     {:op :pure :id :native-work}
+     true
+     "run-1"
+     "run-1"])
+
+   (test-check
+    "HAL types extend the native executor and store protocols"
+    (let [executor (TestWorkExecutor nil)
+          store (TestWorkStore nil)]
+      [(satisfies? IWorkExecutor executor)
+       (IWorkExecutor/work-execute executor {:leaf :compile})
+       (satisfies? IWorkStore store)
+       (IWorkStore/work-query store {:query/type :run})
+       (IWorkStore/work-transact
+        store
+        {:transition/run-id "run-1"})])
+    [true
+     [:executed {:leaf :compile}]
+     true
+     [:query {:query/type :run}]
+     [:transact {:transition/run-id "run-1"}]])
+
+   (test-check
+    "HAL types extend the native host and run protocols with their parents"
+    (let [host (TestWorkHost nil)
+          run (TestWorkRun "run-2")]
+      [(satisfies? IWorkHost host)
+       (IWorkHost/work-submit host :work :input {:priority :high})
+       (IWorkHost/work-resolve host "run-2")
+       (satisfies? IWorkRun run)
+       (IWorkRun/work-status run)
+       (IWorkRef/work-id run)
+       (IClosed/closed? run)])
+    [true
+     [:work :input {:priority :high}]
+     "run-2"
+     true
+     :completed
+     "run-2"
+     true])
+
+   (test-check
+    "runtime-produced Work adds no bind or continuation protocol"
+    [(nil? (resolve (symbol (str "IWork" "Bind"))))
+     (nil? (resolve (symbol (str "IWork" "Continuation"))))]
+    [true true])])
+
+results

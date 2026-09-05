@@ -1,0 +1,586 @@
+(ns code.vm.instrument
+  (:config {:role :internal}))
+
+(def ^{:public true} +protocol+
+  "hara.instrumentation/0-alpha")
+
+(def ^{:public true} +event-schema+
+  "hara.instrumentation.event/0-alpha")
+
+(def +instrument-modes+
+  #{:passive :control :transform})
+
+(def +target-kinds+
+  #{:interpreter :hbc})
+
+(def +runtimes+
+  #{:rust :truffle})
+
+(def +event-phases+
+  #{:live :replay})
+
+(def +delivery-kinds+
+  #{:callback :queue})
+
+(def +capabilities+
+  #{:event/semantic-boundary
+    :event/instruction
+    :event/call
+    :event/exception
+    :event/effect
+    :event/suspension
+    :event/lifecycle
+    :inspect/source-location
+    :inspect/current-frame
+    :inspect/frames
+    :inspect/locals
+    :inspect/stack
+    :inspect/value-preview
+    :inspect/snapshot
+    :control/pause
+    :control/single-step
+    :control/resume
+    :control/settle
+    :control/terminate
+    :transform/halc
+    :transform/hbc
+    :retransform/halc
+    :retransform/hbc})
+
+(def +control-capabilities+
+  #{:control/pause
+    :control/single-step
+    :control/resume
+    :control/settle
+    :control/terminate})
+
+(def +transform-capabilities+
+  #{:transform/halc
+    :transform/hbc
+    :retransform/halc
+    :retransform/hbc})
+
+(def +interpreter-events+
+  #{:semantic/boundary
+    :call/enter
+    :call/return
+    :exception/raise
+    :effect/var-set
+    :effect/field-set
+    :promise/suspend
+    :promise/resume
+    :execution/terminal})
+
+(def +hbc-events+
+  #{:instruction/execute
+    :call/enter
+    :call/return
+    :exception/unwind
+    :machine/suspend
+    :machine/resume
+    :execution/terminal})
+
+(def +events+
+  (reduce conj +interpreter-events+ +hbc-events+))
+
+(def +default-projection-limits+
+  {:items 256
+   :depth 16
+   :bytes 65536})
+
+(defn invalid
+  [message data]
+  (throw (ex-info message data)))
+
+(defn map-value
+  [label value]
+  (if (map? value)
+    value
+    (invalid
+     (str "code.vm.instrument " label " must be a map")
+     {:field label
+      :value value})))
+
+(defn non-empty-string
+  [label value]
+  (if (and (string? value)
+           (> (count value) 0))
+    value
+    (invalid
+     (str "code.vm.instrument " label " must be a non-empty string")
+     {:field label
+      :value value})))
+
+(defn instrument-id
+  [value]
+  (if (or (keyword? value)
+          (and (string? value)
+               (> (count value) 0)))
+    value
+    (invalid
+     "code.vm.instrument instrument id must be a keyword or non-empty string"
+     {:field :instrument/id
+      :value value})))
+
+(defn non-negative-integer
+  [label value]
+  (if (and (long? value)
+           (>= value 0))
+    value
+    (invalid
+     (str "code.vm.instrument " label " must be a non-negative integer")
+     {:field label
+      :value value})))
+
+(defn positive-integer
+  [label value]
+  (if (and (long? value)
+           (> value 0))
+    value
+    (invalid
+     (str "code.vm.instrument " label " must be a positive integer")
+     {:field label
+      :value value})))
+
+(defn member
+  [label allowed value]
+  (if (has? allowed value)
+    value
+    (invalid
+     (str "Unsupported code.vm.instrument " label ": " value)
+     {:field label
+      :value value
+      :allowed allowed})))
+
+(defn member-set
+  [label allowed value]
+  (let [value (or value #{})
+        value (cond
+                (set? value) value
+                (vector? value) (reduce conj #{} value)
+                :else
+                (invalid
+                 (str "code.vm.instrument " label
+                      " must be a set or vector")
+                 {:field label
+                  :value value}))]
+    (reduce
+     (fn [output item]
+       (conj output (member label allowed item)))
+     #{}
+     value)))
+
+(defn contains-member?
+  [values allowed]
+  (reduce
+   (fn [found value]
+     (or found (has? allowed value)))
+   false
+   values))
+
+(defn event-capability
+  [event]
+  (cond
+    (= event :semantic/boundary) :event/semantic-boundary
+    (= event :instruction/execute) :event/instruction
+    (or (= event :call/enter)
+        (= event :call/return)) :event/call
+    (or (= event :exception/raise)
+        (= event :exception/unwind)) :event/exception
+    (or (= event :effect/var-set)
+        (= event :effect/field-set)) :event/effect
+    (or (= event :promise/suspend)
+        (= event :promise/resume)
+        (= event :machine/suspend)
+        (= event :machine/resume)) :event/suspension
+    (= event :execution/terminal) :event/lifecycle
+    :else nil))
+
+(defn event-supported?
+  [target-kind event]
+  (cond
+    (= target-kind :interpreter)
+    (has? +interpreter-events+ event)
+
+    (= target-kind :hbc)
+    (has? +hbc-events+ event)
+
+    :else false))
+
+(defn projection-limit
+  [label value]
+  (if (nil? value)
+    nil
+    (let [value (merge +default-projection-limits+
+                       (map-value label value))]
+      {:items (positive-integer
+               (str label " items")
+               (:items value))
+       :depth (positive-integer
+               (str label " depth")
+               (:depth value))
+       :bytes (positive-integer
+               (str label " bytes")
+               (:bytes value))})))
+
+(defn projection-capabilities
+  [projection]
+  (reduce
+   (fn [required entry]
+     (let [field (first entry)
+           capability (second entry)]
+       (if (or (= field :source-location)
+               (not (nil? (get projection field))))
+         (if (and (= field :source-location)
+                  (not= true (get projection field)))
+           required
+           (conj required capability))
+         required)))
+   #{}
+   [[:source-location :inspect/source-location]
+    [:current-frame :inspect/current-frame]
+    [:frames :inspect/frames]
+    [:locals :inspect/locals]
+    [:stack :inspect/stack]
+    [:value-preview :inspect/value-preview]
+    [:machine-snapshot :inspect/snapshot]]))
+
+(defn normalize-projection
+  [value]
+  (let [value (map-value "projection" (or value {}))]
+    {:source-location (= true (:source-location value))
+     :current-frame (projection-limit
+                     "current-frame"
+                     (:current-frame value))
+     :frames (projection-limit "frames" (:frames value))
+     :locals (projection-limit "locals" (:locals value))
+     :stack (projection-limit "stack" (:stack value))
+     :value-preview (projection-limit
+                     "value-preview"
+                     (:value-preview value))
+     :machine-snapshot (projection-limit
+                        "machine-snapshot"
+                        (:machine-snapshot value))}))
+
+(defn normalize-filter
+  [value]
+  (let [value (map-value "filter" (or value {}))
+        session-id (:session-id value)]
+    {:session-id (if (nil? session-id)
+                   nil
+                   (non-empty-string "filter session-id" session-id))
+     :target-ids (let [ids (or (:target-ids value) #{})]
+                   (reduce
+                    (fn [output id]
+                      (conj output
+                            (non-empty-string "filter target-id" id)))
+                    #{}
+                    (if (vector? ids)
+                      ids
+                      (if (set? ids)
+                        ids
+                        (invalid
+                         "code.vm.instrument filter target-ids must be a set or vector"
+                         {:field :target-ids
+                          :value ids})))))
+     :target-kinds (member-set
+                    "filter target-kind"
+                    +target-kinds+
+                    (:target-kinds value))
+     :runtimes (member-set
+                "filter runtime"
+                +runtimes+
+                (:runtimes value))}))
+
+(defn ^{:public true} registration
+  [options]
+  (let [options (map-value "registration" options)
+        mode (member
+              "instrument mode"
+              +instrument-modes+
+              (or (:instrument/mode options) :passive))
+        capabilities (member-set
+                      "capability"
+                      +capabilities+
+                      (:instrument/capabilities options))
+        events (member-set
+                "event"
+                +events+
+                (:instrument/events options))
+        projection (normalize-projection
+                    (:instrument/projection options))
+        delivery (member
+                  "delivery"
+                  +delivery-kinds+
+                  (or (:instrument/delivery options) :queue))]
+    (reduce
+     (fn [_ event]
+       (let [capability (event-capability event)]
+         (if (has? capabilities capability)
+           nil
+           (invalid
+            "Instrumentation event requires its event capability"
+            {:event event
+             :capability capability}))))
+     nil
+     events)
+    (reduce
+     (fn [_ capability]
+       (if (has? capabilities capability)
+         nil
+         (invalid
+          "Instrumentation projection requires its inspection capability"
+          {:capability capability
+           :projection projection})))
+     nil
+     (projection-capabilities projection))
+    (if (and (not= mode :control)
+             (contains-member? capabilities +control-capabilities+))
+      (invalid
+       "Only control instruments may request control capabilities"
+       {:mode mode
+        :capabilities capabilities})
+      nil)
+    (if (and (not= mode :transform)
+             (contains-member? capabilities +transform-capabilities+))
+      (invalid
+       "Only transform instruments may request transform capabilities"
+       {:mode mode
+        :capabilities capabilities})
+      nil)
+    {:protocol +protocol+
+     :instrument/id (instrument-id (:instrument/id options))
+     :session-id (non-empty-string
+                  "instrument session-id"
+                  (:session-id options))
+     :instrument/mode mode
+     :instrument/capabilities capabilities
+     :instrument/events events
+     :instrument/filter (normalize-filter (:instrument/filter options))
+     :instrument/projection projection
+     :instrument/delivery delivery
+     :instrument/queue-capacity
+     (if (= delivery :queue)
+       (positive-integer
+        "queue capacity"
+        (or (:instrument/queue-capacity options) 256))
+       nil)}))
+
+(defn ^{:public true} registration?
+  [value]
+  (and (map? value)
+       (= (:protocol value) +protocol+)
+       (or (keyword? (:instrument/id value))
+           (and (string? (:instrument/id value))
+                (> (count (:instrument/id value)) 0)))
+       (and (string? (:session-id value))
+            (> (count (:session-id value)) 0))
+       (has? +instrument-modes+ (:instrument/mode value))
+       (set? (:instrument/capabilities value))
+       (set? (:instrument/events value))
+       (map? (:instrument/filter value))
+       (map? (:instrument/projection value))
+       (has? +delivery-kinds+ (:instrument/delivery value))
+       (or (= (:instrument/delivery value) :callback)
+           (and (long? (:instrument/queue-capacity value))
+                (> (:instrument/queue-capacity value) 0)))))
+
+(defn ^{:public true} target
+  [options]
+  (let [options (map-value "target" options)]
+    {:protocol +protocol+
+     :target-id (non-empty-string "target id" (:target-id options))
+     :target-kind (member
+                   "target kind"
+                   +target-kinds+
+                   (:target-kind options))
+     :runtime (member "runtime" +runtimes+ (:runtime options))
+     :session-id (non-empty-string
+                  "target session-id"
+                  (:session-id options))
+     :generation (non-negative-integer
+                  "target generation"
+                  (or (:generation options) 0))
+     :capabilities (member-set
+                    "target capability"
+                    +capabilities+
+                    (:capabilities options))}))
+
+(defn ^{:public true} target?
+  [value]
+  (and (map? value)
+       (= (:protocol value) +protocol+)
+       (and (string? (:target-id value))
+            (> (count (:target-id value)) 0))
+       (has? +target-kinds+ (:target-kind value))
+       (has? +runtimes+ (:runtime value))
+       (and (string? (:session-id value))
+            (> (count (:session-id value)) 0))
+       (and (long? (:generation value))
+            (>= (:generation value) 0))
+       (set? (:capabilities value))))
+
+(defn normalize-span
+  [value]
+  (if (nil? value)
+    nil
+    (let [value (map-value "location span" value)
+          start (non-negative-integer "span start" (:start value))
+          end (non-negative-integer "span end" (:end value))]
+      (if (>= end start)
+        {:start start :end end}
+        (invalid
+         "Instrumentation span end precedes its start"
+         {:start start
+          :end end})))))
+
+(defn normalize-location
+  [target-kind event value]
+  (if (nil? value)
+    nil
+    (let [value (map-value "event location" value)
+          ip (:ip value)
+          form-path (:form/path value)]
+      (if (and (= target-kind :interpreter)
+               (not (nil? ip)))
+        (invalid
+         "Interpreter events cannot claim an instruction pointer"
+         {:target-kind target-kind
+          :ip ip})
+        nil)
+      (if (and (= target-kind :hbc)
+               (= event :instruction/execute)
+               (not (nil? form-path)))
+        (invalid
+         "HBC instruction events cannot claim an AST form path"
+         {:target-kind target-kind
+          :form/path form-path})
+        nil)
+      {:source-id (:source-id value)
+       :form/path form-path
+       :span (normalize-span (:span value))
+       :function (:function value)
+       :ip ip})))
+
+(defn ^{:public true} event
+  [registration target sequence event options]
+  (if (not (registration? registration))
+    (invalid
+     "Instrumentation event requires a registration"
+     {:registration registration})
+    nil)
+  (if (not (target? target))
+    (invalid
+     "Instrumentation event requires a target"
+     {:target target})
+    nil)
+  (if (not= (:session-id registration) (:session-id target))
+    (invalid
+     "Instrumentation registration and target sessions must match"
+     {:instrument/session-id (:session-id registration)
+      :target/session-id (:session-id target)})
+    nil)
+  (let [options (map-value "event options" (or options {}))
+        event (member "event" +events+ event)
+        target-kind (:target-kind target)
+        phase (member
+               "event phase"
+               +event-phases+
+               (or (:phase options) :live))
+        data (map-value "event data" (or (:data options) {}))]
+    (if (has? (:instrument/events registration) event)
+      nil
+      (invalid
+       "Instrumentation event is not subscribed by the instrument"
+       {:instrument/id (:instrument/id registration)
+        :event event}))
+    (if (event-supported? target-kind event)
+      nil
+      (invalid
+       "Instrumentation event is not supported by target kind"
+       {:target-kind target-kind
+        :event event}))
+    (if (and (= target-kind :interpreter)
+             (has? data :opcode))
+      (invalid
+       "Interpreter events cannot claim an opcode"
+       {:event event
+        :data data})
+      nil)
+    (if (and (= target-kind :hbc)
+             (= event :instruction/execute)
+             (has? data :semantic/form))
+      (invalid
+       "HBC instruction events cannot claim an AST semantic form"
+       {:event event
+        :data data})
+      nil)
+    {:schema +event-schema+
+     :protocol +protocol+
+     :instrument/id (:instrument/id registration)
+     :runtime (:runtime target)
+     :session-id (:session-id target)
+     :target-id (:target-id target)
+     :target-kind target-kind
+     :generation (:generation target)
+     :sequence (non-negative-integer "event sequence" sequence)
+     :phase phase
+     :event event
+     :location (normalize-location
+                target-kind
+                event
+                (:location options))
+     :data data}))
+
+(defn ^{:public true} event?
+  [value]
+  (and (map? value)
+       (= (:schema value) +event-schema+)
+       (= (:protocol value) +protocol+)
+       (or (keyword? (:instrument/id value))
+           (string? (:instrument/id value)))
+       (has? +runtimes+ (:runtime value))
+       (and (string? (:session-id value))
+            (> (count (:session-id value)) 0))
+       (and (string? (:target-id value))
+            (> (count (:target-id value)) 0))
+       (has? +target-kinds+ (:target-kind value))
+       (and (long? (:generation value))
+            (>= (:generation value) 0))
+       (and (long? (:sequence value))
+            (>= (:sequence value) 0))
+       (has? +event-phases+ (:phase value))
+       (event-supported? (:target-kind value) (:event value))
+       (or (nil? (:location value))
+           (map? (:location value)))
+       (map? (:data value))
+       (not (and (= (:target-kind value) :interpreter)
+                 (or (not (nil? (get-in value [:location :ip])))
+                     (has? (:data value) :opcode))))
+       (not (and (= (:target-kind value) :hbc)
+                 (= (:event value) :instruction/execute)
+                 (or (not (nil? (get-in value [:location :form/path])))
+                     (has? (:data value) :semantic/form))))))
+
+(defn ^{:public true} trace-provenance
+  [mode options]
+  (let [mode (member "trace mode" #{:live :replay} mode)
+        options (map-value "trace provenance" (or options {}))]
+    (if (= mode :live)
+      {:vm/mode :live
+       :vm/backend (member
+                    "trace backend"
+                    +target-kinds+
+                    (:backend options))
+       :vm/provider (member
+                     "trace provider"
+                     +runtimes+
+                     (:provider options))
+       :vm/target-id (non-empty-string
+                      "trace target-id"
+                      (:target-id options))}
+      {:vm/mode :replay
+       :vm/backend (member
+                    "trace backend"
+                    +target-kinds+
+                    (:backend options))})))

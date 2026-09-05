@@ -1,0 +1,211 @@
+(ns code.manage.unit.scaffold
+  (:require [code.manage.unit.structure :as structure]))
+
+(def +default-added+ "0.1")
+
+(defn mapped-test-path
+  [path options]
+  (let [source-root (:source-root options)
+        test-root (:test-root options)]
+    (cond
+      (and source-root
+           test-root
+           (str/includes? path source-root))
+      (str/replace-first path source-root test-root)
+
+      (str/includes? path "/src-lang/")
+      (str/replace-first path "/src-lang/" "/test-lang/")
+
+      (str/includes? path "/src/")
+      (str/replace-first path "/src/" "/test/")
+
+      (str/starts-with? path "src-lang/")
+      (str/replace-first path "src-lang/" "test-lang/")
+
+      (str/starts-with? path "src/")
+      (str/replace-first path "src/" "test/")
+
+      :else
+      path)))
+
+(defn test-file-path
+  [path]
+  (if (str/ends-with? path ".hal")
+    (str
+     (str/slice path
+                0
+                (- (str/length path) 4))
+     "_test.hal")
+    (str path "_test.hal")))
+
+(defn test-path-for
+  [code-unit options]
+  (or (:test-path options)
+      (:test-path code-unit)
+      (test-file-path
+       (mapped-test-path
+        (:path code-unit)
+        (or options {})))))
+
+(defn test-namespace-for
+  [code-unit options source-namespace]
+  (or (:test-namespace options)
+      (symbol
+       (str source-namespace "-test"))))
+
+(defn major-minor
+  [version]
+  (let [parts (str/split (str version) ".")]
+    (cond
+      (empty? parts) +default-added+
+      (= 1 (count parts)) (str (first parts) ".0")
+      :else (str/join "." (take 2 parts)))))
+
+(defn added-version
+  [options]
+  (major-minor
+   (or (:added options)
+       (:version options)
+       +default-added+)))
+
+(defn definition-name
+  [definition]
+  (if (map? definition)
+    (:name definition)
+    (str definition)))
+
+(defn definition-title
+  [definition]
+  (if (and (map? definition)
+           (not (str/blank? (or (:docstring definition) ""))))
+    (:docstring definition)
+    "TODO"))
+
+(defn scaffold-metadata
+  [source-namespace definition options]
+  (str
+   "^{:refer "
+   source-namespace
+   "/"
+   (definition-name definition)
+   " :added \""
+   (added-version options)
+   "\"}"))
+
+(defn scaffold-fact
+  ([source-namespace definition]
+   (scaffold-fact source-namespace
+                  definition
+                  {}))
+  ([source-namespace definition options]
+   (str
+    (scaffold-metadata
+     source-namespace
+     definition
+     options)
+    "\n"
+    "(fact "
+    (pr-str (definition-title definition))
+    ")")))
+
+(defn namespace-form
+  [source-namespace test-namespace alias]
+  (str
+   "(ns "
+   test-namespace
+   "\n"
+   "  (:use code.test)\n"
+   "  (:require ["
+   source-namespace
+   " :as "
+   alias
+   "]))"))
+
+(defn runner-form
+  [test-namespace]
+  (str
+   "(pr-str (run {:namespace \""
+   test-namespace
+   "\"}))"))
+
+(defn facts-text
+  [source-namespace definitions options]
+  (str/join
+   "\n\n"
+   (map
+    (fn [definition]
+      (scaffold-fact source-namespace definition options))
+    definitions)))
+
+(defn new-scaffold
+  [source-namespace test-namespace alias definitions options]
+  (str
+   (namespace-form source-namespace test-namespace alias)
+   "\n\n"
+   (facts-text source-namespace definitions options)
+   "\n\n"
+   (runner-form test-namespace)
+   "\n"))
+
+(defn missing-definitions
+  [source-namespace definitions test-source test-path]
+  (let [facts (structure/facts-from-source test-source test-path)
+        references (structure/facts-by-reference facts)]
+    (vec
+     (filter
+      (fn [definition]
+        (nil?
+         (get references
+              (structure/source-reference source-namespace definition))))
+      definitions))))
+
+(defn append-scaffold
+  [test-source source-namespace definitions options]
+  (if (empty? definitions)
+    test-source
+    (structure/insert-before-runner
+     test-source
+     (facts-text source-namespace definitions options))))
+
+(defn scaffold-source
+  ([source-namespace test-namespace alias]
+   (scaffold-source
+    source-namespace
+    test-namespace
+    alias
+    []
+    {}))
+  ([source-namespace test-namespace alias definitions]
+   (scaffold-source
+    source-namespace
+    test-namespace
+    alias
+    definitions
+    {}))
+  ([source-namespace
+    test-namespace
+    alias
+    definitions
+    options]
+   (let [test-source (or (:test-source options) "")
+         test-path (or (:test-path options) "")
+         missing (missing-definitions source-namespace
+                                      definitions
+                                      test-source
+                                      test-path)]
+     (cond
+       (empty? missing)
+       test-source
+
+       (str/blank? test-source)
+       (new-scaffold source-namespace
+                     test-namespace
+                     alias
+                     missing
+                     options)
+
+       :else
+       (append-scaffold test-source
+                        source-namespace
+                        missing
+                        options)))))

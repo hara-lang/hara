@@ -1,0 +1,68 @@
+(ns std.stream.frame)
+
+(def +line-breaks+ #{\newline \return})
+
+(defprotocol IFrameCodec
+  (initial-state [codec])
+  (encode-frame [codec value])
+  (feed-frame [codec state chunk])
+  (finish-frame [codec state]))
+
+(defstruct LineCodec [encode-value decode-value max-frame-bytes])
+
+(defn append-bytes [output value]
+  (loop [index 0 result output]
+    (if (= index (bytes/count value))
+      result
+      (recur (inc index) (conj result (bytes/get value index))))))
+
+(defn decode-line [codec value]
+  (let [length (count value)
+        content (if (and (> length 0) (= 13 (nth value (dec length))))
+                  (vec (take (dec length) value))
+                  value)]
+    ((:decode-value codec) (str/decode-utf8 (apply std.native.Bytes/new content)))))
+
+(defn feed-values [codec values index current frames]
+  (if (= index (count values))
+    {:state current :frames frames}
+    (let [value (nth values index)]
+      (if (= value 10)
+        (feed-values codec values (inc index) []
+                     (conj frames (decode-line codec current)))
+        (let [next-current (conj current value)]
+          (if (> (count next-current) (:max-frame-bytes codec))
+            (throw (ex :limit {:error/type :codec/frame-too-large
+                             :max-frame-bytes (:max-frame-bytes codec)} :ex/message "Frame exceeds maximum byte length"))
+            (feed-values codec values (inc index) next-current frames)))))))
+
+(extend-type LineCodec IFrameCodec
+  (initial-state [_] [])
+  (encode-frame [codec value]
+    (let [encoded ((:encode-value codec) value)]
+      (if (not (string? encoded))
+        (throw (ex :io {:value encoded} :ex/message "Frame encoder must return a string")))
+      (if (str/includes-any? encoded +line-breaks+)
+        (throw (ex :io {:value encoded} :ex/message "Line frame contains a newline")))
+      (let [payload (str/encode-utf8 encoded)]
+        (if (> (bytes/count payload) (:max-frame-bytes codec))
+          (throw (ex :limit {:error/type :codec/frame-too-large
+                           :max-frame-bytes (:max-frame-bytes codec)} :ex/message "Frame exceeds maximum byte length"))
+          (apply std.native.Bytes/new (conj (append-bytes [] payload) 10))))))
+  (feed-frame [codec state chunk]
+    (if (not (bytes? chunk))
+      (throw (ex :io {:value chunk} :ex/message "Frame codec expects Bytes")))
+    (feed-values codec (append-bytes [] chunk) 0 state []))
+  (finish-frame [codec state]
+    {:state []
+     :frames (if (= 0 (count state)) [] [(decode-line codec state)])}))
+
+(defn line
+  ([] (line {}))
+  ([options]
+   (LineCodec identity identity (or (:max-frame-bytes options) 1048576))))
+
+(defn json-line
+  ([] (json-line {}))
+  ([options]
+   (LineCodec Json/write Json/read (or (:max-frame-bytes options) 1048576))))

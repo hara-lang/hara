@@ -1,0 +1,98 @@
+(ns work.base.execution.ephemeral
+  (:require [work.base.execution :as execution]
+            [work.base.model :as base]
+            [work.base.result :as result]
+            [work.provider.inline :as inline]))
+
+(def executor (inline/inline-executor))
+
+(defn execution-hooks
+  [options]
+  (merge
+   (or (:work/hooks options) {})
+   (if (:work/capability-call options)
+     {:work/capability-call (:work/capability-call options)}
+     {})
+   (if (:work/capability-descriptors options)
+     {:work/capability-descriptors (:work/capability-descriptors options)}
+     {})
+   (if (:work/handlers options)
+     {:work/handlers (:work/handlers options)}
+     {})))
+
+(defn execution-runtime
+  ([ ]
+   (execution-runtime {}))
+  ([options]
+   (base/runtime-map
+    executor
+    nil
+    (atom {})
+    {:work/mode :native
+     :work/runtime-version 1
+     :work/schema-version 1}
+    (execution-hooks (or options {})))))
+
+(defn invoke-run-hook
+  [options hook arguments]
+  (let [function (get options hook)]
+    (if function
+      (try
+        (apply function arguments)
+        (catch error nil))
+      nil)))
+
+(defn complete-value
+  [options run-id value]
+  (invoke-run-hook options :work/run-complete
+                   [run-id :completed value nil])
+  value)
+
+(defn complete-error
+  [options run-id error]
+  (let [error (if (ex? error)
+                error
+                (ex :generic
+                    {:run/id run-id
+                     :error error}
+                    :ex/message (str error)))]
+    (invoke-run-hook options :work/run-complete
+                     [run-id :failed nil error])
+    (throw error)))
+
+(defn root-id
+  [spec options]
+  (or (:work-root options)
+      (:root spec)
+      (:id spec)
+      :anonymous))
+
+(defn initial-frame
+  [spec options run-id]
+  {:run/id run-id
+   :work/root (root-id spec options)
+   :work/version (or (:work-version options) (:version spec) 1)
+   :node/path []
+   :item/id nil
+   :item/path []
+   :context (or (:context options) {})
+   :options options})
+
+(defn execute
+  [work input options run-id]
+  (let [options (or options {})
+        spec (base/work-spec-map work)
+        runtime (execution-runtime options)
+        frame (initial-frame spec options run-id)]
+    (invoke-run-hook options :work/run-start
+                     [run-id work input options])
+    (try
+      (result/recover
+       (result/then
+        (execution/execute-node runtime frame work input)
+        (fn [value]
+          (complete-value options run-id value)))
+       (fn [error]
+         (complete-error options run-id error)))
+      (catch error
+        (complete-error options run-id error)))))

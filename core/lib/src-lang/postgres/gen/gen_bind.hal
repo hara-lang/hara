@@ -1,0 +1,99 @@
+(ns postgres.gen.gen-bind
+  (:require [std.foundation :as foundation]
+            [postgres.gen.bind-macro :as bind]
+            [lang.common.util :as util]
+            [lang.core.script :as script]))
+
+(defn tmpl-route
+  "Creates a Foundation route template."
+  [input]
+  (let [sym (nth input 0)
+        src (nth input 1)
+        tmeta (nth input 2)
+        merged (merge tmeta (foundation/template-meta))
+        root (:root merged)
+        url (str root "/" (name src))]
+    (with-meta
+      (list 'def.xt
+            (with-meta sym {:api/type :route
+                            :api/url url})
+            (assoc
+             (bind/bind-function
+              (deref (foundation/resolve src)))
+             :url url))
+      merged)))
+
+(defn tmpl-view
+  "Creates a Foundation view template."
+  [input]
+  (let [sym (nth input 0)
+        src (nth input 1)
+        tmeta (nth input 2)
+        merged (merge tmeta (foundation/template-meta))
+        view (:view merged)]
+    (with-meta
+      (list 'def.xt
+            (with-meta sym {:api/type :view})
+            (bind/bind-view
+             (deref (foundation/resolve src))
+             view))
+      merged)))
+
+(defn- snake-case
+  [value]
+  (let [value (str value)
+        lowered (str/lower value)]
+    (loop [index 0 output ""]
+      (if (= index (str/length value))
+        output
+        (let [ch (str/char-at value index)
+              lower-ch (str/char-at lowered index)
+              separator? (or (= ch \-) (= ch \space))
+              hump? (and (> index 0)
+                         (not separator?)
+                         (not= ch lower-ch))]
+          (recur (inc index)
+                 (str output
+                      (if (or separator? hump?) "_" "")
+                      (if separator? "" (str/to-string lower-ch)))))))))
+
+(defn- module-entries
+  [module predicate]
+  (vec
+   (filter predicate
+           (vals (get-in (deref script/+modules+)
+                         [module :code])))))
+
+(defn route-map
+  "Returns route names mapped to their fully qualified symbols."
+  ([] (route-map (symbol (str (ns-current)))))
+  ([module]
+   (into {}
+         (map (fn [entry]
+                [(snake-case (str (:id entry)))
+                 (util/sym-full entry)])
+              (module-entries
+               module
+               (fn [entry]
+                 (= :route (:api/type entry))))))))
+
+(defn- entry-list
+  [module type]
+  (vec
+   (map util/sym-full
+        (module-entries
+         module
+         (fn [entry]
+           (= type (:api/type entry)))))))
+
+(defn route-list
+  "Lists the fully qualified route symbols in a module."
+  ([] (route-list (symbol (str (ns-current)))))
+  ([module] (entry-list module :route)))
+
+(defn view-list
+  "Lists the fully qualified view symbols in a module."
+  ([] (view-list (symbol (str (ns-current)))))
+  ([module] (entry-list module :view)))
+
+(def __tahto_load__ true)

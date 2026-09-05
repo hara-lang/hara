@@ -1,0 +1,58 @@
+(ns code.test-support-test
+  (:require [code.test.base.match :as match]
+            [code.test.cli :as cli]
+            [code.test.result :as comparison]
+            [work.flow.task.selector :as selector]))
+
+(def passed-result (comparison/compare 1 1))
+(def failed-result (comparison/compare 1 2))
+
+(def results
+  [(test-check
+    "test selectors preserve archived prefix and collection semantics"
+    [(selector/matches? 'code 'code.test)
+     (selector/matches? ['std 'code.test] 'code.test)
+     (selector/matches? '(code test) 'code.test)
+     (selector/matches? #{'code.test 'std.work} 'code.test)
+     (selector/matches? nil 'anything)
+     (match/match-options 'code.test {:include 'code
+                                      :exclude 'std})]
+    [true true false true true true])
+
+   (test-check
+    "test CLI parsing is owned by code.test and emits runner selectors"
+    [(cli/process-args
+      (cli/collapse-only
+       [":only" "std" "code" ":fail-fast" "true"]))
+     (cli/process-args [":with" "code.test" ":timeout" "25"])]
+    [{:namespace ['std 'code]
+      :fail-fast true}
+     {:namespace ['code.test]
+      :timeout 25}])
+
+   (test-check
+    "public CLI adapters retain canonical namespace results"
+    [(cli/process-run-args
+      [":only" "std" "code" ":parallel" "true"])
+     (cli/print-options)
+     (cli/print-options :disable)]
+    [{:namespace ['std 'code] :parallel true}
+     #{:help :current :default :disable :all}
+     :disable])
+
+   (test-check
+    "native and code.test result aggregation are Hara-owned"
+    [(cli/result-counts [passed-result failed-result])
+     (cli/result-counts
+      (pr-str {:status :passed
+               :counts {:passed 1 :failed 0 :error 0 :timeout 0}}))
+     (cli/result-counts
+      {:status :failed
+       :counts {:passed 3 :failed 1 :error 1 :timeout 1}})
+     (cli/summary [{:passed 2 :failed 1} {:passed 3 :failed 0}])]
+    [{:passed 1 :failed 1}
+     {:passed 1 :failed 0}
+     {:passed 3 :failed 3}
+     {:passed 5 :failed 1}])])
+
+results

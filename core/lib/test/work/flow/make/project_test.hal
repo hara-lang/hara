@@ -1,0 +1,109 @@
+(ns work.flow.make.project-test
+  (:require [work.flow.make.project :refer :all]
+    [work.flow.make.common :as common]
+    [std.lib.encode.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+^{:refer work.flow.make.project/makefile-parse :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.project/build-default :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.project/changed-files :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.project/is-changed? :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.project/build-all :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.project/build-at :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.project/def-make-fn :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.project/def.make :added "4.0"}
+(do
+ (def.make
+  TEST_MAKE
+  {:default  [{:file "hello.txt" :main "hello" :type :raw}]
+   :triggers #{"test.trigger"}
+   :tag      "test.make"})
+ (Test/run
+  [{:name "macro to instantiate a section"
+    :test (fn [] (common/triggers-get TEST_MAKE))
+    :expected #{"test.trigger"}}]
+  migration-test-check))
+
+^{:refer work.flow.make.project/build-triggered :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{}
+(Test/run
+ [{:name "check watch functionality #1"
+   :test (fn [] (fn? watch))
+   :expected true}
+  {:name "check watch functionality #2"
+   :test (fn [] (fn? file-watcher-handler))
+   :expected true}]
+ migration-test-check)
+
+^{:refer work.flow.make.project/file-watcher-heal :added "4.1"}
+(Test/run
+ [{:name "heals a file's content and writes it back if changed"
+   :test (fn []
+            (let [directory (std.fs/temp-directory
+                             "/"
+                             {:prefix "hara-work-flow-make-"})
+                  tmp       (str directory "/source.clj")
+                  content  "(defn foo [x] x)"]
+              (try
+                (deref (File/write
+                        tmp
+                        (std.foundation.string/encode-utf8 content)
+                        {:mode :replace}))
+                (file-watcher-heal tmp (quote my.ns))
+                (std.foundation.string/decode-utf8 (deref (File/read tmp)))
+                (finally
+                  (std.fs/delete
+                   directory
+                   {:recursive? true :missing-ok? true})))))
+  :expected "(defn foo [x] x)"}]
+ migration-test-check)
+
+^{:refer work.flow.make.project/file-watcher-handler :added "4.1"}
+(Test/run
+ [{:name "file-watcher-handler is a function"
+   :test (fn [] (fn? file-watcher-handler))
+   :expected true}]
+ migration-test-check)
+
+^{:refer work.flow.make.project/watch :added "4.1"}
+(Test/run
+ [{:name "watch is a function that starts directory watchers"
+   :test (fn [] (fn? watch))
+   :expected true}]
+ migration-test-check)
+
+^{:refer work.flow.make.project/watch-project :added "4.1"}
+(Test/run
+ [{:name "watch-project is a function that watches all project paths"
+   :test (fn [] (fn? watch-project))
+   :expected true}]
+ migration-test-check)

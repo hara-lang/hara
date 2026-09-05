@@ -1,0 +1,62 @@
+(ns tool.sh.tmux-test
+  (:require [tool.sh.tmux :as tmux]))
+
+(def calls (atom []))
+
+(defn fake-runner
+  [argv options]
+  (swap! calls conj [argv options])
+  {:command argv :stdout "" :stderr "" :exit 0})
+
+(def results
+  [(test-check
+    "tmux start options are deterministic"
+    (tmux/with-args
+     ["tmux" "new-session"]
+     {:root "/repo"
+      :env {:z "9" :a "1"}})
+    ["tmux" "new-session"
+     "-c" "/repo"
+     "-e" "A=1"
+     "-e" "Z=9"])
+
+   (test-check
+    "vector dispatch preserves argv boundaries through respawn-pane"
+    (tmux/send-keys-command
+     "DEV" "build"
+     ["printf" "%s" "a b"])
+    ["tmux" "respawn-pane" "-k" "-t" "DEV:build" "--"
+     "printf" "%s" "a b"])
+
+   (test-check
+    "explicit string dispatch retains send-keys semantics"
+    (tmux/send-keys-command "DEV" "shell" "echo hello")
+    ["tmux" "send-keys" "-t" "DEV:shell" "echo hello" "C-m"])
+
+   (test-check
+    "new session and window builders execute vector commands directly"
+    [(tmux/new-session-command
+      "DEV" {:command ["sleep" "10"]})
+     (tmux/new-window-command
+      "DEV" "worker"
+      {:cwd "/repo"
+       :command ["node" "worker.js" "--name" "a b"]})]
+    [["tmux" "new-session" "-d" "-s" "DEV" "-n" "CMD"
+      "--" "sleep" "10"]
+     ["tmux" "new-window" "-t" "DEV" "-n" "worker"
+      "-c" "/repo"
+      "--" "node" "worker.js" "--name" "a b"]])
+
+   (test-check
+    "tmux operations strip command-domain options before runners"
+    (do
+      (reset! calls [])
+      (tmux/kill-window
+       "DEV" "worker"
+       {:tool.sh/runner fake-runner
+        :root "/repo"
+        :env {"A" "1"}})
+      (deref calls))
+    [[["tmux" "kill-window" "-t" "DEV:worker"] {}]])])
+
+results

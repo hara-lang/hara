@@ -1,0 +1,161 @@
+(ns lang.runtime.postgres.db-client
+  (:require [db.postgres :as postgres]
+            [db.postgres.connection :as connection]
+            [lang.core.compile :as compile :lazy true]
+            [lang.protocol.runtime :as context-eval]
+            [std.foundation :as foundation]))
+
+(defstruct RuntimePostgresDbClient
+  [id lang runtime options connection host port container startup shutdown state modules pointers profile timeout])
+
+(defn rt-create
+  [options]
+  (lang.runtime.postgres.db-client/RuntimePostgresDbClient
+   (or (:id options) :postgres.db-client)
+   :postgres
+   :db.client
+   options
+   (atom nil)
+   nil
+   nil
+   (get-in options [:config :container])
+   (get-in options [:config :startup])
+   (get-in options [:config :shutdown])
+   (atom {:status :created})
+   (atom #{})
+   (atom #{})
+   {:input [] :source [] :response []}
+   (or (get-in options [:config :timeout]) 30000)))
+
+(defn start-runtime
+  [runtime]
+  (let [started (postgres/start-pg runtime)]
+    (reset! (:state started) {:status :started})
+    started))
+
+(defn stop-runtime
+  [runtime]
+  (let [stopped (postgres/stop-pg runtime)]
+    (reset! (:state stopped) {:status :stopped})
+    stopped))
+
+(defn execute-only?
+  [source]
+  (let [statement (str/upper (str/trim source))]
+    (boolean
+     (first
+      (filter (fn [prefix] (str/starts-with? statement prefix))
+              ["DO " "BEGIN " "DECLARE " "INSERT " "UPDATE " "DELETE "
+               "CREATE " "DROP " "ALTER " "GRANT " "REVOKE " "TRUNCATE "
+               "COMMENT " "VACUUM "])))))
+
+(defn normalize-query
+  [response]
+  (let [columns (get response "columns")
+        rows (get response "rows")
+        values (if (= 1 (count columns))
+                 (map first rows)
+                 rows)]
+    (if (= 1 (count values)) (first values) values)))
+
+(defn raw-eval
+  [runtime source]
+  (let [value (deref (:connection runtime))]
+    (if (nil? value)
+      (throw (ex :database {:id (:id runtime)} :ex/message "PostgreSQL runtime is not started"))
+      (if (execute-only? source)
+        (deref (connection/exec value source))
+        (normalize-query
+         (deref (connection/query value source)))))))
+
+(defn evaluate-async
+  [runtime source options]
+  (promise/run (fn [] (raw-eval runtime source))))
+
+(defn module-compile
+  [module]
+  (compile/compile-module {:lang :postgres
+                           :main module
+                           :layout :module
+                           :emit {:code {:label true}}}))
+
+(defn setup-module
+  [runtime module]
+  (if (get (deref (:modules runtime)) module)
+    runtime
+    (let [compiled (module-compile module)
+          diagnostics (:diagnostics compiled)]
+      (if (not (empty? diagnostics))
+        (throw (ex :database {:module module :diagnostics diagnostics} :ex/message "PostgreSQL module compilation failed")))
+      (deref (connection/batch-exec (deref (:connection runtime)) (:output compiled)))
+      (swap! (:modules runtime) conj module)
+      runtime)))
+
+(defn teardown-module
+  [runtime module]
+  (swap! (:modules runtime) dissoc module)
+  runtime)
+
+(defn setup-pointer
+  [runtime pointer]
+  (swap! (:pointers runtime) conj pointer)
+  runtime)
+
+(defn teardown-pointer
+  [runtime pointer]
+  (swap! (:pointers runtime) dissoc pointer)
+  runtime)
+
+(extend-type RuntimePostgresDbClient context-eval/IContextEval
+  (evaluate [runtime request options]
+    (evaluate-async runtime request options))
+  (evaluate-raw [runtime request options]
+    (evaluate-async runtime request options)))
+
+(extend-type RuntimePostgresDbClient IContext
+  (call [runtime source]
+    (raw-eval runtime source)))
+
+(extend-type RuntimePostgresDbClient IComponent
+  (props [runtime]
+    {:state {:get (fn [] (deref (:state runtime)))}
+     :connection {:get (fn [] (deref (:connection runtime)))}
+     :container {:get (fn [] (:container runtime))}})
+  (status [runtime]
+    (:status (deref (:state runtime))))
+  (started? [runtime]
+    (= :started (:status (deref (:state runtime)))))
+  (stopped? [runtime]
+    (= :stopped (:status (deref (:state runtime)))))
+  (start [runtime]
+    (start-runtime runtime))
+  (stop [runtime]
+    (stop-runtime runtime))
+  (kill [runtime]
+    (stop-runtime runtime))
+  (remote? [runtime]
+    (nil? (:container runtime))))
+
+(extend-type RuntimePostgresDbClient IContextLifeCycle
+  (has-module? [runtime module]
+    (boolean (get (deref (:modules runtime)) module)))
+  (setup-module [runtime module]
+    (setup-module runtime module))
+  (teardown-module [runtime module]
+    (teardown-module runtime module))
+  (has-pointer? [runtime pointer]
+    (boolean (get (deref (:pointers runtime)) pointer)))
+  (setup-pointer [runtime pointer]
+    (setup-pointer runtime pointer))
+  (teardown-pointer [runtime pointer]
+    (teardown-pointer runtime pointer)))
+
+(def +init+
+  (if-let [install-var (foundation/resolve 'lang.core.runtime/install-type)]
+    ((deref install-var)
+     :postgres :db.client
+     {:type :lang/rt.postgres.db-client
+      :component true
+      :config {:layout :module}
+      :instance {:create rt-create}})
+    {:runtime :db.client :installation :deferred}))

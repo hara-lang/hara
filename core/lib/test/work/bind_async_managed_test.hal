@@ -1,0 +1,47 @@
+(ns work.bind-async-managed-test
+  (:use code.test)
+  (:require [work.base :as work]))
+
+(fact "Promise-returning bind leaves checkpoint normally under durable execution"
+  (let [runtime (work/durable-runtime)
+        workflow
+        (work/bind
+         {:id :async-managed-bind
+          :version 1}
+         (work/step
+          :async-source
+          (fn [input context]
+            (promise
+             (fn []
+               (inc input)))))
+         (work/pure
+          :async-select
+          (fn [value context]
+            (work/step
+             :async-produced
+             (fn [produced-input produced-context]
+               (promise
+                (fn []
+                  (* produced-input 2))))))))
+        pending
+        (work/start runtime
+                    workflow
+                    4
+                    {:id "async-managed-bind"})
+        reference (deref pending)
+        checkpoints (work/checkpoints runtime reference)]
+    [(promise? pending)
+     (work/status runtime reference)
+     (work/result runtime reference)
+     (vec
+      (map
+       (fn [checkpoint]
+         (:checkpoint/node-path checkpoint))
+       checkpoints))])
+  => [true
+      :completed
+      10
+      [[:bind :source :async-source]
+       [:bind :produced :async-produced]]])
+
+(pr-str (run '[work.bind-async-managed-test]))

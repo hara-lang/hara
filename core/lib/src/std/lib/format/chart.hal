@@ -1,0 +1,149 @@
+(ns std.lib.format.chart)
+
+(def +chart-pad+ " ")
+
+(defn repeat-text [n value]
+  (str/join "" (repeat n value)))
+
+(defn pad-left [value width]
+  (let [text (str value)
+        padding (- width (str/length text))]
+    (if (> padding 0)
+      (str (repeat-text padding " ") text)
+      text)))
+
+(defn lines-bar-graph
+  "Formats an ASCII bar graph as rows of block characters."
+  [xs height]
+  (let [width (count xs)
+        xs (if (even? width) xs (concat xs [0]))
+        maximum (apply max xs)
+        span maximum
+        scaled (vec (map (fn [x] (long (* (/ (double (- x 0)) (double span)) height))) xs))
+        lookup [" " " " " " " " "▖" "▌" " " " " "▗" " " "▐" " " "▄" "▙" "▟" "█"]
+        filled (fn [column row]
+                 (if (< (std.foundation/get scaled column) row) 0 1))
+        row-text (fn [row]
+                   (loop [column 0 output []]
+                     (if (< column width)
+                       (let [a (filled column row)
+                             b (filled (inc column) row)
+                             c (filled column (dec row))
+                             d (filled (inc column) (dec row))]
+                         (recur (+ column 2)
+                                (conj output
+                                      (std.foundation/get lookup
+                                                           (+ (* 1 a) (* 2 b) (* 4 c) (* 8 d))))))
+                       (reduce (fn [text value] (str text value)) "" output))))]
+    (loop [row height output []]
+      (if (> row 0)
+        (recur (- row 2) (conj output (row-text row)))
+        output))))
+
+(defn bar-graph
+  ([xs] (bar-graph xs 30))
+  ([xs height]
+   (str/join "\n" (lines-bar-graph xs height))))
+
+(defn sparkline [xs]
+  (let [maximum (apply max xs)
+        lookup [" " "▁" "▂" "▃" "▄" "▅" "▆" "▇" "█"]]
+    (reduce (fn [output value]
+              (str output
+                   (std.foundation/get lookup
+                                        (long (* (/ value (+ 0.00001 maximum)) 9)))))
+            ""
+            xs)))
+
+(defn tree-graph
+  ([tree]
+   (str/join "" (map (fn [value]
+                        (tree-graph value +chart-pad+ "" (fn [_] false)))
+                      tree)))
+  ([tree pad prefix check]
+   (if (and (vector? tree) (not (check tree)))
+     (str/join "" (map (fn [value]
+                          (tree-graph value pad (str prefix pad) check))
+                        tree))
+     (str prefix tree "\n"))))
+
+(defn table-row [leader divider trailer widths values]
+  (str leader
+       (str/join divider
+                 (map (fn [pair]
+                        (pad-left (first pair) (second pair)))
+                      (map vector values widths)))
+       trailer))
+
+(defn table-basic-format
+  ([ks rows]
+   (if (empty? rows)
+     nil
+     (let [rows (vec (map (fn [row]
+                            (reduce-kv (fn [output key value]
+                                         (assoc output key (pr-str value)))
+                                       {}
+                                       row))
+                          rows))
+           widths (vec (map (fn [key]
+                              (apply max
+                                     (count (str key))
+                                     (map (fn [row]
+                                            (count (std.foundation/get row key)))
+                                          rows)))
+                            ks))
+           separators (map (fn [width] (repeat-text width "-")) widths)
+           header (map str ks)]
+       (str/join
+        "\n"
+        (concat
+         [(table-row "| " " | " " |" widths header)
+          (table-row "|-" "-+-" "-|" widths separators)]
+         (map (fn [row]
+                (table-row "| " " | " " |" widths
+                           (map (fn [key] (std.foundation/get row key)) ks)))
+              rows))))))
+  ([rows]
+   (table-basic-format (keys (first rows)) rows)))
+
+(defn table-basic-parse [s]
+  (let [lines (str/split s "\n")
+        header-line (first lines)
+        data-lines (drop 2 lines)
+        headers (vec (map (fn [value]
+                            (keyword (str/slice (str/trim value) 1)))
+                          (filter (fn [value] (not (empty? (str/trim value))))
+                                  (str/split header-line "|"))))
+        parse-row (fn [line]
+                    (zipmap headers
+                            (map (fn [value] (Edn/read (str/trim value)))
+                                 (filter (fn [value]
+                                           (not (empty? (str/trim value))))
+                                         (str/split line "|")))))]
+    {:headers headers
+     :data (vec (map parse-row data-lines))}))
+
+(defn table
+  [m opts]
+  (let [id-key (or (:id-key opts) (first (:headers opts)))
+        rows (reduce-kv (fn [output key value]
+                          (conj output
+                                (if id-key
+                                  (assoc value id-key key)
+                                  value)))
+                        []
+                        m)]
+    (table-basic-format
+     (:headers opts)
+     (sort-by (or (:sort-key opts) id-key) rows))))
+
+(defn table-parse [s opts]
+  (let [parsed (table-basic-parse s)
+        headers (:headers parsed)
+        id-key (or (:id-key opts) (first headers))]
+    (reduce (fn [output row]
+              (assoc output
+                     (std.foundation/get row id-key)
+                     (dissoc row id-key)))
+            {}
+            (:data parsed))))

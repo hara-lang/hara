@@ -1,0 +1,92 @@
+(ns work.agent-openai-limits-test
+  (:use code.test)
+  (:require [work.agent :as agent]
+            [work.eval :as eval]
+            [work.agent.openai :as openai]))
+
+(defn limit-data
+  [work]
+  (try
+    (do
+      (eval/run work nil)
+      :not-rejected)
+    (catch Throwable error
+      (ex-data error))))
+
+(fact "turn limit rejects before another model transport call"
+  (let [transport-count (atom 0)
+        client
+        (agent/openai-client
+         {:model "gpt-5"
+          :transport
+          (fn [request]
+            (swap! transport-count inc)
+            {:status 200
+             :body
+             (Json/write
+              (openai/wire-value
+               {:id "unexpected"
+                :status "completed"
+                :output []}))})})
+        limited-agent
+        {:agent/id :turn-limited
+         :agent/driver
+         (agent/openai-driver
+          {:client client
+           :max-turns 0})}
+        data
+        (limit-data
+         (agent/drive limited-agent "Do not call the model"))]
+    [(:agent/turn data)
+     (:agent/max-turns data)
+     (deref transport-count)])
+  => [0 0 0])
+
+(fact "tool-call limit rejects before selected tool execution"
+  (let [transport-count (atom 0)
+        tool-count (atom 0)
+        tool
+        (agent/tool
+         "touch"
+         "Would execute a tool."
+         {:type "object"
+          :properties {}
+          :additionalProperties false}
+         (fn [arguments]
+           (swap! tool-count inc)
+           :touched))
+        client
+        (agent/openai-client
+         {:model "gpt-5"
+          :transport
+          (fn [request]
+            (swap! transport-count inc)
+            {:status 200
+             :body
+             (Json/write
+              (openai/wire-value
+               {:id "tool-limit"
+                :status "completed"
+                :output
+                [{:type "function_call"
+                  :call_id "touch-1"
+                  :name "touch"
+                  :arguments "{}"}]}))})})
+        limited-agent
+        {:agent/id :tool-limited
+         :agent/driver
+         (agent/openai-driver
+          {:client client
+           :tools [tool]
+           :max-turns 4
+           :max-tool-calls 0})}
+        data
+        (limit-data
+         (agent/drive limited-agent "Try the tool"))]
+    [(:agent/tool-calls data)
+     (:agent/max-tool-calls data)
+     (deref transport-count)
+     (deref tool-count)])
+  => [1 0 1 0])
+
+(pr-str (run '[work.agent-openai-limits-test]))

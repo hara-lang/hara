@@ -1,0 +1,299 @@
+(ns std.typed.catalog-test
+  (:use code.test)
+  (:require [std.typed.catalog :as catalog]
+            [std.typed.registry :as registry]))
+
+(def +entries+
+  [{:schema/id :model/id
+    :schema/form :int
+    :source/file "model.hal"}
+   {:schema/id :model/profile
+    :schema/form
+    '[:map
+      {:title "Profile documentation"}
+      [:id (var Id)]
+      [:nickname {:optional true :description "Display name"} :str]]}
+   {:schema/id :model/account
+    :schema/form
+    '[:map
+      [:profile (var Profile)]]}])
+
+(def +catalog+ (catalog/catalog +entries+))
+(def +id-coordinate+ (catalog/coordinate +catalog+ :model/id))
+(def +profile-coordinate+ (catalog/coordinate +catalog+ :model/profile))
+(def +account-coordinate+ (catalog/coordinate +catalog+ :model/account))
+
+^{:refer std.typed.catalog/catalog
+  :id 'stable-schema-identity}
+(fact "catalog entries have canonical ids and reproducible hashes"
+  (let [profile (catalog/lookup +catalog+ :model/profile)
+        reordered
+        (catalog/catalog
+         [{:schema/form
+           '[:map
+             {:owner :docs :title "Ignored documentation"}
+             [:id (var Id)]
+             [:nickname {:optional true :description "Display name"} :str]]
+           :schema/id :model/profile}
+          {:schema/form :int
+           :schema/id :model/id}])
+        semantic-change
+        (catalog/catalog
+         [{:schema/id :model/id :schema/form :int}
+          {:schema/id :model/profile
+           :schema/form '[:map [:id (var Id)] [:name :str]]}])]
+    [(:schema/id profile)
+     (str/starts-with? (:schema/hash profile) "sha256:")
+     (= 71 (count (:schema/hash profile)))
+     (= (:schema/hash profile)
+        (:schema/hash (catalog/lookup reordered :model/profile)))
+     (not= (:schema/hash profile)
+           (:schema/hash (catalog/lookup semantic-change :model/profile)))])
+  => [:model/profile true true true true])
+
+^{:refer std.typed.catalog/catalog
+  :id 'map-entry-order-does-not-change-hash}
+(fact "canonical map hashing ignores map insertion order"
+  (let [left
+        (catalog/catalog
+         [{:schema/id :fixture/value
+           :schema/form
+           '[:map {:optional true :description "x"}
+             [:id :int]]}])
+        right
+        (catalog/catalog
+         [{:schema/id :fixture/value
+           :schema/form
+           '[:map {:description "x" :optional true}
+             [:id :int]]}])
+        left-hash (:schema/hash (catalog/lookup left :fixture/value))
+        right-hash (:schema/hash (catalog/lookup right :fixture/value))]
+    [(= left-hash right-hash)
+     (= 71 (count left-hash))
+     (str/starts-with? left-hash "sha256:")])
+  => [true true true])
+
+^{:refer std.typed.catalog/catalog
+  :id 'schema-version-is-not-a-catalog-coordinate}
+(fact "schema version metadata is rejected instead of becoming identity"
+  (try
+    (catalog/catalog
+     [{:schema/id :demo/value
+       :schema/version 1
+       :schema/form :str}])
+    false
+    (catch Throwable error
+      (= :std.typed.catalog/invalid-catalog
+         (:type (ex-data error)))))
+  => true)
+
+^{:refer std.typed.catalog/catalog
+  :id 'schema-ids-are-unique}
+(fact "a catalog cannot contain two entries for one schema id"
+  (try
+    (catalog/catalog
+     [{:schema/id :demo/value :schema/form :str}
+      {:schema/id :demo/value :schema/form :int}])
+    false
+    (catch Throwable error
+      (= :std.typed.catalog/invalid-catalog
+         (:type (ex-data error)))))
+  => true)
+
+^{:refer std.typed.catalog/dependencies
+  :id 'direct-dependencies-have-portable-order}
+(fact "direct dependencies are ordered independently of set iteration"
+  (let [value
+        (catalog/catalog
+         [{:schema/id :order/id :schema/form :int}
+          {:schema/id :order/node
+           :schema/form '[:map [:id (var Id)]]}
+          {:schema/id :order/root
+           :schema/form '[:map
+                          [:node (var Node)]
+                          [:id (var Id)]]}])
+        root (catalog/coordinate value :order/root)
+        dependencies (catalog/dependencies value root)]
+    [(= dependencies
+        [(catalog/coordinate value :order/id)
+         (catalog/coordinate value :order/node)])
+     (= 2 (count dependencies))])
+  => [true true])
+
+^{:refer std.typed.catalog/catalog
+  :id 'reject-mismatched-schema-hash}
+(fact "a supplied hash is an assertion, not mutable metadata"
+  (try
+    (catalog/catalog
+     [{:schema/id :demo/value
+       :schema/hash "sha256:deadbeef"
+       :schema/form :int}])
+    false
+    (catch Throwable error
+      (= :std.typed.catalog/invalid-catalog
+         (:type (ex-data error)))))
+  => true)
+
+^{:refer IDeps
+  :id 'schema-catalog-dependency-contract}
+(fact "catalogs expose exact pinned schema dependencies through IDeps"
+  [(= :model/account (:schema/id (dep-get +catalog+ +account-coordinate+)))
+   (dep-entries +catalog+ +account-coordinate+)
+   (dep-entries +catalog+ +profile-coordinate+)
+   (set (dep-keys +catalog+))
+   (deps-ordered +catalog+ [+account-coordinate+])]
+  => [true
+      #{+profile-coordinate+}
+      #{+id-coordinate+}
+      #{+id-coordinate+ +profile-coordinate+ +account-coordinate+}
+      [+id-coordinate+ +profile-coordinate+ +account-coordinate+]])
+
+^{:refer std.typed.catalog/schema-registry
+  :id 'ordinary-symbol-registry-view}
+(fact "identified catalogs retain the ordinary symbol lookup surface"
+  [(registry/lookup (catalog/schema-registry +catalog+) 'model/Id)
+   (registry/lookup (catalog/schema-registry +catalog+) 'model/Profile)]
+  => [:int
+      '[:map
+        {:title "Profile documentation"}
+        [:id (var Id)]
+        [:nickname {:optional true :description "Display name"} :str]]])
+
+^{:refer std.typed.catalog/catalog
+  :id 'schema-id-symbol-case-bridge}
+(fact "kebab-case schema ids map reversibly to PascalCase references"
+  (let [value
+        (catalog/catalog
+         [{:schema/id :demo/identifier
+           :schema/form :int}
+          {:schema/id :demo/user-profile
+           :schema/form '[:map [:id (var Identifier)]]}])
+        identifier (catalog/coordinate value :demo/identifier)
+        profile (catalog/coordinate value :demo/user-profile)]
+    [(= [identifier] (catalog/dependencies value profile))
+     (registry/lookup (catalog/schema-registry value) 'demo/UserProfile)])
+  => [true '[:map [:id (var Identifier)]]])
+
+(def +recursive-catalog+
+  (catalog/catalog
+   [{:schema/id :tree/id
+     :schema/form :int}
+    {:schema/id :tree/node
+     :schema/form
+     '[:map
+       [:id (var Id)]
+       [:next [:maybe (var Node)]]
+       [:children [:vector (var Node)]]
+       [:peers [:set (var Node)]]
+       [:pair [:tuple :int (var Node)]]
+       [:outcome [:result (var Node)]]]}]))
+
+(def +recursive-id-coordinate+
+  (catalog/coordinate +recursive-catalog+ :tree/id))
+
+(def +recursive-coordinate+
+  (catalog/coordinate +recursive-catalog+ :tree/node))
+
+(def +mutual-entries+
+  [{:schema/id :graph/a
+    :schema/form
+    '[:map [:next [:maybe (var B)]]]}
+   {:schema/id :graph/b
+    :schema/form
+    '[:map [:previous [:maybe (var A)]]]}])
+
+(def +mutual-catalog+ (catalog/catalog +mutual-entries+))
+(def +mutual-a-coordinate+
+  (catalog/coordinate +mutual-catalog+ :graph/a))
+(def +mutual-b-coordinate+
+  (catalog/coordinate +mutual-catalog+ :graph/b))
+
+^{:refer std.typed.catalog/dependency-closure
+  :id 'exact-transitive-dependency-closure}
+(fact "dependency closure and order remain exact and dependency-first"
+  [(catalog/dependency-closure +catalog+ +account-coordinate+)
+   (catalog/dependency-order +catalog+ [+account-coordinate+])]
+  => [[+id-coordinate+ +profile-coordinate+]
+      [+id-coordinate+ +profile-coordinate+ +account-coordinate+]])
+
+^{:refer std.typed.catalog/dependency-components
+  :id 'self-recursive-schema-component}
+(fact "self recursion is represented as an explicit dependency-first component"
+  (let [components
+        (catalog/dependency-components
+         +recursive-catalog+
+         [+recursive-coordinate+])
+        id-component (first components)
+        node-component (second components)]
+    [(:component/members id-component)
+     (:component/recursive? id-component)
+     (:component/members node-component)
+     (:component/recursive? node-component)
+     (= [(:component/id id-component)]
+        (:component/dependencies node-component))
+     (catalog/dependency-order
+      +recursive-catalog+
+      [+recursive-coordinate+])])
+  => [[+recursive-id-coordinate+]
+      false
+      [+recursive-coordinate+]
+      true
+      true
+      [+recursive-id-coordinate+ +recursive-coordinate+]])
+
+^{:refer std.typed.catalog/dependency-components
+  :id 'mutually-recursive-schema-component}
+(fact "mutual structural recursion is deterministic under entry reordering"
+  (let [reordered (catalog/catalog (vec (reverse +mutual-entries+)))
+        reordered-a (catalog/coordinate reordered :graph/a)
+        components
+        (catalog/dependency-components
+         +mutual-catalog+
+         [+mutual-a-coordinate+])
+        reordered-components
+        (catalog/dependency-components reordered [reordered-a])]
+    [[(:component/members (first components))
+      (:component/recursive? (first components))
+      (:component/dependencies (first components))]
+     (= components reordered-components)
+     (catalog/dependency-closure
+      +mutual-catalog+
+      +mutual-a-coordinate+)
+     (catalog/dependency-order
+      reordered
+      [reordered-a])])
+  => [[[+mutual-a-coordinate+ +mutual-b-coordinate+]
+       true
+       []]
+      true
+      [+mutual-b-coordinate+]
+      [+mutual-a-coordinate+ +mutual-b-coordinate+]])
+
+^{:refer std.typed.catalog/catalog
+  :id 'reject-reference-only-cycle}
+(fact "reference-only cycles retain a structured cyclic-reference diagnostic"
+  (try
+    (catalog/catalog
+     [{:schema/id :alias/a
+       :schema/form 'B}
+      {:schema/id :alias/b
+       :schema/form 'A}])
+    nil
+    (catch Throwable error
+      (let [data (ex-data error)]
+        [(:type data)
+         (:cycle/type data)
+         (:finding/type data)
+         (count (:schema/coordinates data))])))
+  => [:std.typed.catalog/invalid-catalog
+      :std.typed.catalog/reference-only-cycle
+      :std.typed.schema/cyclic-reference
+      2])
+
+(let [result (run '[std.typed.catalog-test])]
+  (if (= :passed (:status result))
+    (pr-str result)
+    (throw
+     (ex :state
+         {:result result}
+         :ex/message "std.typed catalog facts failed"))))

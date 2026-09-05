@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""Install or verify the repository-owned Hara workflow for Codex and Kimi."""
+
+from __future__ import annotations
+
+import argparse
+import filecmp
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import sys
+
+
+REPO = Path(__file__).resolve().parents[2]
+HOME = Path.home()
+HOOKS = ("hara-source-gate", "hara-shell-edit-gate", "source-gates.json")
+SKILLS = (
+    "hara-development",
+    "hara-postgres",
+    "hara-xtalk",
+    "hara-xtalk-compatibility",
+    "hara-dev-spec-writer",
+)
+OBSOLETE_TOOLS = (
+    "clj-nrepl-eval",
+    "clj-repl-ctl",
+    "clj-paren-repair",
+    "clj-paren-repair-claude-hook",
+)
+AGENT_BLOCK = """<!-- hara-workflow:start -->
+## Native Hara workflow
+
+For every `.hal` change, use `$hara-development`. Evaluate the complete
+candidate with the native Hara runtime, run the focused test, write the edit,
+run the written file in a fresh Hara process, and repeat the focused test.
+
+Each validation uses a fresh native process. Correct parser failures in the
+proposed source before it is written. Use `$hara-postgres`, `$hara-xtalk`, or
+the other Hara domain skills when their source families are involved.
+
+## Optional agent in-REPL exploration
+
+When `HARA_INREPL_ENDPOINT` names a user-started loopback Hara RESP server, use
+`tool.inrepl` for small experiments in its dedicated `AGENT` session. The
+project must opt in with `:project/inrepl-capabilities #{:inrepl/loopback}`, and
+the local client requires `hara --allow-net`.
+
+Do not start, discover, or stop a server automatically. Do not attach to
+`ROOT`. Treat the live session as feedback only: every saved `.hal` change
+still follows the fresh-process cycle above.
+<!-- hara-workflow:end -->
+"""
+
+
+def remove_tables(text: str, header: str, predicate) -> str:
+    lines = text.splitlines(keepends=True)
+    output = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != header:
+            output.append(lines[index])
+            index += 1
+            continue
+        end = index + 1
+        while end < len(lines) and not lines[end].lstrip().startswith("["):
+            end += 1
+        block = "".join(lines[index:end])
+        if not predicate(block):
+            output.extend(lines[index:end])
+        index = end
+    return "".join(output)
+
+
+def install_agent_file(path: Path) -> None:
+    text = path.read_text() if path.exists() else ""
+    text = re.sub(
+        r"(?s)<!-- clojure-skills:start -->.*?<!-- clojure-skills:end -->\s*",
+        "",
+        text,
+    )
+    text = re.sub(
+        r"(?s)<!-- hara-workflow:start -->.*?<!-- hara-workflow:end -->\s*",
+        "",
+        text,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text.rstrip() + ("\n\n" if text.strip() else "") + AGENT_BLOCK)
+
+
+def install_codex_hooks(codex: Path) -> None:
+    path = codex / "hooks.json"
+    data = json.loads(path.read_text()) if path.exists() else {"hooks": {}}
+    hooks = data.setdefault("hooks", {})
+    for event in ("PreToolUse", "PostToolUse"):
+        retained = []
+        for group in hooks.get(event, []):
+            commands = [hook.get("command", "") for hook in group.get("hooks", [])]
+            if not any("hara-source-gate" in value or "hara-shell-edit-gate" in value for value in commands):
+                retained.append(group)
+        hooks[event] = retained
+    hook_dir = codex / "hooks"
+    hooks["PreToolUse"].extend([
+        {
+            "matcher": "Bash",
+            "hooks": [{
+                "type": "command",
+                "command": str(hook_dir / "hara-shell-edit-gate"),
+                "timeout": 15,
+                "statusMessage": "Checking Hara shell edit policy",
+            }],
+        },
+        {
+            "matcher": "apply_patch|Edit|Write",
+            "hooks": [{
+                "type": "command",
+                "command": str(hook_dir / "hara-source-gate"),
+                "timeout": 75,
+                "statusMessage": "Evaluating proposed Hara source",
+            }],
+        },
+    ])
+    hooks["PostToolUse"].append({
+        "matcher": "apply_patch|Edit|Write",
+        "hooks": [{
+            "type": "command",
+            "command": str(hook_dir / "hara-source-gate"),
+            "timeout": 75,
+            "statusMessage": "Evaluating written Hara source",
+        }],
+    })
+    path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def install_kimi_hooks(kimi: Path) -> None:
+    path = kimi / "config.toml"
+    text = path.read_text()
+    text = remove_tables(text, "[[hooks]]", lambda block: "hara-source-gate" in block or "hara-shell-edit-gate" in block)
+    hook_dir = kimi / "hooks"
+    blocks = f"""
+[[hooks]]
+event = "PreToolUse"
+matcher = "Bash"
+command = "HARA_HOOK_MODE=kimi {hook_dir / 'hara-shell-edit-gate'}"
+timeout = 15
+
+[[hooks]]
+event = "PreToolUse"
+matcher = "Write|Edit|apply_patch"
+command = "HARA_HOOK_MODE=kimi {hook_dir / 'hara-source-gate'}"
+timeout = 75
+
+[[hooks]]
+event = "PostToolUse"
+matcher = "Write|Edit|apply_patch"
+command = "HARA_HOOK_MODE=kimi {hook_dir / 'hara-source-gate'}"
+timeout = 75
+"""
+    path.write_text(text.rstrip() + "\n" + blocks)
+
+
+def install_codex_config(codex: Path) -> None:
+    path = codex / "config.toml"
+    text = path.read_text()
+    obsolete = {"greenways-clojure-agent", *SKILLS}
+    text = remove_tables(
+        text,
+        "[[skills.config]]",
+        lambda block: any(f"/.codex/skills/{name}/SKILL.md" in block for name in obsolete),
+    )
+    path.write_text(text)
+
+
+def copy_tree(source: Path, target: Path) -> None:
+    if target.is_symlink() or target.is_file():
+        target.unlink()
+    elif target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(source, target)
+
+
+def install() -> None:
+    codex = HOME / ".codex"
+    kimi = HOME / ".kimi-code"
+    for base in (codex, kimi):
+        (base / "hooks").mkdir(parents=True, exist_ok=True)
+        (base / "skills").mkdir(parents=True, exist_ok=True)
+        for name in HOOKS:
+            shutil.copy2(REPO / "scripts/hooks" / name, base / "hooks" / name)
+        for name in ("hara-source-gate", "hara-shell-edit-gate"):
+            (base / "hooks" / name).chmod(0o755)
+        for name in SKILLS:
+            copy_tree(REPO / "skills" / name, base / "skills" / name)
+        obsolete_skill = base / "skills/greenways-clojure-agent"
+        if obsolete_skill.exists():
+            shutil.rmtree(obsolete_skill)
+        install_agent_file(base / "AGENTS.md")
+
+    install_codex_hooks(codex)
+    install_codex_config(codex)
+    install_kimi_hooks(kimi)
+    for name in OBSOLETE_TOOLS:
+        path = HOME / ".local/bin" / name
+        if path.exists() or path.is_symlink():
+            path.unlink()
+
+
+def equal_tree(source: Path, target: Path) -> bool:
+    comparison = filecmp.dircmp(source, target)
+    if comparison.left_only or comparison.right_only or comparison.diff_files or comparison.funny_files:
+        return False
+    return all(equal_tree(source / name, target / name) for name in comparison.common_dirs)
+
+
+def check() -> int:
+    errors = []
+    codex = HOME / ".codex"
+    kimi = HOME / ".kimi-code"
+    for base in (codex, kimi):
+        for name in HOOKS:
+            source, target = REPO / "scripts/hooks" / name, base / "hooks" / name
+            if not target.exists() or not filecmp.cmp(source, target, shallow=False):
+                errors.append(f"stale hook: {target}")
+        for name in ("hara-source-gate", "hara-shell-edit-gate"):
+            if not os.access(base / "hooks" / name, os.X_OK):
+                errors.append(f"hook is not executable: {base / 'hooks' / name}")
+        for name in SKILLS:
+            target = base / "skills" / name
+            if not target.exists() or not equal_tree(REPO / "skills" / name, target):
+                errors.append(f"stale skill: {target}")
+        agents = base / "AGENTS.md"
+        content = agents.read_text() if agents.exists() else ""
+        if AGENT_BLOCK.strip() not in content:
+            errors.append(f"missing native Hara instructions: {agents}")
+        if (base / "skills/greenways-clojure-agent").exists():
+            errors.append(f"obsolete skill remains: {base / 'skills/greenways-clojure-agent'}")
+
+    codex_hooks = (codex / "hooks.json").read_text()
+    kimi_config = (kimi / "config.toml").read_text()
+    for expected in (
+        str(codex / "hooks/hara-source-gate"),
+        str(codex / "hooks/hara-shell-edit-gate"),
+    ):
+        if expected not in codex_hooks:
+            errors.append(f"missing absolute Codex hook path: {expected}")
+    for expected in (
+        str(kimi / "hooks/hara-source-gate"),
+        str(kimi / "hooks/hara-shell-edit-gate"),
+    ):
+        if expected not in kimi_config:
+            errors.append(f"missing absolute Kimi hook path: {expected}")
+
+    for name in OBSOLETE_TOOLS:
+        if (HOME / ".local/bin" / name).exists():
+            errors.append(f"obsolete command remains: {name}")
+    codex_config = (codex / "config.toml").read_text()
+    if '"/Users/zcaudate/.bash_secrets" = "read"' not in codex_config:
+        errors.append("Codex sandbox lacks exact read permission for .bash_secrets")
+    if not os.access(HOME / ".bash_secrets", os.R_OK):
+        errors.append(".bash_secrets is not readable by the current user")
+    if errors:
+        print("\n".join(errors), file=sys.stderr)
+        return 1
+    print("Hara workflow installation is current for Codex and Kimi")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    if args.check:
+        return check()
+    install()
+    return check()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

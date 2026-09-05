@@ -1,0 +1,61 @@
+(ns postgres.core.graph-test
+  (:require [postgres.core.graph :as graph]
+            [postgres.core.graph-view :as view])
+  (:use code.test))
+
+(def schema
+  {:id [{:type :uuid :primary true :order 0}]
+   :name [{:type :text :order 1}]})
+(def app-schema {:tree {:Task schema}})
+(def Task {:id 'Task :module 'demo :table-schema schema :schema app-schema})
+(view/register-table 'Task Task)
+
+(defn expand [form]
+  (second (macroexpand-1 form)))
+
+(fact "exposes graph where and id operations"
+  (expand (list 'graph/g:where Task {:name "n"})) => '[{:name [:eq "n"]}]
+  (expand (list 'graph/g:where Task {})) => (throws)
+  (expand (list 'graph/g:id Task {:where {:name "n"}}))
+  => '(pg:scalar
+       [:select (--- [#{"id"}]) :from demo/Task
+        \\ :where {"name" [:eq "n"]} \\ :limit 1]))
+
+(fact "exposes graph count exists and selects"
+  (expand (list 'graph/g:count Task {}))
+  => '(pg:scalar [:select (count *) :from demo/Task])
+  (expand (list 'graph/g:exists Task {}))
+  => '(pg:scalar [:select (exists [:select 1 :from demo/Task])])
+  (expand (list 'graph/g:select Task {:as :raw})) => '[:select * :from demo/Task])
+
+(fact "guards and constructs graph gets"
+  (expand (list 'graph/g:get Task {})) => (throws)
+  (expand (list 'graph/g:get Task {:where {:id "a"} :as :raw}))
+  => '[:select * :from demo/Task \\ :where {"id" [:eq "a"]} \\ :limit 1])
+
+(fact "exposes graph mutation operations"
+  (expand (list 'graph/g:update Task {:as :raw :set {:name "n"}}))
+  => '[:update demo/Task :set (== (>-< [#{"name"}]) (row (:text "n"))) ]
+  (expand (list 'graph/g:delete Task {:as :raw :where {:id "a"}}))
+  => '[:delete :from demo/Task :where {"id" [:eq "a"]}])
+
+(fact "exposes graph query operations"
+  (expand (list 'graph/q Task {:returning #{:id} :as :raw}))
+  => '[:select (--- [#{"id"}]) :from demo/Task]
+  (expand (list 'graph/q:get Task {:returning #{:id} :as :raw}))
+  => '[:select (--- [#{"id"}]) :from demo/Task \\ :limit 1])
+
+(view/defsel.pg ^{:- [Task] :args [:text input-name]}
+  task-by-name {:name input-name})
+(view/defret.pg ^{:- [Task]}
+  task-basic [:uuid task-id] #{:id :name})
+
+(fact "exposes composed views"
+  (expand
+   (list 'graph/view
+         ['postgres.core.graph-test/task-basic]
+         ['postgres.core.graph-test/task-by-name "n"] {:limit 2}))
+  => '[:with j-ret :as
+       [:select (--- [#{"id"} #{"name"}]) :from demo/Task
+        \\ :where {"name" [:eq "n"]} \\ :limit 2]
+       \\ :select (jsonb-agg j-ret) :from j-ret])

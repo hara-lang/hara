@@ -1,0 +1,123 @@
+(ns postgres.core.supabase-test
+  (:require [lang.core :as l]
+            [postgres.core.supabase :as s]
+            [lang.core.script :as script])
+  (:use code.test))
+
+(l/script :postgres postgres.core.supabase-test {:macro-only true})
+
+(def payload {"db/sync" {"Entry" []}})
+
+(defn emit [form]
+  (script/compile-form :postgres 'postgres.core.supabase-test form))
+
+(fact "emits Supabase auth helpers"
+  (emit '(s/auth-uid)) => "auth.uid()"
+  (emit '(s/auth-email)) => "auth.email()"
+  (emit '(s/auth-role)) => "auth.role()"
+  (emit '(s/auth-jwt)) => "auth.jwt()")
+
+(fact "emits Supabase installation checks"
+  (emit '(s/is-supabase))
+  => "exists(SELECT 1 FROM information_schema.schemata WHERE \"schema_name\" = 'auth')")
+
+(fact "returns canonical realtime request events"
+  (s/request-event {"db/sync" {}}) => "db/sync"
+  (s/request-event {"db/remove" {}}) => "db/remove"
+  (s/request-event {"db/query" {}}) => nil)
+
+(fact "resolves and normalizes realtime literals"
+  (s/resolve-literal 'postgres.core.supabase-test/payload) => payload
+  (meta (s/normalize-realtime-payload {:a 1})) => {:js true}
+  (s/normalize-realtime-payload [1 2]) => [1 2])
+
+(fact "emits realtime helpers"
+  (emit '(s/realtime-topic)) => "realtime.topic()"
+  (emit '(s/realtime-send "room:test" "db/sync"
+                          {"db/sync" {"Entry" []}} false))
+  => "realtime.send(jsonb_build_object('db/sync',jsonb_build_object('Entry',jsonb_build_array())),'db/sync','room:test',FALSE)"
+  (emit '(s/realtime-send-request "room:test"
+                                  {"db/sync" {"Entry" []}} false))
+  => "realtime.send(jsonb_build_object('db/sync',jsonb_build_object('Entry',jsonb_build_array())),'db/sync','room:test',FALSE)")
+
+(fact "rejects unsupported realtime requests"
+  (macroexpand-1 '(s/realtime-send-request "room" {"db/query" {}} false))
+  => (throws))
+
+(fact "processes return values and literal form types"
+  (s/process-return "value") => "value"
+  (s/process-return "") => nil
+  (s/get-form-type "hello") => :text
+  (s/get-form-type 1) => :bigint
+  (s/get-form-type 1.5) => :numeric
+  (s/get-form-type {:a 1}) => :jsonb
+  (s/get-form-type '(:uuid id)) => :uuid)
+
+(fact "keeps unconfigured entry transforms stable"
+  (s/transform-entry "BODY" {:entry {:op-key :defn}}) => "BODY"
+  (s/transform-entry "BODY" {:entry {:op-key :deftype}}) => "BODY"
+  (s/transform-entry "BODY" {:entry {:op-key :def}}) => "BODY")
+
+(fact "emits idempotent role setup blocks"
+  (emit '(s/create-role anon))
+  => "DO $$\nBEGIN\n CREATE ROLE anon ;\nEXCEPTION WHEN OTHERS THEN\nEND ;\n$$ LANGUAGE 'plpgsql'"
+  (emit '(s/alter-role-bypassrls service_role))
+  => "DO $$\nBEGIN\n ALTER ROLE service_role BYPASSRLS ;\nEXCEPTION WHEN OTHERS THEN\nEND ;\n$$ LANGUAGE 'plpgsql'")
+
+(fact "emits Supabase schema grants"
+  (emit '(s/grant-usage "core/fn-util"))
+  => "GRANT USAGE ON SCHEMA 'core/fn-util' TO anon,authenticated,service_role"
+  (emit '(s/grant-tables "core/fn-util"))
+  => "GRANT ALL ON ALL TABLES IN SCHEMA 'core/fn-util' TO anon,authenticated,service_role"
+  (emit '(s/grant-privileges "core/fn-util"))
+  => "ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA 'core/fn-util' GRANT ALL ON TABLES TO anon,authenticated,service_role"
+  (emit '(s/revoke-execute-privileges-from-public "core/fn-util"))
+  => "ALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA 'core/fn-util' REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+  (emit '(s/grant-public "core/fn-util"))
+  => "GRANT USAGE ON SCHEMA 'core/fn-util' TO anon,authenticated,service_role;\nGRANT ALL ON ALL TABLES IN SCHEMA 'core/fn-util' TO anon,authenticated,service_role;\nALTER DEFAULT PRIVILEGES FOR ROLE postgres IN SCHEMA 'core/fn-util' GRANT ALL ON TABLES TO anon,authenticated,service_role;")
+
+(fact "expands multi-schema grants"
+  (emit '(s/grant-all ["a" "b"]))
+  => "GRANT USAGE ON SCHEMA 'a' TO anon,authenticated,service_role;\nGRANT ALL ON ALL TABLES IN SCHEMA 'a' TO anon,authenticated,service_role;\nGRANT USAGE ON SCHEMA 'b' TO anon,authenticated,service_role;\nGRANT ALL ON ALL TABLES IN SCHEMA 'b' TO anon,authenticated,service_role;")
+
+(fact "expands role and identity execution wrappers"
+  (first (macroexpand-1 '(s/with-role-single [:admin :integer] (+ 1 2))))
+  => 'postgres.core.supabase/process-return
+  (get-in (macroexpand-1 '(s/with-role-single [:admin :integer] (+ 1 2)))
+          [1 1 1])
+  => [:set-local-role 'service_role]
+  (macroexpand-1 '(s/with-role [:anon :integer] (+ 1 2)))
+  => '(postgres.core.supabase/with-role-single [:anon :integer] (+ 1 2))
+  (macroexpand-1 '(s/with-auth ["user" :integer] (+ 1 2)))
+  => '(postgres.core.supabase/with-auth-single ["user" :integer] (+ 1 2))
+  (macroexpand-1 '(s/with-super ["user" :integer] (+ 1 2)))
+  => '(postgres.core.supabase/with-super-single ["user" :integer] (+ 1 2)))
+
+(fact "adds function grants and table RLS access"
+  (let [function-sql
+        (s/transform-entry
+         "BODY" {:entry {:op-key :defn :id 'ping :static/schema "api"
+                          :static/input [] :api/meta {:grant :auth}}})
+        table-sql
+        (s/transform-entry
+         "BODY" {:entry {:op-key :deftype :id 'Task :static/schema "api"
+                          :api/meta {:rls true
+                                     :access {:anon :none :auth :all}}}})]
+    [(str/includes? function-sql "REVOKE ALL ON FUNCTION")
+     (str/includes? function-sql "GRANT EXECUTE ON FUNCTION")
+     (str/includes? table-sql "ENABLE ROW LEVEL SECURITY")
+     (str/includes? table-sql "GRANT ")
+     (str/includes? table-sql " ON TABLE ")])
+  => [true true true true true])
+
+(fact "emits structured Supabase errors"
+  (first (second (macroexpand-1 '(s/raise "Hello" {:data 1})))) => 'do
+  (emit '(s/raise "Hello" {:data 1}))
+  => "RAISE EXCEPTION USING detail = jsonb_build_object('data',1),message = 'Hello';")
+
+(fact "emits Supabase role inspection"
+  (emit '(s/show-roles))
+  => "SELECT rolname,rolsuper,rolbypassrls,rolcanlogin FROM pg_roles WHERE rolname IN ('authenticated','service_role','anon')")
+
+(let [summary (run {:namespace '[postgres.core.supabase-test] :no-report true})]
+  (pr-str (select-keys summary [:status :counts])))

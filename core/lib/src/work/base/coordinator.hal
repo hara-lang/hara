@@ -1,0 +1,448 @@
+(ns work.base.coordinator
+  (:require [work.base.model :as base]
+            [work.base.execution :as execution]
+            [work.base.frame :as frame]
+            [work.base.result :as result]
+            [work.base.store :as store]))
+
+(defn runtime-root
+  [runtime spec options]
+  (let [root (or (:work-root options)
+                 (:root spec)
+                 (:id spec))]
+    (if root
+      root
+      (if (base/durable? runtime)
+        (throw
+         (ex :dependency {:operation (:op spec)} :ex/message "Durable work requires :work-root or a root :id"))
+        :anonymous))))
+
+(defn definition-version
+  [spec options]
+  (or (:work-version options)
+      (:version spec)
+      1))
+
+(defn register-work
+  [runtime work options]
+  (let [options (or options {})
+        spec (base/work-spec-map work)
+        root (runtime-root runtime spec options)
+        version (definition-version spec options)]
+    (base/register-definition runtime root version work)))
+
+(defn initial-frame
+  [run options]
+  {:run/id (:run/id run)
+   :work/root (:run/work-root run)
+   :work/version (:run/work-version run)
+   :node/path []
+   :item/id nil
+   :item/path []
+   :context (or (:context options) {})
+   :options options})
+
+(defn terminal-status?
+  [status]
+  (or (= :completed status)
+      (= :failed status)
+      (= :cancelled status)))
+
+(defn commit-run-event
+  [runtime frame updates event data]
+  (frame/transact
+   runtime
+   frame
+   {:transition/run-updates (or updates {})
+    :transition/events [(frame/event-record frame event data)]}))
+
+(defn complete-run
+  [runtime frame id value]
+  (result/then
+   (store/query (base/runtime-store runtime)
+                {:work/query :run/load :run/id id})
+   (fn [current]
+     (result/then
+      (if (= :cancelled (:run/status current))
+        (frame/emit runtime frame :work/run-cancelled
+                     {:result value})
+        (commit-run-event
+         runtime
+         frame
+         {:run/status :completed
+          :run/result value
+          :run/error nil}
+         :work/run-completed
+         {:result value}))
+      (fn [_]
+        (base/work-reference id))))))
+
+(defn fail-run
+  [runtime frame id error]
+  (result/then
+   (store/query (base/runtime-store runtime)
+                {:work/query :run/load :run/id id})
+   (fn [current]
+     (result/then
+      (if (= :cancelled (:run/status current))
+        (frame/emit runtime frame :work/run-cancelled
+                     {:error (str error)})
+        (commit-run-event
+         runtime
+         frame
+         {:run/status :failed
+          :run/error (str error)}
+         :work/run-failed
+         {:error (str error)}))
+      (fn [_]
+        (base/work-reference id))))))
+
+(defn execute-run
+  [runtime run work options]
+  (let [id (:run/id run)
+        frame (initial-frame run options)]
+    (result/attempt
+     (fn []
+       (result/then
+        (commit-run-event
+         runtime
+         frame
+         {:run/status :running
+          :run/error nil
+          :run/options options}
+         :work/run-started
+         {:run/version (:run/work-version run)})
+        (fn [_]
+          (result/then
+           (execution/execute-work runtime
+                                   frame
+                                   work
+                                   (:run/input run))
+           (fn [value]
+             (complete-run runtime frame id value))))))
+     (fn [error]
+       (fail-run runtime frame id error)))))
+
+(def run-counter (atom 0))
+
+(defn requested-run-id
+  [runtime options]
+  (if (has? options :id)
+    (let [id (:id options)]
+      (if (nil? id)
+        (throw (ex :io {} :ex/message "Work run identity cannot be nil")))
+      id)
+    (str "run-" (time-ms) "-" (swap! run-counter inc))))
+
+(defn initial-run-record
+  [runtime id root version input options]
+  {:run/id id
+   :run/work-root root
+   :run/work-version version
+   :run/runtime-version (base/runtime-code-version runtime)
+   :run/schema-version (base/runtime-schema-version runtime)
+   :run/revision 0
+   :run/status :created
+   :run/execution-status :created
+   :run/receipt-status :pending
+   :run/acceptance-status :pending
+   :run/input input
+   :run/result nil
+   :run/error nil
+   :run/options options
+   :run/attributes (or (:attributes options) {})})
+
+(defn start-run-with-id
+  [runtime work input options root version id]
+  (let [proposed (initial-run-record runtime id root version input options)]
+    (result/then
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id id})
+     (fn [existing]
+       (if existing
+         (if (base/compatible-run? existing proposed)
+           (base/work-reference id)
+           (throw
+            (ex :conflict {:run/id id} :ex/message "Work run identity conflicts with existing input")))
+         (result/then
+          (store/create-run (base/runtime-store runtime) proposed)
+          (fn [committed]
+            (if (:transition/created? committed)
+              (execute-run runtime
+                            (:transition/run committed)
+                            work
+                            options)
+              (base/work-reference id)))))))))
+
+(defn start-run
+  [runtime work input options]
+  (let [options (or options {})
+        spec (base/work-spec-map work)
+        root (runtime-root runtime spec options)
+        version (definition-version spec options)]
+    (register-work runtime work options)
+    (result/then
+     (requested-run-id runtime options)
+     (fn [id]
+       (start-run-with-id runtime
+                          work
+                          input
+                          options
+                          root
+                          version
+                          id)))))
+
+(defn query-run
+  [runtime reference options]
+  (let [query (:query options)
+        id (base/reference-id reference)]
+    (cond
+      (= query :runs)
+      (store/query (base/runtime-store runtime)
+                   {:work/query :run/list
+                    :work/where (or (:where options) {})})
+
+      (= query :history)
+      (store/query (base/runtime-store runtime)
+                   {:work/query :event/list :run/id id})
+
+      (= query :checkpoints)
+      (store/query (base/runtime-store runtime)
+                   {:work/query :checkpoint/list :run/id id})
+
+      :else
+      (result/then
+       (store/query (base/runtime-store runtime)
+                    {:work/query :run/load :run/id id})
+       (fn [run]
+         (cond
+           (= query :status) (:run/status run)
+           (= query :result) (:run/result run)
+           (= query :error) (:run/error run)
+           (= query :run) run
+           :else
+           (throw
+            (ex :host {:query query} :ex/message "Work runtime query is not supported"))))))))
+
+(defn resume-run
+  [runtime reference options]
+  (let [id (base/reference-id reference)]
+    (result/then
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id id})
+     (fn [run]
+       (if (nil? run)
+         (throw (ex :not-found {:run/id id} :ex/message "Work run does not exist"))
+         (if (or (= :completed (:run/status run))
+                 (= :cancelled (:run/status run)))
+           (base/work-reference id)
+           (let [work
+                 (base/resolve-definition runtime
+                                          (:run/work-root run)
+                                          (:run/work-version run))]
+             (if (nil? work)
+               (throw
+                (ex :generic {:work/root (:run/work-root run)
+                          :work/version (:run/work-version run)} :ex/message "Pinned work definition is not available"))
+               (execute-run runtime
+                             run
+                             work
+                             (merge (or (:run/options run) {})
+                                    (or options {})
+                                    {:work-root (:run/work-root run)
+                                     :work-version
+                                     (:run/work-version run)}))))))))))
+
+(defn cancel-run
+  [runtime reference options]
+  (let [id (base/reference-id reference)]
+    (result/then
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id id})
+     (fn [current]
+       (if (nil? current)
+         (throw (ex :not-found {:run/id id} :ex/message "Work run does not exist"))
+         (if (terminal-status? (:run/status current))
+           (base/work-reference id)
+           (let [frame
+                 (initial-frame
+                  current
+                  (merge (or (:run/options current) {})
+                         (or options {})))]
+             (result/then
+              (commit-run-event
+               runtime
+               frame
+               {:run/status :cancelled}
+               :work/run-cancel-requested
+               {:reason (:reason options)})
+              (fn [_]
+                (base/work-reference id))))))))))
+
+(defn path-last
+  [path]
+  (if (empty? path)
+    nil
+    (nth path (dec (count path)))))
+
+(defn checkpoint-selected?
+  [checkpoint selected]
+  (or (= selected (:checkpoint/key checkpoint))
+      (= selected (:checkpoint/node-path checkpoint))
+      (= selected
+         (path-last (:checkpoint/node-path checkpoint)))))
+
+(defn selected-checkpoint
+  [checkpoints selected]
+  (let [checkpoints (vec checkpoints)]
+    (loop [index 0
+           match nil]
+      (if (= index (count checkpoints))
+        match
+        (let [checkpoint (nth checkpoints index)]
+          (if (checkpoint-selected? checkpoint selected)
+            (if match
+              (throw
+               (ex :generic {:checkpoint selected} :ex/message "Fork checkpoint selector is ambiguous"))
+              (recur (inc index) checkpoint))
+            (recur (inc index) match)))))))
+
+(defn checkpoint-clones
+  [checkpoints target-id before]
+  (reduce
+   (fn [output checkpoint]
+     (if (< (:checkpoint/sequence checkpoint) before)
+       (let [old-key (vec (:checkpoint/key checkpoint))
+             new-key (assoc old-key 0 target-id)]
+         (conj output
+               (assoc checkpoint
+                      :checkpoint/run target-id
+                      :checkpoint/key new-key)))
+       output))
+   []
+   checkpoints))
+
+(defn copy-checkpoints-before
+  [runtime source-id target-id selected]
+  (result/then
+   (store/query (base/runtime-store runtime)
+                {:work/query :checkpoint/list
+                 :run/id source-id})
+   (fn [checkpoints]
+     (let [checkpoints (vec checkpoints)
+           selected-record (selected-checkpoint checkpoints selected)
+           before
+           (if selected-record
+             (:checkpoint/sequence selected-record)
+             0)]
+       (if (and selected (nil? selected-record))
+         (throw
+          (ex :not-found {:run/id source-id
+                    :checkpoint selected} :ex/message "Fork checkpoint does not exist")))
+       (let [clones (checkpoint-clones checkpoints target-id before)]
+         (if (empty? clones)
+           0
+           (result/then
+            (store/transact-current
+             (base/runtime-store runtime)
+             target-id
+             {:transition/checkpoints clones})
+            (fn [_]
+              (count clones)))))))))
+
+(defn fork-created-run
+  [runtime source-id id selected run work fork-options]
+  (result/then
+   (copy-checkpoints-before runtime source-id id selected)
+   (fn [_]
+     (execute-run runtime run work fork-options))))
+
+(defn fork-run-with-id
+  [runtime source source-id id work fork-options options]
+  (let [proposed
+        (merge
+         (initial-run-record runtime
+                             id
+                             (:run/work-root source)
+                             (:run/work-version source)
+                             (:run/input source)
+                             fork-options)
+         {:run/forked-from source-id
+          :run/fork-checkpoint (:checkpoint options)
+          :run/attributes
+          (merge (:run/attributes source)
+                 (or (:attributes options) {}))})]
+    (result/then
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id id})
+     (fn [existing]
+       (if existing
+         (if (and (base/compatible-run? existing proposed)
+                  (= source-id (:run/forked-from existing))
+                  (= (:checkpoint options)
+                     (:run/fork-checkpoint existing)))
+           (base/work-reference id)
+           (throw
+            (ex :conflict {:run/id id
+                      :source source-id
+                      :checkpoint (:checkpoint options)} :ex/message "Fork run identity conflicts with existing fork")))
+         (result/then
+          (store/create-run (base/runtime-store runtime) proposed)
+          (fn [committed]
+            (if (:transition/created? committed)
+              (fork-created-run runtime
+                                source-id
+                                id
+                                (:checkpoint options)
+                                (:transition/run committed)
+                                work
+                                fork-options)
+              (base/work-reference id)))))))))
+
+(defn fork-source-run
+  [runtime source source-id options]
+  (let [work
+        (base/resolve-definition runtime
+                                 (:run/work-root source)
+                                 (:run/work-version source))
+        fork-options
+        (merge (or (:run/options source) {})
+               options
+               {:work-root (:run/work-root source)
+                :work-version (:run/work-version source)})]
+    (if (nil? work)
+      (throw
+       (ex :generic {:work/root (:run/work-root source)
+                 :work/version (:run/work-version source)} :ex/message "Pinned work definition is not available")))
+    (result/then
+     (requested-run-id runtime options)
+     (fn [id]
+       (fork-run-with-id runtime
+                         source
+                         source-id
+                         id
+                         work
+                         fork-options
+                         options)))))
+
+(defn fork-run
+  [runtime reference options]
+  (let [options (or options {})
+        source-id (base/reference-id reference)]
+    (result/then
+     (store/query (base/runtime-store runtime)
+                  {:work/query :run/load :run/id source-id})
+     (fn [source]
+       (if (nil? source)
+         (throw (ex :not-found {:run/id source-id} :ex/message "Work run does not exist"))
+         (fork-source-run runtime source source-id options))))))
+
+(defn command-run
+  [runtime reference command options]
+  (cond
+    (= command :cancel) (cancel-run runtime reference options)
+    (= command :resume) (resume-run runtime reference options)
+    (= command :fork) (fork-run runtime reference options)
+    :else
+    (throw
+     (ex :host {:command command} :ex/message "Work runtime command is not supported"))))

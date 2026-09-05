@@ -1,0 +1,34 @@
+(ns code.query.match.optional-test
+  (:require [code.query.match.optional :refer :all]
+    [std.lib.encode.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+^{:refer code.query.match.optional/tag-meta :added "3.0"}
+(Test/run
+ [{:name "increment a counter everytime a `:?` element is seen"
+   :test (fn []
+             (let [out (atom {:? -1})]
+                  (tag-meta (with-meta (list) {:? true}) out) (deref out)))
+   :expected {:? 0}}]
+ migration-test-check)
+
+^{:refer code.query.match.optional/pattern-seq :added "3.0"}
+(Test/run
+ [{:name "generate a sequence of possible matches"
+   :test (fn []
+             (pattern-seq (list (quote +)
+                                (with-meta (list (quote 1)) {:? true}) (with-meta (list (with-meta (quote +) {:? true}) (quote 2)) {:? true}))))
+   :expected (quote ((+) (+ (1)) (+ (2)) (+ (1) (2)) (+ (+ 2)) (+ (1) (+ 2))))}]
+ migration-test-check)

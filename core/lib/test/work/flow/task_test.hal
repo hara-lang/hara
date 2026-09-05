@@ -1,0 +1,248 @@
+(ns work.flow.task-test
+  (:require [work.flow :as flow]
+            [work.flow.task :as task]
+            [work.base :as work :refer [def.work]]))
+
+(defn test-check
+  [name actual expected]
+  {:name name
+   :actual actual
+   :expected expected
+   :pass (= actual expected)})
+
+(defn lint-project
+  [input]
+  (* 2 input))
+
+(def.work lint
+  [:task]
+  {:return {:select :results
+            :package :map}
+   :main {:fn lint-project
+          :argcount 1}})
+
+(def first-lint lint)
+
+(def.work lint
+  [:task]
+  {:return {:select :results
+            :package :map}
+   :main {:fn (fn [input]
+                (* 3 input))
+          :argcount 1}})
+
+(def.work summary-task
+  [:task]
+  {:return {:select :summary}
+   :main {:fn lint-project
+          :argcount 1}})
+
+(def profile-records
+  [{:data {:facts 2
+           :checks 3
+           :passed 2
+           :failed 0
+           :throw 0
+           :timeout 0
+           :counts {:passed 2 :failed 0 :error 0 :timeout 0
+                    :skipped 0 :cancelled 0}
+           :check-counts {:total 3 :passed 3 :failed 0}
+           :results [{:name :first} {:name :second}]}}])
+
+(def profile-summary
+  (task/test-summary-finalise {:items 1} profile-records []))
+
+(def results
+  [^{:refer work.flow.task/test-item-list}
+   (test-check
+    "the test profile lists frontend-supplied namespace items"
+    (task/test-item-list {:test/items [:alpha :beta]} {})
+    [:alpha :beta])
+
+   ^{:refer work.flow.task/test-item-run}
+   (test-check
+    "the test profile delegates namespace execution to the item runner"
+    [(task/test-item-run
+      {:test/run (fn [item context] {:namespace :alpha})}
+      {})
+     (task/test-item-run {:item/id :fallback} {})]
+    [{:status :return :data {:namespace :alpha}}
+     {:status :return :data {:item/id :fallback}}])
+
+   ^{:refer work.flow.task/test-number}
+   (test-check
+    "test counters treat non-numeric values as zero"
+    [(task/test-number 3) (task/test-number "3")]
+    [3 0])
+
+   ^{:refer work.flow.task/test-item-display}
+   (test-check
+    "test item display prefers the frontend display value"
+    [(task/test-item-display {:test/display "passed (2)"})
+     (task/test-item-display :raw)]
+    ["passed (2)" :raw])
+
+   ^{:refer work.flow.task/test-item-output}
+   (test-check
+    "test item output preserves the namespace summary"
+    (task/test-item-output {:status :passed :facts 2})
+    {:status :passed :facts 2})
+
+   ^{:refer work.flow.task/test-result-ignore}
+   (test-check
+    "passing namespace rows are ignored while failure rows remain visible"
+    [(task/test-result-ignore {:test/failed 0 :test/throw 0 :test/timeout 0})
+     (task/test-result-ignore {:test/failed 1 :test/throw 0 :test/timeout 0})]
+    [true false])
+
+   ^{:refer work.flow.task/test-report-status}
+   (test-check
+    "test report status maps the domain summary to task completion"
+    [(task/test-report-status {:status :passed} {})
+     (task/test-report-status {:status :failed} {})]
+    [:completed :failed])
+
+   ^{:refer work.flow.task/test-data}
+   (test-check
+    "test data extracts map-valued item results"
+    [(task/test-data (first profile-records))
+     (task/test-data {:data :not-a-map})]
+    [(first (map :data profile-records)) {}])
+
+   ^{:refer work.flow.task/test-total}
+   (test-check
+    "test totals sum numeric namespace fields"
+    [(task/test-total [(first (map :data profile-records))] :facts)
+     (task/test-total [(first (map :data profile-records))] :missing)]
+    [2 0])
+
+   ^{:refer work.flow.task/test-count-total}
+   (test-check
+    "test count totals sum nested result counts"
+    (task/test-count-total [(first (map :data profile-records))] :passed)
+    2)
+
+   ^{:refer work.flow.task/test-check-total}
+   (test-check
+    "test check totals sum nested assertion counts"
+    (task/test-check-total [(first (map :data profile-records))] :total)
+    3)
+
+   ^{:refer work.flow.task/test-result-values}
+   (test-check
+    "test result values flatten namespace result rows"
+    (task/test-result-values [(first (map :data profile-records))])
+    [{:name :first} {:name :second}])
+
+   ^{:refer work.flow.task/test-summary-finalise}
+   (test-check
+    "test summary finalisation exposes Foundation-compatible counters"
+    (let [error-summary
+          (task/test-summary-finalise
+           {:items 1}
+           [{:status :error :error "item failed"}]
+           [])]
+      [(select-keys profile-summary
+                    [:items :files :facts :checks :passed :failed :throw
+                     :timeout :skipped :status :results])
+       (select-keys error-summary [:files :throw :status])])
+    [{:items 1 :files 1 :facts 2 :checks 3 :passed 2 :failed 0
+      :throw 0 :timeout 0 :skipped 0 :status :passed
+      :results [{:name :first} {:name :second}]}
+     {:files 1 :throw 1 :status :failed}])
+
+   ^{:refer work.flow.task/test-task-defaults}
+   (test-check
+    "the test profile installs Foundation-compatible task defaults"
+    [(get-in task/test-task-defaults [:item :list-mode])
+     (get-in task/test-task-defaults [:report :sections])
+     (get-in task/test-task-defaults [:summary :fields])
+     (get-in (task/task-defaults :test) [:return :select])]
+     [:input-context [:items :results :summary]
+      [:files :facts :checks :passed :failed :throw :timeout :skipped]
+      :summary])
+
+   ^{:refer work.flow.task/invocation-options}
+   (test-check
+    "task flow exposes the selector invocation surface"
+    (task/invocation-options ['std {:parallel true}] :namespace)
+    {:selector 'std :parallel true})
+
+   (test-check
+    "task flows register themselves for def.work"
+    (:flow/path (flow/registered-flow [:task]))
+    [:task])
+
+   (test-check
+    "def.work compiles a callable task definition"
+    [(lint 4)
+     (task/task-work? lint)]
+    [{4 12} true])
+
+   (test-check
+    "task redefinition replaces the installed work value"
+    [(not (= first-lint lint))
+     (= lint
+        (flow/definition
+         'work.flow.task-test/lint))]
+    [true true])
+
+   (test-check
+    "task definitions override descriptor defaults locally"
+    [(get-in (work/work-spec summary-task)
+             [:template/definition :return :select])]
+    [:summary])
+
+   (test-check
+    "family-specific task declarations are removed"
+    [(nil? (resolve 'work.flow.task/def.task))
+     (nil? (resolve 'work.flow.task/deftask))]
+    [true true])
+
+   (test-check
+    "named tasks can use the registered descriptor directly"
+    (let [work-value
+          (flow/define-work
+           'another.namespace/increment
+           [:task]
+           {:main {:fn (fn [input] (inc input))
+                   :argcount 1}})]
+      (work-value 5))
+    {5 6})
+
+   (test-check
+    "the flow path cannot be hidden inside a definition"
+    (try
+      (do
+        (flow/define-work
+         'another.namespace/invalid
+         [:task]
+         {:workflow [:task]
+          :main {:fn identity :argcount 1}})
+        false)
+      (catch Throwable error
+        (= 'another.namespace/invalid
+           (:workflow/name (ex-data error)))))
+    true)
+
+   (test-check
+    "unregistered flow paths fail with the requested path"
+    (try
+      (do
+        (flow/define-work 'another.namespace/missing [:missing] {})
+        false)
+      (catch Throwable error
+        (= [:missing] (:workflow/path (ex-data error)))))
+    true)
+
+   (test-check
+    "def.work validates names and paths during expansion"
+    [(try
+       (do (macroexpand '(work.base/def.work :invalid [:task] {})) false)
+       (catch Throwable error true))
+     (try
+       (do (macroexpand '(work.base/def.work invalid [] {})) false)
+       (catch Throwable error true))]
+    [true true])])
+
+results

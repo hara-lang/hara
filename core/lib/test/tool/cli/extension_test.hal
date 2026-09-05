@@ -1,0 +1,141 @@
+(ns tool.cli.extension-test
+  (:require [tool.cli.extension :as extension]
+            ))
+
+(def +wasm-manifest+
+  {:provider :wasm
+   :module "fixture.wasm"
+   :abi :core.v1
+   :exports {"value" {:wasm/export "raw_value"
+                       :args []
+                       :returns :i32}}
+   :capabilities []})
+
+(def +memory-manifest+
+  {:provider :wasm
+   :module "echo.wasm"
+   :abi :memory.v1
+   :exports {"echo" {:wasm/export "echo_bytes"
+                      :args [:bytes]
+                      :returns :bytes}}
+   :capabilities []
+   :assets ["bindings.edn"]})
+
+(def +hta-wasm-manifest+
+  {:identity "hara/filesystem-github"
+   :version "0.1.0"
+   :provider :wasm
+   :module "provider.wasm"
+   :abi :hta.v1
+   :exports {"describe" {:args [] :returns :value :async true}
+             "open" {:args [:options] :returns :value :async true}}
+   :host-calls {"filesystem.github"
+                {:methods ["describe" "open" "request" "cancel" "close"]
+                 :capabilities [:filesystem :network]}}
+   :capabilities [:filesystem :network]})
+
+[(test-check "extension manifests are validated by Hara"
+              (select-keys (extension/validate-manifest
+                            'demo.fixture +wasm-manifest+ "project.edn")
+                           [:namespace :declared/files])
+              {:namespace "demo.fixture"
+               :declared/files ["fixture.wasm"]})
+  (test-check "memory manifests require and declare their binding plan"
+              (select-keys (extension/validate-manifest
+                            'codec.echo +memory-manifest+ "project.edn")
+                           [:namespace :abi :declared/files])
+              {:namespace "codec.echo"
+               :abi :memory.v1
+               :declared/files ["bindings.edn" "echo.wasm"]})
+  (test-check "rich HTA Wasm manifests declare an actual module and host boundary"
+              (select-keys (extension/validate-manifest
+                            'fs.github.wasm +hta-wasm-manifest+ "project.edn")
+                           [:namespace :provider :abi :declared/files])
+              {:namespace "fs.github.wasm"
+               :provider :wasm
+               :abi :hta.v1
+               :declared/files ["provider.wasm"]})
+  (test-check "HTA manifests declare provider targets"
+              (:declared/files
+               (extension/validate-manifest
+                'demo.hta
+                {:provider :hta
+                 :abi :hta.v1
+                 :targets {:node {:provider "node/provider.mjs" :runtime :process}}
+                 :exports {}
+                 :capabilities []}
+                "project.edn"))
+              ["node/provider.mjs"])
+  (test-check "HTA manifests reject legacy target modules"
+              (try
+                (do
+                  (extension/validate-manifest
+                   'demo.hta
+                   {:provider :hta
+                    :abi :hta.v1
+                    :targets {:node {:module "node/worker.mjs" :runtime :process}}
+                    :exports {}
+                    :capabilities []}
+                   "project.edn")
+                  false)
+                (catch Throwable error true))
+              true)
+  (test-check "extension routes select Hara operations"
+              [(extension/operation-request
+                {:request/route :tool.cli.route/extension-install
+                 :request/arguments ["package"]})
+               (extension/operation-request
+                {:request/route :tool.cli.route/extension-wit-import
+                 :request/arguments ["api.wit" "--out" "api.hal"]})
+               (extension/operation-request
+                {:request/route :tool.cli.route/extension-inspect
+                 :request/arguments ["math.wasm" "--out" "math.hal"]})
+               (extension/operation-request
+                {:request/route :tool.cli.route/extension-bind
+                 :request/arguments ["math.hal" "--module" "math.wasm"
+                                     "--out" "dist"]})]
+              [{:operation :install :arguments ["package"]}
+               {:operation :wit-import
+                :arguments ["api.wit" "--out" "api.hal"]}
+               {:operation :inspect
+                :arguments ["math.wasm" "--out" "math.hal"]}
+               {:operation :bind
+                :arguments ["math.hal" "--module" "math.wasm"
+                            "--out" "dist"]}])
+  (test-check "inspect normalizes authoring flags into one host action"
+              (:result/data
+               (extension/inspect-command
+                ["math.wasm" "--namespace=math.scalar"
+                 "--out" "math.interface.hal"]))
+              {:host/action :extension-inspect
+               :host/arguments ["math.wasm" "math.interface.hal"
+                                "math.scalar"]})
+  (test-check "bind normalizes authoring flags into one host action"
+              (:result/data
+               (extension/bind-command
+                ["math.interface.hal" "--out=dist"
+                 "--module" "math.wasm"]))
+              {:host/action :extension-bind
+               :host/arguments ["math.interface.hal" "math.wasm" "dist"]})
+  (test-check "WIT import preserves explicit options and strict mode"
+              (:result/data
+               (extension/wit-import-command
+                ["api.wit" "--out" "api.hal" "--module=api.wasm"
+                 "--namespace" "demo.api" "--world" "api-world"
+                 "--strict"]))
+              {:host/action :extension-wit-import
+               :host/arguments ["api.wit" "api.hal"
+                                "--module" "api.wasm"
+                                "--namespace" "demo.api"
+                                "--world" "api-world"
+                                "--strict"]})
+  (test-check "WIT projection uses the explicit Hara interface route"
+              (:result/data
+               (extension/wit-project-command
+                ["api.hal" "--out=api.wit" "--package" "demo:api"
+                 "--interface" "api" "--world" "api-world"]))
+              {:host/action :extension-wit-project
+               :host/arguments ["api.hal" "api.wit"
+                                "--package" "demo:api"
+                                "--interface" "api"
+                                "--world" "api-world"]})]

@@ -1,0 +1,167 @@
+(ns code.test-test
+  (:use code.test)
+  (:require
+            [work.base :as work]))
+
+(fact "evaluates ordinary equality"
+  (+ 20 22) => 42
+  (+ 1 2 3) => 6)
+
+(fact "awaits promise-returning assertions"
+  (promise/from 42) => 42)
+
+(fact "matches thrown values"
+  (throw "expected") => (throws))
+
+(fact "supports predicate matchers"
+  {:tags [:unit :matcher]}
+  42 => (satisfies (fn [value] (= 42 value)))
+
+  [2 1] => (just [1 2] :in-any-order)
+  [3 1 2] => (contains [1 2] :in-any-order)
+  [["b" 2] ["a" 1]] => (just [["a" 1] ["b" 2]] :in-any-order))
+
+(fact "records skipped facts"
+  {:skip true :tags [:slow]}
+  (throw "must not run") => :never)
+
+(def lifecycle (atom []))
+
+(fact "runs promise-aware fixtures"
+  {:before (fn []
+             (swap! lifecycle (fn [events] (conj events :before))))
+   :after (fn []
+            (swap! lifecycle (fn [events] (conj events :after))))}
+  (promise/from :ready) => :ready)
+
+(def observer (work/recording-observer))
+(def summary
+  (run (work/local-runtime {:observer observer})
+       {:namespace "code.test-test"}))
+(def positional-summary (run '[missing]))
+
+(def timeout-result
+  (check
+   (fn [] (promise/from 42))
+   42
+   {:work/timeout-promise
+    (fn [promise milliseconds]
+      {:promise (promise/from {:test/status :timeout})
+       :timeout milliseconds})
+    :work/cancel-timeout (fn [timeout] timeout)
+    :timeout 25}))
+
+(def fixture-events (atom []))
+(def fixture-summary
+  (run {:namespace "code.test-test"
+        :name "evaluates ordinary equality"
+        :before-all (fn []
+                      (swap! fixture-events
+                             (fn [events] (conj events :before-all))))
+        :before-each (fn []
+                       (swap! fixture-events
+                              (fn [events] (conj events :before-each))))
+        :after-each (fn []
+                      (swap! fixture-events
+                             (fn [events] (conj events :after-each))))
+        :after-all (fn []
+                     (swap! fixture-events
+                            (fn [events] (conj events :after-all))))}))
+
+(def tagged-summary
+  (run {:namespace "code.test-test"
+        :include-tags :matcher}))
+
+(def fail-fast-runs (atom 0))
+(register "fail-fast/1"
+           (fn [options]
+             [(compare :no :yes)])
+           {:test/namespace "code.test-test"})
+(register "fail-fast/2"
+           (fn [options]
+             (do
+               (swap! fail-fast-runs inc)
+               [(compare :yes :yes)]))
+           {:test/namespace "code.test-test"})
+(def fail-fast-summary
+  (run {:namespace "code.test-test"
+        :name "fail-fast/"
+        :fail-fast true}))
+(remove-fact "code.test-test" "fail-fast/1")
+(remove-fact "code.test-test" "fail-fast/2")
+
+(def clock-values (atom [10 18]))
+(def timed-fact-result
+  (run-fact
+   (get-fact "code.test-test" "evaluates ordinary equality")
+   {:work/now
+    (fn []
+      (let [value (first (deref clock-values))]
+        (swap! clock-values rest)
+        value))}))
+
+(defn test-event?
+  [event]
+  (let [kind (:event event)]
+    (or (= kind :test/run-started)
+        (= kind :test/fact-started)
+        (= kind :test/fact-completed)
+        (= kind :test/run-completed))))
+
+(def test-events
+  (vec
+   (map (fn [event] (:event event))
+        (filter test-event?
+                (work/observer-events observer)))))
+
+(def equality-result
+  (first
+   (filter (fn [result]
+             (= "evaluates ordinary equality" (:name result)))
+           (:results summary))))
+
+(def results
+  [(test-check "archived positional namespace selectors are supported"
+                 [(get positional-summary :status)
+                  (get positional-summary :facts)
+                  (get positional-summary :checks)]
+                 [:passed 0 0])
+   (test-check "portable facts pass"
+                 [(get summary :status)
+                  (get (get summary :counts) :passed)
+                  (count (get summary :results))
+                  (count (:checks equality-result))
+                  (deref lifecycle)]
+                 [:passed 5 6 2 [:before :after]])
+   (test-check "Runtime hooks receive durable test-domain events"
+                 test-events
+                 [:test/run-started
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/fact-started :test/fact-completed
+                  :test/run-completed])
+   (test-check "generic work timeout capabilities classify diagnostics"
+                 [(Result/error? timeout-result)
+                  (code.test.base.process/timeout-result? timeout-result)
+                  (:milliseconds
+                   (ex-data (Result/error-value timeout-result)))]
+                 [true true 25])
+   (test-check "generic work clocks attach deterministic elapsed time"
+                 [(get timed-fact-result :status) (get timed-fact-result :elapsed)]
+                 [:passed 8])
+   (test-check "runner supports suite fixtures, selectors, tags, and skips"
+                 [(deref fixture-events)
+                  (get fixture-summary :facts)
+                  (get tagged-summary :facts)
+                  (get (get summary :counts) :skipped)
+                  (get summary :checks)
+                  (get (get fail-fast-summary :counts) :failed)
+                  (get (get fail-fast-summary :counts) :cancelled)
+                  (deref fail-fast-runs)]
+                 [[:before-all :before-each :after-each :after-all]
+                  1 1 1 9 1 1 0])])
+
+results

@@ -1,0 +1,204 @@
+(ns tool.migrate.catalog-ex-info-script
+  (:require [tool.migrate.transform.lib-core :as transform]
+            [std.foundation :refer :all]
+            [std.fs.path :as path]
+            [tool.sh :as sh]))
+
+(def +review-fields+
+  [:review/status :migration/batch :ex/code :ex/class
+   :expected/matches :expected/changes])
+
+(defn lines [text]
+  (vec (filter (fn [line] (not (str/blank? line)))
+               (str/split-lines text))))
+
+(defn git [root arguments]
+  (:stdout (sh/run-checked (vec (concat ["git" "-C" root] arguments)))))
+
+(defn registered-paths [workspace]
+  (let [output (git workspace ["config" "-f" ".gitmodules"
+                               "--get-regexp" "^submodule\\..*\\.path$"])]
+    (vec
+     (sort
+      (map (fn [line]
+             (let [separator (str/index-of line " ")]
+               (str/slice line (inc separator))))
+           (lines output))))))
+
+(defn repository-id [root logical-path]
+  (let [outcome (sh/run ["git" "-C" root "remote" "get-url" "origin"])
+        result (if (Result/success? outcome)
+                 (Result/data outcome)
+                 (let [error (Result/error-value outcome)
+                       data (ex-data error)]
+                   (if (and (map? data) (has? data :exit))
+                     data
+                     (throw error))))
+        url (if (= 0 (:exit result)) (:stdout result) logical-path)
+        cleaned (str/replace
+                 (str/replace url "git@github.com:" "")
+                 "https://github.com/" "")]
+    (if (str/ends-with? cleaned ".git")
+      (str/slice cleaned 0 (- (str/length cleaned) 4))
+      cleaned)))
+
+(defn tracked-hal-paths [root]
+  (let [outcome (sh/run ["git" "-C" root "grep" "-l" "ex-info" "HEAD" "--" "*.hal"])
+        result (if (Result/success? outcome)
+                 (Result/data outcome)
+                 (let [error (Result/error-value outcome)
+                       data (ex-data error)]
+                   (if (and (map? data) (has? data :exit))
+                     data
+                     (throw error))))]
+    (if (= 0 (:exit result))
+      (mapv (fn [line]
+              (str/slice line (inc (str/index-of line ":"))))
+            (lines (:stdout result)))
+      [])))
+
+(defn host-read [file]
+  (let [outcome (sh/run ["/bin/cat" file])]
+    (if (Result/success? outcome)
+      (:stdout (Result/data outcome))
+      (let [error (Result/error-value outcome)
+            data (ex-data error)]
+        (if (and (map? data) (has? data :exit))
+          nil
+          (throw error))))))
+
+(defn host-write [file text]
+  (let [process (Process/spawn ["/usr/bin/tee" file])]
+    (do (Process/write process (str/encode-utf8 text))
+        (Process/close-input process)
+        (let [values (deref (promise/all [(Process/stdout process)
+                                          (Process/stderr process)
+                                          (Process/wait process)]))]
+          (if (= 0 (nth values 2))
+            file
+            (throw (ex :tool.migrate/catalog-write
+                       {:ex/message "Cannot write ex-info catalog"
+                        :path file
+                        :stderr (str/decode-utf8 (nth values 1))})))))))
+
+(defn review-index [output]
+  {})
+
+(defn preserve-review [index site]
+  (if-let [review (get index (:site/id site))]
+    (reduce (fn [output field]
+              (if (contains? review field)
+                (assoc output field (get review field))
+                output))
+            site
+            +review-fields+)
+    site))
+
+(defn scan-repository [workspace logical-path root review]
+  (let [outcome (sh/run ["git" "-C" root "rev-parse" "--git-dir"])
+        probe (if (Result/success? outcome)
+                (Result/data outcome)
+                (let [error (Result/error-value outcome)
+                      data (ex-data error)]
+                  (if (and (map? data) (has? data :exit))
+                    data
+                    (throw error))))]
+  (if (= 0 (:exit probe))
+    (let [repository (repository-id root logical-path)
+          revision (git root ["rev-parse" "HEAD"])
+          paths (tracked-hal-paths root)
+          sites
+          (vec
+           (mapcat
+            (fn [relative]
+              (let [source (git root ["show" (str "HEAD:" relative)])]
+                (if (str/includes? source "ex-info")
+                  (try
+                    (mapv (fn [site] (preserve-review review site))
+                          (transform/catalog-ex-info-source
+                           source relative
+                           {:repository repository :revision revision}))
+                    (catch Throwable error []))
+                  [])))
+            paths))]
+      {:repository {:repository/id repository
+                    :workspace/path logical-path
+                    :repository/revision revision
+                    :scan/status :scanned}
+       :sites sites})
+    {:repository {:repository/id nil
+                  :workspace/path logical-path
+                  :repository/revision nil
+                  :scan/status :placeholder}
+     :sites []})))
+
+(defn site-sort-key [site]
+  [(:source/repository site)
+   (:source/path site)
+   (get-in site [:source/range :start-offset])
+   (pr-str (:site/id site))])
+
+(defn render-edn [value]
+  (cond
+    (map? value)
+    (str "{"
+         (str/join
+          " "
+          (map (fn [entry]
+                 (str (render-edn (first entry)) " "
+                      (render-edn (second entry))))
+               (sort-by (fn [entry] (pr-str (first entry))) (vec value))))
+         "}")
+
+    (vector? value)
+    (str "[" (str/join " " (map render-edn value)) "]")
+
+    :else
+    (pr-str value)))
+
+(defn catalog [workspace hara-root output]
+  (let [review (review-index output)
+        paths (registered-paths workspace)
+        scans
+        (mapv
+         (fn [logical]
+           (scan-repository workspace logical
+                            (if (= logical "technology/hara")
+                              hara-root
+                              (path/join workspace logical))
+                            review))
+         paths)
+        sites (vec (sort-by site-sort-key (mapcat :sites scans)))]
+    {:catalog/version 1
+     :catalog/repositories (mapv :repository scans)
+     :catalog/summary
+     {:sites (count sites)
+      :approved (count (filter (fn [site] (= :approved (:review/status site))) sites))
+      :pending (count (filter (fn [site] (= :pending (:review/status site))) sites))
+      :production (count (filter (fn [site] (= :production (:source/role site))) sites))}
+     :catalog/sites sites}))
+
+(defn run
+  ([] (run "write"))
+  ([mode]
+  (let [hara-root (OS/cwd)
+        workspace (path/parent (path/parent hara-root))
+        output (path/join workspace "ex-info-catalog.edn")
+        rendered (str (render-edn (catalog workspace hara-root output)) "\n")]
+    (cond
+      (= mode "write")
+      (do (host-write output rendered)
+          {:mode :write :output output})
+
+      (= mode "verify")
+      (if (= rendered (host-read output))
+        {:mode :verify :output output :valid true}
+        (throw (ex :tool.migrate/catalog-stale
+                   {:ex/message "ex-info catalog is stale" :path output})))
+
+      :else
+      (throw (ex :tool.migrate/catalog-mode
+                 {:ex/message "HARA_ERROR_CATALOG_MODE must be write or verify"
+                  :mode mode}))))))
+
+(run)

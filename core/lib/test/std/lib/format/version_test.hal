@@ -1,0 +1,112 @@
+(ns std.lib.format.version-test
+  (:use code.test)
+  (:require [std.lib.format.version :as version]))
+
+^{:refer std.lib.format.version/parse-number}
+(fact "parses a numeric version component"
+  [(version/parse-number "1")
+   (version/parse-number "")]
+  => [1 nil])
+
+^{:refer std.lib.format.version/parse-qualifier}
+(fact "ranks release qualifiers"
+  [(version/parse-qualifier "" "")
+   (version/parse-qualifier "alpha" "")
+   (version/parse-qualifier "beta" "")
+   (version/parse-qualifier "" "build")]
+  => [6 0 1 -1])
+
+^{:refer std.lib.format.version/parse}
+(fact "parses complete and qualified versions"
+  [(version/parse "1.0.0-final")
+   (version/parse "1.0.0-alpha+build.123")
+   (version/parse "9.1-901.jdbc4")]
+  => [{:major 1 :minor 0 :incremental 0 :qualifier 6 :release "final" :build ""}
+      {:major 1 :minor 0 :incremental 0 :qualifier 0 :release "alpha" :build "build.123"}
+      {:major 9 :minor 1 :incremental nil :qualifier -1 :release "901.jdbc4" :build ""}])
+
+^{:refer std.lib.format.version/version}
+(fact "normalises strings and preserves maps"
+  (version/version "1.0-RC5")
+  => {:major 1 :minor 0 :incremental nil :qualifier 3 :release "rc5" :build ""}
+
+  (version/version {:major 2 :minor 0})
+  => {:major 2 :minor 0})
+
+^{:refer std.lib.format.version/order}
+(fact "returns comparison fields in order"
+  (version/order "1.2")
+  => [1 2 nil 6 "" ""])
+
+^{:refer std.lib.format.version/equal?}
+(fact "compares versions for equality"
+  (version/equal? "1.2-final" "1.2")
+  => true)
+
+^{:refer std.lib.format.version/newer?}
+(fact "detects newer versions"
+  [(version/newer? "1.2" "1.0")
+   (version/newer? "1.2.2" "1.0.4")]
+  => [true true])
+
+^{:refer std.lib.format.version/older?}
+(fact "detects older versions"
+  [(version/older? "1.0-alpha" "1.0-beta")
+   (version/older? "1.0-rc1" "1.0")]
+  => [true true])
+
+^{:refer std.lib.format.version/not-equal?}
+(fact "negates equality"
+  [(version/not-equal? "3.0" "3.0")
+   (version/not-equal? "3.0" "3.1")]
+  => [false true])
+
+^{:refer std.lib.format.version/not-newer?}
+(fact "negates newer comparison"
+  [(version/not-newer? "3.0" "3.0")
+   (version/not-newer? "3.0" "2.0")]
+  => [true false])
+
+^{:refer std.lib.format.version/not-older?}
+(fact "negates older comparison"
+  [(version/not-older? "3.0" "3.0")
+   (version/not-older? "2.0" "3.0")]
+  => [true false])
+
+^{:refer std.lib.format.version/clojure-version}
+(fact "returns the portable Clojure version shape"
+  (set (keys (version/clojure-version)))
+  => #{:major :minor :incremental :qualifier :release :build})
+
+^{:refer std.lib.format.version/java-version}
+(fact "returns the portable Java version shape"
+  (set (keys (version/java-version)))
+  => #{:major :minor :incremental :qualifier :release :build})
+
+^{:refer std.lib.format.version/system-version}
+(fact "selects a system version"
+  [(version/system-version :clojure)
+   (version/system-version :java)]
+  => [(version/clojure-version) (version/java-version)])
+
+^{:refer std.lib.format.version/satisfied}
+(fact "checks explicit and current constraints"
+  [(version/satisfied [:java :newer {:major 1 :minor 7}]
+                      {:major 1 :minor 8})
+   (version/satisfied [:java :older {:major 1 :minor 7}]
+                      {:major 1 :minor 7})
+   (version/satisfied [:java :not-newer {:major 30 :minor 0}]
+                      {:major 17 :minor 0})]
+  => [true false true])
+
+^{:refer std.lib.format.version/init}
+(fact "expands init bodies when constraints pass"
+  (version/init [] 42)
+  => '(do 42))
+
+^{:refer std.lib.format.version/run}
+(fact "expands run bodies when constraints pass"
+  (version/run [] 43)
+  => '(do 43))
+
+(pr-str (run {:namespace "std.lib.format.version-test"}))

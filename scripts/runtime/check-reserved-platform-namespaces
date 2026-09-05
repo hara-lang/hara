@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""Reject file-backed std.native.* and std.protocol.* HAL namespaces."""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+NS_PATTERN = re.compile(r"(?m)^\s*\(ns\+?\s+([^\s\)]+)")
+SKIP_PARTS = {".git", "node_modules", "target", ".next", "dist", "build"}
+FORBIDDEN_PREFIXES = ("std.native.", "std.protocol.")
+FORBIDDEN_TEST_RUNTIME = (
+    "std.native.Test",
+    "std.protocol.itest",
+    "ITestClock",
+    "ITestControl",
+    "ITestRegistry",
+    "ITestReporter",
+    "ITestSession",
+    "ITestTimer",
+)
+
+
+def skipped(path: Path) -> bool:
+    return any(part in SKIP_PARTS for part in path.parts)
+
+
+def main() -> int:
+    errors: list[str] = []
+    for path in ROOT.rglob("*.hal"):
+        if not path.is_file() or skipped(path.relative_to(ROOT)):
+            continue
+        source = path.read_text(encoding="utf-8")
+        match = NS_PATTERN.search(source)
+        if match and match.group(1).startswith(FORBIDDEN_PREFIXES):
+            errors.append(
+                f"reserved platform namespace is file-backed: "
+                f"{path.relative_to(ROOT)} declares {match.group(1)}"
+            )
+
+    audit_roots = [
+        ROOT / "core/lib/src",
+        ROOT / "core/lib/test",
+    ]
+    for root in audit_roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*.hal"):
+            if not path.is_file():
+                continue
+            source = path.read_text(encoding="utf-8")
+            for token in FORBIDDEN_TEST_RUNTIME:
+                if token in source:
+                    errors.append(
+                        f"retired test-runtime token {token!r} remains in "
+                        f"{path.relative_to(ROOT)}"
+                    )
+
+    inventory = ROOT / "core/rust/standard-library.namespaces"
+    if inventory.exists():
+        for line in inventory.read_text(encoding="utf-8").splitlines():
+            if line.startswith(FORBIDDEN_PREFIXES):
+                errors.append(f"reserved namespace remains in inventory: {line}")
+
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+
+    print(
+        "reserved platform namespace audit passed: no file-backed "
+        "std.native.*, std.protocol.*, std.native.Test, or ITest* surface"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

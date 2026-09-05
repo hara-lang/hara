@@ -1,0 +1,109 @@
+(ns db.postgres.connection-test
+  (:use code.test)
+  (:require [db.protocol :as protocol]
+            [db.postgres.connection :as connection]))
+
+(defstruct FakeDatabase [events])
+
+(extend-type FakeDatabase protocol/IDatabase
+  (db-engine [_] :postgresql)
+  (db-provider [_] :fake)
+  (db-info [_] {:engine :postgresql :provider :fake})
+  (db-exec [value sql parameters]
+    (do
+      (swap! (:events value) conj [:exec sql parameters])
+      :exec-result))
+  (db-query [value sql parameters]
+    (do
+      (swap! (:events value) conj [:query sql parameters])
+      :query-result))
+  (db-close [value]
+    (do
+      (swap! (:events value) conj [:close])
+      :closed)))
+
+(def postgres-connection
+  (db.postgres.connection/PostgresConnection
+   7
+   :postgresql
+   :pglite
+   :embedded
+   ["sql" "transactions" "notifications" "embedded"]
+   "memory"
+   nil))
+
+(def results
+  [(fact "PostgresConnection implements the provider-neutral database contract"
+     [(protocol/db-engine postgres-connection)
+      (protocol/db-provider postgres-connection)
+      (get (protocol/db-info postgres-connection) :mode)]
+     => [:postgresql :pglite :embedded])
+
+   (fact "connection metadata contains no credential fields"
+     [(has? (protocol/db-info postgres-connection) :password)
+      (has? (protocol/db-info postgres-connection) :url)]
+     => [false false])
+
+   (fact "capabilities are stable provider data"
+     (connection/capabilities postgres-connection)
+     => ["sql" "transactions" "notifications" "embedded"])
+
+   (fact "exec remains unconditional when the historical selector requests queries"
+     (let [events (atom [])
+           database (FakeDatabase events)
+           result (binding [connection/*execute* :query]
+                    (connection/exec database "create table t(id int)" [1]))]
+       [result (deref events)])
+     => [:exec-result [[:exec "create table t(id int)" [1]]]])
+
+   (fact "conn-execute delegates command SQL to the database protocol"
+     (let [events (atom [])
+           database (FakeDatabase events)
+           result (connection/conn-execute database "create table t(id int)" [1])]
+       [result (deref events)])
+     => [:exec-result [[:exec "create table t(id int)" [1]]]])
+
+   (fact "the historical dynamic selector delegates row SQL to query"
+     (let [events (atom [])
+           database (FakeDatabase events)
+           result (binding [connection/*execute* :query]
+                    (connection/conn-execute database "select $1" [7]))]
+       [result (deref events)])
+     => [:query-result [[:query "select $1" [7]]]])
+
+   (fact "query uses the provider-neutral query protocol"
+     (let [events (atom [])
+           database (FakeDatabase events)
+           result (connection/query database "select 1")]
+       [result (deref events)])
+     => [:query-result [[:query "select 1" []]]])
+
+   (fact "close is nil-safe and closes real connections"
+     (let [events (atom [])
+           database (FakeDatabase events)]
+       [(connection/close nil)
+        (connection/close database)
+        (deref events)])
+     => [nil :closed [[:close]]])
+
+   (fact "numeric parameters use a portable tagged map"
+     [(connection/tagged? (connection/numeric "12.3400"))
+      (connection/tag-type (connection/numeric "12.3400"))
+      (connection/tag-value (connection/numeric "12.3400"))]
+     => [true "numeric" "12.3400"])
+
+   (fact "array parameters carry element type and inferred dimensions"
+     (connection/sql-array :int8 [1 2 nil])
+     => {"$postgres" "array"
+         "element" "int8"
+         "dimensions" [[1 3]]
+         "value" [1 2 nil]})
+
+   (fact "notification channels accept direct and historical config values"
+     [(connection/notification-channel "events")
+      (connection/notification-channel :events)
+      (connection/notification-channel {:channel :events})
+      (connection/notification-channel {"channel" "events"})]
+     => ["events" "events" "events" "events"])])
+
+(pr-str (run '[db.postgres.connection-test]))

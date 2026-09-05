@@ -1,0 +1,224 @@
+(ns tool.metaspec.schema-test
+  (:use code.test)
+  (:require [std.typed.registry :as registry]
+            [std.typed.schema :as typed]
+            [tool.metaspec.schema :as schema]))
+
+(def sample
+  {:meta/document-schema
+   {:schema/id :demo/document
+    :schema/type :map
+    :schema/required [:demo/name :demo/status]
+    :schema/properties
+    {:demo/name {:schema/ref :demo/name}
+     :demo/status {:schema/ref :demo/status}
+     :demo/ignored {:schema/type :string}}}
+   :meta/schemas
+   [{:schema/id :demo/name
+     :schema/type :string
+     :schema/min-length 1}
+    {:schema/id :demo/status
+     :schema/type :enum
+     :schema/values [:draft :stable]}]})
+
+(def recursive
+  {:meta/document-schema
+   {:schema/id :demo/tree-document
+    :schema/type :map
+    :schema/required [:demo/root]
+    :schema/properties
+    {:demo/root {:schema/ref :demo/node}}}
+   :meta/schemas
+   [{:schema/id :demo/node
+     :schema/type :map
+     :schema/required [:demo/value :demo/children]
+     :schema/properties
+     {:demo/value {:schema/type :integer}
+      :demo/children
+      {:schema/type :vector
+       :schema/items :demo/node}}}]})
+
+^{:refer 'tool.metaspec.schema/version-string?}
+(fact "accepts semantic version strings and rejects malformed values"
+  [(schema/version-string? "0.0.0-alpha")
+   (schema/version-string? "1.2.3+build.7")
+   (schema/version-string? "1.2")
+   (schema/version-string? 123)]
+  => [true true false false])
+
+(defn- field?
+  [normalized key]
+  (any? (fn [field] (= key (:name field))) (:fields normalized)))
+
+(defn- required-fields
+  [normalized]
+  (vec
+   (map :name
+        (filter (fn [field]
+                  (not (= true (:optional (:properties field)))))
+                (:fields normalized)))))
+
+^{:refer 'tool.metaspec.schema/compile-schema
+  :id 'compile-named-metaspec-schema}
+(fact "compiles complete metaspec semantics into registry-aware std.typed data"
+  (let [registry-value (schema/compile-registry sample)
+        compiled
+        (schema/compile-schema
+         sample
+         (:meta/document-schema sample))
+        normalized (typed/normalize-with compiled registry-value)]
+    [(:kind normalized)
+     (required-fields normalized)
+     (count (:fields normalized))
+     (field? normalized :demo/name)
+     (field? normalized :demo/status)
+     (field? normalized :demo/ignored)
+     (registry/names registry-value)])
+  => [:map [:demo/name :demo/status] 3 true true true
+      '[demo/document demo/name demo/status]])
+
+
+^{:refer 'tool.metaspec.schema/compile-schema :id 'no-generic-metaspec-schema-heads}
+(fact "does not emit generic :tool.metaspec schema extensions"
+  (let [compiled (schema/compile-schema sample (:meta/document-schema sample))
+        rendered (str compiled)]
+    [(first compiled)
+     (str/includes? rendered ":tool.metaspec/map")
+     (str/includes? rendered ":tool.metaspec/set")
+     (str/includes? rendered ":tool.metaspec/items")
+     (str/includes? rendered ":tool.metaspec/refine")])
+  => [:map false false false false])
+
+^{:refer 'std.typed.schema/valid?
+  :id 'compiled-schema-is-executable}
+(fact "executes compiled metaspec schemas directly through std.typed"
+  (let [registry-value (schema/compile-registry sample)
+        compiled
+        (schema/compile-schema
+         sample
+         (:meta/document-schema sample))]
+    [(typed/valid?
+      compiled
+      {:demo/name "Example"
+       :demo/status :draft}
+      registry-value)
+     (typed/valid?
+      compiled
+      {:demo/name "Example"
+       :demo/status :unknown}
+      registry-value)
+     (typed/valid?
+      compiled
+      {:demo/name "Example"
+       :demo/status :draft
+       :demo/ignored 42}
+      registry-value)])
+  => [true false false])
+
+^{:refer 'tool.metaspec.schema/validate-document
+  :id 'validate-metaspec-document}
+(fact "preserves metaspec paths while std.typed performs validation"
+  [(schema/validate-document
+    sample
+    {:demo/name "Example" :demo/status :draft})
+   (map :finding/path
+        (schema/validate-document
+         sample
+         {:demo/name "Example" :demo/status :unknown}))
+   (map :finding/path
+        (schema/validate-document
+         sample
+         {:demo/name "Example"
+          :demo/status :draft
+          :demo/ignored 42}))]
+  => [[] [[:demo/status]] [[:demo/ignored]]])
+
+^{:refer 'tool.metaspec.schema/validate-document
+  :id 'map-policy}
+(fact "retains required, optional and closed-map metaspec policy"
+  (let [missing
+        (first
+         (schema/validate-document
+          sample
+          {:demo/status :draft}))
+        closed
+        (first
+         (schema/validate-document
+          (assoc-in sample
+                    [:meta/document-schema :schema/closed]
+                    true)
+          {:demo/name "Example"
+           :demo/status :draft
+           :demo/extra true}))]
+    [[(:finding/path missing)
+      (:action/type (:finding/repair missing))
+      (:action/key (:finding/repair missing))]
+     [(:finding/path closed)
+      (:action/type (:finding/repair closed))]])
+  => [[[] :add-key :demo/name]
+      [[:demo/extra] :remove-key]])
+
+^{:refer 'tool.metaspec.schema/validate-document
+  :id 'refinement-policy}
+(fact "lowers metaspec refinements into portable std.typed properties"
+  (let [qualified
+        {:meta/document-schema
+         {:schema/id :demo/qualified
+          :schema/type :keyword
+          :schema/constraint :qualified}
+         :meta/schemas []}
+        alpha
+        {:meta/document-schema
+         {:schema/id :demo/version
+          :schema/type :string
+          :schema/pattern "^alpha$"}
+         :meta/schemas []}]
+    [(schema/validate-document qualified :demo/value)
+     (:action/type
+      (:finding/repair
+       (first
+        (schema/validate-document qualified :value))))
+     (schema/validate-document alpha "alpha")
+     (:finding/status
+      (first
+       (schema/validate-document alpha "beta")))])
+  => [[] :qualify-value [] :fail])
+
+^{:refer 'tool.metaspec.schema/validate-document
+  :id 'recursive-registry-validation}
+(fact "delegates recursive named schemas to the std.typed registry"
+  [(schema/validate-document
+    recursive
+    {:demo/root
+     {:demo/value 1
+      :demo/children
+      [{:demo/value 2
+        :demo/children []}]}})
+   (map :finding/path
+        (schema/validate-document
+         recursive
+         {:demo/root
+          {:demo/value 1
+           :demo/children
+           [{:demo/value "two"
+             :demo/children []}]}}))]
+  => [[] [[:demo/root :demo/children 0 :demo/value]]])
+
+^{:refer 'tool.metaspec.schema/validate-document
+  :id 'unresolved-reference}
+(fact "translates std.typed unresolved references into metaspec repairs"
+  (let [finding
+        (first
+         (schema/validate-document
+          {:meta/document-schema
+           {:schema/id :demo/document
+            :schema/ref :missing/value}
+           :meta/schemas []}
+          "value"))]
+    [(:finding/status finding)
+     (:finding/path finding)
+     (:action/type (:finding/repair finding))
+     (:action/schema-id (:finding/repair finding))])
+  => [:blocked [] :declare-schema :missing/value])
+
+(pr-str (run '[tool.metaspec.schema-test]))

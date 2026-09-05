@@ -1,0 +1,138 @@
+(ns code.test.checker.diff
+  (:require [code.test.checker.common :as common]))
+
+(defn checker-equal? [expected actual]
+  (common/succeeded? (common/verify (common/->checker expected) actual)))
+
+(defn flatten-value [value path]
+  (if (and (map? value) (not (empty? value)))
+    (reduce-kv (fn [output key nested]
+                 (merge output (flatten-value nested (conj path key))))
+               {}
+               value)
+    {path value}))
+
+(defn flatten-map [value]
+  (reduce-kv (fn [output key nested]
+               (merge output (flatten-value nested [key])))
+             {}
+             value))
+
+(defn diff-map [expected actual]
+  (let [expected-flat (flatten-map expected)
+        actual-flat (flatten-map actual)
+        expected-paths (set (keys expected-flat))
+        actual-paths (set (keys actual-flat))
+        missing (reduce (fn [output path]
+                          (if (has? actual-paths path)
+                            output
+                            (assoc output path (get expected-flat path))))
+                        {}
+                        expected-paths)
+        extra (reduce (fn [output path]
+                        (if (has? expected-paths path)
+                          output
+                          (assoc output path (get actual-flat path))))
+                      {}
+                      actual-paths)
+        changed (reduce (fn [output path]
+                          (let [expected-value (get expected-flat path)
+                                actual-value (get actual-flat path)]
+                            (if (or (not (has? actual-paths path))
+                                    (checker-equal? expected-value actual-value))
+                              output
+                              (assoc output path
+                                     {:expect expected-value :actual actual-value}))))
+                        {}
+                        expected-paths)
+        output (cond-> {}
+                 (not (empty? missing)) (assoc :+ missing)
+                 (not (empty? extra)) (assoc :- extra)
+                 (not (empty? changed)) (assoc :> changed))]
+    (if (empty? output) nil output)))
+
+(declare edit-script*)
+
+(defn edit-script* [expected actual expected-index actual-index cache]
+  (let [key [expected-index actual-index]]
+    (if (has? (deref cache) key)
+      (get (deref cache) key)
+      (let [result
+            (cond
+              (= expected-index (count expected))
+              (if (= actual-index (count actual))
+                []
+                (cons [:+ actual-index [(nth actual actual-index)]]
+                      (edit-script* expected actual expected-index
+                                    (inc actual-index) cache)))
+
+              (= actual-index (count actual))
+              (cons [:- expected-index 1]
+                    (edit-script* expected actual (inc expected-index)
+                                  actual-index cache))
+
+              (= (nth expected expected-index) (nth actual actual-index))
+              (edit-script* expected actual (inc expected-index)
+                            (inc actual-index) cache)
+
+              :else
+              (let [removed (cons [:- expected-index 1]
+                                  (edit-script* expected actual (inc expected-index)
+                                                actual-index cache))
+                    inserted (cons [:+ actual-index [(nth actual actual-index)]]
+                                   (edit-script* expected actual expected-index
+                                                 (inc actual-index) cache))]
+                (if (<= (count removed) (count inserted)) removed inserted)))]
+        (do
+          (swap! cache assoc key result)
+          result)))))
+
+(defn edit-script [expected actual]
+  (edit-script* expected actual 0 0 (atom {})))
+
+(defn merge-edit [output edit]
+  (if (empty? output)
+    [edit]
+    (let [previous (last output)
+          operation (nth edit 0)
+          previous-operation (nth previous 0)]
+      (cond
+        (and (= operation :-)
+             (= previous-operation :-)
+             (= (nth edit 1) (+ (nth previous 1) (nth previous 2))))
+        (conj (vec (butlast output))
+              [:- (nth previous 1) (+ (nth previous 2) (nth edit 2))])
+
+        (and (= operation :+)
+             (= previous-operation :+)
+             (= (nth edit 1) (+ (nth previous 1) (count (nth previous 2)))))
+        (conj (vec (butlast output))
+              [:+ (nth previous 1) (into (vec (nth previous 2)) (nth edit 2))])
+
+        :else (conj output edit)))))
+
+(defn diff-seq [expected actual]
+  (let [expected (vec expected)
+        actual (vec actual)]
+    (if (= expected actual)
+      nil
+      (reduce merge-edit [] (edit-script expected actual)))))
+
+(defn diff [expected actual]
+  (cond
+    (common/checker? expected)
+    (let [tag (:tag expected)
+          difference (diff (:expect expected) actual)]
+      (cond
+        (= tag :contains)
+        (if (map? difference)
+          (let [trimmed (dissoc difference :-)]
+            (if (empty? trimmed) nil trimmed))
+          difference)
+        (or (= tag :just) (= tag :satisfies) (= tag :exactly)) difference
+        :else nil))
+
+    (and (map? expected) (map? actual)) (diff-map expected actual)
+    (and (or (vector? expected) (list? expected))
+         (or (vector? actual) (list? actual))) (diff-seq expected actual)
+    :else nil))

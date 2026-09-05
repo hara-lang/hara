@@ -1,0 +1,319 @@
+;; ============================================================================
+;; tool.sh — canonical argv-only host command boundary.
+;;
+;; Command strings are never interpreted implicitly. Development hosts provide
+;; std.native.Process; browser/Wasm hosts fail through structured exceptions.
+;; ============================================================================
+(ns tool.sh)
+
+(def +option-keys+ #{:cwd :env :stdin :timeout})
+
+(defn command
+  "Validates and returns one argv vector."
+  [argv]
+  (if (and (vector? argv)
+           (not (empty? argv))
+           (every? string? argv))
+    argv
+    (throw
+     (ex :dependency
+         {:tool.sh/error :invalid-command
+          :command argv}
+         :ex/message "tool.sh requires a non-empty argv vector of strings"))))
+
+(defn- string-map?
+  [value]
+  (and (map? value)
+       (every? (fn [key]
+                 (and (string? key)
+                      (string? (get value key))))
+               (keys value))))
+
+(defn options
+  "Validates the closed process option map.
+
+   Supported keys are :cwd, :env, :stdin, and :timeout. :stdin accepts a string
+   or Bytes; :timeout accepts a non-negative integer and is consumed by run.
+   Stdin is consumed only by execute/run/run-checked and never by spawn."
+  [value]
+  (let [value (or value {})]
+    (if (not (map? value))
+      (throw
+       (ex :dependency
+           {:tool.sh/error :invalid-options
+            :options value}
+           :ex/message "tool.sh options must be a map")))
+    (let [unknown (vec (sort-by str
+                               (filter
+                                (fn [key]
+                                  (not (has? +option-keys+ key)))
+                                (keys value))))]
+      (if (not (empty? unknown))
+        (throw
+         (ex :dependency
+             {:tool.sh/error :unknown-options
+              :options value
+              :unknown unknown}
+             :ex/message "tool.sh received unknown process options"))))
+    (if (and (has? value :cwd)
+             (not (string? (:cwd value))))
+      (throw
+       (ex :dependency
+           {:tool.sh/error :invalid-cwd
+            :options value}
+           :ex/message "tool.sh :cwd must be a string")))
+    (if (and (has? value :env)
+             (not (string-map? (:env value))))
+      (throw
+       (ex :dependency
+           {:tool.sh/error :invalid-env
+            :options value}
+           :ex/message "tool.sh :env must be a string-to-string map")))
+    (if (and (has? value :stdin)
+             (not (or (string? (:stdin value))
+                      (bytes? (:stdin value)))))
+      (throw
+       (ex :dependency
+           {:tool.sh/error :invalid-stdin
+            :options value}
+           :ex/message "tool.sh :stdin must be a string or Bytes")))
+    (if (and (has? value :timeout)
+            (not (or (nil? (:timeout value))
+                     (and (long? (:timeout value))
+                          (<= 0 (:timeout value))))))
+      (throw
+      (ex :dependency
+          {:tool.sh/error :invalid-timeout
+           :options value}
+          :ex/message "tool.sh :timeout must be a non-negative integer")))
+    value))
+
+(defn process-options
+  "Selects the options understood by Process/spawn."
+  [value]
+  (select-keys (options value) [:cwd :env]))
+
+(defn- process-failure
+  [operation argv error]
+  (throw
+   (ex :host
+       {:tool.sh/error :process-unavailable
+        :tool.sh/operation operation
+        :command argv
+        :cause/message (ex-message error)
+        :cause/data (ex-data error)}
+       :ex/message "tool.sh process access is unavailable or failed"
+       :ex/cause error)))
+
+(defn spawn
+  "Starts one argv vector and returns the native process without closing stdin."
+  ([argv]
+   (spawn argv {}))
+  ([argv value]
+   (let [argv (command argv)
+         selected (process-options value)]
+     (try
+       (if (empty? selected)
+         (Process/spawn argv)
+         (Process/spawn argv selected))
+       (catch Throwable error
+         (process-failure :spawn argv error))))))
+
+(defn stdout
+  "Returns the process stdout Promise."
+  [process]
+  (Process/stdout process))
+
+(defn stderr
+  "Returns the process stderr Promise."
+  [process]
+  (Process/stderr process))
+
+(defn wait
+  "Returns the process exit-status Promise."
+  [process]
+  (Process/wait process))
+
+(defn write
+  "Writes string or Bytes input to a process without closing stdin."
+  [process value]
+  (let [bytes (if (string? value)
+                (str/encode-utf8 value)
+                value)]
+    (if (bytes? bytes)
+      (Process/write process bytes)
+      (throw
+       (ex :dependency
+           {:tool.sh/error :invalid-stdin
+            :stdin value}
+           :ex/message "tool.sh/write requires a string or Bytes")))))
+
+(defn close-input
+  "Closes process stdin."
+  [process]
+  (Process/close-input process))
+
+(defn alive?
+  "Returns true while the native process is alive."
+  [process]
+  (Process/alive? process))
+
+(defn kill
+  "Terminates the native process."
+  [process]
+  (Process/kill process))
+
+(defn- result
+  [argv values]
+  {:command argv
+   :exit (nth values 2)
+   :stdout (str/decode-utf8 (nth values 0))
+   :stderr (str/decode-utf8 (nth values 1))})
+
+(defn start-execution
+  [argv value]
+  (let [process (spawn argv value)]
+    (try
+      (if (has? value :stdin)
+        (write process (:stdin value)))
+      (close-input process)
+      {:process process
+       :promise (-> (promise/all [(stdout process)
+                                  (stderr process)
+                                  (wait process)])
+                    (promise/then (fn [values] (result argv values))))}
+      (catch Throwable error
+        (try
+          (kill process)
+          (catch Throwable ignored nil))
+        (throw error)))))
+
+(defn execute
+  "Runs argv asynchronously and returns a Promise of the complete result.
+
+   Optional stdin is written and closed before stdout, stderr, and exit status
+   are joined. Output is decoded as UTF-8 without trimming. :timeout is
+   validated here and applied by run at the synchronous completion boundary."
+  ([argv]
+   (execute argv {}))
+  ([argv value]
+   (let [argv (command argv)
+         value (options value)]
+     (try
+       (let [started (start-execution argv value)]
+         (promise/catch
+          (:promise started)
+          (fn [error]
+            (process-failure :execute argv error))))
+       (catch Throwable error
+         (if (= :process-unavailable (:tool.sh/error (ex-data error)))
+           (throw error)
+           (process-failure :execute argv error)))))))
+
+(defn run-context
+  [argv]
+  {:tool.sh/operation :run
+   :tool.sh/command argv})
+
+(defn timed-out?
+  [outcome]
+  (and (Result/error? outcome)
+       (= true (get (or (Result/context outcome) {}) :result/timeout))))
+
+(defn completion-result
+  [argv outcome]
+  (if (Result/success? outcome)
+    (let [record (Result/data outcome)]
+      (if (= 0 (:exit record))
+        outcome
+        (Result/create
+         :error
+         (ex :dependency record :ex/message "Command failed")
+         (Result/context outcome))))
+    outcome))
+
+(defn run
+  "Runs argv synchronously and returns a native Result of the complete result.
+
+   A zero exit is Result/success with the command record. Non-zero exits,
+   process failures, and timeout are Result/error outcomes. Timeout requests
+   best-effort process termination after synchronization."
+  ([argv]
+   (run argv {}))
+  ([argv value]
+   (let [argv (command argv)
+         value (options value)
+         context (run-context argv)]
+     (try
+       (let [started (start-execution argv value)
+             sync-options (if (nil? (:timeout value))
+                            {:context context}
+                            {:timeout (:timeout value)
+                             :context context})
+             outcome (Result/synchronize (:promise started) sync-options)]
+         (if (timed-out? outcome)
+           (try
+             (kill (:process started))
+             (catch Throwable ignored nil))
+           nil)
+         (completion-result argv outcome))
+       (catch Throwable error
+         (Result/create :error error context))))))
+
+(defn result-record
+  "Returns a process record from a Result or an existing record.
+
+   Process failures retain their command, output, and exit data. Other errors
+   are rethrown."
+  [value]
+  (if (result? value)
+    (if (Result/success? value)
+      (Result/data value)
+      (let [error (Result/error-value value)
+            data (select-keys (or (ex-data error) {})
+                              [:command :stdout :stderr :exit])]
+        (if (and (map? data) (has? data :exit))
+          data
+          (throw error))))
+    value))
+
+(defn run-record
+  "Runs argv synchronously and returns the ordinary completion record.
+
+   This compatibility adapter preserves the pre-Result map boundary."
+  ([argv]
+   (run-record argv {}))
+  ([argv value]
+   (deref (execute argv value))))
+
+(defn require-success
+  "Returns a successful command result or throws a structured exception containing it."
+  ([value]
+   (require-success "Command failed" value))
+  ([message value]
+   (if (result? value)
+     (if (Result/success? value)
+       (require-success message (Result/data value))
+       (let [error (Result/error-value value)
+             data (dissoc (or (ex-data error) {})
+                          :ex/code
+                          :ex/message
+                          :ex/class
+                          :ex/cause)]
+         (if (and (map? data) (has? data :exit))
+           (throw
+            (ex :dependency
+                data
+                :ex/message message
+                :ex/cause error))
+           (throw error))))
+     (if (= 0 (:exit value))
+       value
+       (throw (ex :dependency value :ex/message message))))))
+
+(defn run-checked
+  "Runs argv and throws a structured exception on non-zero exit."
+  ([argv]
+   (run-checked argv {}))
+  ([argv value]
+   (require-success (run argv value))))

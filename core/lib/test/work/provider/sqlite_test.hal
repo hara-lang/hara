@@ -1,0 +1,42 @@
+(ns work.provider.sqlite-test
+  (:use code.test)
+  (:require [std.foundation.promise :as promise]
+            [work.provider.sqlite :as sqlite]
+            [work.base.store :as store]))
+
+(def calls (atom []))
+
+(def backend
+  {:provider :sqlite-test
+   :open (fn [options]
+           (swap! calls conj [:open options])
+           (promise/from {:id 7}))
+   :work-call (fn [connection operation arguments]
+                (swap! calls conj [operation (:id connection) arguments])
+                (promise/from {:operation operation}))
+   :close (fn [connection]
+            (swap! calls conj [:close (:id connection)])
+            (promise/from true))})
+
+(def provider (deref (sqlite/sqlite-store backend {:storage :memory})))
+(def listed
+  (deref
+   (store/query provider {:work/query :run/list :work/where {}})))
+(def closed (deref (sqlite/close backend provider)))
+
+(fact "SQLite work stores require an explicit backend and provider identity"
+  [(:provider/id (store/descriptor provider))
+   (:provider/capabilities (store/descriptor provider))
+   listed
+   closed
+   (deref calls)]
+  => [:sqlite-test
+      #{:runs :transactions :events :checkpoints :outbox :persistent}
+      {:operation :list-runs}
+      true
+      [[:open {:storage :memory}]
+       [:migrate 7 []]
+       [:list-runs 7 [{}]]
+       [:close 7]]])
+
+(pr-str (run '[work.provider.sqlite-test]))

@@ -1,0 +1,120 @@
+(ns tool.cli.route-test
+  (:require [tool.cli.route :as route]
+            ))
+
+(def routes
+  [{:route/id :tool.cli.route/repl
+    :route/path ["repl"]
+    :route/aliases [["standalone"]]
+    :route/tier :public
+    :route/summary "REPL"}
+   {:route/id :tool.cli.route/run-file
+    :route/path ["run"]
+    :route/aliases []
+    :route/tier :public
+    :route/summary "Run file"}
+   {:route/id :tool.cli.route/project-run
+    :route/path ["project" "run"]
+    :route/aliases []
+    :route/tier :public
+    :route/summary "Run project"}
+   {:route/id :tool.cli.route/project-check
+    :route/path ["project" "check"]
+    :route/aliases [["check"]]
+    :route/tier :public
+    :route/summary "Check project"}
+   {:route/id :tool.cli.route/internal
+    :route/path ["compile-hir"]
+    :route/aliases []
+    :route/tier :developer
+    :route/summary "Compile HIR"}])
+
+[(test-check "canonical routes use longest-prefix matching"
+              (let [resolved
+                    (route/resolve-route
+                     routes
+                     ["project" "check" "demo"])]
+                [(:route/id (:route resolved))
+                 (:arguments resolved)
+                 (:alias resolved)])
+              [:tool.cli.route/project-check ["demo"] false])
+  (test-check "flat aliases resolve to the canonical route ID"
+              (let [resolved (route/resolve-route routes ["check"])]
+                [(:route/id (:route resolved))
+                 (:alias resolved)])
+              [:tool.cli.route/project-check true])
+  (test-check "run without a file retains project compatibility"
+              (:route/id
+               (:route (route/resolve-route routes ["run"])))
+              :tool.cli.route/project-run)
+  (test-check "empty argv starts the repl"
+              (:route/id
+               (:route (route/resolve-route routes [])))
+              :tool.cli.route/repl)
+  (test-check "option terminator is not a route argument"
+              (:arguments
+               (route/resolve-route
+                routes
+                ["run" "--" "demo.hal"]))
+              ["demo.hal"])
+  (test-check "developer routes are absent from public help"
+              (vec
+               (map
+                (fn [entry] (:route/id entry))
+                (:help/routes
+                 (route/help-model
+                  {:document/version "0.1.0"
+                   :cli/routes routes}))))
+              [:tool.cli.route/repl
+               :tool.cli.route/run-file
+               :tool.cli.route/project-run
+               :tool.cli.route/project-check])
+  (test-check "route lookup and entries preserve canonical and alias paths"
+              [(-> (route/route-by-id routes :tool.cli.route/run-file)
+                  :route/path)
+              (vec
+               (map
+                (fn [entry] [(:match/path entry) (:match/alias entry)])
+                (route/route-entries
+                 (filter
+                  (fn [item] (= :tool.cli.route/project-check
+                                 (:route/id item)))
+                  routes))))]
+              [["run"]
+              [[["check"] true] [["project" "check"] false]]])
+  (test-check "request normalization carries route and runtime context"
+              (route/normalize-request
+              {:cli/routes routes}
+              ["project" "check" "--strict"]
+              {:strict true}
+              {:runtime/id :native
+               :runtime/cwd "/workspace"
+               :runtime/project "demo"
+               :runtime/capabilities #{:filesystem}})
+              {:request/route :tool.cli.route/project-check
+              :request/arguments ["--strict"]
+              :request/options {:strict true}
+              :request/runtime :native
+              :request/cwd "/workspace"
+              :request/project "demo"
+              :request/capabilities [:filesystem]})
+  (test-check "unknown routes normalize to a stable usage error"
+              (route/normalize-request
+              {:cli/routes routes}
+              ["missing"]
+              {}
+              {})
+              {:result/outcome :tool.cli.outcome/usage-error
+              :result/exit 2
+              :result/data {:error/type :tool.cli/unknown-route
+                            :error/argv ["missing"]}
+              :result/messages []})
+  (test-check "help text lists only public canonical routes"
+              (route/help-text
+              {:document/version "0.1.0"
+               :cli/routes routes})
+              (str "Hara CLI\n\nUsage: hara [OPTIONS] COMMAND\n\nCommands:\n"
+                  "  repl\tREPL\n"
+                  "  run\tRun file\n"
+                  "  project run\tRun project\n"
+                  "  project check\tCheck project\n"))]

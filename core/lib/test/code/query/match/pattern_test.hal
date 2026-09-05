@@ -1,0 +1,100 @@
+(ns code.query.match.pattern-test
+  (:require [code.query.match.impl :as match]
+    [code.query.match.pattern :refer :all]
+    [std.protocol.imatch :as protocol]
+    [std.lib.encode.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+^{:refer code.query.match.pattern/transform-pattern :added "3.0"}
+(Test/run
+ [{:name "converts an input into an actual matchable pattern #1"
+   :test (fn [] (transform-pattern (with-meta (set [:b :a]) {:& true})))
+   :expected (logic/all match/actual-pattern?
+                        (fn [migration-argument-0]
+                            (= ((keyword "expression") migration-argument-0) #{(keyword "b") (keyword "a")})))}
+  {:name "converts an input into an actual matchable pattern #2"
+   :test (fn []
+             (transform-pattern (with-meta (list (quote symbol) (quote "_")) {:% true})))
+   :expected (logic/all match/eval-pattern?
+                        (fn [migration-argument-0]
+                            (= ((keyword "expression") migration-argument-0) (quote (symbol "_")))))}
+  {:name "converts an input into an actual matchable pattern #3"
+   :test (fn [] (transform-pattern #{:b :a}))
+   :expected #{:b :a}}
+  {:name "converts an input into an actual matchable pattern #4"
+   :test (fn [] (transform-pattern [:a :b]))
+   :expected [:a :b]}
+  {:name "converts an input into an actual matchable pattern #5"
+   :test (fn [] (transform-pattern [[:code {:a (var number?)} (var string?)]]))
+   :expected [[:code {:a (var std.foundation/number?)} (var std.foundation/string?)]]}]
+ migration-test-check)
+
+^{:refer code.query.match.pattern/pattern-single-fn :added "3.0"}
+(Test/run
+ [{:name "creates a function based on template #1"
+   :test (fn [] ((pattern-single-fn (quote (a))) (quote (a))))
+   :expected true}
+  {:name "creates a function based on template #2"
+   :test (fn [] ((pattern-single-fn (quote (a))) (quote (b))))
+   :expected false}]
+ migration-test-check)
+
+^{:refer code.query.match.pattern/pattern-matches :added "3.0"}
+(Test/run
+ [{:name "pattern matches for a given template #1"
+   :test (fn [] ((pattern-matches ()) ()))
+   :expected (quote (()))}
+  {:name "pattern matches for a given template #2"
+   :test (fn [] ((pattern-matches []) ()))
+   :expected ()}
+  {:name "pattern matches for a given template #3"
+   :test (fn []
+             ((pattern-matches (list (with-meta (quote symbol?) {:% true})
+                                     (with-meta (list (quote +) (quote 1) (quote _) (with-meta (quote _) {:? true}))
+                                                {:? true})))                                                          (quote (+ (+ 1 2 3)))))
+   :expected (list (list (with-meta (quote symbol?) {:% true})
+                         (with-meta (list (quote +) (quote 1) (quote _) (with-meta (quote _) {:? 1}))
+                                    {:? 0})))}]
+ migration-test-check)
+
+^{:refer code.query.match.pattern/pattern-fn :added "3.0"}
+(Test/run
+ [{:name "make sure that functions are working properly #1"
+   :test (fn [] ((pattern-fn vector?) []))
+   :expected true}
+  {:name "make sure that functions are working properly #2"
+   :test (fn [] ((pattern-fn (var vector?)) []))
+   :expected true}
+  {:name "make sure that functions are working properly #3"
+   :test (fn [] ((pattern-fn (with-meta (quote vector?) {:% true})) []))
+   :expected true}
+  {:name "make sure that functions are working properly #4"
+   :test (fn [] ((pattern-fn (with-meta (quote symbol?) {:% true})) []))
+   :expected false}
+  {:name "make sure that functions are working properly #5"
+   :test (fn [] ((pattern-fn (vector (with-meta (quote vector?) {:% true}))) [[]]))
+   :expected true}
+  {:name "make sure that functions are working properly #6"
+   :test (fn [] ((pattern-fn [[:code map? string?]]) [[:code {} "hello"]]))
+   :expected true}
+  {:name "make sure that functions are working properly #7"
+   :test (fn [] ((pattern-fn [[:code {:a number?} string?]]) [[:code {:a 1} "hello"]]))
+   :expected true}
+  {:name "make sure that functions are working properly #8"
+   :test (fn []
+             ((pattern-fn [[:code {:a {:b number?}} string?]]) [[:code {:a {:b 1}} "hello"]]))
+   :expected true}]
+ migration-test-check)

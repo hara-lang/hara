@@ -1,0 +1,102 @@
+(ns work.flow.task.command-test
+  (:require
+            [work.base :as work]
+            [work.flow.task.command :as command]))
+
+(def inspect-work
+  (command/inspect
+   {:id :example/inspect :version 1}
+   {:list
+    (work/pure
+     :example/list
+     (fn [input context]
+       (vec (map (fn [value]
+                   {:item/id value
+                    :item/value {:value value :selector (:selector input)}})
+                 (:values input)))))
+    :filter
+    (work/pure
+     :example/select
+     (fn [item context]
+       (command/matches? (:selector item) (:value item))))
+    :process
+    (command/action
+     :example/double
+     (fn [item context]
+       (if (= 2 (:value item))
+         (throw "boom")
+         (* 2 (:value item)))))}))
+
+(def observer (work/recording-observer))
+(def runtime (work/local-runtime {:observer observer}))
+(def output (work/run runtime inspect-work {:values [1 2 3] :selector :all}))
+(def selected-output
+  (work/run (work/local-runtime) inspect-work {:values [1 2 3] :selector #{1 3}}))
+
+(def transform-work
+  (command/transform
+   {:id :example/transform :version 1}
+   {:list
+    (work/pure :transform/list
+               (fn [input context]
+                 [{:item/id :a :item/value {:changed true :inserts 2 :write false}}
+                  {:item/id :b :item/value {:changed false :verified true :write true}}]))
+    :process
+    (command/action :transform/process (fn [item context] item) {:pure true})}))
+
+(def transform-output (work/run (work/local-runtime) transform-work {}))
+
+(def clock-value (atom 10))
+(defn test-clock
+  []
+  (swap! clock-value inc))
+
+(def projected-work
+  (command/inspect
+   {:id :example/projected :version 1}
+   {:list (work/pure :projected/list
+                     (fn [input context]
+                       [{:item/id :keep :item/value 2}
+                        {:item/id :skip :item/value 0}]))
+    :process (command/action :projected/process
+                             (fn [item context] item)
+                             {:pure true})
+    :result-options {:ignore (fn [value] (= 0 value))
+                     :output (fn [value] (* 10 value))}}))
+
+(def projected-output
+  (work/run (work/local-runtime) projected-work {}
+            {:context {:clock/now test-clock}}))
+
+(def results
+  [(test-check "inspection templates group domain records without aborting the batch"
+               [(:items output)
+                (vec (map (fn [record] (:data record)) (:results output)))
+                (count (:errors output))
+                (:summary output)]
+               [[1 2 3] [2 6] 1
+                {:items 3 :results 2 :warnings 0 :errors 1 :cumulative 0}])
+   (test-check "selection remains a work-native manifest concern"
+               [(:items selected-output)
+                (vec (map (fn [record] (:data record)) (:results selected-output)))]
+               [[1 3] [2 6]])
+   (test-check "transform templates provide capability-level aggregates"
+               (:summary transform-output)
+               {:items 2 :results 2 :warnings 0 :errors 0 :cumulative 0
+                :changed 1 :inserts 2 :deletes 0 :written 1 :verified 1})
+   (test-check "timing, ignored values, and output projection remain explicit capabilities"
+               [(:results projected-output)
+                (:summary projected-output)]
+               [[{:item/id :keep :status :return :data 20
+                  :elapsed 1 :time 1}]
+                {:items 2 :results 1 :warnings 0 :errors 0 :cumulative 2}])
+   (test-check "command CLI parsing produces explicit selector and argument data"
+               (command/parse-args [":only" "code" "std" ":parallel" "true"])
+               {:selector ['code 'std] :parallel true})
+   (test-check "command execution commits item-completion events"
+               (not (nil? (first (filter (fn [event]
+                                           (= :command/item-completed (:event event)))
+                                         (work/observer-events observer)))))
+               true)])
+
+results

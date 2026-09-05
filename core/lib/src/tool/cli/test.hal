@@ -1,0 +1,126 @@
+(ns tool.cli.test
+  (:config {:role :internal})
+  (:require [code.project :as project]
+            [tool.cli.model :as model]
+            [tool.cli.test.arguments :as arguments]
+            [tool.cli.test.project :as test-project]
+            [tool.cli.test.runner :as runner]
+            [tool.cli.test.selection :as selection]
+            [work.flow.task :as task]
+            [work.base :as work]))
+
+(defn parse-arguments
+  [arguments]
+  (arguments/parse arguments))
+
+(defn selected-records
+  [current-project parsed]
+  (selection/select
+    (:selector parsed)
+   (test-project/records
+    current-project
+    (test-project/files current-project (:files parsed)))))
+
+(defn cli-task-item-list
+  [input context]
+  (vec (or (:test/files input) [])))
+
+(defn cli-task-item-index
+  [context]
+  (or (get-in context [:command/subject :task/index]) 0))
+
+(defn cli-task-item-run
+  [item context]
+  (let [data (runner/run-file item (cli-task-item-index context))]
+    {:status :return
+     :data
+     (assoc data
+            :test/status
+            (if (:error data)
+              :error
+              (if (= 0 (:failed data)) :passed :failed)))}))
+
+(defn cli-task-item-display
+  [data]
+  (str "passed (" (or (:passed data) 0) ")"))
+
+(defn cli-task-summary
+  [base records results]
+  (let [values (vec (map (fn [record] (:data record)) records))
+        passed (reduce (fn [total value]
+                         (+ total (or (:passed value) 0)))
+                       0
+                       values)
+        failed (reduce (fn [total value]
+                         (+ total (or (:failed value) 0)))
+                       0
+                       values)]
+    {:status (if (= 0 failed) :passed :failed)
+     :items (:items base)
+     :files (count values)
+     :passed passed
+     :failed failed
+     :results values}))
+
+(def +cli-task-work+
+  (task/compile
+   {:id 'tool.cli/test-task
+    :type :cli-test
+    :version 1
+    :item {:list cli-task-item-list
+           :list-mode :input-context
+           :run cli-task-item-run
+           :display cli-task-item-display
+           :status? false}
+    :summary {:fields [:files :passed :failed]
+              :finalise cli-task-summary}
+    :report {:title "TEST RESULTS"
+             :sections [:items :summary]
+             :labels {:items "TESTS" :summary "SUMMARY"}
+             :strict-summary-fields true
+             :status task/test-report-status}
+    :return {:select :all}}))
+
+(defn cli-task-results
+  [bundle]
+  (vec (map (fn [record] (:data record)) (:records bundle))))
+
+(defn execute
+  [request]
+  (let [parsed (parse-arguments (:request/arguments request))
+        current-project (test-project/discover request)
+        records (selected-records current-project parsed)]
+    (if (empty? records)
+      (model/failure
+       :tool.cli.outcome/resolution-error
+       :tool.cli/test-files-not-found
+       "no test files match the requested selector"
+       {:test/project (:project/id current-project)
+        :test/selector (:selector parsed)})
+      (let [registered (project/register-resources current-project)
+            bundle (work/run work/default-host
+                             +cli-task-work+
+                             {:test/files records})
+            results (cli-task-results bundle)
+            counts (runner/summary results)
+            data {:test/project (:project/id current-project)
+                  :test/registered registered
+                  :test/files results
+                  :test/passed (:passed counts)
+                  :test/failed (:failed counts)
+                  :test/report (:report bundle)}
+            messages (runner/result-messages results
+                                             counts
+                                             (:request/options request))]
+        (if (= 0 (:failed counts))
+          (model/success data messages)
+          (model/result :tool.cli.outcome/failed data messages))))))
+
+(def +command-work+
+  (work/step
+   {:id 'tool.cli/test :version 1}
+   (fn [request context] (execute request))))
+
+(defn ^{:public true} handler
+  [request]
+  (work/run work/default-host +command-work+ request))

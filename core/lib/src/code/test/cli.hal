@@ -1,0 +1,369 @@
+;; Host-facing argument normalisation for code.test. Execution belongs to
+;; work.base; command-line token handling remains in the test domain.
+(ns code.test.cli
+  (:require [code.test.result :as test-result]
+            [tool.cli.model :as model]
+            [code.project :as project]
+            [std.lib.format.report :as report]
+            [std.lib.format.terminal :as terminal]
+            [work.flow.task :as task]
+            [work.base :as work]))
+
+(defn read-arg
+  "Reads one command-line token as EDN, falling back to the original string."
+  [value]
+  (try
+    (read-string value)
+    (catch Throwable error value)))
+
+(defn keyword-arg?
+  [value]
+  (keyword? (read-arg value)))
+
+(defn vector-tail
+  [values start]
+  (loop [index start
+         output []]
+    (if (= index (count values))
+      output
+      (recur (inc index) (conj output (nth values index))))))
+
+(defn selector-values
+  [arguments]
+  (loop [remaining (vec arguments)
+         selected []]
+    (if (or (empty? remaining)
+            (keyword-arg? (first remaining)))
+      selected
+      (recur (vector-tail remaining 1)
+             (conj selected (read-arg (first remaining)))))))
+
+(defn collapse-only
+  "Collapses consecutive selectors following :only into one vector value."
+  [arguments]
+  (loop [remaining (vec arguments)
+         output []]
+    (if (empty? remaining)
+      output
+      (let [key (first remaining)
+            tail (vector-tail remaining 1)]
+        (if (= :only (read-arg key))
+          (let [values (selector-values tail)]
+            (if (empty? values)
+              (recur tail (conj output key))
+              (recur (vector-tail tail (count values))
+                     (conj (conj output key) (pr-str values)))))
+          (recur tail (conj output key)))))))
+
+(defn process-args
+  "Processes code.test CLI options, including archived :only and :with forms."
+  [arguments]
+  (loop [remaining (vec arguments)
+         output {}]
+    (if (empty? remaining)
+      output
+      (let [raw-key (first remaining)
+            key (read-arg raw-key)
+            tail (vector-tail remaining 1)
+            has-value (not (empty? tail))
+            value (if has-value (read-arg (first tail)) nil)]
+        (if (not (keyword? key))
+          (recur tail output)
+          (if (or (not has-value) (keyword? value))
+            (recur tail (assoc output key true))
+            (recur (vector-tail tail 1)
+                   (if (= key :only)
+                     (assoc output :namespace value)
+                     (if (= key :with)
+                       (assoc output :namespace [value])
+                       (assoc output key value))))))))))
+
+(defn print-options
+  "Returns the supported code.test print modes, or preserves an explicit mode."
+  ([] (print-options :help))
+  ([options]
+   (if (= options :help)
+     #{:help :current :default :disable :all}
+     options)))
+
+(defn process-run-args
+  "Returns canonical code.test execution options from command-line arguments."
+  [arguments]
+  (process-args (collapse-only arguments)))
+
+(defn native-result-counts
+  [results]
+  (reduce
+   (fn [counts result]
+     (if (not (result? result))
+       (throw (ex :state {} :ex/message "native test result is not a Result"))
+       (if (test-result/passed? result)
+         (update counts :passed inc)
+         (update counts :failed inc))))
+   {:passed 0 :failed 0}
+   results))
+
+(defn code-test-result-counts
+  [summary]
+  (let [status (:status summary)
+        counts (:counts summary)]
+    (if (not (keyword? status))
+      (throw (ex :state {} :ex/message "code.test/run result is missing :status"))
+      nil)
+    (if (not (map? counts))
+      (throw (ex :state {} :ex/message "code.test/run result is missing :counts"))
+      nil)
+    (let [passed (or (:passed counts) 0)
+          failed (+ (or (:failed counts) 0)
+                    (or (:error counts) 0)
+                    (or (:timeout counts) 0))]
+      {:passed passed
+       :failed (if (and (not= status :passed) (= failed 0)) 1 failed)})))
+
+(defn result-counts
+  "Returns pass counts for :native vectors and :code.test summary maps."
+  [value]
+  (let [result (if (string? value) (Edn/read value) value)]
+    (cond
+      (or (vector? result) (list? result))
+      (native-result-counts result)
+
+      (map? result)
+      (code-test-result-counts result)
+
+      :else
+      (throw
+       (ex :state {}
+           :ex/message
+           "test file must return a code.test/run summary or native test result vector")))))
+
+(defn absolute-path [cwd path]
+  (if (str/starts-with? path "/") path (file/join cwd path)))
+
+(defn project-start [request]
+  (or (:project (:request/options request))
+      (:root (:request/options request))
+      (:request/cwd request)
+      (os/cwd)))
+
+(defn test-files [current-project arguments cwd]
+  (if (> (count arguments) 1)
+    (throw (ex :argument {} :ex/message "test accepts at most one path"))
+    (if (empty? arguments)
+      (let [files (project/files-in current-project
+                                    (:project/test-paths current-project)
+                                    ".hal")]
+        (if (empty? files)
+          (throw (ex :not-found {}
+                     :ex/message
+                     "project has no .hal files under :project/test-paths"))
+          files))
+      (let [path (absolute-path cwd (first arguments))
+            metadata (deref (file/stat path))]
+        (cond
+          (= :directory (:type metadata)) (project/walk-files path)
+          (and (= :file (:type metadata)) (str/ends-with? path ".hal")) [path]
+          (= :file (:type metadata))
+          (throw (ex :argument {:path path}
+                     :ex/message "test file must use the .hal extension"))
+          :else
+          (throw (ex :not-found {:path path}
+                     :ex/message (str "test path does not exist: " path))))))))
+
+(defn run-test-file [path index]
+  (let [session (str "tool.cli.test." index)
+        started (time-ms)]
+    (try
+      (do
+        (Kernel/session-create session)
+        (let [value (Kernel/session-eval session (project/read-text path))
+              counts (result-counts value)]
+          (assoc counts
+                 :path path
+                 :value value
+                 :elapsed (- (time-ms) started))))
+      (catch Throwable error
+        {:path path
+         :passed 0
+         :failed 1
+         :error (str error)
+         :elapsed (- (time-ms) started)})
+      (finally
+        (try
+          (Kernel/session-close session)
+          (catch Throwable error nil))))))
+
+(defn cli-task-item-list
+  [input context]
+  (vec (or (:test/files input) [])))
+
+(defn cli-task-item-index
+  [context]
+  (or (get-in context [:command/subject :task/index]) 0))
+
+(defn cli-task-item-run
+  [item context]
+  (let [data (run-test-file item (cli-task-item-index context))]
+    {:status :return
+     :data
+     (assoc data
+            :test/status
+            (if (:error data)
+              :error
+              (if (= 0 (:failed data)) :passed :failed)))}))
+
+(defn cli-task-item-display
+  [data]
+  (str "passed (" (or (:passed data) 0) ")"))
+
+(defn cli-task-summary
+  [base records results]
+  (let [values (vec (map (fn [record] (:data record)) records))
+        passed (reduce (fn [total value]
+                         (+ total (or (:passed value) 0)))
+                       0
+                       values)
+        failed (reduce (fn [total value]
+                         (+ total (or (:failed value) 0)))
+                       0
+                       values)]
+    {:status (if (= 0 failed) :passed :failed)
+     :items (:items base)
+     :files (count values)
+     :passed passed
+     :failed failed
+     :results values}))
+
+(def +cli-task-work+
+  (task/compile
+   {:id 'code.test/cli-task
+    :type :cli-test
+    :version 1
+    :item {:list cli-task-item-list
+           :list-mode :input-context
+           :run cli-task-item-run
+           :display cli-task-item-display
+           :status? false}
+    :summary {:fields [:files :passed :failed]
+              :finalise cli-task-summary}
+    :report {:title "TEST RESULTS"
+             :sections [:items :summary]
+             :labels {:items "TESTS" :summary "SUMMARY"}
+             :strict-summary-fields true
+             :status task/test-report-status}
+    :return {:select :all}}))
+
+(defn cli-task-results
+  [bundle]
+  (vec (map (fn [record] (:data record)) (:records bundle))))
+
+(defn run-test-bundle
+  [paths]
+  (work/run work/default-host +cli-task-work+ {:test/files paths}))
+
+(defn run-test-files [paths]
+  (cli-task-results (run-test-bundle paths)))
+
+(defn summary [results]
+  (reduce
+   (fn [output result]
+     (update (update output :passed + (:passed result))
+             :failed + (:failed result)))
+   {:passed 0 :failed 0}
+   results))
+
+(defn result-messages
+  ([results counts]
+   (result-messages results counts {}))
+  ([results counts options]
+   (result-messages nil results counts options))
+  ([document results counts options]
+   (let [options (or options {})
+         ansi (if (has? options :ansi)
+                (:ansi options)
+                (not (:no-color options)))]
+     (if document
+       [(model/message
+         (if (= 0 (:failed counts)) :stdout :stderr)
+         (str (report/render-report document {:ansi ansi}) "\n"))]
+       (let [total (count results)
+             index-width (+ 2 (* 2 (str/length (str total))))
+             id-width
+             (reduce
+              (fn [width result]
+                (max width (+ 2 (str/length (str (or (:namespace result)
+                                                     (:path result)))))))
+              0
+              results)]
+         (conj
+          (reduce
+           (fn [messages [index result]]
+             (let [status (if (:error result)
+                            :error
+                            (if (= 0 (:failed result)) :passed :failed))
+                   line (report/progress-line
+                         {:item/id (or (:namespace result) (:path result))
+                          :item/index index
+                          :item/total total
+                          :item/index-width index-width
+                          :item/id-width id-width
+                          :item/result-width 60
+                          :item/time-width 10
+                          :item/count (:passed result)
+                          :status status
+                          :error (:error result)
+                          :elapsed
+                          (if (has? result :elapsed)
+                            (let [centiseconds
+                                  (quot (+ (:elapsed result) 5) 10)
+                                  seconds (quot centiseconds 100)
+                                  fraction (rem centiseconds 100)]
+                              (str seconds "."
+                                   (if (< fraction 10) "0" "")
+                                   fraction
+                                   "s"))
+                            nil)})]
+               (conj messages
+                     (model/message
+                      (if (or (= :error status) (= :failed status))
+                        :stderr
+                        :stdout)
+                      (str (terminal/render-line line {:ansi ansi}) "\n")))))
+           []
+           (map-indexed (fn [index result] [index result]) results))
+          (model/message (str "test result: " (:passed counts) " passed, "
+                             (:failed counts) " failed\n"))))))))
+
+(defn execute [request]
+  (let [cwd (or (:request/cwd request) (os/cwd))
+        arguments (:request/arguments request)
+        current-project (project/discover
+                         (if (empty? arguments)
+                           (project-start request)
+                           (absolute-path cwd (first arguments))))
+        paths (test-files current-project arguments cwd)
+        registered (project/register-resources current-project)
+        bundle (run-test-bundle paths)
+        results (cli-task-results bundle)
+        counts (summary results)
+        data {:test/project (:project/id current-project)
+              :test/registered registered
+              :test/files results
+              :test/passed (:passed counts)
+              :test/failed (:failed counts)
+              :test/report (:report bundle)}
+        messages (result-messages (:report bundle)
+                                 results
+                                 counts
+                                 (:request/options request))]
+    (if (= 0 (:failed counts))
+      (model/success data messages)
+      (model/result :tool.cli.outcome/failed data messages))))
+
+(def +command-work+
+  (work/step
+   {:id 'code.test/cli :version 1}
+   (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run work/default-host +command-work+ request))

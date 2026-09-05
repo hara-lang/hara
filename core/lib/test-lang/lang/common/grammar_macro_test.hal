@@ -1,0 +1,82 @@
+(ns lang.common.grammar-macro-test
+  (:use code.test)
+  (:require [lang.common.grammar-macro :as macro]))
+
+^{:refer lang.common.grammar-macro/form :added "4.0"}
+(fact "builds generated list forms"
+  (macro/form '[a b]) => '(a b))
+
+^{:refer lang.common.grammar-macro/all-but-last :added "4.0"}
+(fact "retains all values except the last"
+  (macro/all-but-last '[a b c]) => '[a b])
+
+^{:refer lang.common.grammar-macro/tf-macroexpand :added "3.0"}
+(fact "expands threading forms once"
+  (macro/tf-macroexpand '(-> 1 (inc))) => '(inc 1)
+  (macro/tf-macroexpand '(->> 1 (add 2))) => '(add 2 1))
+
+^{:refer lang.common.grammar-macro/tf-when :added "3.0"}
+(fact "transforms when to a branch"
+  (macro/tf-when '(when true :A :B :C))
+  => '(br* (if true :A :B :C)))
+
+^{:refer lang.common.grammar-macro/tf-if :added "3.0"}
+(fact "transforms if to a branch"
+  (macro/tf-if '(if true :A :B))
+  => '(br* (if true :A) (else :B)))
+
+^{:refer lang.common.grammar-macro/tf-cond :added "3.0"}
+(fact "transforms cond to branches"
+  (macro/tf-cond '(cond true :A false :B :else :C))
+  => '(br* (if true :A) (elseif false :B) (else :C)))
+
+^{:refer lang.common.grammar-macro/tf-let-bind :added "4.0"}
+(fact "converts let bindings to statements"
+  (macro/tf-let-bind '(let [x 1 b 2] (return (+ x b))))
+  => '(do* (var x := 1) (var b := 2) (return (+ x b))))
+
+^{:refer lang.common.grammar-macro/tf-case :added "4.0"}
+(fact "transforms case to switch"
+  (macro/tf-case '(case (type obj)
+                    :A (return A)
+                    :B (return B)
+                    (return X)))
+  => '(switch [(type obj)]
+              (case [:A] (return A))
+              (case [:B] (return B))
+              (default (return X))))
+
+^{:refer lang.common.grammar-macro/tf-lambda-arrow :added "4.0"}
+(fact "normalizes arrow lambdas"
+  (macro/tf-lambda-arrow '(fn:> [e] e))
+  => '(fn [e] (return e)))
+
+^{:refer lang.common.grammar-macro/tf-tcond :added "4.0"}
+(fact "transforms ternary cond"
+  (macro/tf-tcond '(:?> :a a :b b :else c))
+  => '(:? :a [a (:? :b [b c])]))
+
+^{:refer lang.common.grammar-macro/tf-xor :added "4.0"}
+(fact "normalizes xor operands to booleans"
+  (macro/tf-xor '(xor a b))
+  => '(== (not (not a)) (not (not b))))
+
+^{:refer lang.common.grammar-macro/tf-doto :added "4.0"}
+(fact "threads doto targets"
+  (macro/tf-doto '(doto sym (. a) (b) (. c)))
+  => '(do (. sym a) (b sym) (. sym c)))
+
+^{:refer lang.common.grammar-macro/tf-do-arrow :added "4.0"}
+(fact "wraps do-arrow bodies in an invoked function"
+  (macro/tf-do-arrow '(do:> 1 2 (return 3)))
+  => '((fn [] 1 2 (return 3))))
+
+^{:refer lang.common.grammar-macro/tf-forange :added "4.0"}
+(fact "creates portable range loops"
+  (macro/tf-forange '(forange [i 10] (print i)))
+  => '(for [(var i 0) (< i 10) [(:= i (+ i 1))]] (print i))
+
+  (macro/tf-forange '(forange [i [10 3 -2]] (print i)))
+  => '(for [(var i 10) (< i 3) [(:= i (- i 2))]] (print i)))
+
+(run {:namespace "lang.common.grammar-macro-test"})

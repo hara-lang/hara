@@ -1,0 +1,61 @@
+(ns work.eval
+  (:require [work.base.execution :as execution]
+            [work.base.model :as base]
+            [work.provider.inline :as inline]))
+
+(defn runtime
+  [executor options]
+  (base/runtime-map
+   (execution/normalise-provider executor)
+   nil
+   (:work/registry options)
+   (merge {:work/mode :bare}
+          (or (:work/policy options) {}))
+   (or (:work/hooks options) {})))
+
+(defn registry-targets
+  [registry]
+  (cond
+    (nil? registry) {}
+    (map? registry) registry
+    :else (deref registry)))
+
+(defn configured-executor
+  [executor options]
+  (or executor
+      (inline/inline-executor
+       (registry-targets (:work/registry options)))))
+
+(defn root-id
+  [spec options]
+  (or (:work/root options)
+      (:root spec)
+      (:id spec)
+      :anonymous))
+
+(defn initial-frame
+  [spec options]
+  {:run/id (:run/id options)
+   :work/root (root-id spec options)
+   :work/version (or (:work/version options) (:version spec) 1)
+   :node/path []
+   :item/id nil
+   :item/path []
+   :context (or (:work/context options) (:context options) {})
+   :options options})
+
+(defn run
+  ([work input]
+   (run nil work input {}))
+  ([executor work input]
+   (run executor work input {}))
+  ([executor work input options]
+   (let [options (or options {})
+         spec (base/work-spec-map work)
+         executor (configured-executor executor options)
+         runtime (runtime executor options)]
+     (execution/execute-node
+      runtime
+      (initial-frame spec options)
+      work
+      input))))

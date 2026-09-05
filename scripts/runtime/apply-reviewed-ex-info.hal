@@ -1,0 +1,90 @@
+(ns tool.migrate.apply-reviewed-ex-info
+  (:require [std.foundation :refer :all]
+            [std.foundation.string :as str]
+            [std.fs.path :as path]
+            [tool.sh :as sh]))
+
+(def +reviewed-repositories+
+  #{"greenways-ai/greenways-os"
+    "greenways-ai/hestia"
+    "greenways-ai/historia"
+    "greenways-ai/hoplite"
+    "greenways-ai/ignatius"})
+
+(defn host-read [file]
+  (:stdout (sh/run-checked ["/bin/cat" file] {:trim false})))
+
+(defn host-write [file text]
+  (let [process (Process/spawn ["/usr/bin/tee" file])]
+    (Process/write process (str/encode-utf8 text))
+    (Process/close-input process)
+    (let [values (deref (promise/all [(Process/stdout process)
+                                      (Process/stderr process)
+                                      (Process/wait process)]))]
+      (if (= 0 (nth values 2))
+        file
+        (throw (ex :tool.migrate/review-write
+                   {:ex/message "Cannot write reviewed ex-info catalog"
+                    :path file}))))))
+
+(defn render-edn [value]
+  (cond
+    (map? value)
+    (str "{"
+         (str/join
+          " "
+          (map (fn [entry]
+                 (str (render-edn (first entry)) " "
+                      (render-edn (second entry))))
+               (sort-by (fn [entry] (pr-str (first entry))) (vec value))))
+         "}")
+    (vector? value)
+    (str "[" (str/join " " (map render-edn value)) "]")
+    :else
+    (pr-str value)))
+
+(defn reviewed-site? [site]
+  (and (= :production (:source/role site))
+       (not (nil? (get +reviewed-repositories+ (:source/repository site))))))
+
+(defn review-site [overrides site]
+  (if (reviewed-site? site)
+    (let [override (get overrides (:site/id site))
+          reviewed (merge site override)
+          class (:ex/class reviewed)]
+      (assoc reviewed
+             :review/status :approved
+             :classification/type class
+             :classification/base-type class
+             :classification/rule :reviewed
+             :classification/confidence :reviewed
+             :classification/evidence "Manually reviewed application migration ledger"))
+    site))
+
+(defn run []
+  (let [hara-root (OS/cwd)
+        workspace (path/parent (path/parent hara-root))
+        input (path/join workspace "ex-info-catalog-classified.edn")
+        ledger (path/join workspace "ex-info-review-overrides.edn")
+        catalog (Edn/read (host-read input))
+        overrides (Edn/read (host-read ledger))
+        sites (mapv (fn [site] (review-site overrides site))
+                    (:catalog/sites catalog))
+        approved (count (filter (fn [site]
+                                  (= :approved (:review/status site)))
+                                sites))
+        reviewed (assoc catalog
+                        :catalog/sites sites
+                        :catalog/summary
+                        (assoc (:catalog/summary catalog) :approved approved)
+                        :classification/summary
+                        (assoc (:classification/summary catalog)
+                               :reviewed approved
+                               :inferred (- (count sites) approved)))]
+    (host-write (path/join workspace "ex-info-catalog-classified.edn")
+                (str (render-edn reviewed) "\n"))
+    {:approved approved
+     :overrides (count overrides)
+     :sites (count sites)}))
+
+(run)

@@ -1,0 +1,34 @@
+(ns std.stream.frame-test
+  (:require [std.stream.frame :as frame]))
+
+(Test/run
+ [{:name "decodes frames split across chunks"
+   :test (fn []
+           (let [codec (frame/json-line)
+                 first (frame/feed-frame codec
+                                         (frame/initial-state codec)
+                                         (std.native.Bytes/new 123 34 120))
+                 second (frame/feed-frame codec
+                                          (:state first)
+                                          (std.native.Bytes/new 34 58 49 125 10 91 50 93 13 10))]
+             (:frames second)))
+   :expected [{"x" 1} [2]]}
+  {:name "emits an unterminated final line"
+   :test (fn []
+           (:frames (frame/finish-frame (frame/line) [104 105])))
+   :expected ["hi"]}
+  {:name "encodes JSON with one newline"
+   :test (fn []
+           (str/decode-utf8
+            (frame/encode-frame (frame/json-line) {"x" 1})))
+   :expected "{\"x\":1}\n"}
+  {:name "rejects oversized frames"
+   :test (fn []
+           (try
+             (frame/feed-frame (frame/line {:max-frame-bytes 2})
+                               []
+                               (str/encode-utf8 "abc"))
+             false
+             (catch Throwable error true)))
+   :expected true}])
+

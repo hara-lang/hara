@@ -1,0 +1,261 @@
+(ns code.manage-test
+  (:use code.test)
+  (:require [code.manage :as manage]
+            [code.manage.ns-rename :as ns-rename]
+            [code.manage.unit :as unit]
+            [code.manage.unit.scaffold :as scaffold]
+            [code.manage.unit.template :as template]
+            [work.base :as work]))
+
+(def sample-unit
+  {:path "sample.hal"
+   :source
+   "(ns sample.core)\n\n(defn answer [] 42)\n;; TODO document\n"})
+
+(def fs-path-unit
+  {:path
+   "core/lib/src/std/fs/path.hal"
+   :source
+   "(ns std.fs.path)\n\n(defn ^{:schema [:fn [:str] [:maybe :str]]}\n  parent\n  \"Returns the lexical parent.\"\n  [path]\n  path)\n\n(defn- hidden\n  []\n  nil)\n\n(defn ^{:schema [:fn [:str :str] :str]}\n  resolve\n  \"Returns a normalized path.\"\n  [root path]\n  path)\n"})
+
+(fact "code.manage tasks are composed around namespace-owned tasklets"
+  [(fn? unit/analyse)
+   (fn? unit/scaffold)
+   (fn? ns-rename/ns-rename)
+   (template/task? manage/analyse)
+   (template/task? manage/scaffold)
+   (template/task? manage/ns-rename)
+   (template/tasklet-reference
+    manage/analyse)
+   (template/tasklet-reference
+    manage/scaffold)
+   (template/tasklet-reference
+    manage/ns-rename)]
+  => [true
+      true
+      true
+      true
+      true
+      true
+      'code.manage.unit/analyse
+      'code.manage.unit/scaffold
+      'code.manage.ns-rename/ns-rename])
+
+(fact "the public task and its atomic tasklet produce the same item value"
+  (let [atomic (unit/analyse sample-unit)
+        batch
+        (work/run
+         (work/local-runtime)
+         manage/analyse
+         sample-unit)
+        record
+        (get-in batch
+                [:results 0 :item/value])]
+    [(:item/id record)
+     (= atomic (:data record))
+     (:count (:summary batch))
+     (:results (:summary batch))])
+  => ['sample.core true 1 1])
+
+(fact "composed tasks preserve the tasklet result boundary"
+  (let [heal-then-analyse
+        (work/chain
+         {:id :code.manage/heal-then-analyse}
+         [manage/heal-code
+          (work/pure
+           :code.manage/use-healed-source
+           (fn [batch context]
+             (let [edit
+                   (get-in
+                    batch
+                    [:results 0
+                     :item/value
+                     :data])]
+               {:path (:path edit)
+                :source (:after edit)})))
+          manage/analyse])
+        result
+        (work/run
+         (work/local-runtime)
+         heal-then-analyse
+         {:path "composed.hal"
+          :source "(ns composed.core)  "})]
+    [(get-in result
+             [:results 0
+              :item/value
+              :item/id])
+     (get-in result
+             [:results 0
+              :item/value
+              :data
+              :namespace])
+     (str/ends-with?
+      (get-in result
+              [:results 0
+               :item/value
+               :data
+               :source])
+      "\n")])
+  => ['composed.core
+      "composed.core"
+      true])
+
+(fact "code.manage selectors are applied by the shared task engine"
+  (let [batch
+        (work/run
+         (work/local-runtime)
+         manage/analyse
+         {:units [{:path "alpha.hal"
+                   :source "(ns alpha.core)\n(defn alpha [] 1)\n"}
+                  {:path "beta.hal"
+                   :source "(ns beta.core)\n(defn beta [] 2)\n"}]
+          :selector "alpha"})]
+    [(count (:results batch))
+     (get-in batch [:results 0 :item/value :item/id])
+     (:count (:summary batch))])
+  => [1 'alpha.core 1])
+
+(fact "source edits remain atomic dry-run values"
+  (let [edit
+        (unit/grep-replace
+         sample-unit
+         "42"
+         "43")]
+    [(:changed edit)
+     (:write edit)
+     (:after edit)])
+  => [true
+      false
+      "(ns sample.core)\n\n(defn answer [] 43)\n;; TODO document\n"])
+
+(fact "maintenance reports preserve source location"
+  (let [code-unit
+        {:path "unclean.hal"
+         :source
+         "(ns unclean)  \n;; note"}
+        result
+        (manage/run
+         :unclean-findings
+         {:units [code-unit]})
+        findings
+        (get-in result
+                [:results 0
+                 :item/value
+                 :data])]
+    [(map
+      (fn [entry]
+        (:path entry))
+      findings)
+     (map
+      (fn [entry]
+        (:kind entry))
+      findings)])
+  => [["unclean.hal" "unclean.hal"]
+      [:trailing-whitespace
+       :missing-final-newline]])
+
+(fact "the Foundation inventory plus Hara translation keeps its compatibility boundary"
+  [(count manage/legacy-operations)
+   (count manage/parity-inventory)
+   (get-in
+    manage/parity-inventory
+    [:ns-rename :boundary])
+   (get-in
+    manage/parity-inventory
+    [:find-usages :boundary])]
+  => [35
+      35
+      :pure-edit-plan
+      :portable-inspection])
+
+(fact "plan and direct task execution use the same atomic tasklet"
+  (let [code-unit
+        {:path "src/demo/core.hal"
+         :source
+         "(ns demo.core)\n(defn beta [] 2)\n(defn alpha [] 1)\n"}
+        options
+        {:from 'demo.core
+         :to 'demo.next}
+        direct
+        (work/run
+         (work/local-runtime)
+         manage/ns-rename
+         {:units [code-unit]
+          :options options})
+        direct-value
+        (get-in direct
+                [:results 0
+                 :item/value
+                 :data])
+        plan
+        (manage/plan
+         :ns-rename
+         {:units [code-unit]
+          :options options})]
+    [(= direct-value
+        (get-in plan
+                [:results 0
+                 :item/value]))
+     (get-in plan [:summary :changed])
+     (get-in plan [:edits 0 :before])
+     (get-in plan [:edits 0 :after])
+     (get-in plan [:edits 0 :write])])
+  => [true
+      1
+      "(ns demo.core)\n(defn beta [] 2)\n(defn alpha [] 1)\n"
+      "(ns demo.next)\n(defn beta [] 2)\n(defn alpha [] 1)\n"
+      false])
+
+(fact "scaffold emits refer metadata for each public definition"
+  (let [result
+        (work/run
+         (work/local-runtime)
+         manage/scaffold
+         {:units [fs-path-unit]
+          :options {:version "4.1"}})
+        edit
+        (get-in result
+                [:results 0
+                 :item/value
+                 :data])]
+    [(:path edit)
+     (:functions edit)
+     (:new edit)
+     (:create edit)
+     (:write edit)
+     (str/includes?
+      (:after edit)
+      "^{:refer std.fs.path/parent :added \"4.1\"}")
+     (str/includes?
+      (:after edit)
+      "^{:refer std.fs.path/resolve :added \"4.1\"}")
+     (str/includes?
+      (:after edit)
+      "^{:refer std.fs.path/hidden")
+     (str/includes?
+      (:after edit)
+      "(pr-str (run {:namespace \"std.fs.path-test\"}))")])
+  => ["core/lib/test/std/fs/path_test.hal"
+      ["parent" "resolve"]
+      ["parent" "resolve"]
+      true
+      false
+      true
+      true
+      false
+      true])
+
+(fact "explicit scaffold paths still override project-root mapping"
+  [(scaffold/test-path-for
+    fs-path-unit
+    {:test-path
+     "custom/std/fs/path_test.hal"})
+   (scaffold/test-path-for
+    {:path
+     "core/lib/src-lang/xt/example.hal"}
+    {})]
+  => ["custom/std/fs/path_test.hal"
+      "core/lib/test-lang/xt/example_test.hal"])
+
+(pr-str
+ (run {:namespace "code.manage-test"}))

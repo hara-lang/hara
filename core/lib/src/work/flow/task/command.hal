@@ -1,0 +1,139 @@
+;; Work-native command templates. These return ordinary IWork graphs; they do
+;; not define a second executable value, runtime, scheduler, or lifecycle.
+(ns work.flow.task.command
+  (:require [work.base :as work]
+            [work.flow.task.cli :as cli]
+            [work.flow.task.result :as result]
+            [work.flow.task.selector :as selector]))
+
+(def matches? selector/matches?)
+(def select selector/select)
+(def parse-args cli/parse)
+(def normalise-result result/normalise)
+(def summarise-results result/summarise)
+(def package result/package)
+
+(defn emit-stage
+  [id event data-function]
+  (work/pure
+   id
+   (fn [value context]
+     (do (work/emit context event (data-function value)) value))))
+
+(defn observed
+  "Wraps a work node with durable domain events while preserving its value."
+  [id started completed node]
+  (work/chain
+   {:id id}
+   [(emit-stage (keyword (str (name id) "-started")) started
+                (fn [value] {:input value}))
+    node
+    (emit-stage (keyword (str (name id) "-completed")) completed
+                (fn [value] {:record value}))]))
+
+(defn action
+  "Creates a command action leaf. :on-error :record converts domain failures
+   to records; :on-error :fail leaves failure ownership with work."
+  ([id function]
+   (action id function {}))
+  ([id function options]
+   (let [policy (or (:on-error options) :record)
+         leaf ((if (:pure options) work/pure work/step)
+               id
+               (fn [input context]
+                 (let [clock (:clock/now context)
+                       start (if clock (clock) nil)
+                       record
+                       (if (= policy :fail)
+                         (result/normalise (:item/id context)
+                                           (function input context))
+                         (try
+                           (result/normalise (:item/id context)
+                                             (function input context))
+                           (catch Throwable error
+                             (result/error-record (:item/id context) error))))
+                       finish (if clock (clock) nil)]
+                   (if clock
+                     (assoc record :elapsed (- finish start) :time (- finish start))
+                     record))))]
+     (observed (keyword (str (name id) "-action"))
+               :command/item-started
+               :command/item-completed
+               leaf))))
+
+(defn single
+  "Composes prepare, process, and optional summarise work into one command."
+  [options stages]
+  (let [prepare (or (:prepare stages)
+                    (work/pure :command/prepare
+                               (fn [value context] value)))
+        process (:process stages)
+        summarise (or (:summarise stages)
+                      (work/pure :command/summarise
+                                 (fn [value context] value)))]
+    (work/chain
+     options
+     [(emit-stage :command/start :command/started (fn [input] {:input input}))
+      prepare
+      process
+      summarise
+      (emit-stage :command/complete :command/completed
+                  (fn [value] {:result value}))])))
+
+(defn batch
+  "Composes a prepared command around the native work batch operator."
+  [options stages]
+  (let [prepare (or (:prepare stages)
+                    (work/pure :command/prepare
+                               (fn [value context] value)))
+        batch-options (merge {:id :command/batch}
+                             (or (:batch-options stages) {}))
+        batch-stages
+        (select-keys stages
+                     [:list :filter :process :stop :cancel :summarise])
+        finish (or (:finish stages)
+                   (work/pure :command/finish
+                              (fn [value context] value)))]
+    (work/chain
+     options
+     [(emit-stage :command/start :command/started (fn [input] {:input input}))
+      prepare
+      (work/batch batch-options batch-stages)
+      finish
+      (emit-stage :command/complete :command/completed
+                  (fn [value] {:result value}))])))
+
+(defn inspect
+  "Batch template with normalized result grouping and aggregation."
+  [options stages]
+  (batch options
+         (assoc
+          (assoc stages
+                 :summarise
+                 (or (:summarise stages)
+                     (work/pure
+                      :command/inspect-summary
+                      (fn [value context]
+                        (result/summarise value (:result-options stages))))))
+          :finish
+          (or (:finish stages)
+              (work/pure :command/inspect-result
+                         (fn [value context] (:summary value)))))))
+
+(defn transform
+  "Inspection template with source-transform change aggregates."
+  [options stages]
+  (batch options
+         (assoc
+          (assoc stages
+                 :summarise
+                 (or (:summarise stages)
+                     (work/pure
+                      :command/transform-summary
+                      (fn [value context]
+                        (result/transform-summary value (:result-options stages))))))
+          :finish
+          (or (:finish stages)
+              (work/pure :command/transform-result
+                         (fn [value context] (:summary value)))))))
+

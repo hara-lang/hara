@@ -1,0 +1,131 @@
+(ns work.base.runtime
+  (:require [work.provider.inline :as inline]
+            [work.provider.memory :as memory]
+            [work.base.model :as base]
+            [work.base.coordinator :as coordinator]
+            [work.base.execution :as execution]
+            [work.base.frame :as frame]
+            [work.base.receipt :as receipt]
+            [work.base.store :as store]))
+
+(def work-value base/work-value)
+(def work-spec-map base/work-spec-map)
+(def work-reference base/work-reference)
+(def reference-id base/reference-id)
+(def observer base/observer)
+(def recording-observer base/recording-observer)
+(def observer-events base/observer-events)
+(def runtime-map base/runtime-map)
+(def canonical-runtime? base/canonical-runtime?)
+
+(def memory-backend memory/memory-backend)
+(def memory-store memory/memory-store)
+
+(def checkpoint-key frame/checkpoint-key)
+(def manifest-values frame/manifest-values)
+(def register-work coordinator/register-work)
+(defn configured-store
+  [options]
+  (let [configured
+        (if (has? options :work/store)
+          (:work/store options)
+          (or (:store options)
+              (:backend options)
+              (memory/memory-store)))]
+    (if (nil? configured)
+      nil
+      (store/normalise-provider configured))))
+
+(defn configured-executor
+  [options]
+  (execution/normalise-provider
+   (or (:work/executor options)
+       (:executor options)
+       (inline/inline-executor))))
+
+(defn configured-registry
+  [options]
+  (if (has? options :work/registry)
+    (:work/registry options)
+    (or (:registry options) (atom {}))))
+
+(defn configured-policy
+  [mode options]
+  (merge
+   {:work/mode mode
+    :work/runtime-version (or (:runtime-version options) 1)
+    :work/schema-version (or (:schema-version options) 1)}
+   (or (:work/policy options) {})))
+
+(defn configured-hooks
+  [options]
+  (let [hooks (or (:work/hooks options) {})]
+    (assoc
+     (merge
+      {:work/receipt
+       (receipt/normalise-provider
+        (or (:work/receipt hooks) (:receipt options)))
+       :work/observer
+       (or (:work/observer hooks) (:observer options))}
+      hooks)
+     :work/handlers
+     (merge (or (:handlers options) {})
+            (or (:work/handlers hooks) {})))))
+
+(defn runtime
+  [mode options]
+  (let [options (or options {})
+        store-provider (configured-store options)
+        _ (if store-provider
+            (store/assert-profile store-provider mode))
+        executor-provider (configured-executor options)
+        registry (configured-registry options)
+        policy (configured-policy mode options)
+        hooks (configured-hooks options)]
+    (base/runtime-map executor-provider
+                      store-provider
+                      registry
+                      policy
+                      hooks)))
+
+(defn local-runtime
+  ([]
+   (local-runtime {}))
+  ([options]
+   (runtime :local options)))
+
+(defn durable-runtime
+  ([]
+   (durable-runtime {}))
+  ([options]
+   (runtime :durable options)))
+
+(defn with-handler
+  [runtime operation handler]
+  (assoc runtime
+         :work/hooks
+         (assoc (base/runtime-hooks runtime)
+                :work/handlers
+                (assoc (base/runtime-handlers runtime)
+                       operation
+                       handler))))
+
+(defn handler-operations
+  [runtime]
+  (vec (keys (execution/evaluator-handlers runtime))))
+
+(defn receipts
+  [runtime reference]
+  (receipt/entries runtime reference))
+
+(defn receipt-status
+  [runtime reference]
+  (receipt/status runtime reference))
+
+(defn publish-receipts
+  ([runtime]
+   (receipt/publish-pending runtime))
+  ([runtime reference]
+   (receipt/publish-pending runtime reference))
+  ([runtime reference options]
+   (receipt/publish-pending runtime reference options)))

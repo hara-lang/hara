@@ -1,0 +1,668 @@
+(ns std.block.navigate-test
+  (:require [std.block.base :as base]
+    [std.block.construct :as construct]
+    [std.block.navigate :refer :all :as navigate]
+    [std.block.parse :as parse]
+    [std.block.type :as type]
+    [std.lib.zip :as zip]
+    [std.lib.encode.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic])
+  (:config {:override [next replace type]}))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+^{:refer std.block.navigate/nav-template :added "3.0"}
+(Test/run
+ [{:name "generates a navigation function definition from a given symbol and a block tag function"
+   :test (fn [] (nav-template (quote -tag-) (var std.block.base/block-tag)))
+   :expected (quote (std.foundation/defn -tag-
+                                         ([zip] (-tag- zip (std.foundation/keyword "right"))) ([zip step] (std.foundation/if-let [elem (zip/get zip)] (std.block.base/block-tag elem)))))}]
+ migration-test-check)
+
+^{:refer std.block.navigate/left-anchor :added "3.0" :class [:nav/primitive]}
+(Test/run
+ [{:name "calculates the length to the last newline"
+   :test (fn [] (left-anchor (-> (navigator nil) (zip/step-right))))
+   :expected 3}]
+ migration-test-check)
+
+^{:refer std.block.navigate/update-step-left
+  :added "3.0"
+  :class [:nav/primitive]}
+(Test/run
+ [{:name "updates the step position to the left"
+   :test (fn [] (-> {:position [0 7]} (update-step-left (construct/block [1 2 3]))))
+   :expected {:position [0 0]}}]
+ migration-test-check)
+
+^{:refer std.block.navigate/update-step-right
+  :added "3.0"
+  :class [:nav/primitive]}
+(Test/run
+ [{:name "updates the step position to the right"
+   :test (fn [] (-> {:position [0 0]} (update-step-right (construct/block [1 2 3]))))
+   :expected {:position [0 7]}}]
+ migration-test-check)
+
+^{:refer std.block.navigate/update-step-inside
+  :added "3.0"
+  :class [:nav/primitive]}
+(Test/run
+ [{:name "updates the step position to within a block"
+   :test (fn [] (-> {:position [0 0]} (update-step-inside (construct/block #{}))))
+   :expected {:position [0 2]}}]
+ migration-test-check)
+
+^{:refer std.block.navigate/update-step-inside-left
+  :added "3.0"
+  :class [:nav/primitive]}
+(Test/run
+ [{:name "updates the step position to within a block"
+   :test (fn [] (-> {:position [0 3]} (update-step-inside-left (construct/block #{}))))
+   :expected {:position [0 2]}}]
+ migration-test-check)
+
+^{:refer std.block.navigate/update-step-outside
+  :added "3.0"
+  :class [:nav/primitive]}
+(Test/run
+ [{:name "updates the step position to be outside a block"
+   :test (fn []
+             (let [left-elems [(construct/block [1 2 3]) (construct/newline)]]
+                  (-> {:left left-elems :position [1 0]}
+                      (update-step-outside left-elems) :position)))
+   :expected [0 7]}
+  {:name "updates the step position with no left elements"
+   :test (fn []
+             (-> {:left [] :right [(construct/block 1)] :position [0 2]}
+                 (update-step-outside []) :position))
+   :expected [0 2]}]
+ migration-test-check)
+
+^{:refer std.block.navigate/display-navigator
+  :added "3.0"
+  :class [:nav/primitive]}
+(Test/run
+ [{:name "displays a string representing the navigator"
+   :test (fn [] (-> (navigator [1 2 3 4]) (display-navigator)))
+   :expected "<0,0> |[1 2 3 4]"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/navigator :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "creates a navigator for the block"
+   :test (fn [] (display-navigator (navigator [1 2 3 4])))
+   :expected "<0,0> |[1 2 3 4]"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/navigator? :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "checks if object is navigator"
+   :test (fn [] (navigator? (navigator [1 2 3 4])))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.navigate/from-status :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "constructs a navigator from a given status"
+   :test (fn []
+             (display-navigator (from-status (construct/block [1 2 3 (construct/cursor) 4]))))
+   :expected "<0,7> [1 2 3 |4]"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/parse-string :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "creates a navigator from string"
+   :test (fn [] (display-navigator (parse-string "(2   #|   3  )")))
+   :expected "<0,5> (2   |   3  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/parse-root :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "parses the navigator from root string"
+   :test (fn [] (display-navigator (parse-root "a b c")))
+   :expected "<0,0> |a b c"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/parse-first :added "4.0"}
+(Test/run
+ [{:name "parses the navigator from the first form #1"
+   :test (fn [] (display-navigator (parse-first "a b c")))
+   :expected "<0,0> |a"}
+  {:name "parses the navigator from the first form #2"
+   :test (fn [] (display-navigator (parse-first "(+ 1 2 3) (+ 4 5)")))
+   :expected "<0,0> |(+ 1 2 3)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/parse-root-status
+  :added "3.0"
+  :class [:nav/general]}
+(Test/run
+ [{:name "parses string and creates a navigator from status"
+   :test (fn [] (display-navigator (parse-root-status "a b #|c")))
+   :expected "<0,4> a b |c"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/root-string :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "returns the top level string"
+   :test (fn [] (root-string (navigator [1 2 3 4])))
+   :expected "[1 2 3 4]"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/left-expression :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "returns the expression on the left"
+   :test (fn []
+             (-> {:left [(construct/newline) (construct/block [1 2 3])]}
+                 (left-expression) (base/block-value)))
+   :expected [1 2 3]}]
+ migration-test-check)
+
+^{:refer std.block.navigate/left-expressions :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "returns all expressions on the left"
+   :test (fn []
+             (->> {:left [(construct/newline) (construct/block :b)
+                          (construct/space)   (construct/space)
+                          (construct/block :a)]}
+                  (left-expressions) (mapv base/block-value)))
+   :expected [:a :b]}]
+ migration-test-check)
+
+^{:refer std.block.navigate/right-expression :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "returns the expression on the right"
+   :test (fn []
+             (-> {:right [(construct/newline) (construct/block [1 2 3])]}
+                 (right-expression) (base/block-value)))
+   :expected [1 2 3]}]
+ migration-test-check)
+
+^{:refer std.block.navigate/right-expressions
+  :added "3.0"
+  :class [:nav/general]}
+(Test/run
+ [{:name "returns all expressions on the right"
+   :test (fn []
+             (->> {:right [(construct/newline) (construct/block :b)
+                           (construct/space)   (construct/space)
+                           (construct/block :a)]}
+                  (right-expressions) (mapv base/block-value)))
+   :expected [:b :a]}]
+ migration-test-check)
+
+^{:refer std.block.navigate/top :added "4.0"}
+(Test/run
+ [{:name "moves cursor to the top"
+   :test (fn [] (-> (parse-string "(1  [1 2 3]    #|)") (top) display-navigator))
+   :expected "<0,0> |(1  [1 2 3]    )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/left :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the left expression"
+   :test (fn [] (-> (parse-string "(1  [1 2 3]    #|)") (left) display-navigator))
+   :expected "<0,4> (1  |[1 2 3]    )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/left-most :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the left-most expression"
+   :test (fn []
+             (-> (parse-string "(1  [1 2 3]  3 4   #|)") (left-most) display-navigator))
+   :expected "<0,1> (|1  [1 2 3]  3 4   )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/left-most? :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "checks if navigator is at left-most"
+   :test (fn [] (-> (from-status [1 [(construct/cursor) 2 3]]) (left-most?)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.navigate/right :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the expression on the right"
+   :test (fn [] (-> (parse-string "(#|[1 2 3]  3 4  ) ") (right) display-navigator))
+   :expected "<0,10> ([1 2 3]  |3 4  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/right-most :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the right-most expression"
+   :test (fn [] (-> (parse-string "(#|[1 2 3]  3 4  ) ") (right-most) display-navigator))
+   :expected "<0,12> ([1 2 3]  3 |4  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/right-most? :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "checks if navigator is at right-most"
+   :test (fn [] (-> (from-status [1 [2 3 (construct/cursor)]]) (right-most?)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.navigate/up :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "navigates outside of the form"
+   :test (fn [] (display-navigator (up (from-status [1 [2 (construct/cursor) 3]]))))
+   :expected "<0,3> [1 |[2 3]]"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/down :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "navigates into the form"
+   :test (fn [] (display-navigator (down (from-status [1 (construct/cursor) [2 3]]))))
+   :expected "<0,4> [1 [|2 3]]"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/right* :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "navigates to right element, including whitespace"
+   :test (fn [] (display-navigator (right* (from-status [(construct/cursor) 1 2]))))
+   :expected "<0,2> [1| 2]"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/left* :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "navigates to left element, including whitespace"
+   :test (fn [] (display-navigator (left* (from-status [1 (construct/cursor) 2]))))
+   :expected "<0,2> [1| 2]"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/block :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "returns the current block"
+   :test (fn [] (block (from-status [1 [2 (construct/cursor) 3]])))
+   :expected (construct/block 3)}]
+ migration-test-check)
+
+^{:refer std.block.navigate/prev :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the previous expression"
+   :test (fn [] (-> (parse-string "([1 2 [3]] #|)") (prev) display-navigator))
+   :expected "<0,7> ([1 2 [|3]] )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/find-prev :added "4.0"}
+(Test/run
+ [{:name "finds the previous token or whitespace"
+   :test (fn []
+             (-> (parse-string "( \n \n [[3 \n]] #|  )")
+                 (find-prev type/linebreak-block?) display-navigator))
+   :expected "<2,5> ( \n \n [[3 |\n]]   )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/find-prev-token :added "4.0"}
+(Test/run
+ [{:name "finds the previous token"
+   :test (fn []
+             (-> (parse-string "( \n \n [[3 \n]] #|  )")
+                 (find-prev-token 3) display-navigator))
+   :expected "<2,3> ( \n \n [[|3 \n]]   )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/next :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the next expression"
+   :test (fn []
+             (-> (parse-string "(#|  [[3]]  )")
+                 (navigate/next) (navigate/next)
+                 (navigate/next) display-navigator))
+   :expected "<0,5> (  [[|3]]  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/find-next :added "4.0"}
+(Test/run
+ [{:name "finds the next expression"
+   :test (fn []
+             (-> (parse-string "(#|  [[3] @5]  )")
+                 (find-next (fn [x] (= :deref (base/block-tag x)))) display-navigator))
+   :expected "<0,8> (  [[3] |@5]  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/find-next-token :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the next token"
+   :test (fn []
+             (-> (parse-string "(#|  [[3 2]]  )") (find-next-token 2) display-navigator))
+   :expected "<0,7> (  [[3 |2]]  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/prev-anchor :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the previous newline #1"
+   :test (fn []
+             (-> (parse-string "( \n \n [[3 \n]] #|  )") (prev-anchor) (:position)))
+   :expected [3 0]}
+  {:name "moves to the previous newline #2"
+   :test (fn [] (-> (parse-string "( #| )") (prev-anchor) (:position)))
+   :expected [0 0]}]
+ migration-test-check)
+
+^{:refer std.block.navigate/next-anchor :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the next newline"
+   :test (fn [] (-> (parse-string "( \n \n#| [[3 \n]]  )") (next-anchor) (:position)))
+   :expected [3 0]}]
+ migration-test-check)
+
+^{:refer std.block.navigate/left-token :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the left token"
+   :test (fn [] (-> (parse-string "(1  {}  #|2 3 4)") (left-token) display-navigator))
+   :expected "<0,1> (|1  {}  2 3 4)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/left-most-token :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the left-most token"
+   :test (fn []
+             (-> (parse-string "(1  {}  2 3 #|4)") (left-most-token) display-navigator))
+   :expected "<0,1> (|1  {}  2 3 4)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/right-token :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the right token"
+   :test (fn [] (-> (parse-string "(#|1  {}  2 3 4)") (right-token) display-navigator))
+   :expected "<0,8> (1  {}  |2 3 4)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/right-most-token :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the right-most token"
+   :test (fn []
+             (-> (parse-string "(#|1  {}  2 3 [4])") (right-most-token) display-navigator))
+   :expected "<0,10> (1  {}  2 |3 [4])"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/prev-token :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the previous token"
+   :test (fn [] (-> (parse-string "(1 (2 3 [4])#|)") (prev-token) display-navigator))
+   :expected "<0,9> (1 (2 3 [|4]))"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/next-token :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves to the next token"
+   :test (fn [] (-> (parse-string "(#|[[1 2 3 4]])") (next-token) display-navigator))
+   :expected "<0,3> ([[|1 2 3 4]])"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/position-left :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves the cursor to left expression #1"
+   :test (fn [] (-> (parse-string "( 2   #|   3  )") (position-left) display-navigator))
+   :expected "<0,2> ( |2      3  )"}
+  {:name "moves the cursor to left expression #2"
+   :test (fn [] (-> (parse-string "(   #|   3  )") (position-left) display-navigator))
+   :expected "<0,1> (|      3  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/position-right :added "3.0" :class [:nav/move]}
+(Test/run
+ [{:name "moves the cursor the right expression #1"
+   :test (fn [] (-> (parse-string "(2   #|    3  )") (position-right) display-navigator))
+   :expected "<0,9> (2       |3  )"}
+  {:name "moves the cursor the right expression #2"
+   :test (fn [] (-> (parse-string "(2   #|     )") (position-right) display-navigator))
+   :expected "<0,10> (2        |)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/tighten-left :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "removes extra spaces on the left #1"
+   :test (fn [] (-> (parse-string "(1 2 3   #|4)") (tighten-left) display-navigator))
+   :expected "<0,7> (1 2 3 |4)"}
+  {:name "removes extra spaces on the left #2"
+   :test (fn [] (-> (parse-string "(1 2 3   #|    4)") (tighten-left) display-navigator))
+   :expected "<0,7> (1 2 3 |4)"}
+  {:name "removes extra spaces on the left #3"
+   :test (fn [] (-> (parse-string "(    #|     )") (tighten-left) display-navigator))
+   :expected "<0,1> (|)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/tighten-right :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "removes extra spaces on the right #1"
+   :test (fn []
+             (-> (parse-string "(1 2 #|3       4)") (tighten-right) display-navigator))
+   :expected "<0,5> (1 2 |3 4)"}
+  {:name "removes extra spaces on the right #2"
+   :test (fn []
+             (-> (parse-string "(1 2 3   #|    4)") (tighten-right) display-navigator))
+   :expected "<0,5> (1 2 |3 4)"}
+  {:name "removes extra spaces on the right #3"
+   :test (fn [] (-> (parse-string "(    #|     )") (tighten-right) display-navigator))
+   :expected "<0,1> (|)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/tighten :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "removes extra spaces on both the left and right"
+   :test (fn [] (-> (parse-string "(1 2      #|3       4)") (tighten) display-navigator))
+   :expected "<0,5> (1 2 |3 4)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/level-empty? :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "checks if current container has expressions"
+   :test (fn [] (-> (parse-string "( #| )") (level-empty?)))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.navigate/insert-raw :added "4.0"}
+(Test/run
+ [{:name "inserts a raw element #1"
+   :test (fn []
+             (-> (parse-string "( #| )") (insert-raw (construct/space)) display-navigator))
+   :expected "<0,3> (  | )"}
+  {:name "inserts a raw element #2"
+   :test (fn []
+             (-> (parse-string "( #| )")
+                 (insert-raw (construct/space)) (insert-raw (construct/space))
+                 (insert-raw (construct/space)) (insert-raw (construct/space))
+                 display-navigator))
+   :expected "<0,6> (     | )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/insert-empty :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "inserts an element into an empty container"
+   :test (fn [] (-> (parse-string "( #| )") (insert-empty 1) display-navigator))
+   :expected "<0,1> (|1  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/insert-token-to-right
+  :added "3.0"
+  :class [:nav/edit]}
+(Test/run
+ [{:name "inserts an element to the right #1"
+   :test (fn [] (-> (parse-string "(#|0)") (insert-token-to-right 1) display-navigator))
+   :expected "<0,1> (|0 1)"}
+  {:name "inserts an element to the right #2"
+   :test (fn [] (-> (parse-string "(#|)") (insert-token-to-right 1) display-navigator))
+   :expected "<0,1> (|1)"}
+  {:name "inserts an element to the right #3"
+   :test (fn [] (-> (parse-string "( #| )") (insert-token-to-right 1) display-navigator))
+   :expected "<0,1> (|1  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/insert-token-to-left
+  :added "3.0"
+  :class [:nav/edit]}
+(Test/run
+ [{:name "inserts an element to the left #1"
+   :test (fn [] (-> (parse-string "(#|0)") (insert-token-to-left 1) display-navigator))
+   :expected "<0,3> (1 |0)"}
+  {:name "inserts an element to the left #2"
+   :test (fn [] (-> (parse-string "(#|)") (insert-token-to-left 1) display-navigator))
+   :expected "<0,1> (|1)"}
+  {:name "inserts an element to the left #3"
+   :test (fn [] (-> (parse-string "( #| )") (insert-token-to-left 1) display-navigator))
+   :expected "<0,1> (|1  )"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/insert-token :added "4.0"}
+(Test/run
+ [{:name "standard insert token"
+   :test (fn [] (-> (parse-string "(#|0)") (insert-token 1) display-navigator))
+   :expected "<0,3> (0 |1)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/insert-all :added "3.0"}
+(Test/run
+ [{:name "inserts all expressions into the block"
+   :test (fn [] (-> (parse-string "") (insert-all [1 2 3 4 5 6]) display-navigator))
+   :expected "<0,10> 1␣2␣3␣4␣5␣|6:eof"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/insert-newline :added "3.0"}
+(Test/run
+ [{:name "insert newline/s into the block"
+   :test (fn [] (-> (parse-string "(#|0)") (insert-newline 2) display-navigator))
+   :expected "<2,0> (\n\n|0)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/insert-space :added "3.0"}
+(Test/run
+ [{:name "insert space/s into the block"
+   :test (fn [] (-> (parse-string "(#|0)") (insert-space 2) display-navigator))
+   :expected "<0,3> (  |0)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/delete-spaces-left :added "4.0"}
+(Test/run
+ [{:name "deletes spaces to the left"
+   :test (fn []
+             (-> (parse-string "(1 2      #|3       4)")
+                 (delete-spaces-left) display-navigator))
+   :expected "<0,4> (1 2|3       4)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/delete-spaces-right :added "4.0"}
+(Test/run
+ [{:name "deletes spaces to the left"
+   :test (fn []
+             (-> (parse-string "(1 2      3 #|       4)")
+                 (delete-spaces-right) display-navigator))
+   :expected "<0,12> (1 2      3 |4)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/delete-left :added "3.0" :class [:nav/edit]}
+(do
+ (-> (parse-string "(#|1   )") (delete-left) display-navigator)
+ (-> (parse-string "( 1 #|  )") (delete-left) display-navigator)
+ (Test/run
+  [{:name "deletes left of the current expression #1"
+    :test (fn [] (-> (parse-string "(1 2   #|3)") (delete-left) display-navigator))
+    :expected "<0,3> (1 |3)"}
+   {:name "deletes left of the current expression #2"
+    :test (fn [] (-> (parse-string "(  #|1 2 3)") (delete-left) display-navigator))
+    :expected "<0,1> (|1 2 3)"}
+   {:name "deletes left of the current expression #3"
+    :test (fn [] (-> (parse-string "( #| )") (delete-left) display-navigator))
+    :expected "<0,1> (|)"}]
+  migration-test-check))
+
+^{:refer std.block.navigate/delete-right :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "deletes right of the current expression #1"
+   :test (fn [] (-> (parse-string "(  #|1 2 3)") (delete-right) display-navigator))
+   :expected "<0,3> (  |1 3)"}
+  {:name "deletes right of the current expression #2"
+   :test (fn [] (-> (parse-string "(1 2   #|3)") (delete-right) display-navigator))
+   :expected "<0,7> (1 2   |3)"}
+  {:name "deletes right of the current expression #3"
+   :test (fn [] (-> (parse-string "(  #|   1  )") (delete-right) display-navigator))
+   :expected "<0,1> (|  )"}
+  {:name "deletes right of the current expression #4"
+   :test (fn [] (-> (parse-string "( #| )") (delete-right) display-navigator))
+   :expected "<0,1> (|)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/delete :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "deletes the current element #1"
+   :test (fn [] (-> (parse-string "(  #|1   2 3)") (delete) display-navigator))
+   :expected "<0,3> (  |2 3)"}
+  {:name "deletes the current element #2"
+   :test (fn [] (-> (parse-string "(1 2   #|3)") (delete) display-navigator))
+   :expected "<0,7> (1 2   |)"}
+  {:name "deletes the current element #3"
+   :test (fn [] (-> (parse-string "(  #|    )") (delete) display-navigator))
+   :expected "<0,1> (|)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/backspace :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "the reverse of insert #1"
+   :test (fn [] (-> (parse-string "(0  #|1   2 3)") (backspace) display-navigator))
+   :expected "<0,1> (|0 2 3)"}
+  {:name "the reverse of insert #2"
+   :test (fn [] (-> (parse-string "(  #|1   2 3)") (backspace) display-navigator))
+   :expected "<0,1> (|2 3)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/replace :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "replaces an element at the cursor"
+   :test (fn []
+             (-> (parse-string "(0  #|1   2 3)")
+                 (position-right) (navigate/replace :a)
+                 display-navigator))
+   :expected "<0,4> (0  |:a   2 3)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/replace-splice :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "replaces an element at the cursor"
+   :test (fn []
+             (-> (parse-string "(0  #|1   2 3)")
+                 (position-right) (replace-splice [:a :b :c])
+                 display-navigator))
+   :expected "<0,4> (0  |:a :b :c   2 3)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/swap :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "applies a function to the element at the current cursor position, replacing it with the result"
+   :test (fn []
+             (-> (parse-string "(0  #|1   2 3)")
+                 (position-right) (swap inc)
+                 display-navigator))
+   :expected "<0,4> (0  |2   2 3)"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/update-children :added "3.0" :class [:nav/edit]}
+(Test/run
+ [{:name "replaces the current children"
+   :test (fn []
+             (-> (update-children (parse-string "[1 2 3]")
+                                  [(construct/block 4) (construct/space) (construct/block 5)])
+                 display-navigator))
+   :expected "<0,0> |[4 5]"}]
+ migration-test-check)
+
+^{:refer std.block.navigate/line-info :added "3.0" :class [:nav/general]}
+(Test/run
+ [{:name "returns the line info for the current block #1"
+   :test (fn [] (line-info (parse-string "[1 \\n  2 3]")))
+   :expected {:col 1 :end-col 12 :end-row 1 :row 1}}
+  {:name "returns the line info for the current block #2"
+   :test (fn [] (line-info (parse-string "[1 \n  2 3]")))
+   :expected {:col 1 :end-col 7 :end-row 2 :row 1}}]
+ migration-test-check)

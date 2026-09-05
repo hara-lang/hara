@@ -1,0 +1,93 @@
+(ns std.typed.properties-test
+  (:use code.test)
+  (:require [std.typed :as typed]
+            [std.typed.registry :as registry]
+            [std.typed.schema :as schema]))
+
+^{:refer 'std.typed.schema/normalize :id 'canonical-property-ast}
+(fact "normalizes properties into ordinary canonical std.typed kinds"
+  [(schema/normalize [:str {:min-count 1}])
+   (schema/normalize [:vector {:distinct true} :int])
+   (:kind (schema/normalize [:set :keyword]))
+   (:kind (schema/normalize
+           [:map {:closed true}
+            [:id :int]
+            [:nickname {:optional true} :str]]))]
+  => [{:kind :primitive :name :str :properties {:min-count 1}}
+      {:kind :vector :item {:kind :primitive :name :int}
+       :properties {:distinct true}}
+      :set :map])
+
+^{:refer 'std.typed.schema/normalize :id 'portable-schema-annotations}
+(fact "preserves schema and map-entry annotations without treating them as constraints"
+  (let [contract
+        [:map {:title "User record"
+               :version 2
+               :owner :accounts
+               :closed true}
+         [:name {:required true
+                 :description "Display name"
+                 :default "Anonymous"}
+          [:str {:title "Display name" :min-count 1}]]]
+        normalized (schema/normalize contract)
+        field (first (:fields normalized))]
+    [(:properties normalized)
+     (:properties field)
+     (:properties (:type field))
+     (typed/valid? contract {:name "Ada"})])
+  => [{:title "User record"
+       :version 2
+       :owner :accounts
+       :closed true}
+      {:required true
+       :description "Display name"
+       :default "Anonymous"}
+      {:title "Display name" :min-count 1}
+      true])
+
+^{:refer 'std.typed.schema/valid? :id 'primitive-properties}
+(fact "validates string and qualified-keyword properties"
+  [(typed/valid? [:str {:min-count 2 :max-count 4 :pattern "^a.*$"}] "ab")
+   (typed/valid? [:str {:min-count 2 :max-count 4 :pattern "^a.*$"}] "b")
+   (typed/valid? [:keyword {:qualified true}] :demo/value)
+   (typed/valid? [:keyword {:qualified true}] :value)]
+  => [true false true false])
+
+^{:refer 'std.typed.schema/valid? :id 'collection-properties}
+(fact "validates vector bounds, distinctness, and typed sets"
+  [(typed/valid? [:vector {:min-count 1 :max-count 3 :distinct true} :int] [1 2 3])
+   (typed/valid? [:vector {:min-count 1 :max-count 3 :distinct true} :int] [1 1])
+   (typed/valid? [:set :keyword] #{:a :b})
+   (typed/valid? [:set :keyword] #{:a 2})]
+  => [true false true false])
+
+^{:refer 'std.typed.schema/validate :id 'map-properties}
+(fact "validates optional entries and closed maps with exact typed findings"
+  (let [contract [:map {:closed true}
+                  [:id :int]
+                  [:nickname {:optional true} :str]]
+        missing (first (typed/validate contract {}))
+        extra (first (typed/validate contract {:id 1 :extra true}))]
+    [[(:finding/type missing) (:finding/path missing)
+      (:present? (:finding/context missing))]
+     [(:finding/type extra) (:finding/path extra)]
+     (typed/valid? contract {:id 1})
+     (typed/valid? contract {:id 1 :nickname "Ada"})])
+  => [[:std.typed.schema/missing-key [:id] false]
+      [:std.typed.schema/closed-map-key [:extra]] true true])
+
+^{:refer 'std.typed.schema/valid? :id 'registry-property-traversal}
+(fact "keeps references executable inside property-aware collections"
+  (let [registry-value
+        (registry/registry
+         {'demo/Name [:str {:min-count 1}]
+          'demo/User
+          '[:map {:closed true}
+            [:name (var demo/Name)]
+            [:tags {:optional true} [:set :keyword]]]})]
+    [(typed/valid? 'demo/User {:name "Ada"} registry-value)
+     (typed/valid? 'demo/User {:name ""} registry-value)
+     (typed/valid? 'demo/User {:name "Ada" :tags #{:a :b}} registry-value)])
+  => [true false true])
+
+(pr-str (run '[std.typed.properties-test]))

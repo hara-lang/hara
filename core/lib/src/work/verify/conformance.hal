@@ -1,0 +1,222 @@
+;; The registry is the only input to cross-runtime library verification.
+;; Runtime adapters publish structured EDN reports for the registry contracts;
+;; this task consumes those reports and never infers results from console text.
+(ns work.verify.conformance
+  (:config {:role :internal})
+  (:require [code.project :as project]
+            [tool.sh :as sh]
+            [work.base :as work :refer [def.work]]))
+
+(def +languages+ [:rust :jvm :wasm])
+(def +registry-relative-path+
+  "01-lang/005-foundation-annex/draft/conformance/libraries/index.edn")
+(def +report-relative-paths+
+  {:rust "core/target/conformance/libraries/rust.edn"
+   :jvm "core/target/conformance/libraries/jvm.edn"
+   :wasm "core/target/conformance/libraries/wasm.edn"})
+
+(defn registry-root
+  [input]
+  (or (:registry/root input)
+      "../hara-specs-registry"))
+
+(defn project-root
+  [input]
+  (or (:project/root input) "."))
+
+(defn join-path
+  [root path]
+  (if (str/starts-with? path "/") path (File/join root path)))
+
+(defn host-path
+  [root path]
+  (if (str/starts-with? path "/") path (str root "/" path)))
+
+(defn host-read
+  [path]
+  (:stdout (sh/run-checked ["/bin/cat" path])))
+
+(defn read-document
+  [path]
+  (Edn/read (project/read-text path)))
+
+(defn read-host-document
+  [path]
+  (Edn/read (host-read path)))
+
+(defn registry-index
+  [input]
+  (or (:registry/index input)
+      (read-host-document
+       (host-path (registry-root input) +registry-relative-path+))))
+
+(defn registry-families
+  [input]
+  (or (:registry/families input)
+      (let [root (registry-root input)
+            index (registry-index input)]
+        (vec
+         (map
+          (fn [entry]
+            (assoc entry
+                   :contract
+                   (read-host-document
+                    (host-path root
+                               (str "01-lang/005-foundation-annex/draft/conformance/libraries/"
+                                    (:family/contract entry))))))
+          (:conformance/families index))))))
+
+(defn selected-families
+  [input]
+  (let [families (vec (or (:family-specs input) (registry-families input)))
+        selected (:families input)]
+    (if (or (nil? selected) (empty? selected))
+      families
+      (vec
+       (filter
+        (fn [family] (has? (set selected) (:family/id family)))
+        families)))))
+
+(defn runtime-items
+  [input context]
+  (let [languages (vec (or (:languages input) +languages+))
+        reports (or (:reports input) {})
+        families (selected-families input)]
+    (vec
+     (map
+      (fn [language]
+        {:item/id language
+         :item/value {:language language
+                      :report (get reports language)
+                      :registry (registry-index input)
+                      :registry/root (registry-root input)
+                      :project/root (project-root input)
+                      :family-specs families}})
+      languages))))
+
+(defn read-runtime-report
+  ([root language]
+   (read-runtime-report root language (get +report-relative-paths+ language)))
+  ([root language relative]
+   (try
+     (let [report (read-document (join-path root relative))]
+       (if (and (map? report)
+                (= :hara.conformance.library/0-alpha (:report/schema report))
+                (has? report :families)
+                (has? report :namespaces)
+                (has? report :functions))
+         report
+         {:language language
+          :status :not-implemented
+          :error "runtime report is missing the structured family, namespace, or function data"}))
+     (catch Throwable error
+       {:language language
+        :status :not-implemented
+        :error (str error)}))))
+
+(defn runtime-report
+  [subject context]
+  (let [language (:language subject)
+        supplied (:report subject)]
+    {:data
+     (if (and (map? supplied) (has? supplied :families))
+       supplied
+       (read-runtime-report
+        (:project/root subject)
+        language
+        (or (get-in (:registry subject)
+                    [:conformance/runtimes language :runtime/report-path])
+            (get +report-relative-paths+ language))))}))
+
+(defn runtime-counts
+  [report]
+  (let [namespaces (vec (or (:namespaces report) []))
+        functions (vec (or (:functions report) []))]
+    {:implemented
+     (count (filter #(not= :not-implemented (:status %)) namespaces))
+     :namespace-total (count namespaces)
+     :passed (reduce #(+ %1 (:passed %2)) 0 namespaces)
+     :total (reduce #(+ %1 (:total %2)) 0 namespaces)
+     :functions-passed (count (filter #(= :passed (:status %)) functions))
+     :functions-total (count functions)
+     :functions-not-implemented
+     (count (filter #(= :not-implemented (:status %)) functions))}))
+
+(defn task-summary
+  [summary records results]
+  (let [reports (vec (map :data results))
+        counts
+        (reduce
+         (fn [output report]
+           (let [current (runtime-counts report)]
+             (merge-with + output current)))
+         {:implemented 0 :namespace-total 0 :passed 0 :total 0
+          :functions-passed 0 :functions-total 0
+          :functions-not-implemented 0}
+         reports)
+        failed? (some #(= :failed (:status %)) reports)
+        partial? (some #(= :partial (:status %)) reports)]
+    (merge summary counts
+           {:languages (count reports)
+            :status (cond failed? :failed partial? :partial :else :passed)})))
+
+(defn status-label
+  [status]
+  (case status
+    :passed "PASS"
+    :failed "FAIL"
+    :not-implemented "NOT-IMPLEMENTED"
+    :partial "PARTIAL"
+    (str (name status))))
+
+(defn task-status
+  [summary bundle]
+  (case (:status summary)
+    :failed :failed
+    :partial :warning
+    :completed))
+
+(def.work ^{:public true} library-conformance
+  [:task]
+  {:item {:list runtime-items
+          :list-mode :input-context
+          :display
+          (fn [report]
+            (let [counts (runtime-counts report)]
+              (str (name (:language report)) " "
+                   (status-label (:status report)) " "
+                   (:implemented counts) "/" (:namespace-total counts)
+                   " namespaces, " (:passed counts) "/" (:total counts)
+                   " cases, " (:functions-passed counts) "/"
+                   (:functions-total counts) " functions")))
+          :run runtime-report}
+   :execution {:order :input :parallel false :fail-fast false}
+   :result {:keys
+            [[:runtime (fn [report] (:language report))]
+             [:runtime-status (fn [report] (status-label (:status report)))]
+             [:implemented (fn [report] (:implemented (runtime-counts report)))]
+             [:namespace-total (fn [report] (:namespace-total (runtime-counts report)))]
+             [:passed (fn [report] (:passed (runtime-counts report)))]
+             [:total (fn [report] (:total (runtime-counts report)))]
+             [:functions-passed (fn [report] (:functions-passed (runtime-counts report)))]
+             [:functions-total (fn [report] (:functions-total (runtime-counts report)))]]
+            :columns
+            [{:key :runtime :label "RUNTIME"}
+             {:key :runtime-status :label "STATUS"}
+             {:key :implemented :label "NAMESPACES" :align :right}
+             {:key :namespace-total :label "DECLARED" :align :right}
+             {:key :passed :label "CASES OK" :align :right}
+             {:key :total :label "CASES" :align :right}
+             {:key :functions-passed :label "FUNCTIONS OK" :align :right}
+             {:key :functions-total :label "FUNCTIONS" :align :right}]}
+   :summary {:finalise task-summary
+             :fields [:items :results :languages :implemented :namespace-total
+                      :passed :total :functions-passed :functions-total
+                      :functions-not-implemented :elapsed]}
+   :report {:title "FOUNDATION LIBRARY CONFORMANCE"
+            :sections [:items :results :summary]
+            :labels {:items "RUNTIMES"
+                     :results "RUNTIME SUMMARY"
+                     :summary "OVERALL"}
+            :status task-status}
+   :return {:select :all}})

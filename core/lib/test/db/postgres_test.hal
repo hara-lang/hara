@@ -1,0 +1,110 @@
+(ns db.postgres-test
+  (:use code.test)
+  (:require [db.postgres :as postgres]
+            [db.protocol :as protocol]
+            [tool.sh.docker :as docker]))
+
+(defstruct FakeDatabase [events])
+
+(extend-type FakeDatabase protocol/IDatabase
+  (db-engine [_] :postgresql)
+  (db-provider [_] :fake)
+  (db-info [_] {:engine :postgresql :provider :fake})
+  (db-exec [value sql parameters]
+    (do
+      (swap! (:events value) conj [:exec sql parameters])
+      :exec-result))
+  (db-query [value sql parameters]
+    (do
+      (swap! (:events value) conj [:query sql parameters])
+      :query-result))
+  (db-close [value]
+    (do
+      (swap! (:events value) conj [:close])
+      :closed)))
+
+(def results
+  [(fact "the public facade delegates execute, query, and stop"
+     (let [events (atom [])
+           database (FakeDatabase events)]
+       [(postgres/execute database "create schema app")
+        (postgres/query database "select 1")
+        (postgres/stop database)
+        (deref events)])
+     => [:exec-result
+         :query-result
+         :closed
+         [[:exec "create schema app" []]
+          [:query "select 1" []]
+          [:close]]])
+
+   (fact "transaction helpers remain backed by the same connection"
+     (let [events (atom [])
+           database (FakeDatabase events)]
+       [(postgres/begin database)
+        (postgres/commit database)
+        (postgres/rollback database)
+        (deref events)])
+     => [:exec-result
+         :exec-result
+         :exec-result
+         [[:exec "begin" []]
+          [:exec "commit" []]
+          [:exec "rollback" []]]])
+
+   (fact "exact NUMERIC parameters retain their text"
+     (postgres/numeric "12.3400")
+     => {"$postgres" "numeric"
+         "value" "12.3400"})
+
+   (fact "postgres/sql-array remains the array parameter constructor"
+     (postgres/sql-array :uuid [["a" "b"] ["c" "d"]])
+     => {"$postgres" "array"
+         "element" "uuid"
+         "dimensions" [[1 2] [1 2]]
+         "value" [["a" "b"] ["c" "d"]]})
+
+   (fact "connection options merge container endpoints and environment credentials"
+     (postgres/connection-options
+      {:options
+       {:config
+        {:dbname "app"
+         :temp true
+         :startup (fn [runtime] runtime)
+         :shutdown (fn [runtime] runtime)
+         :container
+         {:environment
+          {"POSTGRES_USER" "hara"
+           "POSTGRES_PASSWORD" "secret"}}}}
+       :container {:host "127.0.0.1" :port 55432}})
+     => {:dbname "app"
+         :host "127.0.0.1"
+         :port 55432
+         :user "hara"
+         :password "secret"})
+
+   (fact "admin options always target the postgres maintenance database"
+     (postgres/admin-options {:dbname "app" :database "legacy" :user "hara"})
+     => {:dbname "postgres" :user "hara"})
+
+   (fact "lifecycle hooks are optional functions over the runtime"
+     [(postgres/run-lifecycle {:id :runtime} nil)
+      (postgres/run-lifecycle
+       {:id :runtime}
+       (fn [runtime] (assoc runtime :hooked true)))]
+     => [{:id :runtime}
+         {:id :runtime :hooked true}])
+
+   (fact "managed PostgreSQL start and stop remain component lifecycle functions"
+     [(fn? postgres/start-pg)
+      (fn? postgres/stop-pg)]
+     => [true true])
+
+   (fact "PostgreSQL lifecycle uses the canonical Docker argv builder"
+     (docker/run-command {:id :pg :image "postgres:16" :ports [5432]})
+     => ["docker" "run" "-p" "127.0.0.1::5432"
+         "-d" "--rm"
+         "--add-host=host.docker.internal:host-gateway"
+         "--name" "testing_pg" "postgres:16"])])
+
+(pr-str (run '[db.postgres-test]))

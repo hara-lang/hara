@@ -1,0 +1,558 @@
+(ns std.block.heal.indent-test
+  (:require [std.block.heal.indent :as indent]
+    [std.block.heal.parse :as parse]
+    [std.foundation.string :as prose]
+    [std.lib.encode.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+^{:refer std.block.heal.indent/flag-close-heavy-function :added "4.0"}
+(Test/run
+ [{:name "flags a function if at a different index"
+   :test (fn []
+             (indent/flag-close-heavy-function {:correct? true
+                                                :index    2
+                                                :pair-id  1
+                                                :type     :open
+                                                :style    :paren
+                                                :line     4
+                                                :col      3
+                                                :depth    0
+                                                :char     "("}
+                                               {:col 1 :depth 0 :index 0}))
+   :expected [{:correct? true
+               :index 2
+               :pair-id 1
+               :type :open
+               :style :paren
+               :line 4
+               :col 3
+               :depth 0
+               :char "("} true]}]
+ migration-test-check)
+
+^{:refer std.block.heal.indent/flag-close-heavy-single :added "4.0"}
+(do
+ (def
+  *dlma*
+  (parse/parse (apply str (interpose "
+" ["" "(fact )" " " "  (this))"]))))
+ (Test/run
+  [{:name "flags when there is open delimiter of the same depth with extra indentation"
+    :test (fn [] (indent/flag-close-heavy-single *dlma* (get *dlma* 0)))
+    :expected [{:correct? true
+                :index 2
+                :pair-id 1
+                :type :open
+                :style :paren
+                :line 4
+                :col 3
+                :depth 0
+                :char "("}]}]
+  migration-test-check))
+
+^{:refer std.block.heal.indent/flag-close-heavy :added "4.0"}
+(Test/run
+ [{:name "finds open delimiters that have closed too early #1"
+   :test (fn [] (indent/flag-close-heavy (parse/parse "
+(fact )
+
+  (this))")))
+   :expected [[0
+               [{:correct? true
+                 :index 2
+                 :pair-id 1
+                 :type :open
+                 :style :paren
+                 :line 4
+                 :col 3
+                 :depth 0
+                 :char "("}]]]}
+  {:name "finds open delimiters that have closed too early #2"
+   :test (fn [] (indent/flag-close-heavy (parse/parse "
+(fact ))
+
+  (this))")))
+   :expected [[0
+               [{:correct? true
+                 :index 2
+                 :pair-id 1
+                 :type :open
+                 :style :paren
+                 :line 4
+                 :col 3
+                 :depth -1
+                 :char "("}]]]}]
+ migration-test-check)
+
+^{:refer std.block.heal.indent/flag-open-heavy-function :added "4.0"}
+(do
+ (def
+  *dlm4*
+  (parse/pair-delimiters
+   (parse/parse-delimiters
+    (std.foundation.string/decode-utf8
+     (deref (File/read "test-data/std.block.heal/cases/004_shorten.block"))))))
+ (Test/run
+  [{:name "flags the delimiter if there are any discrepancies"
+    :test (fn []
+              (indent/flag-open-heavy-single *dlm4*
+                                             (parse/make-delimiter-line-lu *dlm4*) (get *dlm4* 177)))
+    :expected [{:correct? false
+                :index 140
+                :type :open
+                :style :square
+                :line 59
+                :col 13
+                :depth 10
+                :char "["} {:correct? true
+                            :index 136
+                            :pair-id 64
+                            :type :open
+                            :style :square
+                            :line 57
+                            :col 13
+                            :depth 10
+                            :char "["}
+               {:correct? false
+                :index 133
+                :type :open
+                :style :square
+                :line 56
+                :col 12
+                :depth 9
+                :char "["}]}]
+  migration-test-check))
+
+^{:refer std.block.heal.indent/flag-open-heavy-single :added "4.0"}
+(do
+ (def
+  *dlm1*
+  (parse/pair-delimiters
+   (parse/parse-delimiters "
+(defn
+ (do
+   (it
+ (this))")))
+ (def
+  *dlm4*
+  (parse/pair-delimiters
+   (parse/parse-delimiters
+    (std.foundation.string/decode-utf8
+     (deref (File/read "test-data/std.block.heal/cases/002_complex.block"))))))
+ (Test/run
+  [{:name "finds previous index discrepancies given indent layout"
+    :test (fn []
+              (indent/flag-open-heavy-single *dlm1*
+                                             (parse/make-delimiter-line-lu *dlm1*) (get *dlm1* 3)))
+    :expected [{:correct? true
+                :index 2
+                :pair-id 1
+                :type :open
+                :style :paren
+                :line 4
+                :col 4
+                :depth 2
+                :char "("} {:correct? false
+                            :index 1
+                            :type :open
+                            :style :paren
+                            :line 3
+                            :col 2
+                            :depth 1
+                            :char "("}]}]
+  migration-test-check))
+
+^{:refer std.block.heal.indent/flag-open-heavy-raw :added "4.0"}
+(do
+ (def *dlmx* (parse/pair-delimiters (parse/parse-delimiters "
+[
+ [
+  [")))
+ (def
+  *dlmy*
+  (parse/pair-delimiters (parse/parse-delimiters "
+[
+ [
+  [
+[]
+")))
+ (def
+  *dlm0*
+  (parse/pair-delimiters
+   (parse/parse-delimiters "
+(defn
+ (do
+   (it)
+ (this))")))
+ (def
+  *dlm0a*
+  (parse/pair-delimiters
+   (parse/parse-delimiters "
+(defn
+ (do
+   (it)
+ (this)
+ (this))")))
+ (def
+  *dlm1*
+  (parse/pair-delimiters
+   (parse/parse-delimiters "
+(defn
+ (do
+   (it
+ (this))")))
+ (def
+  *dlm2*
+  (parse/pair-delimiters
+   (parse/parse-delimiters "
+[:h
+ [
+  [
+   [
+    [
+     []]]
+ []")))
+ (def
+  *dlm3*
+  (parse/pair-delimiters
+   (parse/parse-delimiters
+    (std.foundation.string/decode-utf8
+     (deref (File/read "test-data/std.block.heal/cases/001_basic.block"))))))
+ (def
+  *dlm4*
+  (parse/pair-delimiters
+   (parse/parse-delimiters
+    (std.foundation.string/decode-utf8
+     (deref (File/read "test-data/std.block.heal/cases/002_complex.block"))))))
+ (Test/run
+  [{:name "finds all discrepancies given some code #1"
+    :test (fn []
+              (indent/flag-open-heavy-raw *dlmx* (parse/make-delimiter-line-lu *dlmx*)))
+    :expected []}
+   {:name "finds all discrepancies given some code #2"
+    :test (fn []
+              (indent/flag-open-heavy-raw *dlmy* (parse/make-delimiter-line-lu *dlmy*)))
+    :expected [[3
+                [{:correct? false
+                  :index 2
+                  :type :open
+                  :style :square
+                  :line 4
+                  :col 3
+                  :depth 2
+                  :char "["}
+                 {:correct? false
+                  :index 1
+                  :type :open
+                  :style :square
+                  :line 3
+                  :col 2
+                  :depth 1
+                  :char "["}
+                 {:correct? false
+                  :index 0
+                  :type :open
+                  :style :square
+                  :line 2
+                  :col 1
+                  :depth 0
+                  :char "["}]]]}
+   {:name "finds all discrepancies given some code #3"
+    :test (fn []
+              (indent/flag-open-heavy-raw *dlm0* (parse/make-delimiter-line-lu *dlm0*)))
+    :expected [[4
+                [{:correct? true
+                  :index 1
+                  :pair-id 2
+                  :type :open
+                  :style :paren
+                  :line 3
+                  :col 2
+                  :depth 1
+                  :char "("}]]]}
+   {:name "finds all discrepancies given some code #4"
+    :test (fn []
+              (indent/flag-open-heavy-raw *dlm0a* (parse/make-delimiter-line-lu *dlm0a*)))
+    :expected [[6
+                [{:correct? true
+                  :index 1
+                  :pair-id 3
+                  :type :open
+                  :style :paren
+                  :line 3
+                  :col 2
+                  :depth 1
+                  :char "("}]] [4
+                                [{:correct? true
+                                  :index 1
+                                  :pair-id 3
+                                  :type :open
+                                  :style :paren
+                                  :line 3
+                                  :col 2
+                                  :depth 1
+                                  :char "("}]]]}
+   {:name "finds all discrepancies given some code #5"
+    :test (fn []
+              (indent/flag-open-heavy-raw *dlm1* (parse/make-delimiter-line-lu *dlm1*)))
+    :expected [[3
+                [{:correct? true
+                  :index 2
+                  :pair-id 1
+                  :type :open
+                  :style :paren
+                  :line 4
+                  :col 4
+                  :depth 2
+                  :char "("}
+                 {:correct? false
+                  :index 1
+                  :type :open
+                  :style :paren
+                  :line 3
+                  :col 2
+                  :depth 1
+                  :char "("}]]]}
+   {:name "finds all discrepancies given some code #6"
+    :test (fn []
+              (indent/flag-open-heavy-raw *dlm2* (parse/make-delimiter-line-lu *dlm2*)))
+    :expected [[9
+                [{:correct? false
+                  :index 2
+                  :type :open
+                  :style :square
+                  :line 4
+                  :col 3
+                  :depth 2
+                  :char "["}
+                 {:correct? false
+                  :index 1
+                  :type :open
+                  :style :square
+                  :line 3
+                  :col 2
+                  :depth 1
+                  :char "["}]]]}
+   {:name "finds all discrepancies given some code #7"
+    :test (fn []
+              (indent/flag-open-heavy-raw *dlm3* (parse/make-delimiter-line-lu *dlm3*)))
+    :expected []}
+   {:name "finds all discrepancies given some code #8"
+    :test (fn []
+              (indent/flag-open-heavy-raw *dlm4* (parse/make-delimiter-line-lu *dlm4*)))
+    :expected vector?}]
+  migration-test-check))
+
+^{:refer std.block.heal.indent/flagged-candidates-merge-common :added "4.0"}
+(Test/run
+ [{:name "merges all common"
+   :test (fn []
+             (indent/flagged-candidates-merge-common (indent/flag-open-heavy-raw *dlm4* (parse/make-delimiter-line-lu *dlm4*))))
+   :expected vector?}]
+ migration-test-check)
+
+^{:refer std.block.heal.indent/flagged-candidates-filter-run :added "4.0"}
+(Test/run
+ [{:name "cuts off all potentially difficult locations"
+   :test (fn []
+             (indent/flagged-candidates-filter-run (indent/flag-open-heavy-raw *dlm4* (parse/make-delimiter-line-lu *dlm4*))
+                                                   {:limit 2}))
+   :expected vector?}]
+ migration-test-check)
+
+^{:refer std.block.heal.indent/flagged-candidates-invert-lookup :added "4.0"}
+(Test/run
+ [{:name "inverts a lookup"
+   :test (fn []
+             (indent/flagged-candidates-invert-lookup (indent/flag-open-heavy-raw *dlm4* (parse/make-delimiter-line-lu *dlm4*))))
+   :expected map?}]
+ migration-test-check)
+
+^{:refer std.block.heal.indent/flag-open-heavy :added "4.0"}
+(do
+ (def
+  *dlm0a*
+  (parse/pair-delimiters
+   (parse/parse-delimiters "
+(defn
+ (do
+   (it)
+ (this)
+ (this))")))
+ (def
+  *dlm4*
+  (parse/pair-delimiters
+   (parse/parse-delimiters
+    (std.foundation.string/decode-utf8
+     (deref (File/read "test-data/std.block.heal/cases/002_complex.block"))))))
+ (Test/run
+  [{:name "combines discrepancies that are the same #1"
+    :test (fn [] (indent/flag-open-heavy *dlm0a*))
+    :expected [[4
+                [{:correct? true
+                  :index 1
+                  :pair-id 3
+                  :type :open
+                  :style :paren
+                  :line 3
+                  :col 2
+                  :depth 1
+                  :char "("}]]]}
+   {:name "combines discrepancies that are the same #2"
+    :test (fn []
+              (count (indent/flag-open-heavy-raw *dlm4* (parse/make-delimiter-line-lu *dlm4*))))
+    :expected 22}
+   {:name "combines discrepancies that are the same #3"
+    :test (fn [] (first (indent/flag-open-heavy *dlm4*)))
+    :expected (quote [177 ({:correct? false
+                            :index    140
+                            :type     :open
+                            :style    :square
+                            :line     59
+                            :col      13
+                            :depth    10
+                            :char     "["}
+                           {:correct? true
+                            :index    136
+                            :pair-id  64
+                            :type     :open
+                            :style    :square
+                            :line     57
+                            :col      13
+                            :depth    10
+                            :char     "["}
+                           {:correct? false
+                            :index    133
+                            :type     :open
+                            :style    :square
+                            :line     56
+                            :col      12
+                            :depth    9
+                            :char     "["})])}
+   {:name "combines discrepancies that are the same #4"
+    :test (fn [] (count (second (last (indent/flag-open-heavy *dlm4*)))))
+    :expected 4}
+   {:name "combines discrepancies that are the same #5"
+    :test (fn [] (map (comp count second) (indent/flag-open-heavy *dlm4*)))
+    :expected (quote (3 1 5 19 3 2 1 6 1 6 1 153 4))}
+   {:name "combines discrepancies that are the same #6"
+    :test (fn [] (first (last (indent/flag-open-heavy *dlm4*))))
+    :expected 993}
+   {:name "combines discrepancies that are the same #7"
+    :test (fn [] (count (indent/flag-open-heavy *dlm4*)))
+    :expected 13}]
+  migration-test-check))
+
+^{:refer std.block.heal.indent/find-indent-last-close :added "4.0"}
+(Test/run
+ [{:name "finds the last close delimiter #1"
+   :test (fn []
+             (indent/find-indent-last-close (parse/pair-delimiters (parse/parse-delimiters "
+(defn
+ (do
+   (it)
+ (this))"))
+                                            4 1))
+   :expected {:correct? true
+              :index 3
+              :pair-id 0
+              :type :close
+              :style :paren
+              :line 4
+              :col 7
+              :depth 2
+              :char ")"}}
+  {:name "finds the last close delimiter #2"
+   :test (fn []
+             (indent/find-indent-last-close (parse/pair-delimiters (parse/parse-delimiters "
+(defn
+ (do
+   (it
+ (this))"))
+                                            3 2))
+   :expected nil}
+  {:name "finds the last close delimiter #3"
+   :test (fn []
+             (indent/find-indent-last-close (parse/pair-delimiters (parse/parse-delimiters "
+[:h
+ [[[[[]
+    ]]
+ []"))
+                                            9 1))
+   :expected {:correct? true
+              :index 8
+              :pair-id 2
+              :type :close
+              :style :square
+              :line 4
+              :col 6
+              :depth 3
+              :char "]"}}]
+ migration-test-check)
+
+^{:refer std.block.heal.indent/build-insert-edit :added "4.0"}
+(do
+ (def
+  *dlm4*
+  (parse/parse
+   (std.foundation.string/decode-utf8
+    (deref (File/read "test-data/std.block.heal/cases/002_complex.block")))))
+ (Test/run
+  [{:name "constructs a single edit"
+    :test (fn [] (indent/build-insert-edit {:col 7 :line 4} [{:char "("} {:char "["}]))
+    :expected {:action :insert :col 7 :line 4 :new-char ")]"}}]
+  migration-test-check))
+
+^{:refer std.block.heal.indent/build-insert-edits :added "4.0"}
+(do
+ (def
+  *dlm4*
+  (parse/parse
+   (std.foundation.string/decode-utf8
+    (deref (File/read "test-data/std.block.heal/cases/002_complex.block")))))
+ (def sample-do "
+(defn
+  (do
+    (it
+
+  (this)
+  (this))")
+ (Test/run
+  [{:name "builds a list of edits to be made to a  #1"
+    :test (fn []
+              (indent/build-insert-edits *dlm4*
+                                         (indent/flagged-candidates-filter-run (indent/flag-open-heavy *dlm4*)) (std.foundation.string/decode-utf8 (deref (File/read "test-data/std.block.heal/cases/002_complex.block")))))
+    :expected (quote ({:action :insert :col 68 :line 110 :new-char "]"} {:action :insert :col 96 :line 276 :new-char "]"}
+                                                                        {:action :insert :col 90 :line 338 :new-char "]"} {:action :insert :col 234 :line 396 :new-char "]"}))}
+   {:name "builds a list of edits to be made to a  #2"
+    :test (fn []
+              (indent/build-insert-edits (parse/parse sample-do)
+                                         (indent/flagged-candidates-filter-run (indent/flag-open-heavy (parse/parse sample-do))) sample-do))
+    :expected (quote ({:action :insert :col 7 :line 4 :new-char "))"}))}]
+  migration-test-check))
+
+^{:refer std.block.heal.indent/build-remove-edits :added "4.0"}
+(do
+ (def +sample+ "(((
+(fact)
+  (hello))")
+ (Test/run
+  [{:name "builds a list of remove edits"
+    :test (fn []
+              (indent/build-remove-edits (parse/parse +sample+)
+                                         (indent/flag-close-heavy (parse/parse +sample+))))
+    :expected (quote ({:action :remove :col 6 :line 2}))}]
+  migration-test-check))

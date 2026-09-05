@@ -1,0 +1,67 @@
+(ns work.runtime-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.base.model :as model]))
+
+(fact "Runtime is exactly the immutable five-key capability composition map"
+  (let [runtime
+        (work/local-runtime
+         {:work/store nil
+          :work/registry nil
+          :work/policy {:work/custom-policy :enabled}
+          :work/hooks {:work/custom-hook :installed}})]
+    [(work/canonical-runtime? runtime)
+     (set (keys runtime))
+     (model/runtime-store runtime)
+     (model/runtime-definitions runtime)
+     (model/runtime-mode runtime)
+     (:work/custom-policy (:work/policy runtime))
+     (:work/custom-hook (:work/hooks runtime))
+     (satisfies? IComponent runtime)])
+  => [true
+      #{:work/executor
+        :work/store
+        :work/registry
+        :work/policy
+        :work/hooks}
+      nil nil :local :enabled :installed false])
+
+(fact "runtime accessors read the canonical capability composition"
+  (let [registry (atom {})
+        runtime
+  (work/runtime-map
+   :executor
+   :store
+   registry
+   {:work/mode :local
+    :work/runtime-version 3
+    :work/schema-version 4}
+   {:work/receipt :receipt
+    :work/observer :observer})]
+    [(model/runtime-executor runtime)
+     (model/runtime-store runtime)
+     (= registry (model/runtime-definitions runtime))
+     (model/runtime-mode runtime)
+     (model/runtime-code-version runtime)
+     (model/runtime-schema-version runtime)
+     (model/runtime-receipt runtime)
+     (model/runtime-observer runtime)])
+  => [:executor :store true
+      :local 3 4 :receipt :observer])
+
+(fact "runtime updates preserve the canonical composition boundary"
+  (let [runtime (work/local-runtime)
+        updated (work/with-handler runtime :custom identity)]
+    [(work/canonical-runtime? updated)
+     (= (:work/store runtime) (:work/store updated))
+     (= (:work/registry runtime) (:work/registry updated))
+     (= (:work/policy runtime) (:work/policy updated))
+     (= (:work/hooks runtime) (:work/hooks updated))
+     (reduce
+      (fn [found operation]
+        (or found (= :custom operation)))
+      false
+      (work/handler-operations updated))])
+  => [true true true true false true])
+
+(pr-str (run '[work.runtime-test]))

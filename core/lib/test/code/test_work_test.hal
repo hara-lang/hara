@@ -1,0 +1,532 @@
+(ns code.test-work-test
+  (:require [code.test :as fact]
+            [code.test.base.runtime :as runtime]
+            [code.test.work :as test-work]
+            [work.base :as work]))
+
+(def execution-count (atom 0))
+
+(def ordering-fixtures
+  [{:namespace "alpha.test" :name "late" :meta {:line 30}}
+   {:namespace "beta.test" :name "late" :meta {:line 10}}
+   {:namespace "alpha.test" :name "early" :meta {:line 20}}
+   {:namespace "beta.test" :name "early" :meta {:line 5}}])
+
+(fact/fact "work-driven passing fact"
+  (swap! execution-count inc)
+  1 => 1)
+
+(fact/fact "work-driven failing fact"
+  1 => 2)
+
+(def registered-passing
+  (runtime/get-fact
+   "code.test-work-test"
+   "work-driven passing fact"))
+(def registered-failing
+  (runtime/get-fact
+   "code.test-work-test"
+   "work-driven failing fact"))
+
+(def suite-runtime (work/durable-runtime))
+(def suite-reference
+  (test-work/start
+   suite-runtime
+   {:namespace 'code.test-work-test
+    :test/revision 7}
+   {:id "test-suite-1"}))
+(def suite-result
+  (work/result suite-runtime suite-reference))
+(def same-suite-reference
+  (test-work/start
+   suite-runtime
+   {:namespace 'code.test-work-test
+    :test/revision 7}
+   {:id "test-suite-1"}))
+
+(def fact-runtime (work/durable-runtime))
+(def fact-reference
+  (work/start
+   fact-runtime
+   (test-work/fact-work
+    'code.test-work-test
+    "work-driven failing fact"
+    7)
+   {}
+   {:id "test-fact-1"}))
+(def fact-result
+  (work/result fact-runtime fact-reference))
+
+(def observer (work/recording-observer))
+(def reported-runtime (work/local-runtime {:observer observer}))
+(def reported-result
+  (work/run
+   reported-runtime
+   (test-work/fact-work
+    'code.test-work-test
+    "work-driven failing fact"
+    7)
+   {}))
+(def reported-events
+  (vec
+   (filter
+    (fn [event]
+      (or (= :test/fact-started (:event event))
+          (= :test/fact-completed (:event event))))
+    (work/observer-events observer))))
+
+(def public-runtime (work/durable-runtime))
+(def public-result
+  (fact/run
+   public-runtime
+   {:namespace 'code.test-work-test
+    :name "work-driven failing fact"
+    :test/revision 8}
+   {:id "test-public-run"}))
+(def public-replayed-result
+  (fact/run
+   public-runtime
+   {:namespace 'code.test-work-test
+    :name "work-driven failing fact"
+    :test/revision 8}
+   {:id "test-public-run"}))
+(def public-runs (work/list-runs public-runtime))
+
+(defn check-result-view
+  [result]
+  [(Result/status result)
+   (if (Result/success? result)
+     (Result/data result)
+     (ex-message (Result/error-value result)))
+   (Result/context result)])
+
+(defn fact-result-view
+  [result]
+  (assoc result
+         :checks
+         (vec (map check-result-view (:checks result)))))
+
+(defn summary-result-view
+  [summary]
+  (assoc (dissoc summary :report :artifacts)
+         :results
+         (vec (map fact-result-view (:results summary)))))
+
+(def results
+  [^{:refer code.test.work/fact-source-line}
+   (test-check
+    "fact ordering prefers source lines when available"
+    [(vec (map test-work/fact-source-line ordering-fixtures))
+     (test-work/fact-source-line registered-passing)
+     (number? (test-work/fact-order-position registered-passing))
+     (< (test-work/fact-order-position registered-passing)
+        (test-work/fact-order-position registered-failing))]
+    [[30 10 20 5] nil true true])
+
+   ^{:refer code.test.work/fact-source-line?}
+   (test-check
+    "line ordering ignores missing source locations"
+    [(test-work/fact-source-line? {:meta {:line 17}})
+     (test-work/fact-source-line? {:meta {}})]
+    [true false])
+
+   ^{:refer code.test.work/fact-order-position}
+   (test-check
+    "registration order fills in absent source lines"
+    [(test-work/fact-order-position {:meta {:line 17}})
+     (test-work/fact-order-position {:meta {:test/order 7}})
+     (test-work/fact-order-position? {:meta {:test/order 7}})]
+    [17 7 true])
+
+   ^{:refer code.test.work/fact-order-position?}
+   (test-check
+    "order positions must be numeric"
+    [(test-work/fact-order-position? {:meta {:test/order 7}})
+     (test-work/fact-order-position? {:meta {:test/order "7"}})]
+    [true false])
+
+   ^{:refer code.test.work/fact-before?}
+   (test-check
+    "fact ordering compares only facts in the same namespace"
+    [(test-work/fact-before?
+      (nth ordering-fixtures 2)
+      (nth ordering-fixtures 0))
+     (test-work/fact-before?
+      (nth ordering-fixtures 2)
+      (nth ordering-fixtures 1))]
+    [true false])
+
+   ^{:refer code.test.work/insert-fact}
+   (test-check
+    "fact insertion uses numeric source lines"
+    (vec
+     (map :name
+          (reduce test-work/insert-fact
+                  []
+                  [(nth ordering-fixtures 0)
+                   (nth ordering-fixtures 2)])))
+    ["early" "late"])
+
+   ^{:refer code.test.work/order-namespace-facts}
+   (test-check
+    "namespace ordering sorts only that namespace"
+    (vec
+     (map :name
+          (test-work/order-namespace-facts
+           ordering-fixtures
+           "alpha.test")))
+    ["early" "late"])
+
+   ^{:refer code.test.work/replace-namespace-slots}
+   (test-check
+    "namespace replacement preserves other namespace slots"
+    (vec
+     (map (fn [entry] [(:namespace entry) (:name entry)])
+          (test-work/replace-namespace-slots
+           ordering-fixtures
+           "alpha.test"
+           (test-work/order-namespace-facts
+            ordering-fixtures
+            "alpha.test"))))
+    [["alpha.test" "early"]
+     ["beta.test" "late"]
+     ["alpha.test" "late"]
+     ["beta.test" "early"]])
+
+   ^{:refer code.test.work/order-facts}
+   (test-check
+    "facts are ordered by source line within each namespace"
+    (vec
+     (map (fn [entry] [(:namespace entry) (:name entry)])
+          (test-work/order-facts ordering-fixtures)))
+    [["alpha.test" "early"]
+     ["beta.test" "early"]
+     ["alpha.test" "late"]
+     ["beta.test" "late"]])
+
+   ^{:refer code.test.work/namespace-facts}
+   (test-check
+    "namespace fact selection preserves the selected namespace"
+    (vec (map :name
+              (test-work/namespace-facts ordering-fixtures "alpha.test")))
+    ["late" "early"])
+
+   ^{:refer code.test.work/namespace-item}
+   (test-check
+    "namespace items carry one namespace and its facts"
+    (let [item (test-work/namespace-item
+                ordering-fixtures
+                "alpha.test"
+                {:fail-fast true})
+          value (:item/value item)]
+      [(:item/id item)
+       (:namespace value)
+       (:test/namespace value)
+       (count (:test/facts value))
+       (has? (first (:test/facts value)) :function)
+       (select-keys (first (:test/facts value))
+                    [:namespace :name :test/revision :test/definition])])
+    ["alpha.test" "alpha.test" "alpha.test" 2 false
+     {:namespace "alpha.test"
+      :name "late"
+      :test/revision 1
+      :test/definition 1}])
+
+   ^{:refer code.test.work/fact-subject}
+   (test-check
+    "fact subjects contain identity and definition data without executable values"
+    (let [subject (test-work/fact-subject
+                   (first ordering-fixtures)
+                   17)]
+      [(select-keys subject
+                    [:namespace :name :test/revision :test/definition])
+       (has? subject :function)
+       (has? subject :meta)])
+    [{:namespace "alpha.test"
+      :name "late"
+      :test/revision 17
+      :test/definition 17}
+     false
+     false])
+
+   ^{:refer code.test.work/cancelled-fact-result}
+   (test-check
+    "cancelled namespace facts retain identity and fail-fast reason"
+    (select-keys (test-work/cancelled-fact-result registered-failing)
+                 [:status :checks :reason])
+    {:status :cancelled :checks [] :reason :fail-fast})
+
+   ^{:refer code.test.work/cancel-namespace-facts}
+   (test-check
+    "namespace cancellation emits completed cancelled fact results"
+    (let [events (atom [])
+          values (test-work/cancel-namespace-facts
+                  [registered-failing]
+                  {:work/emit (fn [event data]
+                                (swap! events conj event))})]
+      [(vec (map :status values)) @events])
+    [[:cancelled]
+     [:test/fact-started :test/fact-completed]])
+
+   ^{:refer code.test.work/run-namespace-fact}
+   (test-check
+    "namespace fact execution emits the standard fact lifecycle"
+    (let [events (atom [])
+          value (test-work/run-namespace-fact
+                 registered-failing
+                 {}
+                 {:work/emit (fn [event data]
+                               (swap! events conj event))})]
+      [(:status value) @events])
+    [:failed [:test/fact-started :test/fact-completed]])
+
+   ^{:refer code.test.work/run-namespace-facts}
+   (test-check
+    "namespace fact batches retain ordered domain results"
+    (let [values (test-work/run-namespace-facts
+                  [registered-failing]
+                  {}
+                  {:work/emit (fn [event data] nil)})]
+      (vec (map :status values)))
+    [:failed])
+
+   ^{:refer code.test.work/capture-hook}
+   (test-check
+    "hook capture returns nil on success and an error on failure"
+    [(test-work/capture-hook (fn [] true) {})
+     (ex-message
+      (test-work/capture-hook
+       (fn [] (throw (ex :generic {} :ex/message "hook failed")))
+       {}))]
+    [nil "hook failed"])
+
+   ^{:refer code.test.work/namespace-error-result}
+   (test-check
+    "namespace hook errors become synthetic domain results"
+    (select-keys
+     (test-work/namespace-error-result
+      {:test/namespace "sample.test" :test/path "sample_test.hal"}
+      :before-all
+      (ex :generic {} :ex/message "boom"))
+     [:namespace :name :status :reason])
+    {:namespace "sample.test"
+     :name ":before-all"
+     :status :error
+     :reason :before-all})
+
+   ^{:refer code.test.work/namespace-summary}
+   (test-check
+    "namespace summaries expose passed counts and Foundation display text"
+    (select-keys
+     (test-work/namespace-summary
+      {:test/namespace "sample.test" :test/path "sample_test.hal"}
+      [{:namespace "sample.test"
+        :name "passing"
+        :status :passed
+        :checks [(fact/compare 1 1)]}]
+      [])
+     [:status :files :facts :checks :passed :failed :test/status
+      :test/passed :test/display])
+    {:status :passed
+     :files 1
+     :facts 1
+     :checks 1
+     :passed 1
+     :failed 0
+     :test/status :passed
+     :test/passed 1
+     :test/display "passed (1)"})
+
+   ^{:refer code.test.work/run-namespace-item}
+   (test-check
+    "namespace item execution retains task-facing test status"
+    (let [item (test-work/namespace-item
+                [registered-failing]
+                "code.test-work-test"
+                {})
+          summary (test-work/run-namespace-item
+                   (:item/value item)
+                   {:work/emit (fn [event data] nil)})]
+      (select-keys summary [:test/status :test/passed :test/failed :test/display]))
+    {:test/status :failed
+     :test/passed 0
+     :test/failed 1
+     :test/display "passed (0), errors: 1"})
+
+   ^{:refer code.test.work/run-test-task-item}
+   (test-check
+    "the test task item runner returns a normal task result"
+    (let [item (test-work/namespace-item
+                [registered-failing]
+                "code.test-work-test"
+                {})
+          result (test-work/run-test-task-item
+                  (:item/value item)
+                  {:work/emit (fn [event data] nil)})]
+      [(:status result)
+       (:test/status (:data result))
+       (:test/failed (:data result))])
+    [:return :failed 1])
+
+   ^{:refer code.test.work/test-task-work}
+   (test-check
+    "test task work installs the namespace item runner in the shared engine"
+    (let [spec (work/work-spec (test-work/test-task-work 13))
+          definition (:template/definition spec)]
+      [(:task/type definition)
+       (:task/version definition)
+       (get-in definition [:invocation :mode])
+       (get-in definition [:invocation :selector-key])
+       (fn? (get-in definition [:item :run]))])
+    [:test 13 :selector :namespace true])
+
+   ^{:refer code.test.work/namespace-items}
+   (test-check
+    "namespace item listing groups selected facts into one item"
+    (let [items (test-work/namespace-items
+                 {:namespace "code.test-work-test"
+                  :name "work-driven passing fact"})]
+      [(count items)
+       (:item/id (first items))
+       (count (get-in (first items) [:item/value :test/facts]))])
+    [1 "code.test-work-test" 1])
+
+   ^{:refer code.test.work/test-task-input}
+   (test-check
+    "test task input adds the namespace item manifest"
+    (let [input (test-work/test-task-input
+                 {:namespace "code.test-work-test"
+                  :name "work-driven passing fact"})]
+      [(get input :namespace)
+       (get input :selector)
+       (count (:test/items input))])
+    ["code.test-work-test" "code.test-work-test" 1])
+
+   ^{:refer code.test.work/normalize-run-options}
+   (test-check
+    "test selectors normalize into the shared namespace option"
+    [(get (test-work/normalize-run-options 'code.test-work-test) :namespace)
+     (get (test-work/normalize-run-options {:selector 'code.test-work-test}) :namespace)
+     (get (test-work/normalize-run-options {:namespace 'code.test-work-test
+                                            :environment {:root "."}})
+          :test/environment)]
+    ['code.test-work-test 'code.test-work-test {:root "."}])
+
+   ^{:refer code.test.work/report-options}
+   (test-check
+    "test reporting defaults to ANSI unless color is disabled"
+    [(get (test-work/report-options {}) :ansi)
+     (get (test-work/report-options {:no-color true}) :ansi)
+     (get (test-work/report-options {:ansi false}) :ansi)]
+    [true false false])
+
+   ^{:refer code.test.work/default-observer}
+   (test-check
+    "test reporting supplies a callable task observer"
+    (let [observer (test-work/default-observer {:ansi false})]
+      [(map? observer) (fn? (:function observer))])
+    [false true])
+
+   ^{:refer code.test.work/reporting-runtime}
+   (test-check
+    "test reporting installs an observer only when requested"
+    (let [runtime (work/local-runtime)
+          reported (test-work/reporting-runtime runtime {:ansi false})
+          quiet (test-work/reporting-runtime runtime {:no-report true})]
+      [(fn? (get-in reported [:work/hooks :work/observer :function]))
+       (= runtime quiet)])
+    [true true])
+
+   ^{:refer code.test.work/reporting-work-options}
+   (test-check
+    "test reporting preserves explicit work observers"
+    (let [observer (work/recording-observer)
+          options (test-work/reporting-work-options
+                   (work/local-runtime)
+                   {:ansi false}
+                   {:work/hooks {:work/observer observer}})]
+      (= observer (get-in options [:work/hooks :work/observer])))
+    true)
+
+   ^{:refer code.test.work/runtime-value?}
+   (test-check
+    "test invocation distinguishes runtimes from selector values"
+    [(test-work/runtime-value? (work/local-runtime))
+     (test-work/runtime-value? work/default-host)
+     (test-work/runtime-value? {})]
+    [true true false])
+
+   ^{:refer code.test.work/run-on}
+   (test-check
+    "run-on returns the shared summary for an empty selector"
+    (let [result
+          (test-work/run-on
+           (work/local-runtime)
+           {:namespace "code.test.no-such-namespace"
+            :no-report true}
+           {})]
+      [(:status result) (:files result) (:facts result)])
+    [:passed 0 0])
+
+   ^{:refer code.test.work/start-on}
+   (test-check
+    "start-on delegates empty selection to the durable task runtime"
+    (let [runtime (work/durable-runtime)
+          reference
+          (test-work/start-on
+           runtime
+           {:namespace "code.test.no-such-namespace"
+            :no-report true}
+           {:id "test-start-on"})
+          result (work/result runtime reference)]
+      [(work/status runtime reference)
+       (:status result)
+       (:files result)
+       (:facts result)])
+    [:completed :passed 0 0])
+
+   ^{:refer code.test.work/start}
+   (test-check
+    "suite execution uses managed Work while retaining test-domain status"
+    [(work/status suite-runtime suite-reference)
+     (:status suite-result)
+     (get-in suite-result [:counts :passed])
+     (get-in suite-result [:counts :failed])
+     (deref execution-count)]
+    [:completed :failed 1 1 1])
+
+   (test-check
+    "idempotent suite starts replay the completed suite boundary"
+    [(work/status suite-runtime same-suite-reference)
+     (= (:run/id (work/run-record suite-runtime suite-reference))
+        (:run/id (work/run-record suite-runtime same-suite-reference)))
+     (deref execution-count)
+     (count (work/checkpoints suite-runtime suite-reference))]
+    [:completed true 1 2])
+
+   (test-check
+    "a failed assertion is a completed fact work result"
+    [(work/status fact-runtime fact-reference)
+     (:status fact-result)
+     (count (:checks fact-result))
+     (count (work/checkpoints fact-runtime fact-reference))]
+    [:completed :failed 1 1])
+
+   (test-check
+    "test events reach Runtime hooks after durable append"
+    [(:status reported-result)
+     (vec (map (fn [event] (:event event)) reported-events))]
+    [:failed [:test/fact-started :test/fact-completed]])
+
+   ^{:refer code.test.work/runner-work}
+   (test-check
+    "public code.test/run uses the Foundation-compatible task graph"
+     [(:op (work/work-spec fact/+runner-work+))
+     (:status public-result)
+     (= (summary-result-view public-result)
+        (summary-result-view public-replayed-result))
+     (count public-runs)
+     (:run/status (first public-runs))]
+    [:chain :failed true 1 :completed])])
+
+results

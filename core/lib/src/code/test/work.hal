@@ -1,0 +1,943 @@
+(ns code.test.work
+  (:config {:role :internal})
+  (:require [code.test.artifact :as artifact]
+            [code.test.base.process :as process]
+            [code.test.base.runtime :as runtime]
+            [code.test.manage :as manage]
+            [work.flow.task :as task]
+            [work.flow.task.selector :as selector]
+            [work.flow.task.report :as task-report]
+            [work.base :as work]
+            [work.base.result :as work-result]
+            [code.test.result :as test-result]))
+
+;; This namespace owns test selection and the namespace-item adapter. Fact
+;; execution and hooks remain internal to an item; task lifecycle, durability,
+;; result projection, and reporting are supplied by work.flow.task.
+
+(defn selector-match?
+  [selection value]
+  (selector/matches? selection value))
+
+(defn tag-selected?
+  [fact options]
+  (let [tags (or (:tags (:meta fact)) #{})
+        include (:include-tags options)
+        exclude (:exclude-tags options)
+        included (if include
+                   (reduce (fn [found tag]
+                             (or found (selector/matches? include tag)))
+                           false
+                           tags)
+                   true)
+        excluded (if exclude
+                   (reduce (fn [found tag]
+                             (or found (selector/matches? exclude tag)))
+                           false
+                           tags)
+                   false)]
+    (and included (not excluded))))
+
+(defn report-selected?
+  [fact options]
+  (let [selection (:test/filter options)]
+    (if selection
+      (let [names (get selection (:namespace fact))]
+        (and names
+             (or (empty? names)
+                 (has? names (:name fact)))))
+      true)))
+
+(defn matches-selection?
+  "Returns true when a fact matches namespace, name, and tag selectors."
+  [fact options]
+  (let [metadata (assoc (:meta fact) :namespace (:namespace fact))]
+    (and
+     (selector-match? (:namespace options) (:namespace fact))
+     (selector-match? (:name options) (:name fact))
+     (tag-selected? fact options)
+     (report-selected? fact options)
+     (selector/matches-options? metadata options))))
+
+(defn selected?
+  "Compatibility predicate: matching facts explicitly marked :skip are not
+   executable, though the runner retains them as structured skipped results."
+  [fact options]
+  (and (matches-selection? fact options)
+       (not (:skip (:meta fact)))))
+
+(defn result-counts
+  [results]
+  (reduce (fn [counts result]
+            (update counts (:status result) (fn [count] (inc (or count 0)))))
+          {:passed 0
+           :failed 0
+           :error 0
+           :timeout 0
+           :skipped 0
+           :cancelled 0}
+          results))
+
+(defn check-counts
+  [results]
+  (reduce
+   (fn [counts result]
+     (reduce (fn [current check-result]
+               (update current
+                       (if (test-result/passed? check-result) :passed :failed)
+                       (fn [count] (inc (or count 0)))))
+             counts
+             (:checks result)))
+   {:total 0 :passed 0 :failed 0}
+   results))
+
+(defn attach-check-total
+  [counts]
+  (assoc counts :total (+ (:passed counts) (:failed counts))))
+
+(defn failing-status?
+  [status]
+  (or (= status :failed)
+      (= status :error)
+      (= status :timeout)))
+
+(defn fact-source-line
+  "Returns the parser-provided source line when a runtime supplies one."
+  [fact]
+  (:line (or (:meta fact) {})))
+
+(defn fact-source-line?
+  [fact]
+  (number? (fact-source-line fact)))
+
+(defn fact-order-position
+  "Returns source position, falling back to registration order on native loads."
+  [fact]
+  (or (fact-source-line fact)
+      (:test/order (or (:meta fact) {}))))
+
+(defn fact-order-position?
+  [fact]
+  (number? (fact-order-position fact)))
+
+(defn fact-before?
+  [left right]
+  (and (= (:namespace left) (:namespace right))
+       (fact-order-position? left)
+       (fact-order-position? right)
+       (< (fact-order-position left)
+          (fact-order-position right))))
+
+(defn insert-fact
+  [facts fact]
+  (loop [index 0
+         output []]
+    (if (= index (count facts))
+      (conj output fact)
+      (if (fact-before? fact (nth facts index))
+        (loop [remaining index
+               inserted (conj output fact)]
+          (if (= remaining (count facts))
+            inserted
+            (recur (inc remaining)
+                   (conj inserted (nth facts remaining)))))
+        (recur (inc index) (conj output (nth facts index)))))))
+
+(defn order-namespace-facts
+  [facts namespace]
+  (let [selected (vec (filter (fn [fact]
+                                (= namespace (:namespace fact)))
+                              facts))]
+    (if (every? fact-order-position? selected)
+      (reduce insert-fact [] selected)
+      selected)))
+
+(defn replace-namespace-slots
+  [facts namespace ordered]
+  (loop [remaining facts
+         sorted ordered
+         output []]
+    (if (empty? remaining)
+      output
+      (let [fact (first remaining)]
+        (if (= namespace (:namespace fact))
+          (recur (vec (rest remaining))
+                 (vec (rest sorted))
+                 (conj output (first sorted)))
+          (recur (vec (rest remaining))
+                 sorted
+                 (conj output fact)))))))
+
+(defn order-facts
+  [facts]
+  (let [facts (vec facts)]
+    (reduce
+     (fn [output namespace]
+       (replace-namespace-slots
+        output
+        namespace
+        (order-namespace-facts output namespace)))
+     facts
+     (distinct (map (fn [fact] (:namespace fact)) facts)))))
+
+(def +default-revision+ 1)
+(def +default-work-revision+ +default-revision+)
+
+(defn work-revision
+  [options]
+  (or (:test/revision options)
+      +default-revision+))
+
+(defn work-context-options
+  [context]
+  (let [base (or (:test/options context) {})
+        now (:work/now context)
+        timeout-promise (:work/timeout-promise context)
+        cancel-timeout (:work/cancel-timeout context)]
+    (merge base
+           (if now {:work/now now} {})
+           (if timeout-promise
+             {:work/timeout-promise timeout-promise}
+             {})
+           (if cancel-timeout
+             {:work/cancel-timeout cancel-timeout}
+             {}))))
+
+(defn work-execution-options
+  [input context]
+  (merge (or input {})
+         (work-context-options context)))
+
+(defn fact-identity
+  [value]
+  (str value))
+
+(defn fact-coordinate
+  [namespace name fact-revision]
+  (pointer {:context :test
+            :id :test
+            :namespace (fact-identity namespace)
+            :name (fact-identity name)
+            :revision fact-revision}))
+
+(defn fact-revision
+  [fact default-revision]
+  (or (:test/revision (:meta fact))
+      default-revision))
+
+(defn fact-definition-token
+  "Returns the stable definition token used to invalidate a fact checkpoint."
+  [fact default-revision]
+  (let [metadata (:meta fact)]
+    (or (:test/digest metadata)
+        (:test/definition metadata)
+        (fact-revision fact default-revision))))
+
+(defn fact-item-coordinate
+  [fact default-revision]
+  (let [fact-revision (fact-revision fact default-revision)]
+    (pointer {:context :test
+              :id :test
+              :namespace (fact-identity (:namespace fact))
+              :name (fact-identity (:name fact))
+              :revision fact-revision
+              :definition (fact-definition-token fact default-revision)})))
+
+(defn resolve-fact
+  [namespace name]
+  (let [namespace (fact-identity namespace)
+        name (fact-identity name)
+        fact (runtime/get-fact namespace name)]
+    (if fact
+      fact
+      (throw
+       (ex :not-found {:namespace namespace
+                       :name name}
+           :ex/message "Registered test fact does not exist")))))
+
+(defn resolve-subject-fact
+  "Resolves a prepared fact and rejects definition drift before execution."
+  [subject]
+  (let [fact (resolve-fact (:namespace subject) (:name subject))
+        expected (:test/definition subject)
+        actual (fact-definition-token fact (:test/revision subject))]
+    (if (and expected (not= expected actual))
+      (throw
+       (ex :conflict {:namespace (:namespace subject)
+                      :name (:name subject)
+                      :expected expected
+                      :actual actual}
+           :ex/message "Registered test fact definition changed after preparation")))
+    fact))
+
+(def fact-result-identity process/fact-result-identity)
+(def error-result process/error-result)
+(def execute-fact-body process/execute-fact-body)
+(def timed-result process/timed-result)
+
+(defn fact-work
+  "Returns one checkpointed fact boundary. Assertion failures, skips, timeouts,
+   and test errors are completed domain results returned by process/run-fact."
+  ([namespace name]
+   (fact-work namespace name +default-revision+))
+  ([namespace name fact-revision]
+   (work/step
+    {:id (fact-coordinate namespace name fact-revision)
+     :version fact-revision
+     :test/revision fact-revision}
+    (fn [input context]
+      (let [options (work-execution-options input context)
+            fact (resolve-fact namespace name)]
+        (work/emit context
+                    :test/fact-started
+                    (process/fact-result-identity fact))
+        (let [result (process/run-fact fact options)]
+          (work/emit context :test/fact-completed result)
+          result))))))
+
+(defn selected-facts
+  [options]
+  (order-facts
+   (vec
+    (filter
+     (fn [fact]
+       (matches-selection? fact options))
+     (runtime/tests)))))
+
+(declare normalize-run-options)
+
+(defn data-options
+  [input context]
+  (merge (normalize-run-options input)
+         (or (:test/options context) {})))
+
+(defn effective-suite-options
+  [facts options]
+  (let [namespace (if (seq facts)
+                    (:namespace (first facts))
+                    nil)]
+    (merge (manage/suite-settings namespace) options)))
+
+(defn fact-item
+  [fact options default-revision]
+  (let [fact-revision (fact-revision fact default-revision)
+        definition-token (fact-definition-token fact default-revision)]
+    {:item/id (fact-item-coordinate fact default-revision)
+     :item/value
+     {:namespace (fact-identity (:namespace fact))
+      :name (fact-identity (:name fact))
+      :test/revision fact-revision
+      :test/definition definition-token
+      :test/options options}}))
+
+(defn fact-subject
+  "Returns the serializable identity used to resolve a fact at execution time.
+
+   Executable fact closures belong to the loaded test registry, not to a
+   durable task input or checkpoint."
+  [fact default-revision]
+  (let [fact-revision (fact-revision fact default-revision)]
+    {:namespace (fact-identity (:namespace fact))
+     :name (fact-identity (:name fact))
+     :test/revision fact-revision
+     :test/definition (fact-definition-token fact default-revision)}))
+
+(defn prepare-fact-batch
+  [input context default-revision]
+  (let [input-options (data-options input context)
+        facts (selected-facts input-options)
+        options (effective-suite-options facts input-options)
+        items
+        (vec
+         (map
+          (fn [fact]
+            (fact-item fact options default-revision))
+          facts))]
+    {:test/options options
+     :test/items items}))
+
+(defn fact-manifest
+  [input context default-revision]
+  (:test/items
+   (prepare-fact-batch input context default-revision)))
+
+(defn summary-from-results
+  [results]
+  (let [counts (result-counts results)
+        checks (attach-check-total
+                (check-counts results))
+        status (if (and (= 0 (:failed counts))
+                        (= 0 (:error counts))
+                        (= 0 (:timeout counts)))
+                 :passed
+                 :failed)
+        namespaces
+        (reduce
+         (fn [output result]
+           (conj output (:namespace result)))
+         #{}
+         results)]
+    {:status status
+     :counts counts
+     :check-counts checks
+     :files (count namespaces)
+     :facts (count results)
+     :checks (:total checks)
+     :passed (:passed checks)
+     :failed (:failed checks)
+     :throw (:error counts)
+     :timeout (:timeout counts)
+     :results results}))
+
+(defn fact-options
+  [subject context]
+  (work-execution-options (:test/options subject) context))
+
+(defn process-prepared-fact
+  [subject context]
+  (let [fact (resolve-subject-fact subject)
+        options (fact-options subject context)]
+    (work/emit context
+                :test/fact-started
+                (process/fact-result-identity fact))
+    (let [result (process/run-fact fact options)]
+      (work/emit context :test/fact-completed result)
+      result)))
+
+(defn fact-process-work
+  [batch-revision]
+  (work/step
+   {:id 'code.test/fact-process
+    :version batch-revision}
+   process-prepared-fact))
+
+(defn stop-after-fact?
+  [batch context]
+  (and (get-in batch [:input :test/options :fail-fast])
+       (failing-status?
+        (get-in batch [:result :item/value :status]))))
+
+(defn cancel-unclaimed-fact
+  [batch context]
+  (let [subject (get-in batch [:item :item/value])
+        fact (resolve-subject-fact subject)
+        result (merge (process/fact-result-identity fact)
+                      {:status :cancelled
+                       :checks []
+                       :reason :fail-fast})]
+    (work/emit context
+                :test/fact-started
+                (process/fact-result-identity fact))
+    (work/emit context :test/fact-completed result)
+    result))
+
+(defn summarise-fact-batch
+  [batch context]
+  (summary-from-results
+   (work/manifest-values (:results batch))))
+
+(defn suite-before
+  [prepared context]
+  (let [options (work-execution-options (:test/options prepared) context)]
+    (work/emit context
+                :test/run-started
+                {:count (count (:test/items prepared))})
+    (process/run-hook (:before-all options) options)
+    nil))
+
+(defn suite-after
+  [outcome context]
+  (let [prepared (:work/input outcome)
+        options (work-execution-options (:test/options prepared) context)
+        body-result (:work/body-result outcome)]
+    (process/run-hook (:after-all options) options)
+    (if (= :completed (:work/body-status outcome))
+      (work/emit context
+                  :test/run-completed
+                  (:summary body-result))
+      nil)
+    {:status :completed}))
+
+(defn fact-batch-body
+  [batch-revision]
+  (work/chain
+   {:id 'code.test/fact-batch-body
+    :version batch-revision}
+   [(work/all
+     {:id 'code.test/suite-start
+      :version batch-revision}
+     [(work/pure
+       {:id 'code.test/suite-state
+        :version batch-revision}
+       (fn [prepared context] prepared))
+      (work/step
+       {:id 'code.test/suite-before
+        :version batch-revision}
+       suite-before)])
+    (work/pure
+     {:id 'code.test/suite-state-after-start
+      :version batch-revision}
+     (fn [outputs context]
+       (nth outputs 0)))
+    (work/batch
+     {:id 'code.test/fact-batch-items
+      :version batch-revision}
+     {:list
+      (work/pure
+       {:id 'code.test/fact-list
+        :version batch-revision}
+       (fn [prepared context]
+         (:test/items prepared)))
+
+      :process
+      (fact-process-work batch-revision)
+
+      :stop
+      (work/pure
+       {:id 'code.test/fact-stop
+        :version batch-revision}
+       stop-after-fact?)
+
+      :cancel
+      (work/step
+       {:id 'code.test/fact-cancel
+        :version batch-revision}
+       cancel-unclaimed-fact)
+
+      :summarise
+      (work/pure
+       {:id 'code.test/fact-summary
+        :version batch-revision}
+       summarise-fact-batch)})]))
+
+(defn cancelled-fact-result
+  [fact]
+  (merge (process/fact-result-identity fact)
+         {:status :cancelled
+          :checks []
+          :reason :fail-fast}))
+
+(defn cancel-namespace-facts
+  [facts context]
+  (loop [remaining (vec facts)
+         output []]
+    (if (empty? remaining)
+      output
+      (let [fact (first remaining)
+            result (cancelled-fact-result fact)]
+        (work/emit context
+                   :test/fact-started
+                   (process/fact-result-identity fact))
+        (work/emit context :test/fact-completed result)
+        (recur (vec (rest remaining))
+               (conj output result))))))
+
+(defn run-namespace-fact
+  [fact options context]
+  (work/emit context
+             :test/fact-started
+             (process/fact-result-identity fact))
+  (let [result (process/run-fact fact options)]
+    (work/emit context :test/fact-completed result)
+    result))
+
+(defn run-namespace-facts
+  [facts options context]
+  (loop [remaining (vec facts)
+         output []]
+    (if (empty? remaining)
+      output
+      (let [fact (first remaining)
+            result (run-namespace-fact fact options context)
+            next-results (conj output result)
+            tail (vec (rest remaining))]
+        (if (and (:fail-fast options)
+                 (failing-status? (:status result)))
+          (vec (concat next-results
+                       (cancel-namespace-facts tail context)))
+          (recur tail next-results))))))
+
+(defn capture-hook
+  [hook options]
+  (try
+    (do
+      (process/run-hook hook options)
+      nil)
+    (catch Throwable error
+      error)))
+
+(defn namespace-error-result
+  [item phase error]
+  {:namespace (:test/namespace item)
+   :name (str phase)
+   :meta {:path (:test/path item)}
+   :status :error
+   :checks []
+   :error (str error)
+   :reason phase})
+
+(defn namespace-summary
+  [item results errors]
+  (let [failure-results
+        (vec
+         (map
+          (fn [entry]
+            (namespace-error-result item (first entry) (second entry)))
+          errors))
+        summary (summary-from-results
+                 (vec (concat results failure-results)))
+        counts (:counts summary)
+        passed (or (:passed counts) 0)
+        status (:status summary)
+        error-count (+ (or (:failed counts) 0)
+                       (or (:error counts) 0)
+                       (or (:timeout counts) 0))
+        display (str "passed ("
+                     passed
+                     ")"
+                     (if (= 0 error-count)
+                       ""
+                       (str ", errors: " error-count)))]
+    (merge summary
+           {:namespace (:test/namespace item)
+            :path (:test/path item)
+            :test/namespace (:test/namespace item)
+            :test/path (:test/path item)
+            :test/status status
+            :test/passed passed
+            :test/failed (or (:failed counts) 0)
+            :test/throw (or (:error counts) 0)
+            :test/timeout (or (:timeout counts) 0)
+            :test/display display})))
+
+(defn run-namespace-item
+  [item context]
+  (let [subjects (:test/facts item)
+        facts (vec (map resolve-subject-fact subjects))
+        options (effective-suite-options
+                 facts
+                 (work-execution-options nil context))]
+    (work/emit context
+               :test/run-started
+               {:namespace (:test/namespace item)
+                :path (:test/path item)
+                :count (count facts)})
+    (let [before-error (capture-hook (:before-all options) options)
+          results (if before-error
+                    []
+                    (run-namespace-facts facts options context))
+          after-error (capture-hook (:after-all options) options)
+          errors
+          (vec
+           (filter
+            (fn [entry] (second entry))
+            [[:before-all before-error]
+             [:after-all after-error]]))
+          summary (namespace-summary item results errors)]
+      (work/emit context :test/run-completed summary)
+      summary)))
+
+(defn namespace-facts
+  [facts namespace]
+  (vec
+   (filter
+    (fn [fact] (= namespace (:namespace fact)))
+    facts)))
+
+(defn namespace-item
+  [facts namespace options]
+  (let [facts (namespace-facts facts namespace)
+        first-fact (first facts)
+        metadata (or (:meta first-fact) {})
+        namespace (fact-identity namespace)
+        default-revision (work-revision options)]
+    {:item/id namespace
+     :item/value
+     {:namespace namespace
+      :test/namespace namespace
+      :test/path (:path metadata)
+      :test/facts (vec (map (fn [fact]
+                              (fact-subject fact default-revision))
+                            facts))}}))
+
+(defn namespace-items
+  [options]
+  (let [facts (selected-facts (dissoc options :namespace))
+        namespaces (vec (distinct (map (fn [fact] (:namespace fact)) facts)))]
+    (vec
+     (map
+      (fn [namespace]
+        (namespace-item facts namespace options))
+      namespaces))))
+
+(defn test-task-input
+  [options]
+  (assoc (select-keys options
+                      [:namespace
+                       :selector
+                       :name
+                       :include-tags
+                       :exclude-tags
+                       :test/filter
+                       :test/revision
+                       :test/environment
+                       :fail-fast
+                       :timeout])
+         :selector (:namespace options)
+         :test/items (namespace-items options)))
+
+(def test-task-summary task/test-summary-finalise)
+
+(defn run-test-task-item
+  [item context]
+  {:status :return
+   :data (run-namespace-item item context)})
+
+(defn test-task-work
+  [batch-revision]
+  (task/compile
+   {:id 'code.test/run
+    :type :test
+    :version batch-revision
+    :invocation {:mode :selector
+                 :selector-key :namespace}
+    :item {:run run-test-task-item}}))
+
+(defn fact-batch-work
+  "Compatibility name for the namespace-item test task."
+  ([]
+   (test-task-work +default-revision+))
+  ([batch-revision]
+   (test-task-work batch-revision)))
+
+(def suite-work fact-batch-work)
+
+(defn batch-summary
+  [result]
+  (if (and (map? result) (has? result :summary))
+    (:summary result)
+    result))
+
+(defn complete-test-run
+  [result options]
+  (let [summary (batch-summary result)
+        report (:report result)
+        latest (artifact/record-run summary options report)]
+    (assoc summary
+           :report report
+           :artifacts (:artifacts latest))))
+
+(defn runner-work
+  [batch-revision]
+  (test-task-work batch-revision))
+
+(def +runner-work+ (runner-work +default-revision+))
+
+(defn runner-options
+  [options]
+  (let [config (Test/config (dissoc (or options {})
+                                    :test/config
+                                    :test/context))
+        context (Test/context config)]
+    (assoc (:options config)
+           :test/config config
+           :test/context context)))
+
+(defn normalize-run-options
+  [selector-or-options]
+  (let [selector-or-options
+        (if (map? selector-or-options)
+          selector-or-options
+          (task/invocation-options [selector-or-options]))
+        options
+        (if (and (map? selector-or-options)
+                 (has? selector-or-options :selector))
+          (assoc (dissoc selector-or-options :selector)
+                 :namespace (:selector selector-or-options))
+          selector-or-options)
+        options
+        (if (has? options :environment)
+          (assoc (dissoc options :environment)
+                 :test/environment (:environment options))
+          options)
+        options
+        (if (has? options :namespace)
+          options
+          (assoc options :namespace (ns-current)))]
+    (runner-options options)))
+
+(defn report-options
+  [options]
+  (assoc (select-keys options [:emit])
+         :ansi (if (has? options :ansi)
+                 (:ansi options)
+                 (not (:no-color options)))))
+
+(defn default-observer
+  [options]
+  (task-report/observer (report-options options)))
+
+(defn reporting-runtime
+  ([runtime options]
+   (reporting-runtime runtime options {}))
+  ([runtime options work-options]
+   (let [hooks (if (work/canonical-runtime? runtime)
+                 (or (:work/hooks runtime) {})
+                 {})
+         requested (or (get-in work-options [:work/hooks :work/observer])
+                       (:observer work-options))]
+     (if (and (work/canonical-runtime? runtime)
+              (not (:no-report options))
+              (or requested (nil? (:work/observer hooks))))
+       (assoc runtime
+              :work/hooks
+              (assoc hooks
+                     :work/observer
+                     (or requested
+                         (:work/observer hooks)
+                         (default-observer options))))
+       runtime))))
+
+(defn reporting-work-options
+  [runtime options work-options]
+  (let [work-options (or work-options {})
+        hooks (or (:work/hooks work-options) {})
+        nested-observer (:work/observer hooks)]
+    (if (or (:no-report options)
+            (not (nil? nested-observer))
+            (work/canonical-runtime? runtime))
+      work-options
+      (assoc work-options
+             :work/hooks
+             (assoc hooks
+                    :work/observer
+                    (or (:observer work-options)
+                        (default-observer options)))))))
+
+(defn runtime-value?
+  [value]
+  (or (work/canonical-runtime? value)
+      (satisfies? IWorkHost value)))
+
+(defn runner-work-options
+  [options work-options]
+  (assoc (or work-options {})
+         :context
+         (merge (or (:context work-options) {})
+                {:test/options options
+                 :test/config (:test/config options)
+                 :test/context (:test/context options)})))
+
+(defn run-on
+  [runtime selector-or-options work-options]
+  (let [options (normalize-run-options selector-or-options)
+        runtime (or runtime (work/local-runtime))
+        work-options (runner-work-options options work-options)
+        work-options (reporting-work-options runtime options work-options)
+        runtime (reporting-runtime runtime options work-options)
+        run-id (:id work-options)
+        artifact-options
+        (if (and run-id
+                 (nil? (get-in options [:test/config :started-at])))
+          (assoc-in options [:test/config :started-at] run-id)
+          options)
+        summary
+        (work/run runtime
+                  (runner-work (work-revision options))
+                  (test-task-input options)
+                  work-options)]
+    (work-result/then
+     summary
+     (fn [resolved]
+       (complete-test-run resolved artifact-options)))))
+
+(defn native-cancelled-result
+  [fact]
+  (merge (process/fact-result-identity fact)
+         {:status :cancelled
+          :checks []
+          :reason :fail-fast}))
+
+(defn native-results
+  [facts options]
+  (loop [remaining facts
+         results []]
+    (if (empty? remaining)
+      results
+      (let [fact (first remaining)
+            result (process/run-fact fact options)
+            next-results (conj results result)
+            tail (vec (rest remaining))]
+        (if (and (:fail-fast options) (failing-status? (:status result)))
+          (vec (concat next-results (map native-cancelled-result tail)))
+          (recur tail next-results))))))
+
+(defn native-run
+  [selector-or-options]
+  (let [base-options (normalize-run-options selector-or-options)
+        facts (selected-facts base-options)
+        options (effective-suite-options facts base-options)]
+    (try
+      (do
+        (process/run-hook (:before-all options) options)
+        (summary-from-results (native-results facts options)))
+      (finally
+        (process/run-hook (:after-all options) options)))))
+
+(defn run
+  "Runs selected facts through the Foundation-compatible task profile."
+  ([] (run-on nil (ns-current) {}))
+  ([selector-or-options]
+   (run-on nil selector-or-options {}))
+  ([first second]
+   (if (runtime-value? first)
+     (run-on first second {})
+     (run-on nil (task/invocation-options [first second]) {})))
+  ([first second third]
+   (if (runtime-value? first)
+     (run-on first second third)
+     (run-on nil (task/invocation-options [first second third]) {}))))
+
+(defn start-on
+  [runtime selector-or-options work-options]
+  (let [options (normalize-run-options selector-or-options)
+        runtime (or runtime (work/local-runtime))
+        work-options (runner-work-options options work-options)
+        work-options (reporting-work-options runtime options work-options)
+        runtime (reporting-runtime runtime options work-options)]
+    (work/start runtime
+                (runner-work (work-revision options))
+                (test-task-input options)
+                work-options)))
+
+(defn start
+  "Starts the canonical namespace test task and returns a live IWorkRun."
+  ([] (start-on nil (ns-current) {}))
+  ([selector-or-options]
+   (start-on nil selector-or-options {}))
+  ([first second]
+   (if (runtime-value? first)
+     (start-on first second {})
+     (start-on nil (task/invocation-options [first second]) {})))
+  ([first second third]
+   (if (runtime-value? first)
+     (start-on first second third)
+     (start-on nil (task/invocation-options [first second third]) {}))))
+
+(defn batch-result
+  ([run]
+   (batch-summary (work/await run)))
+  ([runtime reference]
+   (batch-summary (work/result runtime reference))))
+
+(def run-batch run)
+(def start-batch start)
+
+(defn run-tests
+  "Compatibility name for run."
+  ([] (run))
+  ([options] (run options)))
+
+(def revision work-revision)
+(def context-options work-context-options)
+(def execution-options work-execution-options)

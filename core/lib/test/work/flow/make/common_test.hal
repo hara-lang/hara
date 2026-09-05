@@ -1,0 +1,179 @@
+(ns work.flow.make.common-test
+  (:require [work.flow.make.common :as common]
+    [work.flow.make.artifact :as compile]
+    [std.lib.encode.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+(def +demo-config+
+  (common/make-config {:github    {:description "Demo Makefile"
+                                   :private     true
+                                   :repo        "zcaudate-xyz/test.demo-make"}
+                       :sections  {}
+                       :default   [{:file "hello.md" :main ["# hello world"] :type :raw}]
+                       :build     ".build/test.demo-make"
+                       :container "ghcr.io/zcaudate-xyz/test.demo-make"
+                       :tag       "test.demo-make"}))
+
+(def +triggers+ (atom {:a 1}))
+
+^{:refer work.flow.make.common/with:triggers :added "4.0"}
+(do
+ (def +triggers+ (atom {:a 1}))
+ (Test/run
+  [{:name "purges triggers"
+    :test (fn [] (common/with:triggers [+triggers+] (deref common/*triggers*)))
+    :expected {:a 1}}]
+  migration-test-check))
+
+^{:refer work.flow.make.common/triggers-purge :added "4.0"}
+(do (def +triggers+ (atom {:a 1})) (Test/run [{:expected {} :name "purges triggers" :test (fn [] (common/with:triggers [+triggers+] (common/triggers-purge) (deref +triggers+)))}] migration-test-check))
+
+^{:refer work.flow.make.common/triggers-set :added "4.0"}
+(Test/run [{:expected map? :name "sets a trigger" :test (fn [] (common/with:triggers [+triggers+] (common/triggers-set +demo-config+ ["hello"])))}] migration-test-check)
+
+^{:refer work.flow.make.common/triggers-clear :added "4.0"}
+(Test/run [{:expected empty? :name "clears a trigger" :test (fn [] (common/with:triggers [+triggers+] (common/triggers-clear +demo-config+)))}] migration-test-check)
+
+^{:refer work.flow.make.common/triggers-get :added "4.0"}
+(do (common/with:triggers [+triggers+] (common/triggers-set +demo-config+ ["hello"])) (Test/run [{:expected ["hello"] :name "gets a trigger" :test (fn [] (common/with:triggers [+triggers+] (common/triggers-get +demo-config+)))}] migration-test-check))
+
+^{:refer work.flow.make.common/triggers-list :added "4.0"}
+(Test/run
+ [{:name "lists all trigers"
+   :test (fn [] (common/with:triggers [+triggers+] (common/triggers-list)))
+   :expected {"test.demo-make" ["hello"]}}]
+ migration-test-check)
+
+^{:refer work.flow.make.common/get-triggered :added "4.0"}
+(Test/run [{:expected ["test.demo-make"] :name "gets all configs given a trigger namespace" :test (fn [] (mapv (fn [mcfg] (:tag (deref (:instance mcfg)))) (common/with:triggers [+triggers+] (common/get-triggered (quote hello)))))}] migration-test-check)
+
+^{:refer work.flow.make.common/with:internal-shell :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.common/make-config? :added "4.0"}
+(Test/run
+ [{:name "checks that object is a `make` config"
+   :test (fn [] (common/make-config? +demo-config+))
+   :expected true}]
+ migration-test-check)
+
+^{:refer work.flow.make.common/get-config-tag :added "4.0"}
+(Test/run
+ [{:name "gets the tag for a config"
+   :test (fn [] (common/get-config-tag +demo-config+))
+   :expected "test.demo-make"}]
+ migration-test-check)
+
+^{:refer work.flow.make.common/make-config-map :added "4.0"}
+(Test/run
+ [{:name "creates a make-config map"
+   :test (fn []
+             (common/make-config-map {:github    {:description "Demo Makefile"
+                                                  :private     true
+                                                  :repo        "zcaudate-xyz/test.demo-make"}
+                                      :sections  {}
+                                      :default   [{:file "hello.md" :main ["# hello world"] :type :raw}]
+                                      :build     ".build/test.demo-make"
+                                      :container "ghcr.io/zcaudate-xyz/test.demo-make"
+                                      :tag       "test.demo-make"}))
+   :expected (collection/contains-in {:github    {:description "Demo Makefile"
+                                                  :private     true
+                                                  :repo        "zcaudate-xyz/test.demo-make"}
+                                      :sections  {}
+                                      :default   [{:file "hello.md" :main ["# hello world"] :type :raw}]
+                                      :orgfile   "Main.org"
+                                      :ns        (quote work.flow.make.common-test)
+                                      :build     ".build/test.demo-make"
+                                      :root      string?
+                                      :container "ghcr.io/zcaudate-xyz/test.demo-make"
+                                      :tag       "test.demo-make"})}]
+ migration-test-check)
+
+^{:refer work.flow.make.common/make-config :added "4.0"}
+(Test/run
+ [{:name "function to create a `make` config"
+   :test (fn []
+             (common/make-config {:github    {:description "Demo Makefile"
+                                              :private     true
+                                              :repo        "zcaudate-xyz/test.demo-make"}
+                                  :sections  {}
+                                  :default   [{:file "hello.md" :main ["# hello world"] :type :raw}]
+                                  :build     ".build/test.demo-make"
+                                  :container "ghcr.io/zcaudate-xyz/test.demo-make"
+                                  :tag       "test.demo-make"}))
+   :expected common/make-config?}]
+ migration-test-check)
+
+^{:refer work.flow.make.common/make-config-update :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.common/make-dir :added "4.0"}
+(Test/run
+ [{:name "gets the dir specified by the config"
+   :test (fn [] (common/make-dir +demo-config+))
+   :expected string?}]
+ migration-test-check)
+
+^{:refer work.flow.make.common/make-run :added "4.0"}
+(do
+ (compile/compile +demo-config+)
+ (Test/run
+  [{:name "runs the `make` executable"
+    :test (fn [] (common/with:internal-shell (common/make-run +demo-config+ :dev)))
+    :expected (collection/contains-in [number? true])}]
+  migration-test-check))
+
+^{:refer work.flow.make.common/make-run-close :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.common/make-run-internal :added "4.0"}
+(do
+ (compile/compile +demo-config+)
+ (Test/run
+  [{:name "runs the make executable internal"
+    :test (fn [] (common/make-run-internal +demo-config+ :dev :test))
+    :expected (collection/contains-in [[number? true] [number? true]])}]
+  migration-test-check))
+
+^{:refer work.flow.make.common/make-shell :added "4.0"}
+(Test/run [] migration-test-check)
+
+^{:refer work.flow.make.common/make-dir-setup :added "4.0"}
+(Test/run
+ [{:name "sets up the `make` directory"
+   :test (fn [] (str (common/make-dir-setup +demo-config+)))
+   :expected (common/make-dir +demo-config+)}]
+ migration-test-check)
+
+^{:refer work.flow.make.common/make-dir-exists? :added "4.0"}
+(Test/run
+ [{:name "checks that the `make` directory exists #1"
+   :test (fn [] (str (common/make-dir-setup +demo-config+)))
+   :expected string?}
+  {:name "checks that the `make` directory exists #2"
+   :test (fn [] (common/make-dir-exists? +demo-config+))
+   :expected true}]
+ migration-test-check)
+
+^{:refer work.flow.make.common/make-dir-teardown :added "4.0"}
+(Test/run
+ [{:name "deletes the the `make` directory #1"
+   :test (fn [] (common/make-dir-teardown +demo-config+))
+   :expected (collection/contains-in [boolean?])}
+  {:name "deletes the the `make` directory #2"
+   :test (fn [] (common/make-dir-exists? +demo-config+))
+   :expected false}]
+ migration-test-check)

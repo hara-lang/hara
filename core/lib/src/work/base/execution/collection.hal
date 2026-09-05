@@ -1,0 +1,196 @@
+(ns work.base.execution.collection
+  (:require [work.base.model :as base]
+            [work.base.frame :as frame]
+            [work.base.result :as result]))
+
+(defn run-chain-loop
+  [execute runtime frame children index value]
+  (loop [index index
+         value value]
+    (if (= index (count children))
+      value
+      (let [child (nth children index)
+            child-spec (base/work-spec-map child)
+            child-frame (frame/child-frame frame :chain index child-spec)
+            next-value (execute runtime child-frame child value)]
+        (if (result/asynchronous? next-value)
+          (result/then
+           next-value
+           (fn [resolved]
+             (run-chain-loop execute
+                             runtime
+                             frame
+                             children
+                             (inc index)
+                             resolved)))
+          (recur (inc index) next-value))))))
+
+(defn run-chain
+  [execute runtime frame spec input]
+  (run-chain-loop execute runtime frame (vec (:children spec)) 0 input))
+
+(defn run-each-loop
+  [execute runtime base-frame child manifest index output]
+  (loop [index index
+         output output]
+    (if (= index (count manifest))
+      output
+      (let [item (nth manifest index)
+            item-id (:item/id item)
+            value
+            (execute runtime
+                     (frame/item-frame base-frame item-id)
+                     child
+                     (:item/value item))]
+        (if (result/asynchronous? value)
+          (result/then
+           value
+           (fn [resolved]
+             (run-each-loop execute
+                            runtime
+                            base-frame
+                            child
+                            manifest
+                            (inc index)
+                            (conj output
+                                  {:item/id item-id
+                                   :item/value resolved}))))
+          (recur (inc index)
+                 (conj output
+                       {:item/id item-id
+                        :item/value value})))))))
+
+(defn run-each
+  [execute runtime frame spec input]
+  (let [manifest (frame/normalise-manifest runtime spec input)
+        child (:work spec)
+        child-spec (base/work-spec-map child)
+        base-frame (frame/child-frame frame :each child-spec)]
+    (run-each-loop execute runtime base-frame child manifest 0 [])))
+
+(defn run-filter-loop
+  [execute runtime base-frame predicate manifest index output]
+  (loop [index index
+         output output]
+    (if (= index (count manifest))
+      output
+      (let [item (nth manifest index)
+            selected
+            (execute runtime
+                     (frame/item-frame base-frame (:item/id item))
+                     predicate
+                     (:item/value item))]
+        (if (result/asynchronous? selected)
+          (result/then
+           selected
+           (fn [resolved]
+             (run-filter-loop execute
+                              runtime
+                              base-frame
+                              predicate
+                              manifest
+                              (inc index)
+                              (if resolved
+                                (conj output item)
+                                output))))
+          (recur (inc index)
+                 (if selected
+                   (conj output item)
+                   output)))))))
+
+(defn run-filter
+  [execute runtime frame spec input]
+  (let [manifest (frame/normalise-manifest runtime spec input)
+        predicate (:work spec)
+        predicate-spec (base/work-spec-map predicate)
+        base-frame (frame/child-frame frame :filter predicate-spec)]
+    (run-filter-loop execute runtime base-frame predicate manifest 0 [])))
+
+(defn run-fold-loop
+  [execute runtime base-frame reducer manifest index accumulator]
+  (loop [index index
+         accumulator accumulator]
+    (if (= index (count manifest))
+      accumulator
+      (let [item (nth manifest index)
+            next-value
+            (execute runtime
+                     (frame/item-frame base-frame (:item/id item))
+                     reducer
+                     {:acc accumulator
+                      :item/id (:item/id item)
+                      :item/value (:item/value item)})]
+        (if (result/asynchronous? next-value)
+          (result/then
+           next-value
+           (fn [resolved]
+             (run-fold-loop execute
+                            runtime
+                            base-frame
+                            reducer
+                            manifest
+                            (inc index)
+                            resolved)))
+          (recur (inc index) next-value))))))
+
+(defn run-fold
+  [execute runtime frame spec input]
+  (let [manifest (frame/normalise-manifest runtime spec input)
+        reducer (:work spec)
+        reducer-spec (base/work-spec-map reducer)
+        base-frame (frame/child-frame frame :fold reducer-spec)]
+    (run-fold-loop execute
+                   runtime
+                   base-frame
+                   reducer
+                   manifest
+                   0
+                   (:initial spec))))
+
+(defn run-all-loop
+  [execute runtime frame children input index output]
+  (loop [index index
+         output output]
+    (if (= index (count children))
+      output
+      (let [child (nth children index)
+            child-spec (base/work-spec-map child)
+            child-frame (frame/child-frame frame :all index child-spec)
+            value (execute runtime child-frame child input)]
+        (if (result/asynchronous? value)
+          (result/then
+           value
+           (fn [resolved]
+             (run-all-loop execute
+                           runtime
+                           frame
+                           children
+                           input
+                           (inc index)
+                           (conj output resolved))))
+          (recur (inc index) (conj output value)))))))
+
+(defn run-all
+  [execute runtime frame spec input]
+  (run-all-loop execute runtime frame (vec (:children spec)) input 0 []))
+
+(defn run-choose
+  [execute runtime frame spec input]
+  (let [selector (:selector spec)
+        selector-spec (base/work-spec-map selector)]
+    (result/then
+     (execute runtime
+              (frame/child-frame frame :choose :selector selector-spec)
+              selector
+              input)
+     (fn [selected]
+       (let [choice (get (:choices spec) selected)]
+         (if choice
+           (let [choice-spec (base/work-spec-map choice)]
+             (execute runtime
+                      (frame/child-frame frame :choose selected choice-spec)
+                      choice
+                      input))
+           (throw
+            (ex :not-found {:selected selected
+                      :choices (keys (:choices spec))} :ex/message "Work choice does not exist"))))))))

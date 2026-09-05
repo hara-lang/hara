@@ -1,0 +1,544 @@
+(ns work.base
+  (:config {:override [filter]})
+  (:require [work.flow :as flow]
+            [work.base.coordinator :as coordinator]
+            [work.base.host :as host]
+            [work.base.runtime :as runtime]
+            [work.base.result :as async-result]
+            [work.provider.ephemeral :as ephemeral]))
+
+(declare &env)
+
+;; Canonical public surface for the portable work algebra and managed runtime.
+
+(defmacro def.work
+  "Defines one named value through an explicitly registered workflow path."
+  [definition-name path definition]
+  (if (not (symbol? definition-name))
+    (throw
+     (ex :dependency {:work/name definition-name} :ex/message "def.work requires a symbol name")))
+  (let [path (flow/assert-flow-path path)
+        namespace (get &env :ns)
+        qualified-name
+        (symbol (str namespace) (name definition-name))]
+    `(def ~definition-name
+       (work.flow/define-work
+        (quote ~qualified-name)
+        ~path
+        ~definition))))
+
+(defn work-spec
+  [work]
+  (runtime/work-spec-map work))
+
+(defn definition
+  [spec]
+  (runtime/work-value spec))
+
+(defn pure
+  [id-or-options function]
+  (let [options (if (map? id-or-options)
+                  id-or-options
+                  {:id id-or-options})]
+    (definition
+     (merge options
+            {:op :pure
+             :fn function}))))
+
+(defstruct GraphInput [key])
+(defstruct GraphNode [dependencies function])
+(defstruct GraphDeps [entries])
+(defstruct GraphWork [spec dependencies])
+
+(extend-type GraphDeps IDeps
+  (dep-get [context key]
+    (get (:entries context) key))
+  (dep-entries [context key]
+    (let [entry (get (:entries context) key)]
+      (if (instance? work.base/GraphNode entry)
+        (set (:dependencies entry))
+        #{})))
+  (dep-keys [context]
+    (keys (:entries context))))
+
+(extend-type GraphWork IWork
+  (work-spec [graph]
+    (:spec graph)))
+
+(extend-type GraphWork IDeps
+  (dep-get [graph key]
+    (IDeps/dep-get (:dependencies graph) key))
+  (dep-entries [graph key]
+    (IDeps/dep-entries (:dependencies graph) key))
+  (dep-keys [graph]
+    (IDeps/dep-keys (:dependencies graph))))
+
+(defn input
+  "Declares one named graph input."
+  [key]
+  (work.base/GraphInput key))
+
+(defn node
+  "Declares a graph computation with explicit ordered dependencies."
+  [dependencies function]
+  (work.base/GraphNode (vec dependencies) function))
+
+(defn- contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= candidate value)))
+   false
+   values))
+
+(defn- graph-input-keys
+  [definitions]
+  (vec
+   (sort-by
+    str
+    (std.foundation/filter
+     (fn [key]
+       (instance? work.base/GraphInput (get definitions key)))
+     (keys definitions)))))
+
+(defn- graph-node-keys
+  [definitions]
+  (vec
+   (sort-by
+    str
+    (std.foundation/filter
+     (fn [key]
+       (instance? work.base/GraphNode (get definitions key)))
+     (keys definitions)))))
+
+(defn- assert-graph-definitions
+  [definitions]
+  (if (not (map? definitions))
+    (throw
+     (ex :argument {:work/error :work/invalid-graph} :ex/message "Work graph definitions must be a map")))
+  (reduce
+   (fn [_ key]
+     (let [definition (get definitions key)]
+       (if (not (or (instance? work.base/GraphInput definition)
+                    (instance? work.base/GraphNode definition)))
+         (throw
+          (ex :argument {:work/error :work/invalid-graph-entry
+                    :graph/key key
+                    :graph/value definition} :ex/message "Work graph entry must be an input or node")))
+       (if (and (instance? work.base/GraphNode definition)
+                (not (fn? (:function definition))))
+         (throw
+          (ex :dependency {:work/error :work/invalid-graph-node
+                    :graph/key key} :ex/message "Work graph node requires a function")))
+       true))
+   true
+   (keys definitions))
+  definitions)
+
+(defn- assert-graph-dependencies
+  [dependencies node-keys]
+  (let [all-keys (IDeps/dep-keys dependencies)]
+    (reduce
+     (fn [_ key]
+       (reduce
+        (fn [_ dependency]
+          (if (not (contains-value? all-keys dependency))
+            (throw
+             (ex :not-found {:work/error :work/missing-graph-dependency
+                       :graph/key key
+                       :graph/dependency dependency} :ex/message "Work graph dependency does not exist")))
+          true)
+        true
+        (IDeps/dep-entries dependencies key)))
+     true
+     node-keys))
+  dependencies)
+
+(defn- graph-ready?
+  [dependencies resolved key]
+  (every?
+   (fn [dependency]
+     (contains-value? resolved dependency))
+   (IDeps/dep-entries dependencies key)))
+
+(defn- graph-order-loop
+  [dependencies resolved remaining order]
+  (if (empty? remaining)
+    order
+    (let [ready
+          (vec
+           (std.foundation/filter
+            (fn [key]
+              (graph-ready? dependencies resolved key))
+            remaining))]
+      (if (empty? ready)
+        (throw
+         (ex :dependency {:work/error :work/graph-cycle
+                   :graph/remaining remaining} :ex/message "Work graph contains a dependency cycle")))
+      (graph-order-loop
+       dependencies
+       (concat resolved ready)
+       (vec
+        (std.foundation/filter
+         (fn [key]
+           (not (contains-value? ready key)))
+         remaining))
+       (concat order ready)))))
+
+(defn- graph-order
+  [dependencies input-keys node-keys]
+  (vec (graph-order-loop dependencies input-keys node-keys [])))
+
+(defn- graph-node-work
+  [key definition]
+  (pure
+   key
+   (fn [values context]
+     (apply (:function definition) values))))
+
+(defn graph
+  "Creates a portable named computation graph.
+
+   Entries are produced with `input` and `node`. Evaluation defaults to
+   `:eager`; use `{:evaluation :lazy :outputs [...]}` at construction or run
+   time to select only the requested dependency closure."
+  ([definitions]
+   (graph {} definitions))
+  ([options definitions]
+   (let [definitions (assert-graph-definitions definitions)
+         input-keys (graph-input-keys definitions)
+         node-keys (graph-node-keys definitions)
+         dependencies (work.base/GraphDeps definitions)
+         _ (assert-graph-dependencies dependencies node-keys)
+         order (graph-order dependencies input-keys node-keys)
+         evaluation (or (:evaluation options) :eager)]
+     (if (not (or (= :eager evaluation) (= :lazy evaluation)))
+       (throw
+        (ex :argument {:work/error :work/invalid-graph-evaluation
+                  :evaluation evaluation} :ex/message "Work graph evaluation must be :eager or :lazy")))
+     (work.base/GraphWork
+      (merge
+       options
+       {:op :graph
+        :evaluation evaluation
+        :inputs input-keys
+        :dependencies dependencies
+        :nodes
+        (reduce
+         (fn [nodes key]
+           (let [node-definition (get definitions key)]
+             (assoc nodes
+                    key
+                    {:dependencies (:dependencies node-definition)
+                     :work (graph-node-work key node-definition)})))
+         {}
+         node-keys)
+        :order order})
+      dependencies))))
+
+(defn step
+  [id-or-options function]
+  (let [options (if (map? id-or-options)
+                  id-or-options
+                  {:id id-or-options})]
+    (definition
+     (merge options
+            {:op :step
+             :fn function}))))
+
+(defn ^{:public true} suspend
+  "Creates a serializable Work node that waits on an ephemeral or durable
+  suspension capability.  The wait identity and absolute deadline are data;
+  providers own the pending handle."
+  ([wait]
+   (suspend {} wait))
+  ([options wait]
+   (if (not (map? wait))
+     (throw
+      (ex :argument {:wait wait} :ex/message "Work await descriptor must be a map")))
+   (let [kind (:wait/kind wait)
+         deadline (:wait/deadline wait)]
+     (if (nil? (:wait/id wait))
+       (throw
+        (ex :dependency {:wait wait} :ex/message "Work await descriptor requires :wait/id")))
+     (if (not (contains-value? #{:signal :timer} kind))
+       (throw
+        (ex :argument {:wait/kind kind} :ex/message "Work await descriptor kind must be :signal or :timer")))
+     (if (and (= :timer kind) (nil? deadline))
+       (throw
+        (ex :dependency {:wait/id (:wait/id wait)} :ex/message "Timer await descriptor requires :wait/deadline")))
+     (if (and deadline (not (number? deadline)))
+       (throw
+        (ex :argument {:wait/deadline deadline} :ex/message "Work await deadline must be an absolute number")))
+     (definition
+      (merge (or options {})
+             {:op :await
+              :wait wait})))))
+
+(defn chain
+  ([children]
+   (chain {} children))
+  ([options children]
+   (definition
+    (merge options
+           {:op :chain
+            :children (vec children)}))))
+
+(defn each
+  ([child]
+   (each {} child))
+  ([options child]
+   (definition
+    (merge options
+           {:op :each
+            :work child}))))
+
+(defn filter
+  ([predicate]
+   (filter {} predicate))
+  ([options predicate]
+   (definition
+    (merge options
+           {:op :filter
+            :work predicate}))))
+
+(defn fold
+  ([initial reducer]
+   (fold {} initial reducer))
+  ([options initial reducer]
+   (definition
+    (merge options
+           {:op :fold
+            :initial initial
+            :work reducer}))))
+
+(defn all
+  ([children]
+   (all {} children))
+  ([options children]
+   (definition
+    (merge options
+           {:op :all
+            :children (vec children)}))))
+
+(defn choose
+  ([selector choices]
+   (choose {} selector choices))
+  ([options selector choices]
+   (definition
+    (merge options
+           {:op :choose
+            :selector selector
+            :choices choices}))))
+
+(defn batch
+  ([stages]
+   (batch {} stages))
+  ([options stages]
+   (definition
+    (merge options stages {:op :batch}))))
+
+(defn ensure
+  "Runs cleanup after body completion, failure, or cancellation.
+
+   Cleanup receives an outcome map containing the original input and body
+   result/error. The default return value is the body result. Set
+   `:return :outcome` to retain both successful body and cleanup results."
+  ([body cleanup]
+   (ensure {} body cleanup))
+  ([options body cleanup]
+   (definition
+    (merge options
+           {:op :ensure
+            :work body
+            :cleanup cleanup}))))
+
+(def memory-backend runtime/memory-backend)
+(def runtime-map runtime/runtime-map)
+(def canonical-runtime? runtime/canonical-runtime?)
+(def local-runtime runtime/local-runtime)
+(def durable-runtime runtime/durable-runtime)
+(def observer runtime/observer)
+(def recording-observer runtime/recording-observer)
+(def observer-events runtime/observer-events)
+(def with-handler runtime/with-handler)
+(def handler-operations runtime/handler-operations)
+(def checkpoint-key runtime/checkpoint-key)
+(def manifest-values runtime/manifest-values)
+(def receipts runtime/receipts)
+(def receipt-status runtime/receipt-status)
+(def publish-receipts runtime/publish-receipts)
+
+(def ^{:public true} capabilities host/capabilities)
+(def ^{:public true} capability? host/capability?)
+(def ^{:public true} capability-descriptors host/capability-descriptors)
+(def ^{:public true} capability-descriptor host/capability-descriptor)
+(def ^{:public true} capability-operation? host/capability-operation?)
+(def ^{:public true} capability-call host/capability-call)
+(def ^{:public true} await-work host/await-work)
+(def ^{:public true} signal-work host/signal-work)
+(def ^{:public true} claim-acquire host/claim-acquire)
+(def ^{:public true} claim-renew host/claim-renew)
+(def ^{:public true} claim-release host/claim-release)
+(def ^{:public true} claim-assert host/claim-assert)
+(def ^{:public true} receipt-candidates host/receipt-candidates)
+(def ^{:public true} receipt-capability-status host/receipt-status)
+(def ^{:public true} receipt-sign host/receipt-sign)
+(def ^{:public true} receipt-publish host/receipt-publish)
+(def ^{:public true} reset-capabilities host/reset-capabilities)
+
+(def default-host
+  (ephemeral/ephemeral-host))
+
+(defn submit
+  ([work input]
+   (submit default-host work input {}))
+  ([scheduler work input]
+   (submit scheduler work input {}))
+  ([scheduler work input options]
+   (IWorkHost/work-submit scheduler work input (or options {}))))
+
+(defn resolve
+  ([reference]
+   (resolve default-host reference))
+  ([scheduler reference]
+   (IWorkHost/work-resolve scheduler reference)))
+
+(defn work-id
+  [run-or-reference]
+  (IWorkRef/work-id run-or-reference))
+
+(defn emit
+  "Appends one structured domain event through the active work runtime."
+  ([context event]
+   (emit context event {}))
+  ([context event data]
+   (let [emitter (:work/emit context)]
+     (if emitter
+       (emitter event data)
+       (throw
+        (ex :generic {:event event} :ex/message "Work event emission is not available in this context"))))))
+
+(defn register
+  ([runtime work]
+   (register runtime work {}))
+  ([runtime work options]
+   (runtime/register-work runtime work options)))
+
+(defn start
+  ([runtime work input]
+   (start runtime work input {}))
+  ([runtime work input options]
+   (if (satisfies? IWorkHost runtime)
+     (submit runtime work input options)
+     (coordinator/start-run runtime work input options))))
+
+(defn status
+  ([run]
+   (IWorkRun/work-status run))
+  ([runtime reference]
+   (coordinator/query-run runtime reference {:query :status})))
+
+(defn result
+  ([run]
+   (IWorkRun/work-result run))
+  ([runtime reference]
+   (coordinator/query-run runtime reference {:query :result})))
+
+(defn events
+  ([run]
+   (events run {}))
+  ([run options]
+   (IWorkRun/work-events run (or options {}))))
+
+(defn await
+  [run]
+  (deref (result run)))
+
+(defn error
+  [runtime reference]
+  (coordinator/query-run runtime reference {:query :error}))
+
+(defn run-record
+  [runtime reference]
+  (coordinator/query-run runtime reference {:query :run}))
+
+(defn history
+  [runtime reference]
+  (coordinator/query-run runtime reference {:query :history}))
+
+(defn checkpoints
+  [runtime reference]
+  (coordinator/query-run runtime reference {:query :checkpoints}))
+
+(defn list-runs
+  ([runtime]
+   (list-runs runtime {}))
+  ([runtime query]
+   (coordinator/query-run runtime nil {:query :runs
+                                       :where query})))
+
+(defn- run-reference
+  [runtime reference]
+  (async-result/then
+   (status runtime reference)
+   (fn [run-status]
+     (if (= :completed run-status)
+       (result runtime reference)
+       (async-result/then
+        (error runtime reference)
+        (fn [run-error]
+          (throw
+           (ex :host {:run/id (runtime/reference-id reference)
+                     :status run-status
+                     :error run-error} :ex/message "Work run did not complete"))))))))
+
+(defn run
+  ([work input]
+   (run default-host work input {}))
+  ([runtime work input]
+   (run runtime work input {}))
+  ([runtime work input options]
+   (if (satisfies? IWorkHost runtime)
+     (await (submit runtime work input options))
+     (async-result/then
+      (start runtime work input options)
+      (fn [reference]
+        (run-reference runtime reference))))))
+
+(defn cancel
+  ([run]
+   (IWorkRun/work-cancel run {}))
+  ([runtime reference]
+   (if (satisfies? IWorkRun runtime)
+     (IWorkRun/work-cancel runtime reference)
+     (cancel runtime reference {})))
+  ([runtime reference options]
+   (coordinator/command-run runtime reference :cancel options)))
+
+(defn resume
+  ([runtime reference]
+   (resume runtime reference {}))
+  ([runtime reference options]
+   (coordinator/command-run runtime reference :resume options)))
+
+(defn fork
+  ([runtime reference checkpoint]
+   (fork runtime reference checkpoint {}))
+  ([runtime reference checkpoint options]
+   (coordinator/command-run runtime
+                            reference
+                            :fork
+                            (assoc options :checkpoint checkpoint))))
+
+(defn bind
+  "Executes source Work, uses a pure continuation to produce the next Work,
+   then executes that Work in the same run."
+  ([source continuation]
+   (bind {} source continuation))
+  ([options source continuation]
+   (definition
+    (merge options
+           {:op :bind
+            :source source
+            :continuation continuation}))))

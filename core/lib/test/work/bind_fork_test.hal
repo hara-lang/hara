@@ -1,0 +1,69 @@
+(ns work.bind-fork-test
+  (:use code.test)
+  (:require [work.base :as work]))
+
+(fact "forking before a produced bind step reuses earlier dynamic checkpoints"
+  (let [source-count (atom 0)
+        first-count (atom 0)
+        second-count (atom 0)
+        produced
+        (work/chain
+         {:id :fork-produced}
+         [(work/step :first
+            (fn [value context]
+              (swap! first-count inc)
+              (+ value 10)))
+          (work/step :second
+            (fn [value context]
+              (swap! second-count inc)
+              (+ value 100)))])
+        workflow
+        (work/bind
+         {:id :bind-fork-work
+          :version 1}
+         (work/step :source
+           (fn [input context]
+             (swap! source-count inc)
+             (inc input)))
+         (work/pure :continuation
+           (fn [value context]
+             produced)))
+        runtime (work/durable-runtime)
+        source-reference
+        (work/start runtime workflow 1 {:id "bind-fork-source"})
+        source-result (work/result runtime source-reference)
+        fork-reference
+        (work/fork runtime
+                   source-reference
+                   :second
+                   {:id "bind-fork-target"})
+        fork-history (work/history runtime fork-reference)
+        fork-checkpoints (work/checkpoints runtime fork-reference)
+        replay-count
+        (count
+         (filter
+          (fn [event]
+            (= :work/step-replayed (:event event)))
+          fork-history))]
+    [source-result
+     (work/status runtime fork-reference)
+     (work/result runtime fork-reference)
+     [(deref source-count)
+      (deref first-count)
+      (deref second-count)]
+     replay-count
+     (vec
+      (map
+       (fn [checkpoint]
+         (:checkpoint/node-path checkpoint))
+       fork-checkpoints))])
+  => [112
+      :completed
+      112
+      [1 1 2]
+      2
+      [[:bind :source :source]
+       [:bind :produced :fork-produced :chain 0 :first]
+       [:bind :produced :fork-produced :chain 1 :second]]])
+
+(pr-str (run '[work.bind-fork-test]))

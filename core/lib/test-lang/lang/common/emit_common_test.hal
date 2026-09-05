@@ -1,0 +1,405 @@
+(ns lang.common.emit-common-test
+  (:use code.test)
+  (:require [lang.common.emit-common :as common]
+            [lang.common.emit-helper :as helper]))
+
+(def operator-grammar
+  (assoc helper/+default+
+         :reserved
+         {'+ {:op :add :emit :infix :raw "+"}
+          '- {:op :sub :emit :infix- :raw "-"}
+          'not {:op :not :emit :pre :raw "!"}
+          := {:op :assign :emit :assign :raw "="}
+          '. {:op :index :emit :index}}))
+
+^{:refer lang.common.emit-common/with:explode :added "4.0"}
+(fact "controls exploding emitter failures"
+  (common/with:explode common/*explode*) => true)
+
+^{:refer lang.common.emit-common/with-trace :added "4.0"}
+(fact "controls emitter tracing"
+  (common/with-trace common/*trace*) => true)
+
+^{:refer lang.common.emit-common/with-compressed :added "3.0"}
+(fact "controls compressed formatting"
+  (common/with-compressed common/*compressed*) => true)
+
+^{:refer lang.common.emit-common/with-indent :added "3.0"}
+(fact "adds indentation levels"
+  (common/with-indent [10] common/*indent*) => 10)
+
+^{:refer lang.common.emit-common/newline-indent :added "3.0"}
+(fact "returns a newline with current indentation"
+  [(common/newline-indent)
+   (common/with-indent [2] (common/newline-indent))
+   (common/with-compressed (common/newline-indent))]
+  => ["\n" "\n  " " "])
+
+^{:refer lang.common.emit-common/emit-reserved-value :added "4.0"}
+(fact "emits reserved values"
+  [(common/emit-reserved-value 'hello {} {})
+   (common/emit-reserved-value
+    'hello {:reserved {'hello {:value true :raw "world"}}} {})]
+  => [nil "world"])
+
+^{:refer lang.common.emit-common/emit-free-raw :added "4.0"}
+(fact "emits free values with an explicit separator"
+  (common/emit-free-raw "." [1 2 3] helper/+default+ {})
+  => "1.2.3")
+
+^{:refer lang.common.emit-common/emit-free :added "4.0"}
+(fact "emits a free form"
+  (common/emit-free " " '(:- 1 2 3 4) helper/+default+ {})
+  => "1 2 3 4")
+
+^{:refer lang.common.emit-common/emit-comment :added "4.0"}
+(fact "emits comments"
+  (common/emit-comment nil '(:# "This is a comment" A B 1)
+                       helper/+default+ {})
+  => "// This is a comment A B 1")
+
+^{:refer lang.common.emit-common/emit-macro :added "4.0"}
+(fact "expands grammar macros"
+  (common/emit-macro
+   :double-array '(double-array x y c)
+   {:reserved
+    {'double-array
+     {:macro (fn [form]
+               (let [args (rest form)] (vec (concat args args))))}}}
+   {})
+  => "[x y c x y c]")
+
+^{:refer lang.common.emit-common/emit-array :added "4.0"}
+(fact "returns an array of emitted strings"
+  (common/emit-array [1 2 3] {} {})
+  => '("1" "2" "3"))
+
+^{:refer lang.common.emit-common/emit-wrappable? :added "4.0"}
+(fact "classifies wrappable forms"
+  [(common/emit-wrappable? '(!= 1 x) {:reserved {'!= {:emit :infix}}})
+   (common/emit-wrappable? '(!= 1 x) {:reserved {'!= {:emit :none}}})]
+  => [true false])
+
+^{:refer lang.common.emit-common/emit-squash :added "4.0"}
+(fact "emits squashed forms"
+  (common/emit-squash nil '(:% 1 2 3 "hello") helper/+default+ {})
+  => "123\"hello\"")
+
+^{:refer lang.common.emit-common/wrapped-str :added "3.0"}
+(fact "wraps strings with grammar delimiters"
+  (common/wrapped-str "hello" [:data :map] helper/+default+)
+  => "{hello}")
+
+(fact "Foundation argument order is preserved for common helpers"
+  [(common/emit-pre "!" '[x] helper/+default+ {})
+   (common/emit-post "--" '[x] helper/+default+ {})
+   (common/emit-infix "|" '[x y z] helper/+default+ {})
+   (common/emit-infix-default "/" '[x] 1 helper/+default+ {})]
+  => ["!x" "x--" "x | y | z" "1 / x"])
+
+(fact "dynamic emit-fn controls helper emission"
+  (binding [common/*emit-fn* (fn [value grammar context]
+                               (str "<" value ">"))]
+    (common/emit-free " " '(:- a b) helper/+default+ {}))
+  => "<a> <b>")
+
+(fact "common emission installs recursive emission"
+  (common/emit-common '(+ 1 (+ 2 3)) operator-grammar {})
+  => "1 + (2 + 3)")
+
+(fact "index compatibility keeps Foundation's argument shape"
+  (common/emit-index nil '[user ["name"]] operator-grammar {})
+  => "user[\"name\"]")
+
+(fact "symbol classification preserves aliases, links, self, and globals"
+  [(common/emit-symbol-classify 't/hello
+                                {:module {:alias {'t 'table}}})
+   (common/emit-symbol-classify 't.n/hello
+                                {:module {:alias {'t 'table}}})
+   (common/emit-symbol-classify 'self/hello
+                                {:module {:id 'self}})
+   (common/emit-symbol-classify
+    'shared/value
+    {:module {:id 'current}
+     :book {:modules {'shared {:code {'value {:op-key :defglobal}}}}}})]
+  => [[:alias 'table]
+      [:link 't.n]
+      [:self 'self]
+      [:global 'shared]])
+
+(fact "symbol emission preserves Foundation layout modes"
+  [(common/emit-symbol 'hello/hello helper/+default+
+                       {:layout :full :module {:link {'hello 'hello}}})
+   (common/emit-symbol 'hello/hello helper/+default+
+                       {:layout :module :module {:link {'hello 'hello}}})
+   (common/emit-symbol 'hello/hello helper/+default+
+                       {:layout :host :module {:link {'hello 'hello}}})
+   (common/emit-symbol 'hello/hello helper/+default+
+                       {:layout :flat :module {:link {'hello 'hello}}})
+   (common/emit-symbol 'hello/hello helper/+default+
+                       {:layout :full
+                        :module {:link {'hello 'hello.world.again}}})]
+  => ["hello____hello"
+      "hello.hello"
+      "hello____hello"
+      "hello"
+      "hello_world_again____hello"])
+
+(fact "the port preserves Foundation metadata"
+  (:added (meta (var lang.common.emit-common/emit-common)))
+  => "4.0")
+
+^{:refer lang.common.emit-common/emit-indent :added "4.0"}
+(fact "emits an indented form"
+  (common/emit-indent nil '(\| "This\nis\nan indented" A B 1)
+                      helper/+default+ {})
+  => "  This\n  is\n  an indented A B 1")
+
+^{:refer lang.common.emit-common/emit-wrapping :added "4.0"}
+(fact "wraps operations that require grouping"
+  (common/emit-wrapping
+   '(!= 1 x)
+   (assoc helper/+default+ :reserved {'!= {:emit :infix}})
+   {})
+  => "((!= 1 x))")
+
+^{:refer lang.common.emit-common/emit-unit :added "4.0"}
+(fact "emits a unit default"
+  (common/emit-unit {:default 'hello} '(:unit) helper/+default+ {})
+  => "hello")
+
+^{:refer lang.common.emit-common/emit-internal :added "4.0"}
+(fact "emits the value within an internal form"
+  (common/emit-internal '(% "hello") helper/+default+ {})
+  => "\"hello\"")
+
+^{:refer lang.common.emit-common/emit-internal-str :added "4.0"}
+(fact "emits internal strings without quoting"
+  [(common/emit-internal-str
+    '(-%%- ["hello" "hello" "hello"])
+    helper/+default+
+    {})
+   (binding [common/*emit-fn* common/emit-common-loop]
+     (common/emit-internal-str
+      '(%%% ["hello" "hello" "hello"])
+      helper/+default+
+      {}))]
+  => ["\"hello\"\n\"hello\"\n\"hello\""
+      "hello\nhello\nhello"])
+
+^{:refer lang.common.emit-common/emit-pre :added "3.0"}
+(fact "emits a compact prefix"
+  (common/emit-pre "!" '[x] helper/+default+ {}) => "!x")
+
+^{:refer lang.common.emit-common/emit-post :added "3.0"}
+(fact "emits a compact postfix"
+  (common/emit-post "--" '[x] helper/+default+ {}) => "x--")
+
+^{:refer lang.common.emit-common/emit-prefix :added "4.0"}
+(fact "emits a spaced prefix"
+  (common/emit-prefix "hello" '[x] helper/+default+ {}) => "hello x")
+
+^{:refer lang.common.emit-common/emit-postfix :added "4.0"}
+(fact "emits a spaced postfix"
+  (common/emit-postfix "hello" '[x] helper/+default+ {}) => "x hello")
+
+^{:refer lang.common.emit-common/emit-infix :added "3.0"}
+(fact "emits infix operations"
+  (common/emit-infix "|" '[x y z] helper/+default+ {}) => "x | y | z")
+
+^{:refer lang.common.emit-common/emit-infix-default :added "3.0"}
+(fact "supplies an infix default"
+  (common/emit-infix-default "/" '[x] 1 helper/+default+ {}) => "1 / x")
+
+^{:refer lang.common.emit-common/emit-infix-pre :added "3.0"}
+(fact "uses prefix form for a unary infix operation"
+  (common/emit-infix-pre "-" '[x] helper/+default+ {}) => "-x")
+
+^{:refer lang.common.emit-common/emit-infix-if-single :added "4.0"}
+(fact "emits one ternary expression"
+  (common/emit-infix-if-single '(:? true x y) helper/+default+ {})
+  => "true ? x : y")
+
+^{:refer lang.common.emit-common/emit-infix-if :added "3.0"}
+(fact "emits an infix conditional"
+  [(common/emit-infix-if '(:? true x y) helper/+default+ {})
+   (common/emit-infix-if '(:? true x :else y) helper/+default+ {})]
+  => ["true ? x : y" "true ? x : y"])
+
+^{:refer lang.common.emit-common/emit-between :added "3.0"}
+(fact "emits a raw separator between values"
+  (common/emit-between ":" [1 2] helper/+default+ {}) => "1:2")
+
+^{:refer lang.common.emit-common/emit-bi :added "3.0"}
+(fact "emits a binary infix operation"
+  (common/emit-bi "==" '[x y] helper/+default+ {}) => "x == y")
+
+^{:refer lang.common.emit-common/emit-assign :added "3.0"}
+(fact "emits an assignment expression"
+  (common/emit-assign "=" '[x 1] helper/+default+ {}) => "x = 1")
+
+^{:refer lang.common.emit-common/emit-return-do :added "4.0"}
+(fact "adds a return to the final do value"
+  (common/emit-return-do [1 2 3] helper/+default+ {})
+  => "(1 2 (return 3))")
+
+^{:refer lang.common.emit-common/emit-return-base :added "4.0"}
+(fact "emits the base return representation"
+  [(common/emit-return-base "break" [1] helper/+default+ {})
+   (common/emit-return-base "return" [1] helper/+default+ {})]
+  => ["break 1" "return 1"])
+
+^{:refer lang.common.emit-common/emit-return :added "3.0"}
+(fact "emits a return operation"
+  [(common/emit-return "break" [1] helper/+default+ {})
+   (common/emit-return
+    "return" [1 2 3]
+    (assoc-in helper/+default+ [:default :return :multi] true)
+    {})]
+  => ["break 1" "return 1, 2, 3"])
+
+^{:refer lang.common.emit-common/emit-with-global :added "4.0"}
+(fact "emits a global symbol"
+  (common/emit-with-global nil '(!:G HELLO) {} {}) => "HELLO")
+
+^{:refer lang.common.emit-common/emit-symbol-standard :added "3.0"}
+(fact "emits a standard symbol"
+  [(common/emit-symbol-standard 'print! helper/+default+ {:layout :full})
+   (common/emit-symbol-standard
+    'print!
+    {:token {:symbol {:replace {}} :string {:quote :single}}}
+    {:layout :full})]
+  => ["printf" "print!"])
+
+^{:refer lang.common.emit-common/emit-symbol :added "4.0"}
+(fact "uses a custom symbol emitter"
+  (common/emit-symbol
+   'a
+   {:token {:symbol {:emit-fn (fn [sym _ _] (str sym 123))}}}
+   {})
+  => "a123")
+
+^{:refer lang.common.emit-common/emit-token :added "3.0"}
+(fact "emits configured token types"
+  [(common/emit-token :number 1 helper/+default+ {})
+   (common/emit-token :string "1" {:token {:string {:quote :single}}} {})
+   (common/emit-token
+    :string "1" {:token {:string {:emit (fn [s _ _] (keyword s))}}} {})]
+  => ["1" "'1'" :1])
+
+^{:refer lang.common.emit-common/emit-with-decorate :added "4.0"}
+(fact "emits the decorated form"
+  (common/emit-with-decorate nil '(!:decorate {:id 1} HELLO) {} {})
+  => "HELLO")
+
+^{:refer lang.common.emit-common/emit-symbol-classify :added "3.0"}
+(fact "classifies symbols against module options"
+  [(common/emit-symbol-classify 't/hello {:module {:alias '{t table}}})
+   (common/emit-symbol-classify 't.n/hello {:module {:alias '{t table}}})]
+  => [[:alias 'table] [:link 't.n]])
+
+^{:refer lang.common.emit-common/emit-with-uuid :added "4.0"}
+(fact "emits a portable unique identifier"
+  [(string? (common/emit-with-uuid nil '(!:uuid :hello :world) {} {}))
+   (string? (common/emit-with-uuid nil '(!:uuid) {} {}))]
+  => [true true])
+
+^{:refer lang.common.emit-common/emit-with-rand :added "4.0"}
+(fact "emits portable generated numbers"
+  [(common/emit-with-rand nil '(!:rand :int) helper/+default+ {})
+   (common/emit-with-rand nil '(!:rand) helper/+default+ {})]
+  => ["1" "(double 0.5)"])
+
+^{:refer lang.common.emit-common/invoke-kw-parse :added "3.0"}
+(fact "separates positional and keyword arguments"
+  (common/invoke-kw-parse [1 2 3 4 :name "hello" :foo "bar"])
+  => [[1 2 3 4] [[:name "hello"] [:foo "bar"]]])
+
+^{:refer lang.common.emit-common/emit-invoke-kw-pair :added "3.0"}
+(fact "emits a keyword argument pair"
+  (common/emit-invoke-kw-pair [:name "hello"] helper/+default+ {})
+  => "name=\"hello\"")
+
+^{:refer lang.common.emit-common/emit-invoke-args :added "3.0"}
+(fact "emits invocation arguments"
+  (vec (common/emit-invoke-args
+        [1 2 3 4 :name "hello" :foo "bar"] helper/+default+ {}))
+  => ["1" "2" "3" "4" "name=\"hello\"" "foo=\"bar\""])
+
+^{:refer lang.common.emit-common/emit-invoke-layout :added "4.0"}
+(fact "lays out invocation arguments"
+  (common/emit-invoke-layout ["ab\nc" "de\nf"] helper/+default+ {})
+  => "(ab\nc,de\nf)")
+
+^{:refer lang.common.emit-common/emit-invoke-raw :added "3.0"}
+(fact "emits a reserved invocation"
+  (common/emit-invoke-raw "-" '[abc] helper/+default+ {}) => "-(abc)")
+
+^{:refer lang.common.emit-common/emit-invoke-static :added "3.0"}
+(fact "emits a namespaced static invocation"
+  (common/emit-invoke-static '(:table/new "hello") helper/+default+ {})
+  => "table.new(\"hello\")")
+
+^{:refer lang.common.emit-common/emit-invoke-typecast :added "3.0"}
+(fact "emits a typecast expression"
+  (common/emit-invoke-typecast '(:int (:char 2)) helper/+default+ {})
+  => "((int)(:char 2))")
+
+^{:refer lang.common.emit-common/emit-invoke :added "3.0"}
+(fact "emits a general invocation"
+  (common/emit-invoke :invoke '(call "hello" (+ 1 2)) helper/+default+ {})
+  => "call(\"hello\",(+ 1 2))")
+
+^{:refer lang.common.emit-common/emit-new :added "3.0"}
+(fact "emits a constructor invocation"
+  (common/emit-new "new" '(String 1 2 3 4) helper/+default+ {})
+  => "new String(1,2,3,4)")
+
+^{:refer lang.common.emit-common/emit-class-static-invoke :added "4.0"}
+(fact "emits a class static invocation"
+  (common/emit-class-static-invoke
+   nil '(String "new" 1 2 3 4) helper/+default+ {})
+  => "String.new(1,2,3,4)")
+
+^{:refer lang.common.emit-common/emit-index-entry :added "3.0"}
+(fact "emits index and member entries"
+  [(common/emit-index-entry 'hello helper/+default+ {})
+   (common/emit-index-entry [9] helper/+default+ {})
+   (common/emit-index-entry '(call 1 2 3) helper/+default+ {})]
+  => [".hello" "[9]" ".call(1,2,3)"])
+
+^{:refer lang.common.emit-common/emit-index :added "3.0"}
+(fact "emits an indexed expression"
+  (common/emit-index nil '[x [hello] (world foo bar) baz]
+                     helper/+default+ {})
+  => "x[hello].world(foo,bar).baz")
+
+^{:refer lang.common.emit-common/emit-op :added "3.0"}
+(fact "dispatches a reserved common operation"
+  (common/emit-op
+   :- '(:- "~~")
+   (assoc helper/+default+ :reserved {:- {:emit :free}})
+   {})
+  => "~~")
+
+^{:refer lang.common.emit-common/form-key :added "3.0"}
+(fact "classifies forms for emitter dispatch"
+  [(common/form-key (first {:a 1}) {})
+   (common/form-key [] {})
+   (common/form-key () {})]
+  => [[:map-entry :data nil] [:vector :data nil] [:invoke :invoke nil]])
+
+^{:refer lang.common.emit-common/emit-common-loop :added "4.0"}
+(fact "emits one form through the common loop"
+  [(common/emit-common-loop '(add 1 (:int 1)) helper/+default+ {})
+   (binding [common/*emit-fn* common/emit-common-loop]
+     (common/emit-common-loop '(add 1 (:int 1)) helper/+default+ {}))]
+  => ["add(1,(:int 1))" "add(1,((int)1))"])
+
+^{:refer lang.common.emit-common/emit-common :added "4.0"}
+(fact "emits recursively through common dispatch"
+  (common/emit-common
+   '(add 1 (:int 1) (add (new Class 1 2 3))) helper/+default+ {})
+  => "add(1,((int)1),add(new(Class,1,2,3)))")
+
+(run {:namespace "lang.common.emit-common-test"})

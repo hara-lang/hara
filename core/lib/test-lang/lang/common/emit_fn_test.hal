@@ -1,0 +1,100 @@
+(ns lang.common.emit-fn-test
+  (:use code.test)
+  (:require [lang.common.emit-fn :as function]
+            [lang.common.emit-helper :as helper]
+            [lang.common.grammar-spec :as spec]))
+
+^{:refer lang.common.emit-fn/emit-input-default :added "3.0"}
+(fact "emits typed function inputs"
+  (function/emit-input-default
+   {:modifiers [:const :int] :symbol 'value :force true :value 42}
+   "=" helper/+default+ {})
+  => "const int value = 42"
+
+  (function/emit-input-default
+   {:modifiers [[]] :symbol 'values}
+   "=" helper/+default+ {})
+  => "values[]")
+
+^{:refer lang.common.emit-fn/emit-fn-preamble :added "4.0"}
+(fact "emits function preambles"
+  (function/emit-fn-preamble
+   [:function 'add '(:int x :int y)] helper/+default+ {})
+  => "add(int x,int y)")
+
+^{:refer lang.common.emit-fn/emit-fn-block :added "4.0"}
+(fact "merges function block options"
+  (:raw (function/emit-fn-block
+         :function
+         (assoc-in helper/+default+ [:function :function :raw] "fn")))
+  => "fn")
+
+^{:refer lang.common.emit-fn/emit-hint-type :added "4.0"}
+(fact "emits return hints and multiline preambles"
+  (function/emit-hint-type
+   {:uppercase true} (with-meta 'value {:- [:int []]}) nil
+   helper/+default+ {})
+  => "INT []"
+
+  (function/emit-fn-preamble
+   [:function 'add '(:int x :int y)]
+   (assoc-in helper/+default+
+             [:function :function :args :multiline] true)
+   {})
+  => "add(\n  int x,\n  int y\n)")
+
+(fact "normalizes a canonical parenthesized single arity"
+  (second
+   (spec/format-defn
+    (quote (defn identity
+             "returns its argument"
+             {:added "4.0"}
+             ([x] (return x))))))
+  => (quote (defn identity [x] (return x))))
+
+^{:refer lang.common.emit-fn/emit-fn :added "3.0"}
+(fact "emits function bodies and header-only declarations"
+  (function/emit-fn
+   :function '(function add [:int x] (return x))
+   helper/+default+ {})
+  => "function add(int x){\n  (return x);\n}"
+
+  (function/emit-fn
+   :function
+   (list 'function (with-meta 'add {:header true}) [:int 'x])
+   helper/+default+ {})
+  => "function add(int x);")
+
+^{:refer lang.common.emit-fn/emit-def-type :added "4.0"}
+(fact "emits definition type hints"
+  (function/emit-def-type
+   (with-meta 'value {:- [:char]}) nil helper/+default+ {})
+  => "char")
+
+^{:refer lang.common.emit-fn/emit-fn-type :added "4.0"}
+(fact "emits function return type hints"
+  (function/emit-fn-type
+   (with-meta 'value {:- [:char]}) nil helper/+default+ {})
+  => "char")
+
+^{:refer lang.common.emit-fn/emit-fn-preamble-args :added "4.0"}
+(fact "emits function preamble arguments"
+  (vec (function/emit-fn-preamble-args
+        :function '(:int x :int y) helper/+default+ {}))
+  => ["int x" "int y"])
+
+^{:refer lang.common.emit-fn/test-fn-loop :added "4.0"}
+(fact "the Foundation function loop retains direct dispatch"
+  (function/test-fn-loop '(print 1) helper/+default+ {}) => "print(1)")
+
+^{:refer lang.common.emit-fn/test-fn-emit :added "4.0"}
+(fact "the Foundation function test emitter installs recursive dispatch"
+  (function/test-fn-emit
+   '(function add [:int x] (return x))
+   (assoc helper/+default+
+          :reserved {'function {:op :fn :type :fn :emit :fn :raw "function"}
+                     'return {:op :return :emit :return :raw "return"}})
+   {})
+  => "function add(int x){\n  return x;\n}")
+
+(run {:namespace "lang.common.emit-fn-test"})

@@ -1,0 +1,195 @@
+(ns tool.migrate.common.transform
+  (:config {:role :internal})
+  (:require [code.framework :as framework]
+            [tool.migrate.common.block :as nav]
+            [tool.migrate.common.clojure :as clj]
+            [tool.migrate.common.rule :as rule]
+            [tool.migrate.common.rules :as catalog]))
+
+(defn language
+  [unit options]
+  (or (:source/language options)
+      (:source/language unit)
+      (if (and (string? (:source/path unit))
+               (or (str/ends-with? (:source/path unit) ".clj")
+                   (str/ends-with? (:source/path unit) ".cljc")))
+        :clojure
+        :hara)))
+
+(defn target-language
+  [unit options]
+  (or (:target/language options)
+      (:target/language unit)
+      :hara))
+
+(defn selected-rules
+  [options source-language]
+  (if (:rules options)
+    (:rules options)
+    (catalog/rules (catalog/catalog options) source-language)))
+
+(defn analyze
+  "Runs a language-aware rule catalog over either Clojure or Hara source."
+  ([source options]
+   (let [source-language (or (:source/language options) :clojure)
+         target-language (or (:target/language options) :hara)
+         rules (selected-rules options source-language)
+         result (rule/analyze-source
+                 source
+                 (merge
+                  {:source/language source-language
+                   :target/language target-language
+                   :rules rules
+                   :function-resolver clj/function-resolver}
+                  options))
+         output (:output result)]
+     ;; Parsing the target is part of the transform contract. It catches a
+     ;; function rule that returned non-Hara text before a writer sees it.
+     (nav/block-input output)
+     (assoc result
+            :output output
+            :changed (not= source output)
+            :source/language source-language
+            :target/language target-language
+            :diagnostics (:diagnostics result)))))
+
+(defn transform-code
+  "Applies the registry-backed transform through code.framework/transform-code."
+  ([unit]
+   (transform-code unit {}))
+  ([unit options]
+   (let [options (or options {})
+         source-language (language unit options)
+         target-language (target-language unit options)
+         result (analyze
+                 (or (:source/text unit) (:source unit))
+                 (merge options
+                        {:source/language source-language
+                         :target/language target-language}))]
+     (framework/transform-code
+      unit
+      (fn [_]
+        {:after (:output result)
+         :rules (:rules/applied result)
+         :rules/matched (:rules/matched result)
+         :diagnostics (:diagnostics result)
+         :provenance {:operation :tool.migrate.common/transform-code
+                      :source/language source-language
+                      :target/language target-language
+                      :catalog (:document/id (catalog/catalog options))}})))))
+
+(defn ^{:public true} canonicalize-public-metadata
+  "Moves declaration :public metadata from a form prefix to its binding symbol.
+
+   This is a Hara source canonicalization pass. It only considers definitions
+   recognized by code.framework and leaves metadata on facts and other forms
+   untouched."
+  [source]
+  (let [analysis (framework/analyse-structure source)
+        state
+        (reduce
+         (fn [state definition]
+           (if (:generated definition)
+             state
+             (let [form (:form definition)
+                   prefix
+                   (first
+                    (filter
+                     (fn [record]
+                       (= true
+                          (get
+                           (:value (framework/metadata-info source record))
+                           :public)))
+                     (:prefix-metadata form)))]
+               (if (nil? prefix)
+                 state
+                 (let [prefix-info (framework/metadata-info source prefix)
+                       prefix-value (:value prefix-info)
+                       binding (framework/binding-metadata
+                                source form (:name-record definition))
+                       binding-public (get binding :public)]
+                   (if (and (has? binding :public)
+                            (not= true binding-public))
+                     (assoc
+                      state
+                      :diagnostics
+                      (conj
+                       (:diagnostics state)
+                       {:type :tool.migrate/public-metadata-conflict
+                        :level :error
+                        :message
+                        (str "cannot move :public true onto "
+                             (:name definition)
+                             "; the binding already declares :public "
+                             binding-public)
+                        :definition/var (:name definition)
+                        :definition/form (:head definition)}))
+                     (let [binding-record
+                           (first
+                            (filter
+                             (fn [record]
+                               (= (:end record) (:name-end definition)))
+                             (framework/inline-metadata-records source form)))
+                           binding-info
+                           (if binding-record
+                             (framework/metadata-info source binding-record)
+                             nil)
+                           map-record (if binding-info
+                                        (:map-record binding-info)
+                                        nil)
+                           insertion
+                           (cond
+                             (= true binding-public)
+                             nil
+
+                             map-record
+                             {:start (inc (:start map-record))
+                              :end (inc (:start map-record))
+                              :text ":public true "}
+
+                             (nil? binding-record)
+                             {:start (:name-start definition)
+                              :end (:name-start definition)
+                              :text "^{:public true} "}
+
+                             :else
+                             (let [metadata-text (pr-str binding)
+                                   body (str/slice metadata-text
+                                                   1
+                                                   (dec (str/length metadata-text)))]
+                               {:start (:start binding-record)
+                                :end (:end binding-record)
+                                :text
+                                (str "^{:public true " body "} "
+                                     (str/slice source
+                                                (:name-start definition)
+                                                (:name-end definition)))}))
+                           public-pair
+                           (first
+                            (filter
+                             (fn [pair] (= :public (:key pair)))
+                             (:pairs prefix-info)))
+                           removal
+                           (if (= 1 (count prefix-value))
+                             {:start (:start prefix)
+                              :end (:start form)
+                              :text ""}
+                             {:start (:start (:key-record public-pair))
+                              :end (:end (:value-record public-pair))
+                              :text ""})]
+                       (assoc
+                        state
+                        :edits
+                        (into (:edits state)
+                              (if insertion
+                                [insertion removal]
+                                [removal]))
+                        :moved (inc (:moved state))))))))))
+         {:edits [] :diagnostics [] :moved 0}
+         (:definitions analysis))
+        output (framework/apply-edits source (:edits state))]
+    (assoc state
+           :output output
+           :changed (not= source output))))
+
+(def transform-unit transform-code)

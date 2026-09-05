@@ -1,0 +1,270 @@
+(ns work.base.store
+  (:require [work.base.result :as result]))
+
+(def query-operations
+  {:run/load :load-run
+   :run/list :list-runs
+   :event/list :list-events
+   :checkpoint/load :load-checkpoint
+   :checkpoint/list :list-checkpoints})
+
+(def baseline-capabilities
+  [:runs :transactions :events :checkpoints])
+
+(def optional-capabilities
+  {:outbox [:list-outbox :claim-outbox :ack-outbox]})
+
+(defstruct StoreAdapter [descriptor operations optional])
+
+(defn descriptor
+  [store]
+  (if (instance? work.base.store/StoreAdapter store)
+    (:descriptor store)
+    (or (:descriptor store) store)))
+
+(defn operations
+  [store]
+  (if (instance? work.base.store/StoreAdapter store)
+    (:operations store)
+    (or (:provider/operations store) store)))
+
+(defn capability?
+  [store capability]
+  (if
+    (reduce
+     (fn [found installed]
+       (or found (= capability installed)))
+     false
+     (or (:provider/capabilities (descriptor store)) []))
+    true
+    false))
+
+(defn query-arguments
+  [query]
+  (case (:work/query query)
+    :run/load [(:run/id query)]
+    :run/list [(or (:work/where query) (:where query) {})]
+    :event/list [(:run/id query)]
+    :checkpoint/load [(:checkpoint/key query)]
+    :checkpoint/list [(:run/id query)]
+    []))
+
+(defn adapter-query
+  [store query]
+  (let [operation (get query-operations (:work/query query))
+        function (get (:operations store) operation)]
+    (if (nil? operation)
+      (throw
+       (ex :generic {:work/query (:work/query query)} :ex/message "Work store query is not supported")))
+    (if (nil? function)
+      (throw
+       (ex :generic {:work/query (:work/query query)
+                 :provider/id (:provider/id (:descriptor store))
+                 :operation operation} :ex/message "Work store query operation is not installed")))
+    (apply function (query-arguments query))))
+
+(extend-type StoreAdapter IWorkStore
+  (work-query [store query]
+    (adapter-query store query))
+  (work-transact [store transition]
+    (let [function (get (:operations store) :transact)]
+      (if function
+        (function transition)
+        (throw
+         (ex :database {:provider/id (:provider/id (:descriptor store))} :ex/message "Work store transaction operation is not installed"))))))
+
+(defn operations-installed?
+  [provider required]
+  (let [installed (operations provider)]
+    (reduce
+     (fn [valid operation]
+       (and valid (not (nil? (get installed operation)))))
+     true
+     required)))
+
+(defn missing-operations
+  [provider required]
+  (let [installed (operations provider)]
+    (reduce
+     (fn [missing operation]
+       (if (nil? (get installed operation))
+         (conj missing operation)
+         missing))
+     []
+     required)))
+
+(defn baseline-operations
+  []
+  (vec (concat (vals query-operations) [:transact])))
+
+(defn inferred-capabilities
+  [provider]
+  (let [capabilities
+        (if (operations-installed? provider (baseline-operations))
+          #{:runs :transactions :events :checkpoints}
+          #{})]
+    (if (operations-installed? provider (get optional-capabilities :outbox))
+      (conj capabilities :outbox)
+      capabilities)))
+
+(defn legacy-provider
+  [backend]
+  {:provider/role :work/store
+   :provider/id (or (:provider/id backend) :legacy-backend)
+   :provider/capabilities (inferred-capabilities backend)
+   :provider/operations backend
+   :provider/legacy backend
+   :provider/state (:state backend)})
+
+(defn assert-role
+  [provider]
+  (if (not= :work/store (:provider/role provider))
+    (throw
+     (ex :generic {:provider/role (:provider/role provider)
+               :provider/id (:provider/id provider)} :ex/message "Work provider does not have the store role")))
+  provider)
+
+(defn assert-operations
+  [provider required capability]
+  (let [missing (missing-operations provider required)]
+    (if (not (empty? missing))
+      (throw
+       (ex :not-found {:provider/id (:provider/id provider)
+                 :provider/capability capability
+                 :provider/missing missing} :ex/message "Work store provider is missing required operations"))))
+  provider)
+
+(defn require-capability
+  [provider capability]
+  (if (not (capability? provider capability))
+    (throw
+     (ex :dependency {:provider/id (:provider/id (descriptor provider))
+               :provider/capability capability} :ex/message "Work store provider does not support the required capability")))
+  provider)
+
+(defn validate-descriptor
+  [provider]
+  (let [provider (assert-role provider)
+        provider
+        (if (:provider/capabilities provider)
+          provider
+          (assoc provider
+                 :provider/capabilities
+                 (inferred-capabilities provider)))]
+    (reduce
+     (fn [validated capability]
+       (require-capability validated capability))
+     provider
+     baseline-capabilities)
+    (assert-operations provider (baseline-operations) :baseline)
+    (if (capability? provider :outbox)
+      (assert-operations provider
+                          (get optional-capabilities :outbox)
+                          :outbox))
+    provider))
+
+(defn adapt-provider
+  [provider]
+  (let [provider (validate-descriptor provider)]
+    (work.base.store/StoreAdapter
+     provider
+     (:provider/operations provider)
+     {:outbox
+      (if (capability? provider :outbox)
+        (select-keys (:provider/operations provider)
+                     (get optional-capabilities :outbox))
+        {})})))
+
+(defn normalise-provider
+  [provider]
+  (cond
+    (nil? provider)
+    (throw (ex :dependency {} :ex/message "Work runtime requires a store provider"))
+
+    (satisfies? IWorkStore provider)
+    provider
+
+    (and (map? provider)
+         (= :work/store (:provider/role provider)))
+    (adapt-provider provider)
+
+    (and (map? provider)
+         (:provider/role provider))
+    (assert-role provider)
+
+    (map? provider)
+    (adapt-provider (legacy-provider provider))
+
+    :else
+    (throw
+     (ex :generic {:provider provider} :ex/message "Work store must implement IWorkStore or be a legacy provider"))))
+
+(defn assert-profile
+  [provider mode]
+  (let [provider (normalise-provider provider)]
+    (reduce
+     (fn [validated capability]
+       (require-capability validated capability))
+     provider
+     baseline-capabilities)
+    provider))
+
+(defn query
+  [store request]
+  (IWorkStore/work-query store request))
+
+(defn transact
+  [store transition]
+  (IWorkStore/work-transact store transition))
+
+(defn call
+  "Compatibility access for optional suites and deprecated callers."
+  [provider operation & arguments]
+  (let [function (get (operations provider) operation)]
+    (if function
+      (apply function arguments)
+      (throw
+       (ex :generic {:provider/id (:provider/id (descriptor provider))
+                 :operation operation} :ex/message "Work store compatibility operation is not installed")))))
+
+(defn load-run
+  [provider run-id]
+  (result/then
+   (query provider {:work/query :run/load :run/id run-id})
+   (fn [run]
+     (if (nil? run)
+       (throw (ex :not-found {:run/id run-id} :ex/message "Work run does not exist")))
+     run)))
+
+(defn transition-request
+  [run-id expected-revision changes]
+  (merge
+   {:transition/run-id run-id
+    :transition/expected-revision expected-revision
+    :transition/run-updates {}
+    :transition/checkpoints []
+    :transition/events []}
+   (or changes {})
+   {:transition/run-id run-id
+    :transition/expected-revision expected-revision}))
+
+(defn creation-request
+  [run]
+  (transition-request
+   (:run/id run)
+   :absent
+   {:transition/create-run run}))
+
+(defn create-run
+  [provider run]
+  (transact provider (creation-request run)))
+
+(defn transact-current
+  [provider run-id changes]
+  (result/then
+   (load-run provider run-id)
+   (fn [run]
+     (transact provider
+               (transition-request run-id
+                                   (or (:run/revision run) 0)
+                                   changes)))))

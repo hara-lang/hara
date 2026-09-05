@@ -1,0 +1,144 @@
+(ns code.test.checker.collection
+  (:require [code.test.checker.common :as common]
+            [code.test.checker.util :as util]))
+
+(defn map-checkers [values]
+  (reduce-kv (fn [output key value]
+               (assoc output key (common/->checker value)))
+             {}
+             values))
+
+(defn verify-map [checkers data]
+  (reduce-kv (fn [passing key check]
+               (and passing
+                    (common/succeeded? (common/verify check (get data key)))))
+             true
+             checkers))
+
+(defn verify-seq [checkers data modifiers]
+  (cond
+    (= #{} modifiers) (util/contains-exact data checkers)
+    (= #{:in-any-order} modifiers) (util/contains-any-order data checkers)
+    (= #{:gaps-ok} modifiers) (util/contains-with-gaps data checkers)
+    (= #{:in-any-order :gaps-ok} modifiers) (util/contains-all data checkers)
+    :else (throw (ex :argument {:modifiers modifiers}
+                     :ex/message "modifiers can only be :gaps-ok and :in-any-order"))))
+
+(defn contains-map [value]
+  (let [checkers (map-checkers value)]
+    (common/checker
+     {:tag :contains
+      :doc "Checks that a map contains matching entries."
+      :fn (fn [result]
+            (let [data (common/result-data result)]
+              (verify-map checkers data)))
+      :expect checkers})))
+
+(defn contains-vector
+  ([value] (contains-vector value #{}))
+  ([value modifiers]
+   (let [checkers (mapv common/->checker value)]
+     (common/checker
+      {:tag :contains
+       :doc "Checks that a sequence contains a matching pattern."
+       :fn (fn [result]
+             (let [data (common/result-data result)]
+               (cond
+                 (set? data) (verify-seq checkers data (conj modifiers :in-any-order))
+                 (or (vector? data) (list? data)) (verify-seq checkers data modifiers)
+                 :else false)))
+       :expect checkers}))))
+
+(defn contains-set [value]
+  (contains-vector value #{:in-any-order}))
+
+(defn contains [value & modifiers]
+  (cond
+    (map? value) (contains-map value)
+    (set? value) (contains-set value)
+    (or (vector? value) (list? value))
+    (contains-vector value (set modifiers))
+    :else
+    (throw (ex :argument {:input (vec (cons value modifiers))}
+               :ex/message "Cannot create contains checker"))))
+
+(defn just-map [value]
+  (let [checkers (map-checkers value)]
+    (common/checker
+     {:tag :just
+      :doc "Checks that a map has exactly the matching entries."
+      :fn (fn [result]
+            (let [data (common/result-data result)]
+              (and (map? data)
+                   (= (set (keys data)) (set (keys checkers)))
+                   (verify-map checkers data))))
+      :expect checkers})))
+
+(defn just-vector
+  ([value] (just-vector value #{}))
+  ([value modifiers]
+   (let [checkers (mapv common/->checker value)]
+     (common/checker
+      {:tag :just
+       :doc "Checks that a sequence exactly matches a pattern."
+       :fn (fn [result]
+             (let [data (common/result-data result)]
+               (and (or (set? data) (vector? data) (list? data))
+                    (= (count data) (count checkers))
+                    (if (set? data)
+                      (verify-seq checkers data (conj modifiers :in-any-order))
+                      (verify-seq checkers data modifiers)))))
+       :expect checkers}))))
+
+(defn just-set [value]
+  (just-vector value #{:in-any-order}))
+
+(defn just [value & modifiers]
+  (cond
+    (map? value) (just-map value)
+    (set? value) (just-set value)
+    (or (vector? value) (list? value))
+    (just-vector value (set modifiers))
+    :else
+    (throw (ex :argument {:input (vec (cons value modifiers))}
+               :ex/message "Cannot create just checker"))))
+
+(defn nested-form [checker-symbol value]
+  (cond
+    (map? value)
+    (list checker-symbol
+          (reduce-kv (fn [output key nested]
+                       (assoc output key (nested-form checker-symbol nested)))
+                     {}
+                     value))
+    (set? value)
+    (list checker-symbol
+          (mapv (fn [nested] (nested-form checker-symbol nested)) value)
+          :in-any-order)
+    (vector? value)
+    (list checker-symbol
+          (mapv (fn [nested] (nested-form checker-symbol nested)) value))
+    :else value))
+
+(defn contains-in-form [value]
+  (nested-form (quote code.test.checker.collection/contains) value))
+
+(defn just-in-form [value]
+  (nested-form (quote code.test.checker.collection/just) value))
+
+(defmacro contains-in [value]
+  (contains-in-form value))
+
+(defmacro just-in [value]
+  (just-in-form value))
+
+(defn throws-info
+  ([] (throws-info {}))
+  ([expected]
+   (common/checker
+    {:tag :raises
+     :doc "Checks an exception's data."
+     :fn (fn [error]
+           (and (map? (ex-data error))
+                ((contains expected) (ex-data error))))
+     :expect {:exception :hara/Error :data expected}})))

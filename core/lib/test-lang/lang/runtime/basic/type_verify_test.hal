@@ -1,0 +1,104 @@
+(ns lang.runtime.basic.type-verify-test
+  (:require [lang.runtime.basic.type-verify :as verify]))
+
+(def runtime
+  {:lang :lua
+   :runtime :verify
+   :program :lua
+   :exec ["lua" "-e" "checker"]
+   :grammar-coordinate [:lua :default]
+   :grammar-version 1})
+
+(def results
+  [(test-check
+    "checker-result retains the existing pure vector contract"
+    (verify/checker-result
+     runtime
+     [(str/encode-utf8 "out")
+      (str/encode-utf8 "err")
+      3])
+    {:phase :verify
+     :lang :lua
+     :runtime :verify
+     :program :lua
+     :command ["lua" "-e" "checker"]
+     :exit 3
+     :stdout "out"
+     :stderr "err"})
+
+   (test-check
+    "checker-result accepts canonical tool.sh result maps"
+    (verify/checker-result
+     runtime
+     {:command ["lua" "-e" "checker"]
+      :exit 0
+      :stdout ""
+      :stderr ""})
+    {:phase :verify
+     :lang :lua
+     :runtime :verify
+     :program :lua
+     :command ["lua" "-e" "checker"]
+     :exit 0
+     :stdout ""
+     :stderr ""})
+
+   (test-check
+    "verify-result returns verified source unchanged"
+    (verify/verify-result runtime "return 42" {:exit 0})
+    "return 42")
+
+   (test-check
+    "verify-result preserves runtime and grammar provenance"
+    (try
+      (verify/verify-result
+       runtime
+       "function {"
+       {:phase :verify
+        :lang :lua
+        :runtime :verify
+        :program :lua
+        :command ["lua" "-e" "checker"]
+        :exit 1
+        :stdout ""
+        :stderr "syntax error"})
+      nil
+      (catch Throwable error
+        (let [data (ex-data error)]
+          [(ex-message error)
+           (get data :phase)
+           (get data :lang)
+           (get data :runtime)
+           (get data :program)
+           (get data :grammar-coordinate)
+           (get data :grammar-version)
+           (get data :generated-fragment)
+           (get data :stderr)])))
+    ["Target source verification failed"
+     :verify
+     :lua
+     :verify
+     :lua
+     [:lua :default]
+     1
+     "function {"
+     "syntax error"])
+
+   (test-check
+    "verify-execute writes exact source through canonical stdin"
+    (verify/verify-execute
+     {:lang :shell
+      :runtime :verify
+      :program :cat
+      :exec ["cat"]}
+     "source\n")
+    {:phase :verify
+     :lang :shell
+     :runtime :verify
+     :program :cat
+     :command ["cat"]
+     :exit 0
+     :stdout "source\n"
+     :stderr ""})])
+
+results

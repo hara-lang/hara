@@ -1,0 +1,34 @@
+(ns work-playground
+    (:require [work.base :as work]
+     [work.provider.ephemeral :as ephemeral]))
+
+(declare execute-pure)
+
+(defn execute-pure
+  [definition input]
+  (let [spec (work/work-spec definition)]
+    (cond
+     (= :pure (:op spec))
+     ((:fn spec)
+      input
+      {:run (Work/current-run)
+       :cancelled? Work/cancelled?
+       :deadline-nanos Work/deadline-nanos})
+
+     (= :chain (:op spec))
+     (reduce execute-pure input (:children spec))
+
+     (= :bind (:op spec))
+     (let [source-value (execute-pure (:source spec) input)
+           produced (execute-pure (:continuation spec) source-value)]
+       (if (not (satisfies? IWork produced))
+         (throw
+          (ex :state
+              {:work/error :work/bind-not-work
+               :operation :bind}
+              :ex/message "Playground bind continuation must return Work")))
+       (execute-pure produced source-value))
+
+     :else
+     (throw
+      (ex :generic {:operation (:op spec)} :ex/message "Unsupported playground operation")))))

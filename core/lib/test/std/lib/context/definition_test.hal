@@ -1,0 +1,42 @@
+(ns std.lib.context.definition-test
+  (:require [std.lib.context.definition :as definition]))
+
+(definition/clear)
+(definition/register-family
+ {:id :fallback/function
+  :origin :hara
+  :prefix #{"defn."}
+  :kind :function})
+(definition/register-family
+ {:id :language/postgres-function
+  :origin [:lang :postgres]
+  :exact #{"defn.pg"}
+  :kind :function
+  :language :postgres})
+
+(def results
+  (Test/run
+   [{:name "exact registrations override prefix families"
+     :test (fn []
+             [(:id (definition/match-family "defn.pg"))
+              (:id (definition/match-family "defn.js"))])
+     :expected [:language/postgres-function :fallback/function]}
+    {:name "origin synchronization atomically replaces owned entries"
+     :test (fn []
+             (do
+               (definition/sync-origin
+                [:lang :postgres]
+                [{:id :language/postgres-type
+                  :exact #{"deftype.pg"}
+                  :kind :type}])
+               [(:id (definition/match-family "defn.pg"))
+                (:id (definition/match-family "deftype.pg"))]))
+     :expected [:fallback/function :language/postgres-type]}
+    {:name "unregister returns the removed normalized family"
+     :test (fn []
+             (let [removed (definition/unregister-family :fallback/function)]
+               [(:id removed) (:prefix removed)
+                (definition/match-family "defn.js")]))
+     :expected [:fallback/function #{"defn."} nil]}]))
+
+(pr-str results)

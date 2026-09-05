@@ -1,0 +1,328 @@
+(ns lang.core.runtime
+  (:require [lang.protocol.runtime :as context-eval]
+            [std.lib.component :as component]
+            [lang.common.compat :as compat]
+            [lang.core.eval :as evaluation]
+            [lang.core.registry :as registry]))
+
+(def +language-registry+ (atom {}))
+(def +type-registry+ (atom {}))
+
+(defstruct RuntimeDefault
+  [id lang runtime module options state modules pointers profile timeout])
+
+(defn- atom-value [reference]
+  (deref (identity reference)))
+
+(defn rt-default:create
+  "Creates the lightweight Foundation-compatible language runtime."
+  [options]
+  (let [lang (get options :lang)
+        module (get options :module)]
+    (lang.core.runtime/RuntimeDefault
+     (or (get options :id)
+         (keyword (str (name lang) ".default")))
+     lang
+     :default
+     module
+     options
+     (atom {:status :created})
+     (atom #{})
+     (atom #{})
+     {:input [] :source [] :response []}
+     (or (get options :timeout) 2000))))
+
+(defn- default-state
+  [runtime]
+  (deref (get runtime :state)))
+
+(defn- start-default
+  [runtime]
+  (reset! (get runtime :state) {:status :started})
+  runtime)
+
+(defn- stop-default
+  [runtime]
+  (reset! (get runtime :state) {:status :stopped})
+  runtime)
+
+(defn rt-default
+  "Creates and starts the lightweight default language runtime."
+  [options]
+  (start-default (rt-default:create options)))
+
+(defn- raw-eval-default
+  [runtime source]
+  source)
+
+(defn default-runtime-spec
+  "Returns the portable compile-only runtime spec available to every language."
+  [language]
+  {:lang language
+   :runtime :default
+   :type :lang/rt.default
+   :component true
+   :config {}
+   :instance {:create rt-default:create
+              :raw-eval raw-eval-default}})
+
+(extend-type RuntimeDefault context-eval/IContextEval
+  (evaluate [runtime request options]
+    (promise/from request))
+  (evaluate-raw [runtime request options]
+    (promise/from request)))
+
+(extend-type RuntimeDefault IContext
+  (call [runtime source]
+    source))
+
+(extend-type RuntimeDefault IComponent
+  (props [runtime]
+    {:state {:get (fn [] (default-state runtime))}
+     :module {:get (fn [] (get runtime :module))}})
+  (status [runtime]
+    (get (default-state runtime) :status))
+  (started? [runtime]
+    (= :started (get (default-state runtime) :status)))
+  (stopped? [runtime]
+    (= :stopped (get (default-state runtime) :status)))
+  (start [runtime]
+    (start-default runtime))
+  (stop [runtime]
+    (stop-default runtime))
+  (kill [runtime]
+    (stop-default runtime))
+  (remote? [runtime]
+    false))
+
+(extend-type RuntimeDefault IContextLifeCycle
+  (has-module? [runtime module]
+    (boolean (get (deref (get runtime :modules)) module)))
+  (setup-module [runtime module]
+    (swap! (get runtime :modules) conj module)
+    runtime)
+  (teardown-module [runtime module]
+    (swap! (get runtime :modules) dissoc module)
+    runtime)
+  (has-pointer? [runtime pointer]
+    (boolean (get (deref (get runtime :pointers)) pointer)))
+  (setup-pointer [runtime pointer]
+    (swap! (get runtime :pointers) conj pointer)
+    runtime)
+  (teardown-pointer [runtime pointer]
+    (swap! (get runtime :pointers) dissoc pointer)
+    runtime))
+
+(defn install-lang
+  "Installs a selected version of a language into the runtime registry.
+
+   Omitting :version uses the configured default for the selected book key."
+  ([language]
+   (install-lang language {}))
+  ([language options]
+   (let [book-key (or (get options :book-key) :default)
+         requested-version (get options :version)
+         book (or (get options :book)
+                  (registry/registry-book language
+                                          book-key
+                                          requested-version))]
+     (if (nil? book)
+       (throw
+        (ex :io {:language language
+                  :book-key book-key
+                  :version requested-version} :ex/message "Language book is not registered"))
+       (let [version (or requested-version
+                         (get book :version)
+                         (registry/registry-book-default-version
+                          language
+                          book-key))
+             entry (merge options
+                          {:lang language
+                           :book-key book-key
+                           :version version
+                           :book book})]
+         (swap! +language-registry+ assoc language entry)
+         entry)))))
+
+(defn select-lang-version
+  "Selects one installed book version as the active language grammar."
+  [language version]
+  (install-lang language {:version version}))
+
+(defn install-type
+  "Installs one runtime type for a language.
+
+   This keeps the Foundation [language runtime] coordinate and constructor
+   shape while replacing JVM resource specs with portable immutable data."
+  [language runtime spec]
+  (let [spec (compat/canonicalize-map spec)
+        spec (if (keyword? (:type spec))
+               (assoc spec :type (compat/canonical-key (:type spec)))
+               spec)
+        entry (merge {:lang language
+                      :runtime runtime}
+                     spec)]
+    (swap! +type-registry+ assoc [language runtime] entry)
+    entry))
+
+(defn language-info
+  [language]
+  (get (atom-value +language-registry+) language))
+
+(defn runtime-installed?
+  [language runtime]
+  (if (= runtime :default)
+    true
+    (boolean (get (atom-value +type-registry+) [language runtime]))))
+
+(defn available-runtimes
+  [language]
+  (let [installed
+        (reduce (fn [out coordinate]
+                  (if (= language (first coordinate))
+                    (conj out (second coordinate))
+                    out))
+                []
+                (keys (atom-value +type-registry+)))]
+    (if (get (set installed) :default)
+      installed
+      (conj installed :default))))
+
+(defn require-runtime
+  "Loads the implementation registered for [language runtime]."
+  [language runtime]
+  (or (registry/registry-runtime language runtime)
+      (throw
+       (ex :dependency {:lang language
+                 :runtime runtime
+                 :available (registry/registry-list)} :ex/message "Runtime is not registered"))))
+
+(defn runtime-spec
+  "Returns an installed runtime type, loading its implementation lazily."
+  [language runtime]
+  (if (= runtime :default)
+    (default-runtime-spec language)
+    (do
+      (require-runtime language runtime)
+      (or (get (atom-value +type-registry+) [language runtime])
+          (throw
+           (ex :dependency {:lang language
+                     :runtime runtime
+                     :namespace (registry/registry-runtime-ns language runtime)} :ex/message "Runtime implementation did not install its type"))))))
+
+(defn rt-create
+  "Creates a runtime from its Foundation [language runtime] coordinate."
+  ([language runtime]
+   (rt-create language runtime {}))
+  ([language runtime options]
+   (let [spec (runtime-spec language runtime)
+         create-fn (get-in spec [:instance :create])
+         config (merge (get spec :config)
+                       options
+                       {:lang language
+                        :runtime runtime})]
+     (if create-fn
+       (create-fn config)
+       (throw
+        (ex :host {:lang language
+                  :runtime runtime
+                  :spec spec} :ex/message "Runtime type has no constructor"))))))
+
+(defn- instance-fn
+  [runtime key]
+  (let [spec (runtime-spec (get runtime :lang) (get runtime :runtime))]
+    (get-in spec [:instance key])))
+
+(defn rt-start
+  [runtime]
+  (let [spec (runtime-spec (get runtime :lang) (get runtime :runtime))
+        start-fn (get-in spec [:instance :start])]
+    (if (or (:component spec) start-fn)
+      (component/start runtime)
+      runtime)))
+
+(defn rt-stop
+  [runtime]
+  (let [spec (runtime-spec (get runtime :lang) (get runtime :runtime))
+        stop-fn (get-in spec [:instance :stop])]
+    (if (or (:component spec) stop-fn)
+      (component/stop runtime)
+      runtime)))
+
+(defn rt-eval
+  "Promise-first semantic evaluation through IContextEval."
+  ([runtime request] (rt-eval runtime request {}))
+  ([runtime request options] (context-eval/evaluate runtime request options)))
+
+(defn rt-eval-raw
+  "Promise-first transport exchange with semantic plugins bypassed."
+  ([runtime request] (rt-eval-raw runtime request {}))
+  ([runtime request options] (context-eval/evaluate-raw runtime request options)))
+
+(defn rt-eval-trace
+  "Returns a promise of an EvalTrace, including target failures."
+  ([runtime request] (rt-eval-trace runtime request {}))
+  ([runtime request options] (evaluation/eval-trace runtime request options)))
+
+(defn rt-raw-eval
+  "Blocking compatibility adapter for already-emitted target source."
+  [runtime source]
+  (if (get runtime :transport)
+    (evaluation/eval-await runtime source {})
+    (if-let [raw-eval (instance-fn runtime :raw-eval)]
+      (raw-eval runtime source)
+      (throw (ex :host {:lang (get runtime :lang)
+                       :runtime (get runtime :runtime)} :ex/message "Runtime type has no raw evaluator")))))
+
+(defn- requested-version
+  [language version versions]
+  (or (get versions language)
+      version
+      (registry/registry-book-default-version language :default)))
+
+(defn bootstrap
+  "Bootstraps Foundation-compatible books and runtime types.
+
+   :version pins one version for every language.
+   :versions pins versions per language and takes precedence over :version.
+   With neither option, each language uses its configured default version."
+  ([]
+   (bootstrap {:languages [:js :python :lua]
+                :runtimes [:oneshot :basic]}))
+  ([options]
+   (let [languages (or (get options :languages) [:js :python :lua])
+         runtimes (or (get options :runtimes) [:oneshot :basic])
+         version (get options :version)
+         versions (or (get options :versions) {})
+         selected
+         (reduce
+          (fn [out language]
+            (let [selected-version
+                  (requested-version language version versions)
+                  book
+                  (registry/registry-book language
+                                          :default
+                                          selected-version)]
+              (install-lang language
+                             {:book-key :default
+                              :version selected-version
+                              :book book})
+              {:books (assoc (get out :books) language book)
+               :versions (assoc (get out :versions)
+                                language
+                                selected-version)}))
+          {:books {}
+           :versions {}}
+          languages)]
+     (reduce (fn [_ language]
+               (reduce (fn [_ runtime]
+                         (require-runtime language runtime))
+                       nil
+                       runtimes))
+             nil
+             languages)
+     {:version version
+      :versions (get selected :versions)
+      :books (get selected :books)
+      :languages (atom-value +language-registry+)
+      :runtimes (atom-value +type-registry+)})))

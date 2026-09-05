@@ -1,0 +1,99 @@
+(ns work.examples.basic
+  (:require [work.base :as work]
+            [work.base.host :as host]
+            [work.provider.ephemeral :as ephemeral]))
+
+;; A provider-neutral executor. A SQLite or swarm host can use the same work
+;; values while replacing the host provider and execution policy.
+(def runtime (work/local-runtime))
+
+(defn execute
+  [definition input options run-id]
+  (work/run runtime definition input options))
+
+(def scheduler (ephemeral/ephemeral-host))
+
+(def add-one
+  (work/pure :add-one
+             (fn [value context]
+               (inc value))))
+
+;; 1. The smallest possible pure workflow.
+(def direct-result
+  (work/run runtime add-one 41))
+
+;; 2. Submit immediately and receive a live IWorkRun handle.
+(def submitted
+  (deref
+   (IWorkHost/work-submit
+    scheduler
+    add-one
+    41
+    {:id "example/add-one"
+     :work/execute execute})))
+
+(def submitted-result
+  (deref (IWorkRun/work-result submitted)))
+
+;; 3. Keep a portable reference and resolve a new live facade later.
+(def reference (host/reference submitted))
+(def resolved
+  (deref (IWorkHost/work-resolve scheduler reference)))
+
+;; 4. A named dependency graph can run eagerly or for one lazy output.
+(def rectangle
+  (work/graph
+   {:width (work/input :width)
+    :height (work/input :height)
+    :area (work/node [:width :height]
+                     (fn [width height]
+                       (* width height)))
+    :label (work/node [:area]
+                      (fn [area]
+                        (str "Area: " area)))}))
+
+(def eager-result
+  (work/run runtime rectangle {:width 6 :height 7}))
+
+(def lazy-result
+  (work/run runtime
+            rectangle
+            {:width 6 :height 7}
+            {:evaluation :lazy
+             :outputs [:area]}))
+
+;; 5. bind lets a pure decision select the next Work value at runtime while
+;; keeping the selected computation inside the same Work run.
+(def dynamic-transform
+  (work/bind
+   {:id :dynamic-transform}
+   (work/pure :classify
+     (fn [value context]
+       {:value value
+        :mode (if (> value 10) :double :increment)}))
+   (work/pure :select-transform
+     (fn [state context]
+       (if (= :double (:mode state))
+         (work/pure :double-selected
+           (fn [selected selected-context]
+             (* 2 (:value selected))))
+         (work/pure :increment-selected
+           (fn [selected selected-context]
+             (inc (:value selected)))))))))
+
+(def dynamic-result
+  (work/run runtime dynamic-transform 21))
+
+{:direct direct-result
+ :submitted
+ {:id (IWorkRef/work-id submitted)
+  :status (IWorkRun/work-status submitted)
+  :result submitted-result}
+ :resolved
+ {:id (IWorkRef/work-id resolved)
+  :result (deref (IWorkRun/work-result resolved))}
+ :graph
+ {:dependencies (set (IDeps/dep-entries rectangle :area))
+  :eager eager-result
+  :lazy lazy-result}
+ :bind dynamic-result}

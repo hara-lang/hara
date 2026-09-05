@@ -1,0 +1,124 @@
+(ns code.query.common
+  (:require [std.foundation.string]))
+
+(defn any
+  "returns true for any value\n   (any nil) => true\n   (any '_) => true"
+  {:added "3.0"}
+  [x]
+  true)
+
+(defn none
+  "returns false for any value\n   (none nil) => false\n   (none '_) => false"
+  {:added "3.0"}
+  [x]
+  false)
+
+(defn expand-meta
+  "separates out the meta into individual flags\n \n   (meta (expand-meta ^:? ()))\n   => {:? true}\n \n   (meta (expand-meta ^:+%? ()))\n   => {:+ true, :? true, :% true}"
+  {:added "3.0"}
+  [ele]
+  (->> (meta ele)
+    (keys)
+    (remove #{:line :column :end-line :end-column})
+    (map name)
+    (apply str)
+    ((fn [migration-argument-0]
+       (std.foundation.string/split migration-argument-0 #"")))
+    (map keyword)
+    (set)
+    ((fn [migration-argument-0]
+       (-> migration-argument-0
+         (zipmap (repeat true))
+         (select-keys [(keyword "%") (keyword "?") (keyword "&") (keyword "-") (keyword "+")]))))
+    (with-meta ele)))
+
+(defn cursor?
+  "checks if element is `|`\n   (cursor? '|) => true\n   (cursor? '_) => false"
+  {:added "3.0"}
+  [ele]
+  (= (quote |) ele))
+
+(defn insertion?
+  "checks if element has an insert meta\n   (insertion? '^:+ a) => true\n   (insertion? 'a) => false"
+  {:added "3.0"}
+  [ele]
+  (or (-> ele meta :+) false))
+
+(defn deletion?
+  "checks if element has a delete meta\n   (deletion? '^:- a) => true\n   (deletion? 'a) => false"
+  {:added "3.0"}
+  [ele]
+  (or (-> ele meta :-) false))
+
+(defn- wrap-keep-meta
+  [f]
+  (fn [inner outer form]
+    (let [obj (f inner outer form)]
+      (if (and (satisfies? IObjType form) (satisfies? IObjType obj))
+        (with-meta obj (meta form))
+        obj))))
+
+(defn prewalk
+  "helper function for changing elements eagerly"
+  {:added "3.0"}
+  [f form]
+  ((wrap-keep-meta std.foundation/walk) (partial prewalk f) identity (f form)))
+
+(defn- remove-null
+  [ele]
+  (cond (list? ele)
+    (with-meta (apply list
+                 (filter (fn [migration-argument-0] (not= (keyword ":null") migration-argument-0))
+                   ele))
+      (meta ele))
+    (vector? ele)
+    (with-meta (filterv (fn [migration-argument-0] (not= (keyword ":null") migration-argument-0))
+                 ele)
+      (meta ele))
+    :else
+    ele))
+
+(defn- mark-null [pred]
+  (fn [ele]
+    (if (pred ele) ::null ele)))
+
+(defn remove-items
+  "removes items from a form matching the predicate\n   (remove-items #{1} '(1 2 3 4))\n   => '(2 3 4)\n \n   (remove-items #{1} '(1 (1 (1 (1)))))\n   => '(((())))"
+  {:added "3.0"}
+  [pred pattern]
+  (->> pattern (prewalk (mark-null pred)) (prewalk remove-null)))
+
+(defn prepare-deletion
+  "removes extraneous symbols for deletion walk\n   (prepare-deletion '(+ a 2))\n   => '(+ a 2)\n \n   (prepare-deletion '(+ ^:+ a | 2))\n   => '(+ 2)"
+  {:added "3.0"}
+  [pattern]
+  (->> pattern (remove-items cursor?) (remove-items insertion?)))
+
+(defn prepare-insertion
+  "removes extraneous symbols for deletion walk\n   (prepare-insertion '(+ a 2))\n   => '(+ a 2)\n \n   (prepare-insertion '(+ ^:+ a | ^:- b 2))\n   => '(+ a 2)"
+  {:added "3.0"}
+  [pattern]
+  (->> pattern (remove-items cursor?) (remove-items deletion?)))
+
+(defn prepare-query
+  "removes extraneous symbols for query walk\n \n   (prepare-query '(+ ^:+ a | ^:- b 2))\n   => '(+ 2)"
+  {:added "3.0"}
+  [pattern]
+  (->> pattern
+    (remove-items cursor?)
+    (remove-items deletion?)
+    (remove-items insertion?)))
+
+(defn find-index
+  "returns the index of the first occurrence
+   (find-index #{2} '(1 2 3 4))
+   => 1"
+  {:added "3.0"}
+  ([pred seq] (find-index pred seq 0))
+  ([pred [x & more :as seq] idx] (cond (empty? seq) nil (pred x) idx :else (find-index pred more (inc idx)))))
+
+(defn finto
+  "into but the right way for lists\n   (finto () '(1 2 3))\n   => '(1 2 3)"
+  {:added "3.0"}
+  [to from]
+  (cond (list? to) (into to (reverse from)) :else (into to from)))

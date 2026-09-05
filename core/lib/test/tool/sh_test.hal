@@ -1,0 +1,231 @@
+(ns tool.sh-test
+  (:require [tool.sh :as sh]))
+
+(def results
+  [(test-check
+    "execute returns a Promise and preserves exact output"
+    (let [pending
+          (sh/execute
+           ["sh" "-c"
+            "printf ' out\n'; printf ' err\n' >&2; exit 7"])]
+      [(promise? pending) (deref pending)])
+    [true
+     {:command
+      ["sh" "-c"
+       "printf ' out\n'; printf ' err\n' >&2; exit 7"]
+      :stdout " out\n"
+      :stderr " err\n"
+      :exit 7}])
+
+   (test-check
+    "result-record unwraps process Results and rethrows unrelated errors"
+    (let [success
+          (Result/create
+           :success
+           {:command ["true"] :stdout "out" :stderr "" :exit 0})
+          failed
+          (Result/create
+           :error
+           (ex :dependency
+               {:command ["false"] :stdout "out" :stderr "err" :exit 7
+                :ignored true}
+               :ex/message "Command failed")
+           {:tool.sh/operation :run})
+          unrelated
+          (Result/create
+           :error
+           (ex :host {:reason :unavailable} :ex/message "Unavailable"))
+          record {:command ["existing"] :stdout "" :stderr "" :exit 0}]
+      [(sh/result-record success)
+       (sh/result-record failed)
+       (sh/result-record record)
+       (try
+         (sh/result-record unrelated)
+         nil
+         (catch Throwable error
+           [(ex-message error) (:reason (ex-data error))]))])
+    [{:command ["true"] :stdout "out" :stderr "" :exit 0}
+     {:command ["false"] :stdout "out" :stderr "err" :exit 7}
+     {:command ["existing"] :stdout "" :stderr "" :exit 0}
+     ["Unavailable" :unavailable]])
+
+   (test-check
+    "run returns a successful Result for a zero exit"
+    (let [argv ["sh" "-c" "printf out"]
+         outcome (sh/run argv)]
+      [(Result/status outcome)
+       (Result/data outcome)
+       (get (Result/context outcome) :tool.sh/operation)])
+    [:success
+     {:command ["sh" "-c" "printf out"]
+      :stdout "out"
+      :stderr ""
+      :exit 0}
+     :run])
+
+   (test-check
+    "run retains output and exit data in an error Result"
+    (let [argv ["sh" "-c" "printf out; printf err >&2; exit 7"]
+         outcome (sh/run argv)
+         error (Result/error-value outcome)]
+      [(Result/status outcome)
+       (select-keys (ex-data error) [:command :stdout :stderr :exit])
+       (get (Result/context outcome) :tool.sh/command)])
+    [:error
+     {:command ["sh" "-c" "printf out; printf err >&2; exit 7"]
+      :stdout "out"
+      :stderr "err"
+      :exit 7}
+     ["sh" "-c" "printf out; printf err >&2; exit 7"]])
+
+   (test-check
+    "run returns a timeout Result and terminates the process"
+    (let [outcome (sh/run ["sh" "-c" "sleep 30"] {:timeout 10})]
+      [(Result/status outcome)
+       (:code (ex-data (Result/error-value outcome)))
+       (get (Result/context outcome) :result/timeout)])
+    [:error :result/timeout 10])
+
+   (test-check
+    "run returns a Result error when the process cannot spawn"
+    (let [outcome (sh/run ["/definitely/missing/hara-command"])]
+      [(Result/status outcome)
+       (:tool.sh/error (ex-data (Result/error-value outcome)))
+       (get (Result/context outcome) :tool.sh/operation)])
+    [:error :process-unavailable :run])
+
+   (test-check
+    "stdin strings are UTF-8 encoded, written, and closed"
+    (Result/data (sh/run ["cat"] {:stdin "hello\n"}))
+    {:command ["cat"]
+     :stdout "hello\n"
+     :stderr ""
+     :exit 0})
+
+   (test-check
+    "cwd and string environment entries reach the process builder"
+    [(let [result (Result/data (sh/run ["pwd"] {:cwd "/tmp"}))]
+       (assoc result
+              :stdout
+              (str/ends-with? (:stdout result) "/tmp\n")))
+     (Result/data
+      (sh/run ["printenv" "HARA_TOOL_SH_TEST"]
+              {:env {"HARA_TOOL_SH_TEST" "present"}}))]
+    [{:command ["pwd"]
+      :stdout true
+      :stderr ""
+      :exit 0}
+     {:command ["printenv" "HARA_TOOL_SH_TEST"]
+      :stdout "present\n"
+      :stderr ""
+      :exit 0}])
+
+   (test-check
+    "spawn leaves stdin open and lifecycle wrappers remain explicit"
+    (let [process (sh/spawn ["cat"])
+          written (sh/write process "stream")
+          alive (sh/alive? process)
+          _ (sh/close-input process)
+          values (deref
+                  (promise/all
+                   [(sh/stdout process)
+                    (sh/stderr process)
+                    (sh/wait process)]))]
+      [written alive
+       (str/decode-utf8 (nth values 0))
+       (str/decode-utf8 (nth values 1))
+       (nth values 2)])
+    [6 true "stream" "" 0])
+
+   (test-check
+    "run-checked preserves the failed result as ex-data"
+    (try
+      (sh/run-checked ["sh" "-c" "printf out; printf err >&2; exit 9"])
+      nil
+      (catch Throwable error
+        [(ex-message error)
+         (select-keys (ex-data error) [:command :stdout :stderr :exit])
+         (:ex/code (ex-data error))]))
+    ["Command failed"
+     {:command ["sh" "-c" "printf out; printf err >&2; exit 9"]
+      :stdout "out"
+      :stderr "err"
+      :exit 9}
+     :hara/dependency])
+
+   (test-check
+    "require-success preserves an explicit failure message for Results"
+    (try
+       (sh/require-success
+        "Custom command failure"
+        (sh/run ["sh" "-c" "printf err >&2; exit 9"]))
+       nil
+       (catch Throwable error
+         [(ex-message error)
+          (:stderr (ex-data error))
+          (:exit (ex-data error))]))
+    ["Custom command failure" "err" 9])
+
+   (test-check
+    "implicit command strings are rejected"
+    (try
+      (sh/command "echo unsafe")
+      false
+      (catch Throwable error
+        (= :invalid-command
+           (:tool.sh/error (ex-data error)))))
+    true)
+
+   (test-check
+    "the process option map is closed and typed"
+    [(try
+       (sh/options {:trim true})
+       nil
+       (catch Throwable error
+         (:tool.sh/error (ex-data error))))
+     (try
+       (sh/options {:cwd :tmp})
+       nil
+       (catch Throwable error
+         (:tool.sh/error (ex-data error))))
+     (try
+       (sh/options {:env {:A "1"}})
+       nil
+       (catch Throwable error
+         (:tool.sh/error (ex-data error))))
+     (try
+       (sh/options {:stdin 42})
+       nil
+       (catch Throwable error
+         (:tool.sh/error (ex-data error))))
+      (try
+       (sh/options {:timeout -1})
+       nil
+       (catch Throwable error
+        (:tool.sh/error (ex-data error))))]
+    [:unknown-options :invalid-cwd :invalid-env :invalid-stdin :invalid-timeout])
+
+   (test-check
+    "Bytes stdin is preserved and core rejects a domain runner option"
+    [(Result/data (sh/run ["cat"] {:stdin (str/encode-utf8 "bytes\n")}))
+     (try
+       (sh/run ["true"]
+               {:tool.sh/runner
+                (fn [argv options]
+                  {:command argv :stdout "" :stderr "" :exit 0})})
+       nil
+       (catch Throwable error
+         (:tool.sh/error (ex-data error))))]
+    [{:command ["cat"] :stdout "bytes\n" :stderr "" :exit 0}
+     :unknown-options])
+
+   (test-check
+    "kill delegates to the native handle and wait still resolves"
+    (let [process (sh/spawn ["sh" "-c" "sleep 30"])
+          alive (sh/alive? process)
+          _ (sh/kill process)
+          exit (deref (sh/wait process))]
+      [alive (long? exit)])
+    [true true])])
+
+results

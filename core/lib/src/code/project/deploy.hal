@@ -1,0 +1,341 @@
+;; Multi-package deployment is orchestration, not a second package
+;; implementation. The hara package CLI remains the authority for project
+;; validation, deterministic HARP archives, local installation, signing, and
+;; registry publication. This namespace expresses those operations as native
+;; work graphs with stable package identities.
+(ns code.project.deploy
+  (:require [code.project.deploy.runtime :as runtime]
+            [work.base :as work]
+            [work.flow.task.command :as command]))
+
+(def +operations+
+  {:check "check"
+   :package "build"
+   :build "build"
+   :install "install"
+   :deploy "publish"
+   :publish "publish"})
+
+(def +input-defaults+
+  {:selector :all
+   :arguments []
+   :process-options {}})
+
+(defn operation-name
+  [operation]
+  (or (get +operations+ operation)
+      (throw
+       (ex :dependency {:operation operation
+                 :supported (vec (sort (keys +operations+)))} :ex/message "Unsupported Hara package operation"))))
+
+(defn package-root
+  "Returns a package root from a catalog entry. Catalog values may be a path
+   string or a map containing :path or :root."
+  [entry]
+  (let [root (cond
+               (string? entry) entry
+               (map? entry) (or (:path entry) (:root entry))
+               :else nil)]
+    (if (and (string? root) (not (empty? root)))
+      root
+      (throw
+       (ex :io {:package entry} :ex/message "Deploy package requires a path")))))
+
+(defn- option-string
+  [value]
+  (if (or (keyword? value) (symbol? value))
+    (name value)
+    (str value)))
+
+(defn package-command
+  "Builds the shell-free argv for one hara package operation."
+  ([operation root]
+   (package-command operation root {}))
+  ([operation root options]
+   (let [executable (or (:executable options) "hara")
+         command (operation-name operation)
+         extra (vec (or (:arguments options) []))]
+     (if (= command "publish")
+       (vec
+        (concat [executable "package" command
+                 "--tap" (option-string (or (:tap options) :hara))]
+                (if (:dry-run options) ["--dry-run"] [])
+                extra
+                [root]))
+       (vec
+        (concat [executable "package" command root]
+                (if (and (= command "build") (:output options))
+                  ["--output" (str (:output options))]
+                  [])
+                extra))))))
+
+(defn package-entry
+  [package packages]
+  (if (has? packages package)
+    (get packages package)
+    package))
+
+(defn package-dependencies
+  [entry]
+  (vec (if (map? entry) (or (:depends entry) []) [])))
+
+(defn undeclared-dependencies
+  [packages]
+  (reduce
+   (fn [missing package]
+     (reduce
+      (fn [missing dependency]
+        (if (has? packages dependency)
+          missing
+          (conj missing {:package dependency :required-by package})))
+      missing
+      (package-dependencies (get packages package))))
+   []
+   (sort (keys packages))))
+
+(defn dependencies-ready?
+  [entry completed]
+  (reduce
+   (fn [ready dependency]
+     (and
+      ready
+      (reduce (fn [matched value]
+                (or matched (= value dependency)))
+              false
+              completed)))
+   true
+   (package-dependencies entry)))
+
+(defn ordered-packages
+  "Returns catalog keys in stable dependency order. A package entry may use
+   :depends to name other catalog keys that must be processed first."
+  [packages]
+  (let [missing (undeclared-dependencies packages)]
+    (if (seq missing)
+      (throw
+       (ex :not-found (first missing) :ex/message "Deploy package dependency is not declared"))
+      (loop [remaining (vec (sort (keys packages)))
+             completed []]
+        (if (empty? remaining)
+          completed
+          (let [ready (first
+                       (filter
+                        (fn [package]
+                          (dependencies-ready? (get packages package)
+                                               completed))
+                        remaining))]
+            (if (nil? ready)
+              (throw
+               (ex :dependency {:packages remaining} :ex/message "Deploy package dependency cycle"))
+              (recur
+               (vec (filter (fn [package] (not (= package ready)))
+                            remaining))
+               (conj completed ready)))))))))
+
+(defn selector-match?
+  "Returns true when one deployment selector includes a package coordinate."
+  [selector package]
+  (cond
+    (or (nil? selector) (= :all selector))
+    true
+
+    (or (string? selector) (symbol? selector) (keyword? selector))
+    (str/starts-with? (str package) (str selector))
+
+    (set? selector)
+    (reduce (fn [matched value]
+              (or matched (= value package)))
+            false
+            selector)
+
+    (list? selector)
+    (reduce (fn [matched part]
+              (and matched (selector-match? part package)))
+            true
+            selector)
+
+    (vector? selector)
+    (reduce (fn [matched part]
+              (or matched (selector-match? part package)))
+            false
+            selector)
+
+    :else
+    (throw
+     (ex :argument {:selector selector} :ex/message "Deploy selector is not valid"))))
+
+(defn prepare-input
+  "Normalises serializable deployment input before package graph execution."
+  [input]
+  (let [input (or input {})
+        _ (if (map? input)
+            nil
+            (throw
+             (ex :argument {:input input} :ex/message "Deploy work input must be a map")))
+        packages (or (:packages input) {})
+        _ (if (map? packages)
+            nil
+            (throw
+             (ex :dependency {:packages packages} :ex/message "Deploy :packages must be a map")))
+        selector (if (has? input :selector)
+                   (:selector input)
+                   :all)]
+    (merge +input-defaults+
+           input
+           {:packages packages
+            :selector selector})))
+
+(defn operation-options
+  [input]
+  (dissoc (dissoc input :packages) :selector))
+
+(defn package-manifest
+  [input context]
+  (let [packages (:packages input)
+        selector (:selector input)
+        options (operation-options input)]
+    (vec
+     (map
+      (fn [package]
+        {:item/id package
+         :item/value
+         {:package package
+          :entry (package-entry package packages)
+          :selector selector
+          :options options}})
+      (ordered-packages packages)))))
+
+(defn selected-package?
+  [item context]
+  (selector-match? (:selector item)
+                   (:package item)))
+
+(defn operation-status
+  [result]
+  (cond
+    (and (map? result) (has? result :status))
+    (:status result)
+
+    (and (map? result)
+         (number? (:exit result))
+         (not (= 0 (:exit result))))
+    :error
+
+    :else
+    :return))
+
+(defn normalise-operation-result
+  [base result]
+  (let [status (operation-status result)]
+    (if (map? result)
+      (merge base {:status status} result)
+      (merge base
+             {:status status
+              :value result}))))
+
+(defn run-operation
+  "Runs one package operation through a runtime context process capability.
+   Command failures are completed domain results so the remaining package
+   manifest can continue; work/runtime failures remain outside this boundary."
+  [operation item context]
+  (let [package (:package item)
+        entry (:entry item)
+        root (package-root entry)
+        entry-options (if (map? entry) (or (:options entry) {}) {})
+        options (merge entry-options (:options item))
+        runner (or (:process/run context) runtime/run)
+        argv (package-command operation root options)
+        process-options (or (:process-options options) {})
+        base {:package package
+              :root root
+              :operation operation
+              :command argv}]
+    (try
+      (let [result (runner argv process-options)
+            result (if (promise? result) (deref result) result)]
+        (normalise-operation-result base result))
+      (catch Throwable error
+        (merge base
+               {:status :error
+                :error (str error)})))))
+
+(defn result-records
+  [manifest]
+  (vec
+   (map (fn [item] (:item/value item))
+        manifest)))
+
+(defn records-with-status
+  [records statuses]
+  (vec
+   (filter
+    (fn [record]
+      (reduce (fn [matched status]
+                (or matched (= status (:status record))))
+              false
+              statuses))
+    records)))
+
+(defn package-results
+  [records]
+  (reduce
+   (fn [output record]
+     (assoc output
+            (:package record)
+            (dissoc record :status)))
+   {}
+   (records-with-status records [:return])))
+
+(defn summarise-results
+  [batch context]
+  (let [packages (vec (map (fn [item] (:item/id item))
+                           (:items batch)))
+        records (result-records (:results batch))
+        warnings (records-with-status records [:warn])
+        errors (records-with-status records [:error :critical])
+        results (package-results records)
+        cumulative
+        (reduce (fn [total record]
+                  (+ total (or (:elapsed record) 0)))
+                0
+                records)]
+    {:items packages
+     :records records
+     :results results
+     :warnings warnings
+     :errors errors
+     :summary
+     {:items (count records)
+      :results (count results)
+      :warnings (count warnings)
+      :errors (count errors)
+      :cumulative cumulative
+      :elapsed cumulative}}))
+
+(defn operation-work
+  [operation]
+  (command/batch
+   {:id (symbol (str "code.project.deploy/" (name operation)))
+    :version 1
+    :deploy/operation operation}
+   {:prepare
+    (work/pure :deploy/prepare
+               (fn [input context] (prepare-input input)))
+    :batch-options {:id :deploy/packages}
+    :list (work/pure :deploy/list-packages package-manifest)
+    :filter (work/pure :deploy/select-package selected-package?)
+    :process
+    (work/step :deploy/run-package
+               (fn [item context]
+                 (run-operation operation item context)))
+    :summarise (work/pure :deploy/summarise summarise-results)
+    :finish
+    (work/pure :deploy/result
+               (fn [batch context] (:summary batch)))}))
+
+(def check (operation-work :check))
+(def package (operation-work :package))
+(def build (operation-work :build))
+(def install (operation-work :install))
+(def deploy (operation-work :deploy))
+(def publish (operation-work :publish))

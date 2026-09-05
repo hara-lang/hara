@@ -1,0 +1,115 @@
+(ns lang.common.book-module-test
+  (:use code.test)
+  (:require [lang.common.book-module :as module]))
+
+^{:refer lang.common.book-module/book-module? :added "4.0"}
+(fact "checks if object is a book module"
+  (module/book-module?
+   (module/book-module {:lang :lua :id 'L.core}))
+  => true)
+
+^{:refer lang.common.book-module/book-module :added "4.0"}
+(fact "creates immutable book modules"
+  (module/book-module
+   {:lang :lua :id 'L.core :link {'- 'L.core}
+    :alias {'cr 'coroutine 't 'table}
+    :code {'identity {}}})
+  => module/book-module?)
+
+^{:refer lang.common.book-module/polyfill-default-alias :added "4.1"}
+(fact "returns the default alias for a derived polyfill module"
+  (module/polyfill-default-alias 'common-net) => 'polyfill-net
+  (module/polyfill-default-alias 'polyfill-net) => 'polyfill-net
+  (module/polyfill-default-alias 'net) => 'polyfill-net)
+
+^{:refer lang.common.book-module/module-derived-view :added "4.1"}
+(fact "returns an immutable compilation view with derived polyfill links"
+  (let [book {:modules {'demo.poly
+                        (module/book-module {:lang :js :id 'demo.poly})}}
+        view
+        (module/module-derived-view
+         book
+         (module/book-module
+          {:lang :js :id 'demo.core
+           :code {'identity {:polyfill-modules #{'demo.poly}}}}))]
+    [(:link view) (:internal view) (:alias view)])
+  => [{'polyfill-demo.poly 'demo.poly}
+      {'demo.poly 'polyfill-demo.poly}
+      {'polyfill-demo.poly 'demo.poly}])
+
+^{:refer lang.common.book-module/resolve-module-view :added "4.1"}
+(fact "resolves module ids and values into compilation views"
+  (let [value (module/book-module {:lang :js :id 'demo.core})
+        book {:modules {'demo.core value}}]
+    [(module/resolve-module-view nil nil)
+     (:id (module/resolve-module-view book 'demo.core))
+     (:id (module/resolve-module-view nil value))])
+  => [nil 'demo.core 'demo.core])
+
+^{:refer lang.common.book-module/module-deps-code :added "4.0"}
+(fact "derives code and hard-link dependencies"
+  (let [value
+        (module/book-module
+         {:lang :js :id 'demo.promise
+          :code {'wrap {:deps #{'demo.data/value}
+                        :polyfill-modules #{'demo.poly}
+                        :xtalk-ops #{:x-promise}}}})
+        book {:modules {'demo.promise value 'demo.poly {}}
+              :grammar {:reserved
+                        {'x:promise {:op :x-promise :emit :hard-link
+                                     :raw 'demo.promise/promise}}}}]
+    [(module/module-deps-code value)
+     (module/module-deps-code book value)])
+  => [#{'demo.data}
+      #{'demo.data 'demo.poly 'demo.promise}])
+
+^{:refer lang.common.book-module/module-deps-native :added "4.0"}
+(fact "merges native dependencies from module entries"
+  (module/module-deps-native
+   (module/book-module
+    {:lang :js :id 'demo
+     :code {'a {:deps-native {"react" #{'React}}}
+            'b {:deps-native {"node" #{'fs}}}}}))
+  => {"react" #{'React} "node" #{'fs}})
+
+^{:refer lang.common.book-module/module-deps-fragment :added "4.0"}
+(fact "collects fragment dependencies from module entries"
+  (module/module-deps-fragment
+   (module/book-module
+    {:lang :js :id 'demo
+     :code {'a {:deps-fragment #{'demo/ref}}
+            'b {:deps-fragment #{'demo/init}}}}))
+  => #{'demo/ref 'demo/init})
+
+^{:refer lang.common.book-module/module-entries :added "4.0"}
+(fact "orders export entries by priority, time, and line"
+  (module/module-entries
+   (module/book-module
+    {:lang :js :id 'demo
+     :code {'later {:id 'later :op-key :defn :priority 2}
+            'first {:id 'first :op-key :defn :priority 1}
+            'hidden {:id 'hidden :op-key :def :priority 0}}})
+   #{:defn})
+  => [[(list :% " " 'first " ") 'demo/first]
+      [(list :% " " 'later " ") 'demo/later]])
+
+^{:refer lang.common.book-module/module-deps-all :added "4.1"}
+(fact "derives portable module dependency views"
+  (let [value
+        (module/book-module
+         {:lang :js :id 'demo.core
+          :link {'util 'demo.util}
+          :code {'one {:id 'one :op-key :defn
+                       :deps #{'demo.data/value}
+                       :deps-native {"react" #{'React}}
+                       :deps-fragment #{'demo.frag/value}}}})]
+    [(module/module-deps-all value)
+     (module/module-deps-native value)
+     (module/module-deps-fragment value)
+     (module/module-entries value #{:defn})])
+  => [#{'demo.data 'demo.util}
+      {"react" #{'React}}
+      #{'demo.frag/value}
+      [[(list :% " " 'one " ") 'demo.core/one]]])
+
+(pr-str (run {:namespace "lang.common.book-module-test"}))

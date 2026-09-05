@@ -1,0 +1,94 @@
+(ns xt.db.node.client-supabase-test
+  (:use code.test)
+  (:require [xt.db.node.client-supabase]))
+
+(def request-functions
+  '[sign-up
+    sign-in
+    sign-out
+    refresh
+    signed-in?
+    current-session
+    rpc-call
+    query-table
+    attach-model
+    health
+    admin-create-user
+    admin-delete-user
+    admin-generate-link
+    admin-get-user
+    admin-list-users
+    admin-update-user
+    authorize
+    callback
+    invite
+    otp
+    recovery
+    settings
+    token-refresh
+    user-get
+    user-put
+    verify-get
+    verify-post])
+
+(def request-arg-counts
+  {'sign-up 3
+   'sign-in 3
+   'sign-out 2
+   'refresh 1
+   'signed-in? 1
+   'current-session 1
+   'rpc-call 4
+   'query-table 4
+   'attach-model 4
+   'health 2
+   'admin-create-user 3
+   'admin-delete-user 3
+   'admin-generate-link 3
+   'admin-get-user 3
+   'admin-list-users 2
+   'admin-update-user 3
+   'authorize 3
+   'callback 2
+   'invite 3
+   'otp 3
+   'recovery 3
+   'settings 2
+   'token-refresh 3
+   'user-get 2
+   'user-put 3
+   'verify-get 3
+   'verify-post 3})
+
+(defn request-call
+  [sym]
+  (let [module (get (deref lang.core.script/+modules+)
+                    'xt.db.node.client-supabase)
+        form (:form (get (:code module) sym))]
+    (second (last form))))
+
+(defn request-contract-failures
+  []
+  (vec
+   (filter
+    (fn [row]
+      (not= [true true true true] row))
+    (map
+     (fn [sym]
+       (let [call (request-call sym)
+             action (nth call 2)
+             args (nth call 3)
+             opts (nth call 4)]
+         [(= (str "@xt.supabase/" (name sym)) action)
+          (= (get request-arg-counts sym) (count args))
+          (= 'service-id (first args))
+          (= 'opts opts)]))
+     request-functions))))
+
+(fact "preserves every Foundation Supabase action and argument contract"
+
+  (request-contract-failures)
+  => []
+
+  (request-call 'user-info)
+  => '(-/user-get node service-id opts))

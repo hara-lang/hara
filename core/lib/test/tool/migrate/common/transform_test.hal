@@ -1,0 +1,199 @@
+(ns tool.migrate.common.transform-test
+  (:use code.test)
+  (:require [tool.migrate.common.transform :as transform]
+            [tool.migrate.common.block :as nav]))
+
+(def catalog
+  {:document/id :demo/transform
+   :document/type :code-migration-spec
+   :migration/rules
+   [{:rule/id :demo/rename
+     :rule/languages [:clojure :hara]
+     :rule/phase :expression
+     :rule/priority 1
+     :rule/kind :token
+     :rule/match {:clojure {:text "old"}
+                  :hara {:text "legacy"}}
+     :rule/rewrite {:clojure {:op :replace-token :text "new"}
+                    :hara {:op :replace-token :text "native"}}
+     :rule/safety :safe
+     :rule/evidence {:source/path "src/demo.clj"
+                     :target/spec :hara/foundation}}]})
+
+(defn resolver
+  [value]
+  (if (= value 'demo/matcher)
+    (fn [root context]
+      (if-let [location (first (nav/walk-locations root))]
+        [(nav/evidence location)]
+        []))
+    (if (= value 'demo/rewriter)
+      (fn [root match context] root)
+      nil)))
+
+(def function-catalog
+  {:document/id :demo/function
+   :document/type :code-migration-spec
+   :migration/rules
+   [{:rule/id :demo/function
+     :rule/languages [:clojure :hara]
+     :rule/phase :expression
+     :rule/priority 1
+     :rule/kind :function
+     :rule/match {:clojure {:text "matcher"}
+                  :hara {:text "matcher"}}
+     :rule/rewrite nil
+     :rule/function
+     {:clojure {:match 'demo/matcher :rewrite 'demo/rewriter}
+      :hara {:match 'demo/matcher :rewrite 'demo/rewriter}}
+     :rule/safety :manual
+     :rule/evidence {:source/path "src/demo.clj"
+                     :target/spec :hara/native}}]})
+
+(def disj-catalog
+  {:document/id :demo/disj
+   :document/type :code-migration-spec
+   :migration/rules
+   [{:rule/id :clojure/disj-to-dissoc
+     :rule/languages [:clojure]
+     :rule/phase :expression
+     :rule/priority 1
+     :rule/kind :function
+     :rule/match {:clojure {:text "disj"}}
+     :rule/rewrite nil
+     :rule/function
+     {:clojure
+      {:match 'tool.migrate.common.clojure/match-disj
+       :rewrite 'tool.migrate.common.clojure/rewrite-disj}}
+     :rule/safety :safe
+     :rule/evidence {:source/path "clojure.core/disj"
+                     :target/spec :hara/foundation}}]})
+
+^{:refer tool.migrate.common.transform/language}
+(fact "language treats clj and cljc files as Clojure input"
+  [(transform/language {:source/path "src/demo.clj"} {})
+   (transform/language {:source/path "src/demo.cljc"} {})
+   (transform/language {:source/path "src/demo.hal"} {})]
+  => [:clojure :clojure :hara])
+
+^{:refer tool.migrate.common.transform/transform-code}
+(fact "transform-code returns the canonical dry-run edit for Clojure"
+  (let [result
+        (transform/transform-code
+         {:source/path "src/demo.clj"
+          :source/text "(ns demo)\n(def old 1)\n"
+          :target/path "lib/demo.hal"}
+         {:catalog catalog :mode :safe})]
+    [(:target/path result)
+     (:changed result)
+     (str/includes? (:after result) "new")
+     (count (:rules/applied result))]
+    => ["lib/demo.hal" true true 1]))
+
+^{:refer tool.migrate.common.transform/analyze}
+(fact "the same rule engine matches Hara source with its Hara branch"
+  (let [result (transform/analyze "(ns demo)\n(def legacy 1)\n"
+                                  {:catalog catalog
+                                   :source/language :hara
+                                   :target/language :hara
+                                   :mode :safe})]
+    [(str/includes? (:output result) "native")
+     (:source/language result)
+     (:target/language result)]
+    => [true :hara :hara]))
+
+^{:refer tool.migrate.common.transform/analyze}
+(fact "the direct transform supplies the default semantic resolver"
+  (let [result
+        (transform/analyze
+         "(ns demo) (defn remove-one [values link] (disj values link))"
+         {:catalog disj-catalog
+          :source/language :clojure
+          :target/language :hara
+          :mode :review})]
+    [(str/includes? (:output result) "(dissoc values link)")
+     (mapv :rule/id (:rules/applied result))])
+  => [true [:clojure/disj-to-dissoc]])
+
+^{:refer tool.migrate.common.rule/resolve-function}
+(fact "function rules use the injected resolver"
+  (let [result (transform/analyze "(ns demo)\n(def value 1)\n"
+                                  {:catalog function-catalog
+                                   :function-resolver resolver
+                                   :mode :lint})]
+    [(count (:rules/matched result))
+     (:type (first (:diagnostics result)))]
+    => [1 :tool.migrate/manual]))
+
+^{:refer tool.migrate.common.transform/canonicalize-public-metadata}
+(fact "moves declaration public metadata onto the binding symbol"
+  (let [source
+        (str "(ns demo.core)\n"
+             "^{:public true} (defn old [] 1)\n"
+             "^{:public true} (defstruct Point [x y])\n"
+             "^{:public true} (defmutable Cursor [[position :int]])\n"
+             "(defn ^{:doc :ok} both [] 2)\n"
+             "^{:refer demo.core/value}\n"
+             "(fact true)\n")
+        result (transform/canonicalize-public-metadata source)]
+    [(:moved result)
+     (:changed result)
+     (:diagnostics result)
+     (:output result)])
+  => [3 true []
+      (str "(ns demo.core)\n"
+           "(defn ^{:public true} old [] 1)\n"
+           "(defstruct ^{:public true} Point [x y])\n"
+           "(defmutable ^{:public true} Cursor [[position :int]])\n"
+           "(defn ^{:doc :ok} both [] 2)\n"
+           "^{:refer demo.core/value}\n"
+           "(fact true)\n")])
+
+^{:refer tool.migrate.common.transform/canonicalize-public-metadata}
+(fact "reports conflicting binding visibility without changing source"
+  (let [source "^{:public true} (defn ^{:public false} hidden [] 1)"
+        result (transform/canonicalize-public-metadata source)]
+    [(:changed result)
+     (:moved result)
+     (select-keys (first (:diagnostics result))
+                  [:type :level :definition/var :definition/form])])
+  => [false 0
+      {:type :tool.migrate/public-metadata-conflict
+       :level :error
+       :definition/var "hidden"
+       :definition/form "defn"}])
+
+^{:refer tool.migrate.common.transform/analyze}
+(fact "leaves binding-owned schemas to the declaration parser"
+  (let [source
+        (str "(ns demo)\n"
+             "(def ^{:schema [:xt/record [\"id\" :xt/str]]} User nil)\n"
+             "(defn.xt ^{:schema [:fn [:xt/int] :xt/str]} run [value] value)\n")
+        result (transform/analyze source
+                                  {:catalog catalog
+                                   :source/language :hara
+                                   :target/language :hara
+                                   :mode :safe})]
+    [(:changed result)
+     (:output result)
+     (:schema/moved result)
+     (:schema/removed result)]
+    => [false source nil nil]))
+
+(def results
+  [(test-check
+    "transform-code applies the declarative rewrite"
+    (let [result
+          (transform/transform-code
+           {:source/path "src/demo.clj"
+            :source/text "(ns demo)\n(def old 1)\n"
+            :target/path "lib/demo.hal"}
+           {:catalog catalog :mode :safe})]
+      [(:target/path result)
+       (:changed result)
+       (str/includes? (:after result) "new")])
+    ["lib/demo.hal" true true])])
+
+results
+
+(pr-str (run {:namespace "tool.migrate.common.transform-test"}))

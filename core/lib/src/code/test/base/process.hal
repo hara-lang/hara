@@ -1,0 +1,219 @@
+(ns code.test.base.process
+  (:require [code.test.checker.common :as common]
+            [code.test.result :as comparison]))
+
+(defn evaluate
+  [input]
+  (try
+    (Result/synchronize
+     (if (map? input)
+       ((or (:function input) (fn [] (:form input))))
+       (input)))
+    (catch Throwable error
+      (Result/create :error error))))
+
+(defn timed-settle
+  [options promise milliseconds]
+  (let [timeout-function (:work/timeout-promise options)
+        cancel-function (:work/cancel-timeout options)
+        binding (timeout-function promise milliseconds)
+        wrapped (if (map? binding) (:promise binding) binding)
+        timeout (if (map? binding) (:timeout binding) nil)
+        outcome (try
+                  (deref wrapped)
+                  (finally
+                    (if (and timeout cancel-function)
+                      (cancel-function timeout)
+                      nil)))]
+    (if (and (map? outcome) (= :timeout (:test/status outcome)))
+      (throw
+       (ex :timeout {:milliseconds milliseconds}
+           :ex/message "test comparison timed out"))
+      (if (and (map? outcome) (= :value (:test/status outcome)))
+        (:value outcome)
+        outcome))))
+
+(defn settle
+  "Returns an ordinary value, awaiting a Promise through generic std.work
+   context capabilities when a timeout is requested."
+  ([value]
+   (settle value {}))
+  ([value options]
+   (if (promise? value)
+     (if (and (:work/timeout-promise options) (:timeout options))
+       (timed-settle options value (:timeout options))
+       (deref value))
+     value)))
+
+(defn check
+  "Evaluates a thunk and returns one native comparison Result<boolean>."
+  ([thunk expected]
+   (check thunk expected {}))
+  ([thunk expected options]
+   (let [error-checker?
+         (and (common/checker? expected)
+              (has? #{:throws :raises} (:tag expected)))
+         reported-expected (comparison/descriptor expected)]
+     (try
+       (comparison/compare (settle (thunk) options) expected)
+       (catch Throwable error
+         (if (and error-checker?
+                  (not= :result/timeout (:code (ex-data error))))
+           (comparison/compare error expected)
+           (Result/create
+            :error error
+            {:test {:actual nil :expected reported-expected}})))))))
+
+(defn timeout-result?
+  [value]
+  (and (Result/error? value)
+       (let [data (ex-data (Result/error-value value))]
+         (has? #{:result/timeout :hara/timeout}
+               (or (:code data) (:ex/code data))))))
+
+(defn checks-pass?
+  [checks]
+  (reduce (fn [passing check-result]
+            (and passing (comparison/passed? check-result)))
+          true
+          checks))
+
+(defn checks-error?
+  [checks]
+  (reduce (fn [errored check-result]
+            (or errored
+                (and (Result/error? check-result)
+                     (not (timeout-result? check-result)))))
+          false
+          checks))
+
+(defn checks-timeout?
+  [checks]
+  (reduce (fn [timed-out check-result]
+            (or timed-out (timeout-result? check-result)))
+          false
+          checks))
+
+(defn normalize-checks
+  [value]
+  (cond
+    (vector? value) value
+    (result? value) [value]
+    :else
+    [(Result/create
+      :success true
+      {:test {:actual value :expected :returned}
+       :failures []})]))
+
+(defn clock-now
+  [options]
+  (let [now (:work/now options)]
+    (if now (now) nil)))
+
+(defn run-hook
+  [hook options]
+  (if hook
+    (settle (hook) options)
+    nil))
+
+(defn run-hooks
+  [hooks options]
+  (reduce (fn [output hook]
+            (do (run-hook hook options) output))
+          nil
+          hooks))
+
+(defn fact-cancelled?
+  [fact options]
+  (if (:cancelled options) true false))
+
+(defn fact-result-identity
+  [fact]
+  {:namespace (:namespace fact)
+   :name (:name fact)
+   :meta (:meta fact)})
+
+(defn error-result
+  [fact error]
+  (merge (fact-result-identity fact)
+         {:status :error
+          :checks []
+          :error (str error)}))
+
+(defn execute-fact-body
+  [fact options]
+  (try
+    (let [checks
+          (normalize-checks
+           (settle ((:function fact) options) options))
+          status (if (checks-timeout? checks)
+                   :timeout
+                   (if (checks-error? checks)
+                     :error
+                     (if (checks-pass? checks)
+                       :passed
+                       :failed)))]
+      (merge (fact-result-identity fact)
+             {:status status
+              :checks checks}))
+    (catch Throwable error
+      (error-result fact error))))
+
+(defn timed-result
+  [result start options]
+  (let [end (clock-now options)]
+    (if (and start end)
+      (assoc result :elapsed (- end start))
+      result)))
+
+(defn run-fact
+  "Runs one fact and returns a structured test-domain result."
+  ([fact]
+   (run-fact fact {}))
+  ([fact options]
+   (let [identity (fact-result-identity fact)
+         start (clock-now options)
+         result
+         (if (:skip (:meta fact))
+           (merge identity {:status :skipped :checks []})
+           (if (fact-cancelled? fact options)
+             (merge identity {:status :cancelled :checks []})
+             (try
+               (let [checks
+                     (try
+                       (do
+                         (run-hooks [(:before-each options)
+                                     (:before (:meta fact))]
+                                    options)
+                         (normalize-checks
+                          (settle ((:function fact) options) options)))
+                       (finally
+                         (run-hooks [(:after (:meta fact))
+                                     (:after-each options)]
+                                    options)))
+                     status (if (checks-timeout? checks)
+                              :timeout
+                              (if (checks-error? checks)
+                                :error
+                                (if (checks-pass? checks)
+                                  :passed
+                                  :failed)))]
+                 (merge identity {:status status :checks checks}))
+               (catch Throwable error
+                 (merge identity
+                        {:status :error
+                         :checks []
+                         :error (str error)})))))
+         end (clock-now options)
+         timed-result (if (and start end)
+                        (assoc result :elapsed (- end start))
+                        result)]
+     timed-result)))
+
+(defn infer-function [form] (fn [] form))
+(defn attach-meta [result metadata] (assoc result :meta metadata))
+(defn evaluate-on-error [result] result)
+(defn process [input] (evaluate input))
+(defn collect [results] (vec results))
+(defn skip-check [check] (assoc check :status :skipped))
+(def run-check check)

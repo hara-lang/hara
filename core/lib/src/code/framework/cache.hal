@@ -1,0 +1,136 @@
+(ns code.framework.cache
+  (:config {:override [update]})
+  (:require [std.block.base :as block]
+            [std.block.construct :as construct]
+            [std.block.parse :as parse]
+            [std.fs :as fs]
+            [std.fs.path :as path]))
+
+(def +cache-dir+ "/.hara/code/framework")
+(def +cache-suffix+ ".cache")
+(def ^:dynamic *memory-loaded* (atom false))
+(def ^:dynamic *memory* (atom {}))
+
+(declare init-memory)
+
+(defn map-values [function input]
+  (reduce-kv (fn [output key value]
+               (assoc output key (function value)))
+             {} input))
+
+(defn prepare-entry-out [entry]
+  (let [code (get-in entry [:test :code])]
+    (if (nil? code) entry
+      (assoc-in entry [:test :code]
+                (block/block-string (construct/root code))))))
+
+(defn prepare-entry-in [entry]
+  (let [code (get-in entry [:test :code])]
+    (if (nil? code) entry
+      (assoc-in entry [:test :code]
+                (vec (block/block-children (parse/parse-root code)))))))
+
+(defn prepare-out [data]
+  (map-values (fn [namespace-entry]
+                (map-values prepare-entry-out namespace-entry)) data))
+
+(defn prepare-in [data]
+  (map-values (fn [namespace-entry]
+                (map-values prepare-entry-in namespace-entry)) data))
+
+(defn modified-at [file-path]
+  (:modified-at (fs/stat file-path)))
+
+(defn file-signature [file-path]
+  (let [metadata (fs/stat file-path)]
+    [(:modified-at metadata)
+     (:size metadata)
+     (str/decode-utf8 (fs/read-bytes file-path))]))
+
+(defn file-modified?
+  ([namespace file-path]
+   (file-modified? namespace file-path *memory* +cache-dir+))
+  ([namespace file-path current cache-dir]
+   (if (or (nil? file-path) (not (fs/exists? file-path))) false
+     (let [entry (get (deref current) namespace)]
+       (if (:file-signature entry)
+         (not= (file-signature file-path) (:file-signature entry))
+         (not= (modified-at file-path) (:file-modified entry)))))))
+
+(defn fetch
+  ([namespace file-path]
+   (fetch namespace file-path *memory* +cache-dir+))
+  ([namespace file-path current cache-dir]
+   (if (not (deref *memory-loaded*)) (init-memory current cache-dir) nil)
+   (let [entry (get (deref current) namespace)]
+     (if (and (not (nil? entry))
+              (not (file-modified? namespace file-path current cache-dir)))
+       (:data entry) nil))))
+
+(defn cache-path [cache-dir namespace cache-suffix]
+  (path/join cache-dir (str namespace cache-suffix)))
+
+(defn write-text [file-path source]
+  (fs/write-bytes file-path (str/encode-utf8 source)
+                  {:mode (if (fs/exists? file-path) :replace :create)
+                   :parents? true}))
+
+(defn read-text [file-path]
+  (str/decode-utf8 (fs/read-bytes file-path)))
+
+(defn update
+  ([namespace file-path data]
+   (update namespace file-path data *memory* +cache-dir+ +cache-suffix+))
+  ([namespace file-path data current cache-dir cache-suffix]
+   (if (and (not (nil? namespace))
+            (file-modified? namespace file-path current cache-dir))
+     (let [file-modified (modified-at file-path)
+           signature (file-signature file-path)
+           output-path (cache-path cache-dir namespace cache-suffix)
+           document (assoc (prepare-out data)
+                           :meta {:file-modified file-modified
+                                  :file-signature signature
+                                  :namespace namespace})
+           _ (write-text output-path (Edn/write document))
+           cache-modified (modified-at output-path)]
+       (swap! current assoc namespace
+              {:cache-modified cache-modified
+               :file-modified file-modified
+               :file-signature signature
+               :data data})
+       data)
+     nil)))
+
+(defn load-cache-file [current file-path]
+  (try
+    (let [document (Edn/read (read-text file-path))
+          metadata (:meta document)
+          namespace (:namespace metadata)
+          data (prepare-in (dissoc document :meta))]
+      (if (nil? namespace) nil
+        (do
+          (swap! current assoc namespace
+                 {:cache-modified (modified-at file-path)
+                  :file-modified (:file-modified metadata)
+                  :file-signature (:file-signature metadata)
+                  :data data})
+          namespace)))
+    (catch Throwable error nil)))
+
+(defn init-memory
+  ([] (init-memory *memory* +cache-dir+))
+  ([current cache-dir]
+   (if (not (fs/exists? cache-dir))
+     (fs/create-directory cache-dir {:parents? true :exists-ok? true}) nil)
+   (let [files (fs/select cache-dir (fn [entry] (= :file (:type entry))))
+         loaded (vec (keep (fn [entry]
+                             (load-cache-file current (:path entry))) files))]
+     (reset! *memory-loaded* true)
+     loaded)))
+
+(defn purge
+  ([] (purge *memory*))
+  ([current]
+   (reset! current {})
+   (reset! *memory-loaded* false)
+   nil))

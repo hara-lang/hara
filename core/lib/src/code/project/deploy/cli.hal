@@ -1,0 +1,251 @@
+(ns code.project.deploy.cli
+  (:require [code.project.deploy :as deploy]
+            [std.config :as config]
+            [std.config.common :as config-common]
+            [work.base :as work]
+            [tool.cli.model :as model]
+            [tool.cli.template :as template]
+            [code.project :as project]))
+
+(def +operations+
+  #{:check :package :install :publish})
+
+(defn selector-value
+  [value]
+  (if (string? value)
+    (try
+      (Edn/read value)
+      (catch Throwable error value))
+    value))
+
+(defn operation-value
+  [value]
+  (cond
+    (keyword? value) value
+    (symbol? value) (keyword (name value))
+    (string? value) (keyword value)
+    :else value))
+
+(defn option-value
+  [options key]
+  (if (has? options key)
+    (get options key)
+    nil))
+
+(defn parse-arguments
+  "Accepts deploy options from either the manifest option parser or direct
+   handler invocations used by embedded hosts."
+  [request]
+  (loop [remaining (vec (:request/arguments request))
+         positionals []
+         options (or (:request/options request) {})]
+    (if (empty? remaining)
+      {:positionals positionals
+       :options options}
+      (let [value (first remaining)]
+        (cond
+          (= value "--config")
+          (if (< (count remaining) 2)
+            (throw
+             (ex :syntax {} :ex/message "usage: hara deploy --config requires PATH"))
+            (recur (vec (rest (rest remaining)))
+                   positionals
+                   (assoc options :config (nth remaining 1))))
+
+          (= value "--tap")
+          (if (< (count remaining) 2)
+            (throw
+             (ex :syntax {} :ex/message "usage: hara deploy --tap requires TAP"))
+            (recur (vec (rest (rest remaining)))
+                   positionals
+                   (assoc options :tap (nth remaining 1))))
+
+          (= value "--dry-run")
+          (recur (vec (rest remaining))
+                 positionals
+                 (assoc options :dry-run true))
+
+          (and (string? value)
+               (str/starts-with? value "--"))
+          (throw
+           (ex :syntax {:option value} :ex/message (str "usage: unknown deploy option " value)))
+
+          :else
+          (recur (vec (rest remaining))
+                 (conj positionals value)
+                 options))))))
+
+(defn parse-request
+  [request]
+  (let [parsed (parse-arguments request)
+        positionals (:positionals parsed)
+        operation (operation-value (first positionals))
+        selectors (vec (map selector-value (rest positionals)))
+        selector (case (count selectors)
+                   0 :all
+                   1 (first selectors)
+                   selectors)
+        options (:options parsed)]
+    (if (not (has? +operations+ operation))
+      (throw
+       (ex :syntax {:operation operation
+         :supported (vec (sort +operations+))} :ex/message "usage: hara deploy <check|package|install|publish> [SELECTOR ...]")))
+    (if (and (not= :publish operation)
+             (or (option-value options :tap)
+                 (option-value options :dry-run)))
+      (throw
+       (ex :syntax {:operation operation} :ex/message "--tap and --dry-run are only available for deploy publish")))
+    (assoc
+     (assoc
+      (assoc request
+             :request/options options)
+      :deploy/operation operation)
+     :deploy/selector selector)))
+
+(defn project-for
+  [request]
+  (let [supplied (:request/project request)]
+    (if (map? supplied)
+      supplied
+      (project/discover
+       (or supplied
+           (:request/cwd request)
+           (os/cwd))))))
+
+(defn default-loader
+  "Discovers the active project and resolves config/deploy.edn for every
+   invocation."
+  [request]
+  (let [project (project-for request)
+        root (:project/root project)
+        configured (option-value (:request/options request) :config)
+        path (or configured "config/deploy.edn")
+        document (config/load
+                  path
+                  {:root root
+                   :project project
+                   :config/project project})]
+    (if (map? document)
+      (assoc document
+             :project project
+             :project/root root
+             :config/path path)
+      document)))
+
+(defn normalise-path
+  [root path]
+  (if (or (nil? path)
+          (config-common/absolute-path? path))
+    path
+    (File/join root path)))
+
+(defn normalise-package
+  [root entry]
+  (cond
+    (string? entry)
+    (normalise-path root entry)
+
+    (map? entry)
+    (let [entry (if (has? entry :path)
+                  (assoc entry :path
+                         (normalise-path root (:path entry)))
+                  entry)]
+      (if (has? entry :root)
+        (assoc entry :root
+               (normalise-path root (:root entry)))
+        entry))
+
+    :else entry))
+
+(defn normalise-packages
+  [packages root]
+  (reduce
+   (fn [output entry]
+     (assoc output
+            (nth entry 0)
+            (normalise-package root (nth entry 1))))
+   {}
+   packages))
+
+(defn deploy-input
+  [request document]
+  (if (not (map? document))
+    (throw
+     (ex :argument {:document document} :ex/message "Resolved deploy configuration must be a map")))
+  (let [packages (:packages document)
+        root (or (:project/root document)
+                 (:root document)
+                 (:project/root (:project document)))
+        options (:request/options request)]
+    (if (not (map? packages))
+      (throw
+       (ex :dependency {:packages packages} :ex/message "Resolved deploy configuration :packages must be a map")))
+    (merge
+     (dissoc document :project)
+     {:packages (normalise-packages packages root)
+      :selector (:deploy/selector request)
+      :tap (or (option-value options :tap)
+               (:tap document))
+      :dry-run (or (option-value options :dry-run)
+                   (:dry-run document))})))
+
+(defn failure-summary?
+  [summary]
+  (seq (:errors summary)))
+
+(defn summary-message
+  [operation summary]
+  (let [counts (:summary summary)]
+    (str "deploy " (name operation)
+         ": " (:items counts) " package(s), "
+         (:errors counts) " error(s)\n")))
+
+(defn result-for
+  [operation summary]
+  (let [message (model/message
+                 (if (failure-summary? summary)
+                   :stderr
+                   :stdout)
+                 (summary-message operation summary))]
+    (if (failure-summary? summary)
+      (model/result
+       :tool.cli.outcome/failed
+       summary
+       [message])
+      (model/success summary [message]))))
+
+(defn execute
+  [loader request context]
+  (let [operation (:deploy/operation request)
+        document (loader request)
+        input (deploy-input request document)
+        summary
+        (work/run
+         (work/local-runtime)
+         (deploy/operation-work operation)
+         input
+         {:context context})]
+    (result-for operation summary)))
+
+(defn handler-for
+  "Builds a closed-registry deploy handler around catalog loader.
+   loader: [request] -> resolved deploy document."
+  [loader]
+  (if (not (fn? loader))
+    (throw
+     (ex :argument {:loader loader} :ex/message "Deploy catalog loader must be a function")))
+  (template/handler
+   {:id 'code.project.deploy.cli/handler
+    :version 1
+    :template :deploy
+    :prepare parse-request
+    :main
+    {:fn (fn [request context]
+           (execute loader request context))
+     :argcount 2}}))
+
+(defn handler
+  "Runs the default deploy handler without storing an eager closed-over
+   function in runtime-neutral namespace metadata."
+  [request]
+  ((handler-for default-loader) request))

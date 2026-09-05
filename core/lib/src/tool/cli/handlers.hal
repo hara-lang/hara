@@ -1,0 +1,101 @@
+(ns tool.cli.handlers
+  (:require [code.project.deploy.cli :as deploy]
+            [code.manage.cli :as manage]
+            [tool.cli.asset :as asset]
+            [tool.cli.extension :as extension]
+            [tool.cli.identity :as identity]
+            [tool.cli.host :as cli-host]
+            [tool.cli.language :as language]
+            [tool.cli.lint :as lint]
+            [tool.cli.model :as model]
+            [tool.cli.package :as package]
+            [tool.cli.project-command :as project-command]
+            [tool.cli.snapshot :as snapshot]
+            [tool.cli.spec :as spec]
+            [tool.cli.tap :as tap]
+            [tool.cli.test :as test]
+            [tool.cli.template :as template]
+            [lang.seedgen.cli :as seedgen]))
+
+(defn unavailable-handler
+  "Returns a stable result for a temporarily disconnected command family."
+  [feature]
+  (fn [_]
+    (model/failure
+     :tool.cli.outcome/unavailable
+     :tool.cli/feature-unavailable
+     (str (name feature) " is temporarily unavailable")
+     {:feature feature})))
+
+(defn registered-handler
+  "Closes one implementation handler through the shared CLI template. Existing
+   template handlers are retained without adding a nested work graph."
+  [handler-id implementation]
+  (if (template/handler? implementation)
+    implementation
+    (template/handler
+     {:id handler-id
+      :version 1
+      :main {:fn implementation
+             :argcount 1}})))
+
+(def +registry+
+  {:tool.cli.handler/eval
+   (registered-handler :tool.cli.handler/eval language/eval-handler)
+   :tool.cli.handler/run-file
+   (registered-handler :tool.cli.handler/run-file language/run-file-handler)
+   :tool.cli.handler/project-run
+   (registered-handler :tool.cli.handler/project-run language/project-run-handler)
+   :tool.cli.handler/lint
+   (registered-handler :tool.cli.handler/lint lint/handler)
+   :tool.cli.handler/manage
+   (registered-handler :tool.cli.handler/manage manage/handler)
+   :tool.cli.handler/project-test
+   (registered-handler :tool.cli.handler/project-test
+                       test/handler)
+   :tool.cli.handler/project-new
+   (registered-handler :tool.cli.handler/project-new project-command/handler)
+   :tool.cli.handler/project-check
+   (registered-handler :tool.cli.handler/project-check project-command/handler)
+   :tool.cli.handler/project-build
+   (registered-handler :tool.cli.handler/project-build project-command/handler)
+   :tool.cli.handler/project-add
+   (registered-handler :tool.cli.handler/project-add project-command/handler)
+   :tool.cli.handler/project-remove
+   (registered-handler :tool.cli.handler/project-remove project-command/handler)
+   :tool.cli.handler/project-sync
+   (registered-handler :tool.cli.handler/project-sync project-command/handler)
+   :tool.cli.handler/project-update
+   (registered-handler :tool.cli.handler/project-update project-command/handler)
+   :tool.cli.handler/asset
+   (registered-handler :tool.cli.handler/asset asset/handler)
+   :tool.cli.handler/extension
+   (registered-handler :tool.cli.handler/extension extension/handler)
+   :tool.cli.handler/identity
+   (registered-handler :tool.cli.handler/identity identity/handler)
+   :tool.cli.handler/stdin
+   (registered-handler :tool.cli.handler/stdin cli-host/handler)
+   :tool.cli.handler/repl
+   (registered-handler :tool.cli.handler/repl cli-host/handler)
+   :tool.cli.handler/server
+   (registered-handler :tool.cli.handler/server cli-host/handler)
+   :tool.cli.handler/remote
+   (registered-handler :tool.cli.handler/remote cli-host/handler)
+   :tool.cli.handler/compile-halc
+   (registered-handler :tool.cli.handler/compile-halc cli-host/handler)
+   :tool.cli.handler/package
+   (registered-handler :tool.cli.handler/package package/handler)
+   :tool.cli.handler/tap
+   (registered-handler :tool.cli.handler/tap tap/handler)
+   :tool.cli.handler/snapshot
+   (registered-handler :tool.cli.handler/snapshot snapshot/handler)
+   :tool.cli.handler/spec
+   (registered-handler :tool.cli.handler/spec spec/handler)
+   :tool.cli.handler/seedgen
+   (registered-handler :tool.cli.handler/seedgen seedgen/handler)
+   :tool.cli.handler/deploy
+   (registered-handler :tool.cli.handler/deploy deploy/handler)})
+
+(defn registry
+  ([] +registry+)
+  ([overrides] (merge +registry+ overrides)))

@@ -1,0 +1,837 @@
+(ns std.lib.zip
+  (:config {:override [get find prewalk postwalk]}))
+
+(declare display-zipper)
+
+(def ^:dynamic *handler* nil)
+
+(defonce +types+ (atom {}))
+
+(defn register-type
+  "registers a zip type"
+  {:added "4.0"}
+  [type context]
+  (swap! +types+ assoc type context))
+
+(defn unregister-type
+  "unregisters a zip type"
+  {:added "4.0"}
+  [type context]
+  (swap! +types+ dissoc type))
+
+(def +nil-handler+
+  {:at-left-most        nil
+   :at-outside-most     nil
+   :at-inside-most-left nil
+   :at-inside-most      nil
+   :at-right-most       nil})
+
+(defstruct Zipper
+  [context prefix display parent left right depth changed? tag position])
+
+(defn check-context
+  "checks that the zipper contains valid functions"
+  {:added "3.0"}
+  [context]
+  (let [missing (->>
+                 [:create-container
+                  :create-element
+                  :cursor
+                  :is-container?
+                  :is-empty-container?
+                  :is-element?
+                  :list-elements
+                  :update-elements
+                  :add-element
+                  :at-left-most?
+                  :at-right-most?
+                  :at-inside-most?
+                  :at-inside-most-left?
+                  :at-outside-most?]
+                 (remove context))]
+    (if (seq missing) (throw (ex :not-found {:keys missing} :ex/message "Missing keys.")) context)))
+
+(defn check-optional
+  "checks that the meta contains valid functions"
+  {:added "3.0"}
+  [context]
+  (let [missing (->>
+                 [:update-step-left
+                  :update-step-right
+                  :update-step-inside
+                  :update-step-inside-left
+                  :update-step-outside
+                  :update-delete-left
+                  :update-delete-right
+                  :update-insert-left
+                  :update-insert-right
+                  :wrap-data
+                  :unwrap-data]
+                 (remove context))]
+    (if (seq missing) (throw (ex :not-found {:keys missing} :ex/message "Missing keys.")) context)))
+
+(defn zipper?
+  "checks to see if an object is a zipper"
+  {:added "3.0"}
+  [x]
+  (instance? Zipper x))
+
+(defn zipper
+  "constructs a zipper"
+  {:added "3.0"}
+  ([root context]
+   (zipper root context {}))
+  ([root context opts]
+   (let [wrap-data (or (:wrap-data context) identity)]
+     (map->Zipper (merge opts
+                         {:depth   0
+                          :left    ()
+                          :right   (list (wrap-data root))
+                          :context (check-context context)})))))
+
+(defn unwrap-element
+  "unwraps an element"
+  {:added "4.0"}
+  [{:as zip :keys [context]} element]
+  (let [unwrap-data (or (:unwrap-data context) identity)]
+    (unwrap-data element)))
+
+(defn left-element
+  "element directly left of current position"
+  {:added "3.0"}
+  [zip]
+  (first (:left zip)))
+
+(defn right-element
+  "element directly right of current position"
+  {:added "3.0"}
+  [zip]
+  (first (:right zip)))
+
+(defn left-elements
+  "all elements left of current position"
+  {:added "3.0"}
+  [zip]
+  (reverse (:left zip)))
+
+(defn right-elements
+  "all elements right of current position"
+  {:added "3.0"}
+  [zip]
+  (:right zip))
+
+(defn current-elements
+  "all elements left and right of current position"
+  {:added "3.0"}
+  [{:as zip :keys [left right]}]
+  (concat (reverse left) right))
+
+(defn is
+  "checks zip given a predicate"
+  {:added "3.0"}
+  ([zip pred] (is zip pred :right))
+  ([zip pred step] (let [elem (first (std.foundation/get zip step))]
+                     (try (or (= elem pred)
+                            (if (and (fn? pred) (not (coll? pred))) (pred elem))
+                            (zero? (compare elem pred)))
+                       (catch Throwable t false)))))
+
+(defn get
+  "gets the value of the zipper"
+  {:added "3.0"}
+  ([zip] (get zip identity :right))
+  ([zip arg] (if (or (= arg :left) (= arg :right))
+               (get zip identity arg)
+               (get zip arg :right)))
+  ([zip func step] (let [elem (first (std.foundation/get zip step))] (func elem))))
+
+(defn is-container?
+  "checks if node on either side is a container
+
+   (-> (vector-zip [1 2 3])
+       (is-container? :right))
+   => true
+
+   (-> (vector-zip [1 2 3])
+       (is-container? :left))
+   => false"
+  {:added "3.0"}
+  ([zip]
+   (is-container? zip :right))
+  ([{:keys [context] :as zip} step]
+   (is zip (-> context :is-container?) step)))
+
+(defn is-empty-container?
+  "check if current container is empty
+
+   (-> (vector-zip [])
+       (is-empty-container?))
+   => true"
+  {:added "3.0"}
+  ([zip]
+   (is-empty-container? zip :right))
+  ([{:keys [context] :as zip} step]
+   (is zip (-> context :is-empty-container?) step)))
+
+(defn at-left-most?
+  "check if at left-most point of a container"
+  {:added "3.0"}
+  [zip]
+  (empty? (:left zip)))
+
+(defn at-right-most?
+  "check if at right-most point of a container"
+  {:added "3.0"}
+  [zip]
+  (empty? (:right zip)))
+
+(defn at-inside-most?
+  "check if at inside-most point of a container"
+  {:added "3.0"}
+  [zip]
+  (or (empty? (:right zip)) (not (is-container? zip :right))))
+
+(defn at-inside-most-left?
+  "check if at inside-most left point of a container"
+  {:added "3.0"}
+  [zip]
+  (or (empty? (:left zip)) (not (is-container? zip :left))))
+
+(defn at-outside-most?
+  "check if at outside-most point of the tree"
+  {:added "3.0"}
+  [zip]
+  (nil? (:parent zip)))
+
+(def +base+
+  {:at-inside-most-left? at-inside-most-left?
+   :cursor               (quote |)
+   :cursor-equal?        =
+   :at-outside-most?     at-outside-most?
+   :at-left-most?        at-left-most?
+   :at-right-most?       at-right-most?
+   :at-inside-most?      at-inside-most?})
+
+(defn seq-zip
+  "constructs a sequence zipper"
+  {:added "3.0"}
+  ([root]
+   (seq-zip root nil))
+  ([root opts]
+   (zipper root
+           (merge {:create-container    list
+                   :create-element      identity
+                   :is-container?       seq?
+                   :is-empty-container? empty?
+                   :is-element?         (complement nil?)
+                   :list-elements       identity
+                   :update-elements     (fn [container new-elements] (apply list new-elements))
+                   :add-element         (fn [container element] (concat container [element]))}
+                  +base+)
+           opts)))
+
+(defn vector-zip
+  "constructs a vector based zipper"
+  {:added "3.0"}
+  ([root]
+   (vector-zip root nil))
+  ([root opts]
+   (zipper root
+           (merge {:create-container  vector
+                   :create-element    identity
+                   :is-container?     vector?
+                   :is-empty-container? empty?
+                   :is-element?         (complement nil?)
+                   :list-elements     seq
+                   :update-elements   (fn [_ new-elements] (vec new-elements))
+                   :add-element       conj}
+                  +base+)
+           opts)))
+
+(defn list-child-elements
+  "lists elements of a container"
+  {:added "3.0"}
+  ([zip] (list-child-elements zip :right))
+  ([{:as zip :keys [context]} direction] (let [elem     (first (std.foundation/get zip direction))
+                                               check-fn (:is-container? context)
+                                               list-fn  (:list-elements context)]
+                                           (if (check-fn elem)
+                                             (list-fn elem)
+                                             (throw (ex :generic {:element elem} :ex/message "Not a org."))))))
+
+(defn update-child-elements
+  "updates elements of a container"
+  {:added "3.0"}
+  ([zip child-elements]
+   (update-child-elements zip child-elements :right))
+  ([{:keys [context] :as zip} child-elements direction]
+   (update-in zip
+              [direction]
+              (fn [elements]
+                (let [check-fn  (:is-container? context)
+                      update-fn (:update-elements context)
+                      old   (first elements)
+                      _     (if-not (check-fn old)
+                              (throw (ex :generic {:element old} :ex/message "Not a container.")))
+                      new   (update-fn old
+                                       child-elements)]
+                  (cons new (rest elements)))))))
+
+(defn can-step-left?
+  "check if can step left from current status\n \n   (-> (from-status '[1 2 [3 | 4]])\n       (can-step-left?))\n   => true\n \n   (-> (from-status '[1 2 [| 3 4]])\n       (can-step-left?))\n   => false"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (not ((:at-left-most? context) zip)))
+
+(defn can-step-right?
+  "check if can step right from current status\n \n   (-> (from-status '[1 2 [3 | 4]])\n       (can-step-right?))\n   => true\n \n   (-> (from-status '[1 2 [3 4 |]])\n       (can-step-right?))\n   => false"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (not ((:at-right-most? context) zip)))
+
+(defn can-step-inside?
+  "check if can step down from current status"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (not ((:at-inside-most? context) zip)))
+
+(defn can-step-inside-left?
+  "check if can step left inside a container"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (not ((:at-inside-most-left? context) zip)))
+
+(defn can-step-outside?
+  "check if can step up from current status"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (not ((:at-outside-most? context) zip)))
+
+(defn step-left
+  "step left from current status"
+  {:added "3.0"}
+  ([{:keys [left context right] :as zip}]
+   (cond ((:at-left-most? context) zip)
+         (if-let [zip-fn (get-in *handler* [:step :at-left-most])]
+           (zip-fn zip)
+           zip)
+
+         :else
+         (let [elem (first left)]
+           (-> zip
+               (assoc :left (rest left))
+               (assoc :right (cons elem right))
+               (std.foundation/apply-with (:update-step-left context) elem)))))
+  ([zip n]
+
+
+   (nth (iterate step-left zip) n)))
+
+(defn step-right
+  "step right from current status"
+  {:added "3.0"}
+  ([{:keys [left right context] :as zip}]
+   (cond ((:at-right-most? context) zip)
+         (if-let [zip-fn (get-in *handler* [:step :at-right-most])]
+           (zip-fn zip)
+           zip)
+
+         :else
+         (let [elem (first right)
+               res (-> zip
+                       (assoc :left  (cons elem left))
+                       (assoc :right (rest right))
+                       (std.foundation/apply-with (:update-step-right context) elem))]
+           res)))
+  ([zip n]
+   (nth (iterate step-right zip) n)))
+
+(defn step-inside
+  "step down from current status"
+  {:added "3.0"}
+  ([{:keys [context] :as zip}]
+   (cond ((:at-right-most? context) zip)
+         (if-let [zip-fn (get-in *handler* [:step :at-right-most])]
+           (zip-fn zip)
+           zip)
+
+         ((:at-inside-most? context) zip)
+         (if-let [zip-fn (get-in *handler* [:step :at-inside-most])]
+           (zip-fn zip)
+           zip)
+
+         :else
+         (let [elem     (right-element zip)
+               children (list-child-elements zip :right)]
+           (-> zip
+               (assoc :depth (inc (:depth zip))
+                      :left ()
+                      :right children
+                      :parent zip)
+               (std.foundation/apply-with (:update-step-inside context) elem)))))
+  ([zip n]
+   (nth (iterate step-inside zip) n)))
+
+(defn step-inside-left
+  "steps into the form on the left side"
+  {:added "3.0"}
+  ([{:keys [context] :as zip}]
+   (cond ((:at-left-most? context) zip)
+         (if-let [zip-fn (get-in *handler* [:step :at-left-most])]
+           (zip-fn zip)
+           zip)
+
+         ((:at-inside-most-left? context) zip)
+         (if-let [zip-fn (get-in *handler* [:step :at-inside-most-left])]
+           (zip-fn zip)
+           zip)
+
+         :else
+         (let [elem     (left-element zip)
+               children (list-child-elements zip :left)
+               {:keys [left right depth]} zip
+               parent (assoc zip
+                             :left (rest left)
+                             :right (cons (first left) right))]
+           (-> zip
+               (assoc :depth (inc  depth) :left (reverse children) :right () :parent parent)
+               (std.foundation/apply-with (:update-step-inside-left context) elem)))))
+  ([zip n]
+   (nth (iterate step-inside-left zip) n)))
+
+(defn step-outside
+  "step out to the current container"
+  {:added "3.0"}
+  ([zip] (let [{:keys [context left right parent depth]} zip]
+           (cond ((:at-outside-most? context) zip)
+             (if-let [zip-fn (get-in *handler* [:step :at-outside-most])] (zip-fn zip) zip)
+             :else
+             (let [elements (concat (reverse left) right)
+                   body     {:parent (:parent parent)
+                             :right (:right parent)
+                             :depth (dec depth)
+                             :left (:left parent)}]
+               (cond-> (reduce (fn [output entry] (assoc output (key entry) (val entry))) zip body)
+                 (:changed? zip)
+                 (update-child-elements elements)
+                 :then
+                 (std.foundation/apply-with (:update-step-outside context) left))))))
+  ([zip n] (nth (iterate step-outside zip) n)))
+
+(defn step-outside-right
+  "the right of the current container"
+  {:added "3.0"}
+  ([zip] (-> zip step-outside step-right))
+  ([zip n] (nth (iterate step-outside-right zip) n)))
+
+(defn step-left-most
+  "step to left-most point of current container"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (if ((:at-left-most? context) zip) zip (step-left-most (step-left zip))))
+
+(defn step-right-most
+  "step to right-most point of current container"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (if ((:at-right-most? context) zip) zip (step-right-most (step-right zip))))
+
+(defn step-inside-most
+  "step to at-inside-most point of current container"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (if ((:at-inside-most? context) zip) zip (step-inside-most (step-inside zip))))
+
+(defn step-inside-most-left
+  "steps all the way inside to the left side"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (if ((:at-inside-most-left? context) zip)
+    zip
+    (step-inside-most-left (step-inside-left zip))))
+
+(defn step-outside-most
+  "step to outside-most point of the tree"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (if ((:at-outside-most? context) zip)
+    zip
+    (step-outside-most (step-outside zip))))
+
+(defn step-outside-most-right
+  "step to outside-most point of the tree to the right"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (if ((:at-outside-most? context) zip) zip (step-right (step-outside-most zip))))
+
+(defn step-end
+  "steps status to container directly at end"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (-> zip step-outside-most step-right-most step-inside-most-left))
+
+(defn insert-left
+  "insert element/s left of the current status"
+  {:added "3.0"}
+  ([{:as zip :keys [context]} data] (let [create-fn (:create-element context) elem (create-fn data)]
+                                      (-> zip
+                                        (update-in [:left] (fn [migration-argument-0] (cons elem migration-argument-0)))
+                                        (assoc :changed? true)
+                                        (std.foundation/apply-with (:update-insert-left context) elem))))
+  ([{:as zip :keys [context]} data & more] (apply insert-left (insert-left zip data) more)))
+
+(defn insert-right
+  "insert element/s right of the current status"
+  {:added "3.0"}
+  ([{:as zip :keys [context]} data] (let [create-fn (:create-element context) elem (create-fn data)]
+                                      (-> zip
+                                        (update-in [:right]
+                                          (fn [migration-argument-0] (cons elem migration-argument-0)))
+                                        (assoc :changed? true)
+                                        (std.foundation/apply-with (:update-insert-right context) elem))))
+  ([{:as zip :keys [context]} data & more] (apply insert-right (insert-right zip data) more)))
+
+(defn delete-left
+  "delete element/s left of the current status"
+  {:added "3.0"}
+  ([{:keys [context left] :as zip}]
+   (cond ((:at-left-most? context) zip)
+         (if-let [zip-fn (get-in *handler* [:delete :at-left-most])]
+           (zip-fn zip)
+           zip)
+
+         :else
+         (let [elem (first left)]
+           (-> zip
+               (update-in [:left] rest)
+               (assoc :changed? true)
+               (std.foundation/apply-with (:update-delete-left context) elem)))))
+  ([{:keys [context] :as zip} n]
+   (nth (iterate delete-left zip) n)))
+
+(defn delete-right
+  "delete element/s right of the current status"
+  {:added "3.0"}
+  ([{:keys [context right] :as zip}]
+   (cond ((:at-right-most? context) zip)
+         (if-let [zip-fn (get-in *handler* [:delete :at-right-most])]
+           (zip-fn zip)
+           zip)
+
+         :else
+         (let [elem (first right)]
+           (-> zip
+               (update-in [:right] rest)
+               (assoc :changed? true)
+               (std.foundation/apply-with (:update-delete-right context) elem)))))
+  ([{:keys [context] :as zip} n]
+   (nth (iterate delete-right zip) n)))
+
+(defn replace-left
+  "replace element left of the current status"
+  {:added "3.0"}
+  [zip data]
+  (-> zip delete-left (insert-left data)))
+
+(defn replace-right
+  "replace element right of the current status"
+  {:added "3.0"}
+  [zip data]
+  (-> zip delete-right (insert-right data)))
+
+(defn hierarchy
+  "replace element right of the current status"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (letfn [(hierarchy--loop-1
+           [out zip]
+           (if
+            ((:at-outside-most? context) zip)
+            (conj out zip)
+            (hierarchy--loop-1 (conj out zip) (step-outside zip))))]
+    (hierarchy--loop-1 [] (step-outside zip))))
+
+(defn at-end?
+  "replace element right of the current status"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (and ((:at-right-most? context) zip)
+    (->> (hierarchy zip) (map step-right) (every? (:at-right-most? context)))))
+
+(defn surround
+  "nests elements in current block within another container"
+  {:added "3.0"}
+  [{:as zip :keys [context parent left]}]
+  (let [list-fn    (:list-elements context)
+        update-fn  (:update-elements context)
+        add-fn     (:add-element context)
+        empty-elem ((:create-container context))
+        new-elem   (->> (update-fn empty-elem (current-elements zip)) (add-fn empty-elem))]
+    (cond (nil? parent)
+      (let [elem (list-fn new-elem)]
+        (-> zip
+          (assoc :left () :right elem :changed? true)
+          (std.foundation/apply-with (:update-step-outside context) left)))
+      :else
+      (-> (step-outside zip) (replace-right new-elem) step-inside))))
+
+(defn root-element
+  "accesses the top level node"
+  {:added "3.0"}
+  [zip]
+  (-> zip step-outside-most step-left-most right-element))
+
+(defn status
+  "returns the form with the status showing"
+  {:added "3.0"}
+  [{:as zip :keys [context]} & [no-cursor]]
+  (->> (if no-cursor zip (insert-left zip (:cursor context)))
+    step-outside-most
+    current-elements
+    (apply list)
+    (unwrap-element zip)))
+
+(defn status-string
+  "returns the string form of the status"
+  {:added "3.0"}
+  [zip]
+  (->> (status zip) (apply pr-str)))
+
+(defn display-zipper
+  "displays the zipper"
+  {:added "4.0"}
+  [{:keys [parent context] :as zip}]
+  #_(dissoc zip :context :prefix :display :changed?)
+  (cond-> zip
+      :then  (dissoc :context :prefix :display :changed?)
+      parent (assoc :parent
+                    (root-element
+
+                     (replace-right parent
+                                    ((:update-elements context)
+                                     (first (:right parent))
+                                     [((:create-element context)
+                                       '...)]))))))
+
+(defn step-next
+  "step status through the tree in depth first order"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (cond (nil? zip)
+    nil
+    (and (can-step-inside? zip) (not (is-empty-container? zip)))
+    (let [zip (step-inside zip) check-fn (:is-element? context)]
+      (if (check-fn (right-element zip)) zip (step-next (step-right zip))))
+    (can-step-right? (step-right zip))
+    (let [zip (step-right zip)]
+      (if ((:is-element? context) (right-element zip)) zip (step-next zip)))
+    :else
+    (letfn [(step-next--loop-1
+             [zip]
+             (cond
+              ((:at-outside-most? context) zip)
+              nil
+              ((:is-element? context) (right-element zip))
+              zip
+              (can-step-right? (step-right zip))
+              (step-next (step-right zip))
+              :else
+              (step-next--loop-1 (step-outside-right zip))))]
+      (step-next--loop-1 (step-outside-right zip)))))
+
+(defn step-prev
+  "step status in reverse through the tree in depth first order"
+  {:added "3.0"}
+  [{:as zip :keys [context]}]
+  (cond (nil? zip)
+    nil
+    ((:at-outside-most? context) zip)
+    nil
+    (can-step-left? zip)
+    (cond (can-step-inside-left? zip)
+      (step-prev (step-inside-left zip))
+      ((:is-element? context) (left-element zip))
+      (step-left zip)
+      :else
+      (step-prev (step-left zip)))
+    :else
+    (step-outside zip)))
+
+(defn find
+  "helper function for the rest of the `find` series"
+  {:added "3.0"}
+  [zip move pred]
+  (apply-with zip
+    (comp first
+      (filter (fn [migration-argument-0]
+                (try (pred (right-element migration-argument-0)) (catch Throwable t nil))))
+      (take-while right-element)
+      (drop 1)
+      iter
+      (partial iterate move))))
+
+(defn find-left
+  "steps status left to search predicate"
+  {:added "3.0"}
+  [zip pred]
+  (find zip
+    (fn [current]
+      (if (and current (can-step-left? current)) (step-left current) nil))
+    pred))
+
+(defn find-right
+  "steps status right to search for predicate"
+  {:added "3.0"}
+  [zip pred]
+  (find zip
+    (fn [current]
+      (if (and current (can-step-right? current)) (step-right current) nil))
+    pred))
+
+(defn find-next
+  "step status through the tree in depth first order to the first matching element"
+  {:added "3.0"}
+  [zip pred]
+  (find zip step-next pred))
+
+(defn find-prev
+  "step status through the tree in reverse order to the last matching element"
+  {:added "3.0"}
+  [zip pred]
+  (find zip step-prev pred))
+
+(defn from-status
+  "returns a zipper given a data structure with | as the status"
+  {:added "3.0"}
+  ([data] (from-status data vector-zip))
+  ([data zipper-fn] (let [{:as zip :keys [context]} (zipper-fn data)]
+                      (if-let [nzip (->
+                                     zip
+                                     (find-next
+                                      (fn
+                                       [migration-argument-0]
+                                       ((:cursor-equal? context) ((keyword "cursor") context) migration-argument-0))))]
+                        (delete-right nzip)
+                        zip))))
+
+(defn form-zip-wrap
+  "wraps nils for the zipper"
+  {:added "4.0"}
+  [form]
+  (std.foundation/prewalk (fn [x] (if (nil? x) (result :success x) x)) form))
+
+(defn form-zip-unwrap
+  "unwraps nils for the zipper"
+  {:added "4.0"}
+  [form]
+  (std.foundation/prewalk (fn [x] (if (result? x) (deref x) x)) form))
+
+(defn form-zip
+  "creates a form zip"
+  {:added "4.0"}
+  ([root]
+   (form-zip root nil))
+  ([root opts]
+   (zipper root
+           (merge {:wrap-data         form-zip-wrap
+                   :unwrap-data       form-zip-unwrap
+                   :create-container  (fn [] '()) ; Default to an empty list for new containers
+                   :create-element    identity
+                   :is-container?       (fn [x] (or (list? x) (vector? x) (map? x) (set? x)))
+                   :is-empty-container? empty?
+                   :is-element?         (complement nil?)
+                   :list-elements     seq
+                   :update-elements   (fn [container new-elements]
+                                        ;; Reconstructs the container, preserving its original type
+                                        (cond
+                                          (list? container) (apply list new-elements)
+                                          (vector? container) (vec new-elements)
+                                          (map? container) (into {} new-elements)
+                                          (set? container) (into #{} new-elements)
+                                          :else (throw (ex :generic {:type (type container)} :ex/message "Unsupported container type for update"))))
+                   :add-element       (fn [container element]
+                                        ;; Adds an element, preserving container type.
+                                        ;; Note: conj behavior varies by collection type (front for lists, end for vectors).
+                                        (cond
+                                          (list? container) (concat container [element])
+                                          (vector? container) (conj container element)
+                                          (map? container) (conj container element)
+                                          (set? container) (conj container element)
+                                          :else (throw (ex :generic {:type (type container)} :ex/message "Unsupported container type for add"))))}
+                  +base+)
+           opts)))
+
+(defn prewalk
+  "emulates std.foundation/prewalk behavior with zipper"
+  {:added "3.0"}
+  [{:as zip :keys [context]} f]
+  (let [elem (right-element zip) zip (replace-right zip (f elem))]
+    (cond (can-step-inside? zip)
+      (letfn [(prewalk--loop-1
+               [zip]
+               (let
+                [zip (-> (prewalk zip f) step-right)]
+                (cond (can-step-right? zip) (prewalk--loop-1 zip) :else (step-outside zip))))]
+        (prewalk--loop-1 (step-inside zip)))
+      :else
+      zip)))
+
+(defn postwalk
+  "emulates std.foundation/postwalk behavior with zipper"
+  {:added "3.0"}
+  [zip f]
+  (let [zip (cond
+             (can-step-inside? zip) (letfn
+                                     [(postwalk--loop-1
+                                       [zip]
+                                       (let
+                                        [zip (postwalk zip f)]
+                                        (cond
+                                         (can-step-right? zip)
+                                         (postwalk--loop-1 (step-right zip))
+                                         :else
+                                         (step-outside zip))))]              (postwalk--loop-1 (step-inside zip)))
+             :else                  zip)]
+    (if (can-step-right? zip)
+      (let [elem (right-element zip)] (replace-right zip (f elem)))
+      zip)))
+
+(defn matchwalk
+  "performs a match at each level"
+  {:added "3.0"}
+  ([zip matchers f] (matchwalk zip matchers f matchwalk {}))
+  ([zip
+    [pred
+     &
+     more
+     :as
+     matchers]
+    f
+    recur-fn
+    {:as opts
+     :keys [move-right
+            can-move-right?]}]  (let [zip (if (try (pred zip) (catch Throwable t nil))
+                                           (cond (empty? more)
+                                             (f zip)
+                                             (can-step-inside? zip)
+                                             (step-outside (recur-fn (step-inside zip) (vec more) f recur-fn opts))
+                                             :else
+                                             zip)
+                                           zip)
+                                     zip (if (can-step-inside? zip)
+                                           (step-outside (recur-fn (step-inside zip) matchers f recur-fn opts))
+                                           zip)
+                                     zip (if ((or can-move-right? can-step-right?) zip)
+                                           (recur-fn ((or move-right step-right) zip) matchers f recur-fn opts)
+                                           zip)]
+                                 zip)))
+
+(defn levelwalk
+  "performs a match at the same level"
+  {:added "3.0"}
+  ([zip [pred] f] (levelwalk zip [pred] f levelwalk {}))
+  ([zip [pred] f levelwalk {:as opts :keys [move-right can-move-right?]}] (let [zip (if (try (pred zip) (catch Throwable t nil)) (f zip) zip)
+                                                                                zip (if ((or can-move-right? can-step-right?) zip)
+                                                                                      (levelwalk ((or move-right step-right) zip) [pred] f levelwalk opts)
+                                                                                      zip)]
+                                                                            zip)))

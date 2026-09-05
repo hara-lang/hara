@@ -1,0 +1,124 @@
+(ns work.provider.postgres-test
+  (:use code.test)
+  (:require [work.provider.postgres :as postgres]
+            [work.provider.memory :as memory]
+            [work.provider.conformance :as conformance]
+            [work.base.store :as store]))
+
+(def operations
+  {:next-run-id (fn [] "run-1")
+   :validate-run-id (fn [id] id)
+   :create-run (fn [run] run)
+   :load-run (fn [id] nil)
+   :list-runs (fn [query] [])
+   :transact (fn [transition] transition)
+   :list-events (fn [id] [])
+   :load-checkpoint (fn [key] nil)
+   :list-checkpoints (fn [id] [])
+   :list-outbox (fn [query] [])
+   :claim-outbox (fn [options] [])
+   :ack-outbox (fn [id options] nil)})
+
+(def provider
+  (postgres/postgres-store operations))
+
+(def postgres-baseline-corpus
+  (conformance/run-baseline-corpus
+   (fn []
+     (postgres/postgres-store
+      (store/operations (memory/memory-store))))))
+
+(def results
+  [(fact "PostgreSQL declares the shared operational store role"
+     (postgres/describe)
+     => {:provider/role :work/store
+         :provider/id :postgres
+         :provider/schema-version 1
+         :provider/value-profile "hara.hta/0-alpha"
+         :provider/capabilities
+         #{:runs
+           :transactions
+           :events
+           :checkpoints
+           :outbox
+           :persistent
+           :distributed-claims
+           :leases
+           :fencing}})
+
+   (fact "the schema is application-neutral and versioned"
+     [(get (postgres/schema) :migration/id)
+      (get (postgres/schema) :migration/version)
+      (get (postgres/schema) :migration/schema)
+      (get (postgres/schema) :migration/value-profile)
+      (get (postgres/schema) :migration/tables)
+      (count (get (postgres/schema) :migration/statements))]
+     => ["std.work.postgres/1"
+         1
+         "std_work"
+         "hara.hta/0-alpha"
+         ["std_work.store_metadata"
+          "std_work.work_run"
+          "std_work.work_transition"
+          "std_work.work_event"
+          "std_work.work_checkpoint"
+          "std_work.work_outbox"]
+         19])
+
+   (fact "atomic transition statements carry explicit CAS metadata"
+     [(get (postgres/query :transition/lock) :locking)
+      (get (postgres/query :transition/lock) :transactional)
+      (get (postgres/query :transition/update-run) :cas)
+      (get (postgres/query :transition/update-run) :transactional)
+      (get (postgres/query :transition/record) :transactional)]
+     => [:row true :run/revision true true])
+
+   (fact "distributed outbox claims are leased, fenced, and skip locked"
+     [(get (postgres/query :outbox/claim) :locking)
+      (get (postgres/query :outbox/claim) :lease)
+      (get (postgres/query :outbox/claim) :fencing)
+      (get (postgres/query :outbox/ack) :fencing)]
+     => [:skip-locked
+         :required
+         :monotonic-generation
+         :claim-id-and-generation])
+
+   (fact "completed checkpoints and outbox intents declare immutability"
+     [(get (postgres/query :checkpoint/upsert) :completed-immutability)
+      (get (postgres/query :outbox/insert) :idempotency)
+      (get (postgres/query :event/append) :idempotency)
+      (get (postgres/query :transition/create-run) :idempotency)]
+     => [true
+         :compare-existing-value
+         :compare-existing-value
+         :compare-existing-value])
+
+   (fact "bound PostgreSQL operations satisfy the standard store contract"
+     [(:provider/role (store/descriptor provider))
+      (:provider/id (store/descriptor provider))
+      (:provider/schema-version (store/descriptor provider))
+      (:provider/value-profile (store/descriptor provider))
+      (= operations (store/operations provider))]
+     => [:work/store :postgres 1 "hara.hta/0-alpha" true])
+
+   ^{:refer work.provider.conformance/run-baseline-corpus :added "0.1"}
+   (fact "the PostgreSQL adapter passes the shared baseline corpus"
+     postgres-baseline-corpus
+     => {:idempotent-create true
+         :conflicting-create-rejected true
+         :monotonic-revisions true
+         :failed-cas-no-partial-writes true
+         :checkpoint-event-atomic true
+         :stable-event-ordering true
+         :completed-checkpoint-immutable true
+         :cancellation-visible true})
+
+   (fact "portable provider descriptors carry no connection authority"
+     [(has? (store/descriptor provider) :connection)
+      (has? (store/descriptor provider) :password)
+      (has? (store/descriptor provider) :url)
+      (has? (store/descriptor provider) :endpoint)
+      (has? (postgres/describe) :connection)]
+     => [false false false false false])])
+
+(pr-str (run '[std.work-provider-postgres-test]))

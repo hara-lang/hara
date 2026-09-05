@@ -1,0 +1,43 @@
+(ns postgres.typed.export.ts-schema-test
+  (:require [postgres.typed.export.ts-schema :as ts]
+            [postgres.typed.typed-common :as types])
+  (:use code.test))
+
+(fact "converts fields to TypeScript declarations"
+  (postgres.typed.export.ts-schema/field->ts [:id {:type :uuid :nullable? false}]) => "  id: string;"
+  (postgres.typed.export.ts-schema/field->ts [:name {:type :text :nullable? true}]) => "  name?: string;"
+  (postgres.typed.export.ts-schema/field->ts ["two words" {:type :boolean}]) => "  \"two words\": boolean;")
+
+(fact "converts scalar, reference, array, enum, and nested types"
+  (postgres.typed.export.ts-schema/type->ts {:type :integer}) => "number"
+  (postgres.typed.export.ts-schema/type->ts {:type :jsonb}) => "Record<string, any>"
+  (postgres.typed.export.ts-schema/type->ts {:is-ref? true}) => "string"
+  (postgres.typed.export.ts-schema/type->ts {:type :array :items {:type :text}}) => "string[]"
+  (postgres.typed.export.ts-schema/type->ts {:type :enum :enum-ref {:ns 'Status}}) => "Status"
+  (postgres.typed.export.ts-schema/type->ts {:type :jsonb
+                :shape (types/make-jsonb-shape {:id {:type :uuid}})})
+  => "{ id: string; }")
+
+(fact "emits named interfaces while preserving literal keys"
+  (let [nested (types/make-jsonb-shape {"UserProfile" {:type :array
+                                                        :items {:type :jsonb}}})
+        value (types/make-jsonb-shape {"db/sync" {:type :jsonb :shape nested}})
+        result (postgres.typed.export.ts-schema/shape->ts-interface value "IUserEvent")]
+    [(str/includes? result "\"db/sync\"")
+     (str/includes? result "UserProfile")
+     (str/includes? result "db_sync")])
+  => [true true false])
+
+(fact "generates TypeScript definitions from the registry"
+  (types/clear-registry)
+  (types/register-type 'demo/User
+                        (types/make-table-def "demo" "User" [] :id))
+  (types/register-type 'demo/Status
+                        (types/make-enum-def "demo" "Status" [:active :disabled] nil))
+  (let [result (postgres.typed.export.ts-schema/generate-ts-schema)]
+    [(str/includes? result "export interface User")
+     (str/includes? result "export type Status")])
+  => [true true])
+
+(let [summary (run {:namespace '[postgres.typed.export.ts-schema-test] :no-report true})]
+  (pr-str (select-keys summary [:status :counts])))

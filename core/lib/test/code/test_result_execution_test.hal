@@ -1,0 +1,38 @@
+(ns code.test-result-execution-test
+  (:use code.test)
+  (:require [code.test.base.process :as process]))
+
+^{:refer 'code.test.base.process/check
+  :id 'result-execution-contract}
+(fact "returns Result booleans for matches, mismatches, and throws"
+  (let [matched (process/check (fn [] 42) 42)
+        mismatched (process/check (fn [] 42) 43)
+        thrown (process/check
+                (fn [] (throw (ex-info "boom" {:id 1})))
+                (throws :hara/Error "boom"))
+        thrown-info (process/check
+                     (fn [] (throw (ex-info "boom" {:id 1})))
+                     (throws-info {:id 1}))
+        failed (process/check
+                (fn [] (throw (ex-info "boom" {})))
+                42)]
+    [(Result/data matched)
+     (Result/data mismatched)
+     (Result/data thrown)
+     (Result/data thrown-info)
+     (Result/error? failed)])
+  => [true false true true true])
+
+(fact "normalizes direct evaluation through native Result"
+  (let [value (process/evaluate (fn [] 42))
+        promised (process/evaluate (fn [] (promise/from 42)))
+        errored (process/evaluate
+                 (fn [] (throw (ex-info "boom" {:id 1}))))]
+    [(Result/status value)
+     (Result/data value)
+     (Result/data promised)
+     (Result/error? errored)
+     (:id (ex-data (Result/error-value errored)))])
+  => [:success 42 42 true 1])
+
+(pr-str (run '[code.test-result-execution-test]))

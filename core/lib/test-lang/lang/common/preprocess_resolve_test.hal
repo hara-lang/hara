@@ -1,0 +1,55 @@
+(ns lang.common.preprocess-resolve-test
+  (:use code.test)
+  (:require [lang.common.preprocess-resolve :as resolve]))
+
+(def modules
+  (hash-map
+   'L.core
+   {:code (hash-map 'identity {:id 'identity :op :def})
+    :fragment (hash-map 'fragment {:id 'fragment :form '(constant 1)})}))
+
+(def options
+  {:module
+   {:id 'L.util
+    :link (hash-map 'u 'L.core)
+    :native-lu (hash-map 'React "react" 'Puck "@measured/puck")}})
+
+^{:refer lang.common.preprocess-resolve/get-fragment :added "4.1"}
+(fact "looks up linked fragments"
+  (let [fragment (resolve/get-fragment 'u/fragment modules options)]
+    [(:id fragment) (:form fragment)])
+  => '[fragment (constant 1)])
+
+^{:refer lang.common.preprocess-resolve/process-namespaced-resolve :added "4.1"}
+(fact "resolves linked symbols"
+  (resolve/process-namespaced-resolve 'u/identity modules options)
+  => '[L.core identity L.core/identity])
+
+^{:refer lang.common.preprocess-resolve/process-namespaced-symbol :added "4.1"}
+(fact "resolves code and standalone fragment symbols"
+  (let [deps (atom #{})
+        out (resolve/process-namespaced-symbol
+             'u/identity modules options deps (atom #{}) identity)]
+    [out (deref deps)])
+  => '[L.core/identity #{L.core/identity}]
+
+  (resolve/process-namespaced-symbol
+   'u/fragment modules options (atom #{}) (atom #{}) identity)
+  => '(constant 1))
+
+^{:refer lang.common.preprocess-resolve/process-standard-symbol :added "4.1"}
+(fact "records native import dependencies"
+  (let [deps (atom {})
+        out (resolve/process-standard-symbol 'Puck.Component options deps)]
+    [out (deref deps)])
+  => '[Puck.Component {"@measured/puck" #{Puck}}])
+
+^{:refer lang.common.preprocess-resolve/find-natives :added "4.1"}
+(fact "finds native dependencies inside quoted macro forms"
+  (resolve/find-natives
+   {:form '(defmacro effect [body]
+             (quote (React.useEffect body)))}
+   options)
+  => {"react" #{'React}})
+
+(run {:namespace "lang.common.preprocess-resolve-test"})

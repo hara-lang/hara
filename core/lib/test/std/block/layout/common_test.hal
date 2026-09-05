@@ -1,0 +1,516 @@
+(ns std.block.layout.common-test
+  (:require [std.foundation.string]
+    [std.block.base :as base]
+    [std.block.construct :as construct]
+    [std.block.layout :as bind]
+    [std.block.layout.common :as common]
+    [std.lib.encode.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+(defn migration-meta-tree
+  [value]
+  (let [metadata   (select-keys (or (meta value) {}) [:readable-len :tag :spec])
+        normalized (cond
+                    (vector? value) (mapv migration-meta-tree value)
+                    (map? value)    (reduce-kv
+                                     (fn
+                                      [output key item] (assoc output (migration-meta-tree key) (migration-meta-tree item))) {}
+                                     value)
+                    (set? value)    (set (map migration-meta-tree value))
+                    (seq? value)    (apply list (map migration-meta-tree value))
+                    :else           value)]
+    {:meta metadata :value normalized}))
+
+(defn layout-default
+  [form]
+  (binding [common/*layout-fn* bind/layout-default-fn]
+    (bind/layout-default-fn form {})))
+
+(defn split-block
+  [form]
+  (std.foundation.string/split-lines (base/block-string (layout-default form))))
+
+^{:refer std.block.layout.common/join-blocks :added "4.0"}
+(Test/run
+ [{:name "joins blocks together with a spacing array"
+   :test (fn [] (common/join-blocks [nil nil] [1 2 3 4]))
+   :expected (list 1 nil nil 2 nil nil 3 nil nil 4)}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/join-block-arrays :added "4.0"}
+(Test/run
+ [{:name "joins block-arrays together with a spacing array"
+   :test (fn [] (common/join-block-arrays [nil nil] [[1 2] [3 4 5] [6 7]]))
+   :expected (list 1 2 nil nil 3 4 5 nil nil 6 7)}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/format-multiline-string :added "4.0"}
+(Test/run [{:name "makes a multiline string into a form", :test (fn [] (common/format-multiline-string "hoeuoeu\noeuoeuoeu\noeuoeuoe\noeoeuoe")), :expected (list (quote String/join) "\\n" (vector "hoeuoeu" "oeuoeuoeu" "oeuoeuoe" "oeoeuoe"))}] migration-test-check)
+
+^{:refer std.block.layout.common/layout-single-row :added "4.0"}
+(Test/run
+ [{:name "layouts a row"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-single-row (list 1 2 3 4 5) {:indent 10}))))
+   :expected (pr-str (vector 1 (quote ␣) 2 (quote ␣) 3 (quote ␣) 4 (quote ␣) 5))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-one-column :added "4.0"}
+(Test/run
+ [{:name "layout for one column"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-one-column (list 1 2 3 4 5) {:indent 10}))))
+   :expected (pr-str [1 2 3 4 5])}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-two-column :added "4.0"}
+(Test/run
+ [{:name "layout for 2 column bindings and :key val combinations #1"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-two-column (list (list :key1 (quote val)) (list :key2-oeueu-oeue (quote val2)))
+                                                              {:col-align false} {:indent 10}))))
+   :expected (pr-str (vector (vector :key1 (quote ␣) (quote val))
+                             (vector :key2-oeueu-oeue (quote ␣) (quote val2))))}
+  {:name "layout for 2 column bindings and :key val combinations #2"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-two-column (list (list :key1 (quote val)) (list :key2-oeueu-oeue (quote val2)))
+                                                              {:col-align true} {:indent 10}))))
+   :expected (pr-str (vector (list :key1
+                                   (quote ␣) (quote ␣)
+                                   (quote ␣) (quote ␣)
+                                   (quote ␣) (quote ␣)
+                                   (quote ␣) (quote ␣)
+                                   (quote ␣) (quote ␣)
+                                   (quote ␣) (quote ␣)
+                                   (quote val))
+                             (list :key2-oeueu-oeue (quote ␣) (quote val2))))}
+  {:name "layout for 2 column bindings and :key val combinations #3"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-two-column (Algo/ordered-map :a 1 :b 2)
+                                                              {:col-align true} {:indent 10}))))
+   :expected (pr-str (vector (list :a (quote ␣) 1) (list :b (quote ␣) 2)))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-n-column-space :added "4.0"}
+(Test/run
+ [{:name "layouts a set of columns with single space"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-n-column-space [[1 2 3] [3 4] [6 7 6 7 8]] {}))))
+   :expected (pr-str (vector (vector 1 (quote ␣) 2 (quote ␣) 3)
+                             (vector 3 (quote ␣) 4) (vector 6 (quote ␣) 7 (quote ␣) 6 (quote ␣) 7 (quote ␣) 8)))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-n-column-pad :added "4.0"}
+(Test/run
+ [{:name "layouts a set of columns with single space #1"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-n-column-pad [[100 2 3] [3 400] [6 7 600 7 8]] {:col-pad 4} {}))))
+   :expected (pr-str (vector (vector 100 (quote ␣) (quote ␣) 2 (quote ␣) (quote ␣) (quote ␣) (quote ␣) 3)
+                             (vector 3 (quote ␣) (quote ␣) (quote ␣) (quote ␣) 400) (vector 6
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            7 (quote ␣)
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            (quote ␣) 600
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            7 (quote ␣)
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            (quote ␣) 8)))}
+  {:name "layouts a set of columns with single space #2"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-n-column-pad [[100 2 3] [3 400] [6 7 600 7 8]]
+                                                                {:col-pad [8 7 6 5 4]} {}))))
+   :expected (pr-str (vector (vector 100
+                                     (quote ␣) (quote ␣)
+                                     (quote ␣) (quote ␣)
+                                     (quote ␣) (quote ␣)
+                                     2 (quote ␣)
+                                     (quote ␣) (quote ␣)
+                                     (quote ␣) (quote ␣)
+                                     (quote ␣) (quote ␣)
+                                     3)
+                             (vector 3
+                                     (quote ␣) (quote ␣)
+                                     (quote ␣) (quote ␣)
+                                     (quote ␣) (quote ␣)
+                                     (quote ␣) (quote ␣)
+                                     400) (vector 6
+                                                  (quote ␣) (quote ␣)
+                                                  (quote ␣) (quote ␣)
+                                                  (quote ␣) (quote ␣)
+                                                  (quote ␣) (quote ␣)
+                                                  7 (quote ␣)
+                                                  (quote ␣) (quote ␣)
+                                                  (quote ␣) (quote ␣)
+                                                  (quote ␣) (quote ␣)
+                                                  600 (quote ␣)
+                                                  (quote ␣) (quote ␣)
+                                                  (quote ␣) 7
+                                                  (quote ␣) (quote ␣)
+                                                  (quote ␣) (quote ␣)
+                                                  (quote ␣) 8)))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-n-column-align :added "4.0"}
+(Test/run
+ [{:name "layout code based on n columns #1"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-n-column-align [[100 2 3] [3 400] [6 7 600 7 8]] {} {}))))
+   :expected (pr-str (vector (vector 100 (quote ␣) 2 (quote ␣) (quote ␣) (quote ␣) 3)
+                             (vector 3 (quote ␣) (quote ␣) (quote ␣) 400) (vector 6
+                                                                                  (quote ␣) (quote ␣)
+                                                                                  (quote ␣) 7
+                                                                                  (quote ␣) (quote ␣)
+                                                                                  (quote ␣) 600
+                                                                                  (quote ␣) 7
+                                                                                  (quote ␣) 8)))}
+  {:name "layout code based on n columns #2"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-n-column-align [[100 2 3] [3 400] [6 7 600 7 8]] {:col-pad 2} {}))))
+   :expected (pr-str (vector (vector 100 (quote ␣) 2 (quote ␣) (quote ␣) (quote ␣) 3)
+                             (vector 3 (quote ␣) (quote ␣) (quote ␣) 400) (vector 6
+                                                                                  (quote ␣) (quote ␣)
+                                                                                  (quote ␣) 7
+                                                                                  (quote ␣) (quote ␣)
+                                                                                  (quote ␣) 600
+                                                                                  (quote ␣) 7
+                                                                                  (quote ␣) (quote ␣)
+                                                                                  8)))}
+  {:name "layout code based on n columns #3"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-n-column-align [[100 2 3] [3 400] [6 7 600 7 8]] {:col-pad 4} {}))))
+   :expected (pr-str (vector (vector 100 (quote ␣) (quote ␣) 2 (quote ␣) (quote ␣) (quote ␣) (quote ␣) 3)
+                             (vector 3 (quote ␣) (quote ␣) (quote ␣) (quote ␣) 400) (vector 6
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            7 (quote ␣)
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            (quote ␣) 600
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            7 (quote ␣)
+                                                                                            (quote ␣) (quote ␣)
+                                                                                            (quote ␣) 8)))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-n-column :added "4.0"}
+(Test/run
+ [{:name "layout for arbitrary column formatting"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-n-column [[100 2 3] [3 400] [6 7 600 7 8]] {} {}))))
+   :expected (pr-str (vector (vector 100 (quote ␣) 2 (quote ␣) 3)
+                             (vector 3 (quote ␣) 400) (vector 6 (quote ␣) 7 (quote ␣) 600 (quote ␣) 7 (quote ␣) 8)))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-pair-blocks :added "4.0"}
+(Test/run
+ [{:name "layout-pair-blocks #1"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-pair-blocks (list :a 1 :b 2)
+                                                               {:indents 2 :spec {:col-align true}}))))
+   :expected (pr-str (vector (vector (list :a (quote ␣) 1) (list :b (quote ␣) 2))
+                             (list \n (quote ␣) (quote ␣))))}
+  {:name "layout-pair-blocks #2"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-pair-blocks (list :a 1 :b 2)
+                                                               {:indents 5 :spec {:col-align true}}))))
+   :expected (pr-str (vector (vector (list :a (quote ␣) 1) (list :b (quote ␣) 2))
+                             (list \n (quote ␣) (quote ␣) (quote ␣) (quote ␣) (quote ␣))))}
+  {:name "layout-pair-blocks #3"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-pair-blocks (list :a-long 1 :b 2)
+                                                               {:indents 5 :spec {:col-align true}}))))
+   :expected (pr-str (vector (vector (list :a-long (quote ␣) 1)
+                                     (list :b (quote ␣) (quote ␣) (quote ␣) (quote ␣) (quote ␣) (quote ␣) 2))
+                             (list \n (quote ␣) (quote ␣) (quote ␣) (quote ␣) (quote ␣))))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-multiline-call-setup :added "4.0"}
+(Test/run
+ [{:name "helper function to prep multiline form"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-multiline-call-setup (list (quote apply) 1 2 3 4) {:indents 0}))))
+   :expected (pr-str (vector (quote apply) 6))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-multiline-call :added "4.0"}
+(Test/run
+ [{:name "custom function for most list based functions"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-multiline-call :list (list (quote apply) 1 2 3 4) {:indents 0}))))
+   :expected (pr-str (list (quote apply) 1 2 3 4))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-multiline-list :added "4.0"}
+(Test/run [{:name "layout standard paired inputs #1", :test (fn [] (-> (common/layout-multiline-list (list (quote defn) (quote hello) "oeuoeu" (Algo/ordered-map :add 1) (vector (quote x)) (list (quote +) (quote x) 1)) {:spec {:col-from 1, :col-start 2}}) (base/block-string) (std.foundation.string/split-lines))), :expected ["(defn hello" "  \"oeuoeu\"" "  {:add 1}" "  [x]" "  (+ x 1))"]} {:name "layout standard paired inputs #2", :test (fn [] (-> (common/layout-multiline-list (list (quote assoc) (quote hello) :key1 (quote val) :key2-oeueu-oeue (quote val2)) {:spec {:columns 2, :col-from 1, :col-align true}}) (base/block-string) (std.foundation.string/split-lines))), :expected ["(assoc hello" "       :key1            val" "       :key2-oeueu-oeue val2)"]} {:name "layout standard paired inputs #3", :test (fn [] (-> (common/layout-multiline-list (list (quote assoc) (quote hello) :key1 (quote val) :key2-oeueu-oeue (quote val2)) {:spec {:columns 2, :col-from 1, :col-align false}}) (base/block-string) (std.foundation.string/split-lines))), :expected ["(assoc hello" "       :key1 val" "       :key2-oeueu-oeue val2)"]} {:name "layout standard paired inputs #4", :test (fn [] (-> (common/layout-multiline-list (list (quote hash-map) :key1 (quote val) :key2-oeueu-oeue (quote val2)) {:spec {:columns 2, :col-from 0, :col-align true}}) (base/block-string) (std.foundation.string/split-lines))), :expected ["(hash-map :key1            val" "          :key2-oeueu-oeue val2)"]} {:name "layout standard paired inputs #5", :test (fn [] (-> (common/layout-multiline-list (list (quote hash-map) :key1 (quote val) :key2-oeueu-oeue (quote val2)) {:spec {:columns 2, :col-from 0, :col-align false}}) (base/block-string) (std.foundation.string/split-lines))), :expected ["(hash-map :key1 val" "          :key2-oeueu-oeue val2)"]} {:name "layout standard paired inputs #6", :test (fn [] (-> (common/layout-multiline-list (list (quote case) (list (quote type)) :a 1 :b 2) {:spec {:columns 2, :col-from 1, :col-start 2}}) (base/block-string) (std.foundation.string/split-lines))), :expected ["(case (type)" "  :a 1" "  :b 2)"]} {:name "layout standard paired inputs #7", :test (fn [] (-> (common/layout-multiline-list (list (quote something) (quote to) (quote do) (list (quote type)) :a 1 :b 2) {:spec {:columns 2, :col-from 3, :col-start 2}}) (base/block-string) (std.foundation.string/split-lines))), :expected ["(something to do (type)" "  :a 1" "  :b 2)"]} {:name "layout standard paired inputs #8", :test (fn [] (-> (common/layout-multiline-list (list (quote something) (quote to) (quote do) (list (quote type)) :a 1 :b 2) {:spec {:columns 2, :col-from 3, :col-start 2}}) (base/block-string) (std.foundation.string/split-lines))), :expected ["(something to do (type)" "  :a 1" "  :b 2)"]}] migration-test-check)
+
+^{:refer std.block.layout.common/layout-multiline-hiccup :added "4.0"}
+(do
+ (->
+  (common/layout-multiline-hiccup
+   [:hello {:a 1 :b 2} [:world {}]]
+   {:spec {:col-from 1 :col-start 1}})
+  (base/block-string)
+  (std.foundation.string/split-lines))
+ ["[:hello {:a 1 :b 2}" " [:world {}]]"]
+ (Test/run
+  [{:name "generates hiccup code"
+    :test (fn []
+              (-> (common/layout-multiline-hiccup [:hello {:a 1 :b 2} [:world {}]]
+                                                  {:spec {:col-from 0 :col-start 1}})
+                  (base/block-string) (std.foundation.string/split-lines)))
+    :expected ["[:hello" " {:a 1 :b 2}" " [:world {}]]"]}]
+  migration-test-check))
+
+^{:refer std.block.layout.common/layout-multiline-paired :added "4.0"}
+(do
+ (->
+  (common/layout-multiline-paired
+   (list (quote something) (quote to) (quote do) (list (quote type)) :a 1 :b 2)
+   {:spec {:col-from 3 :col-start 2}})
+  (base/block-string)
+  (std.foundation.string/split-lines))
+ (Test/run
+  [{:name "layout standard paired inputs #1"
+    :test (fn []
+              (-> (common/layout-multiline-paired (list (quote assoc)
+                                                        (quote hello) :key1
+                                                        (quote val) :key2-oeueu-oeue
+                                                        (quote val2))
+                                                  {:spec {:col-align true :col-from 1}})
+                  (base/block-string) (std.foundation.string/split-lines)))
+    :expected ["(assoc hello" "       :key1            val" "       :key2-oeueu-oeue val2)"]}
+   {:name "layout standard paired inputs #2"
+    :test (fn []
+              (-> (common/layout-multiline-paired (list (quote assoc)
+                                                        (quote hello) :key1
+                                                        (quote val) :key2-oeueu-oeue
+                                                        (quote val2))
+                                                  {:spec {:col-align false :col-from 1}})
+                  (base/block-string) (std.foundation.string/split-lines)))
+    :expected ["(assoc hello" "       :key1 val" "       :key2-oeueu-oeue val2)"]}
+   {:name "layout standard paired inputs #3"
+    :test (fn []
+              (-> (common/layout-multiline-paired (list (quote hash-map) :key1 (quote val) :key2-oeueu-oeue (quote val2))
+                                                  {:spec {:col-align true :col-from 0}})
+                  (base/block-string) (std.foundation.string/split-lines)))
+    :expected ["(hash-map :key1            val" "          :key2-oeueu-oeue val2)"]}
+   {:name "layout standard paired inputs #4"
+    :test (fn []
+              (-> (common/layout-multiline-paired (list (quote hash-map) :key1 (quote val) :key2-oeueu-oeue (quote val2))
+                                                  {:spec {:col-align false :col-from 0}})
+                  (base/block-string) (std.foundation.string/split-lines)))
+    :expected ["(hash-map :key1 val" "          :key2-oeueu-oeue val2)"]}
+   {:name "layout standard paired inputs #5"
+    :test (fn []
+              (-> (common/layout-multiline-paired (list (quote case) (list (quote type)) :a 1 :b 2)
+                                                  {:spec {:col-from 1 :col-start 2}})
+                  (base/block-string) (std.foundation.string/split-lines)))
+    :expected ["(case (type)" "  :a 1" "  :b 2)"]}
+   {:name "layout standard paired inputs #6"
+    :test (fn []
+              (-> (common/layout-multiline-paired (list (quote something) (quote to) (quote do) (list (quote type)) :a 1 :b 2)
+                                                  {:spec {:col-from 3 :col-start 2}})
+                  (base/block-string) (std.foundation.string/split-lines)))
+    :expected ["(something to do (type)" "  :a 1" "  :b 2)"]}]
+  migration-test-check))
+
+^{:refer std.block.layout.common/layout-multiline-hashmap :added "4.0"}
+(Test/run
+ [{:name "layouts the hashmap #1"
+   :test (fn []
+             (-> (common/layout-multiline-hashmap {:a 1 :b 2} {:spec {:col-align true}})
+                 (base/block-string) (std.foundation.string/split-lines)))
+   :expected ["{:a 1" " :b 2}"]}
+  {:name "layouts the hashmap #2"
+   :test (fn []
+             (-> (common/layout-multiline-hashmap {:a 1 :b 2}
+                                                  {:indents 5 :spec {:col-align true}})
+                 (base/block-string) (std.foundation.string/split-lines)))
+   :expected ["{:a 1" "      :b 2}"]}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-by-columns :added "4.0"}
+(Test/run
+ [{:name "layout data using columns #1"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-by-columns [:a-long 1 :b 2] 1 {:spec {:col-align false}}))))
+   :expected (pr-str (vector :a-long (quote ␣) 1 \n (quote ␣) :b (quote ␣) 2))}
+  {:name "layout data using columns #2"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-by-columns [:a-long 1 :b 2] 2 {:spec {:col-align true}}))))
+   :expected (pr-str (vector :a-long
+                             (quote ␣) 1
+                             \n (quote ␣)
+                             (quote ␣) :b
+                             (quote ␣) (quote ␣)
+                             (quote ␣) (quote ␣)
+                             (quote ␣) (quote ␣)
+                             2))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-by-rows :added "4.0"}
+(Test/run
+ [{:name "layout data using rows #1"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-by-rows [:a-long 1 :b-long 2] 1 {:spec {:row-len 10}}))))
+   :expected (pr-str (vector :a-long (quote ␣) 1 \n (quote ␣) :b-long (quote ␣) 2))}
+  {:name "layout data using rows #2"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-by-rows [:a-long 1 :b-long 2 :c-long 3 :d-long 4]
+                                                           10 {:spec {:row-len 20}}))))
+   :expected (pr-str (vector :a-long
+                             (quote ␣) 1
+                             (quote ␣) :b-long
+                             (quote ␣) 2
+                             \n (quote ␣)
+                             (quote ␣) (quote ␣)
+                             (quote ␣) (quote ␣)
+                             (quote ␣) (quote ␣)
+                             (quote ␣) (quote ␣)
+                             (quote ␣) :c-long
+                             (quote ␣) 3
+                             (quote ␣) :d-long
+                             (quote ␣) 4))}
+  {:name "layout data using rows #3"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-by-rows [:a-long 1 :b-long 2 :c-long 3 :d-long 4]
+                                                           10 {:spec {:row-len 50}}))))
+   :expected (pr-str (vector :a-long
+                             (quote ␣) 1
+                             (quote ␣) :b-long
+                             (quote ␣) 2
+                             (quote ␣) :c-long
+                             (quote ␣) 3
+                             (quote ␣) :d-long
+                             (quote ␣) 4))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-by :added "4.0"}
+(Test/run
+ [{:name "general layout function #1"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-by [:a 1 :b 2] 0 {:spec {:row-len 5 :row-wrap true}}))))
+   :expected (pr-str (vector :a (quote ␣) 1 \n :b (quote ␣) 2))}
+  {:name "general layout function #2"
+   :test (fn []
+             (pr-str (construct/rep (common/layout-by [:a 1 :b 2] 0 {:spec {:columns 2}}))))
+   :expected (pr-str (vector :a (quote ␣) 1 \n :b (quote ␣) 2))}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-multiline-hashset :added "4.0"}
+(Test/run
+ [{:name "layouts the hashset"
+   :test (fn []
+             (-> (common/layout-multiline-hashset [:a 1 :b 2]
+                                                  {:spec {:col-align true :columns 3}})
+                 (base/block-string) (std.foundation.string/split-lines)))
+   :expected ["#{:a 1 :b" "  2}"]}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-multiline-vector :added "4.0"}
+(do
+ (bind/layout-default-fn
+  (with-meta (vector (quote col-align) (quote columns)) {:spec {:columns 1}})
+  {})
+ (Test/run
+  [{:name "layouts the vector #1"
+    :test (fn []
+              (-> (common/layout-multiline-vector [:a 1 :b 2] {:spec {:col-align true}})
+                  (base/block-string) (std.foundation.string/split-lines)))
+    :expected ["[:a" " 1" " :b" " 2]"]}
+   {:name "layouts the vector #2"
+    :test (fn []
+              (binding [common/*layout-fn* bind/layout-default-fn]
+                       (-> (common/layout-multiline-vector (vector (Algo/ordered-map :keys
+                                                                                     (with-meta (vector (quote col-align) (quote columns))
+                                                                                                {:readable-len 10 :spec {:columns 1}}) :as
+                                                                                     (quote spec))
+                                                                   (list (quote merge) (Algo/ordered-map :columns 2 :col-align false) (quote spec)) (quote hello)
+                                                                   (quote world))
+                                                           {:spec {:col-align true :columns 2}})
+                           (base/block-string) (std.foundation.string/split-lines))))
+    :expected ["[{:keys [col-align" "         columns]"
+               "  :as spec}        (merge {:col-align false :columns 2}" "                          spec)"
+               " hello             world]"]}
+   {:name "layouts the vector #3"
+    :test (fn []
+              (binding [common/*layout-fn* bind/layout-default-fn]
+                       (-> (bind/layout-default-fn (list (quote let)
+                                                         (vector (Algo/ordered-map :keys
+                                                                                   (vector (quote col-align) (quote columns)) :as
+                                                                                   (quote spec))
+                                                                 (list (quote merge) (Algo/ordered-map :columns 2 :col-align false) (quote spec)) (quote hello)
+                                                                 (quote world)))
+                                                   {})
+                           (base/block-string) (std.foundation.string/split-lines))))
+    :expected ["(let [{:keys [col-align" "              columns]"
+               "       :as spec}        (merge {:col-align false :columns 2}" "                               spec)"
+               "      hello             world])"]}]
+  migration-test-check))
+
+^{:refer std.block.layout.common/layout-with-bindings :added "4.0"}
+(Test/run
+ [{:name "layout with bindings #1"
+   :test (fn []
+             (-> (common/layout-with-bindings (list (quote let)
+                                                    (vector (quote a) 1 (quote b) 2) (list (quote +) (quote a) (quote b))
+                                                    (list (quote +) (quote a) (quote b)) (list (quote +) (quote a) (quote b)))
+                                              {})
+                 (base/block-string) (std.foundation.string/split-lines)))
+   :expected ["(let [a 1 b 2]" " (+ a b)" " (+ a b)" " (+ a b))"]}
+  {:name "layout with bindings #2"
+   :test (fn []
+             (-> (common/layout-with-bindings (list (quote binding)
+                                                    (vector (quote *ns*) 1) (list (quote do) (list (quote make-something-with) (quote *ns*) 1 2 3)))
+                                              {})
+                 (base/block-string) (std.foundation.string/split-lines)))
+   :expected ["(binding [*ns* 1]" " (do (make-something-with *ns* 1 2 3)))"]}]
+ migration-test-check)
+
+^{:refer std.block.layout.common/layout-multiline-basic :added "4.0"}
+(Test/run
+ [{:name "layout standard multiline forms"
+   :test (fn []
+             (-> (common/layout-multiline-basic (list (quote apply) 1 2 3 4) {:indents 0})
+                 (base/block-string) (std.foundation.string/split-lines)))
+   :expected ["(apply 1" "       2" "       3" "       4)"]}]
+ migration-test-check)
+
+^{:refer std.block.layout/layout-default-fn-fix :added "4.0"}
+(Test/run
+ [{:name "layout standard vectors as 1 column, but bindings as 2 #1"
+   :test (fn [] (split-block [:a 1 :b 2 :c 3]))
+   :expected ["[:a 1 :b 2 :c 3]"]}
+  {:name "layout standard vectors as 1 column, but bindings as 2 #2"
+   :test (fn [] (split-block [:this-is-long-1 :this-is-long-2 :this-is-long-3]))
+   :expected ["[:this-is-long-1" " :this-is-long-2" " :this-is-long-3]"]}
+  {:name "layout standard vectors as 1 column, but bindings as 2 #3"
+   :test (fn []
+             (split-block (list (quote let)
+                                (vector (quote variable-a)
+                                        100 (quote variable-b)
+                                        200 (quote variable-c)
+                                        (list (quote +) (quote variable-a) (quote variable-b))) (list (quote println) (quote variable-c)))))
+   :expected ["(let [variable-a 100" "      variable-b 200"
+              "      variable-c (+ variable-a variable-b)]" "  (println variable-c))"]}
+  {:name "layout standard vectors as 1 column, but bindings as 2 #4"
+   :test (fn []
+             (split-block (list (quote cond)
+                                (list (quote =) (quote x) 1) :one
+                                (list (quote =) (quote x) 2) :two
+                                :else :other)))
+   :expected ["(cond (= x 1) :one" "      (= x 2) :two" "      :else   :other)"]}]
+ migration-test-check)

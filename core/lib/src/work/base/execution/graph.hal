@@ -1,0 +1,149 @@
+(ns work.base.execution.graph
+  (:require [work.base.model :as base]
+            [work.base.frame :as frame]
+            [work.base.result :as result]))
+
+(defn- contains-value?
+  [values value]
+  (reduce
+   (fn [found candidate]
+     (or found (= candidate value)))
+   false
+   values))
+
+(defn- assert-output
+  [available output]
+  (if (not (contains-value? available output))
+    (throw
+     (ex :not-found {:work/error :work/missing-graph-output
+               :graph/output output} :ex/message "Work graph output does not exist")))
+  output)
+
+(defn- graph-needed-loop
+  [dependencies nodes pending needed]
+  (if (empty? pending)
+    needed
+    (let [key (first pending)]
+      (if (contains-value? needed key)
+        (graph-needed-loop dependencies nodes (rest pending) needed)
+        (let [definition (get nodes key)
+              entries (if definition
+                        (IDeps/dep-entries dependencies key)
+                        [])]
+          (graph-needed-loop
+           dependencies
+           nodes
+           (concat (rest pending) entries)
+           (conj needed key)))))))
+
+(defn- graph-needed
+  [spec dependencies evaluation outputs]
+  (if (= :eager evaluation)
+    (concat (:inputs spec) (:order spec))
+    (graph-needed-loop dependencies (:nodes spec) outputs [])))
+
+(defn- missing-inputs
+  [input inputs needed]
+  (vec
+   (filter
+    (fn [key]
+      (and (contains-value? needed key)
+           (not (has? input key))))
+    inputs)))
+
+(defn- graph-values
+  [input inputs]
+  (reduce
+   (fn [values key]
+     (if (has? input key)
+       (assoc values key (get input key))
+       values))
+   {}
+   inputs))
+
+(defn- dependency-values
+  [values dependencies]
+  (mapv
+   (fn [dependency]
+     (get values dependency))
+   dependencies))
+
+(declare run-graph-loop)
+
+(defn- continue-graph
+  [execute runtime frame dependencies nodes order needed outputs index values key value]
+  (run-graph-loop execute
+                  runtime
+                  frame
+                  dependencies
+                  nodes
+                  order
+                  needed
+                  outputs
+                  (inc index)
+                  (assoc values key value)))
+
+(defn- run-graph-loop
+  [execute runtime frame dependencies nodes order needed outputs index values]
+  (if (= index (count order))
+    (select-keys values outputs)
+    (let [key (nth order index)]
+      (if (not (contains-value? needed key))
+        (run-graph-loop execute runtime frame dependencies nodes order needed outputs
+                        (inc index) values)
+        (let [definition (get nodes key)
+              work (:work definition)
+              work-spec (base/work-spec-map work)
+              value
+              (execute runtime
+                       (frame/child-frame frame :graph key work-spec)
+                       work
+                       (dependency-values values (:dependencies definition)))]
+          (if (result/asynchronous? value)
+            (result/then
+             value
+             (fn [resolved]
+               (continue-graph execute runtime frame dependencies nodes order needed outputs
+                               index values key resolved)))
+            (continue-graph execute runtime frame dependencies nodes order needed outputs
+                            index values key value)))))))
+
+(defn run-graph
+  [execute runtime frame spec input]
+  (if (not (map? input))
+    (throw
+     (ex :argument {:work/error :work/invalid-graph-input
+               :input input} :ex/message "Work graph input must be a map")))
+  (let [options (or (:options frame) {})
+        evaluation (or (:evaluation options) (:evaluation spec) :eager)
+        default-outputs
+        (if (= :eager evaluation)
+          (concat (:inputs spec) (:order spec))
+          nil)
+        outputs (vec (or (:outputs options) (:outputs spec) default-outputs))
+        available (concat (:inputs spec) (:order spec))]
+    (if (not (or (= :eager evaluation) (= :lazy evaluation)))
+      (throw
+       (ex :argument {:work/error :work/invalid-graph-evaluation
+                 :evaluation evaluation} :ex/message "Work graph evaluation must be :eager or :lazy")))
+    (if (empty? outputs)
+      (throw
+       (ex :not-found {:work/error :work/missing-graph-outputs} :ex/message "Lazy work graph evaluation requires :outputs")))
+    (reduce (fn [_ output] (assert-output available output)) true outputs)
+    (let [dependencies (:dependencies spec)
+          needed (graph-needed spec dependencies evaluation outputs)
+          missing (missing-inputs input (:inputs spec) needed)]
+      (if (not (empty? missing))
+        (throw
+         (ex :not-found {:work/error :work/missing-graph-input
+                   :graph/missing missing} :ex/message "Work graph input is missing required values")))
+      (run-graph-loop execute
+                      runtime
+                      frame
+                      dependencies
+                      (:nodes spec)
+                      (:order spec)
+                      needed
+                      outputs
+                      0
+                      (graph-values input (:inputs spec))))))

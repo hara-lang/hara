@@ -1,0 +1,267 @@
+(ns work.provider.postgres
+  (:require [work.base.store :as store]))
+
+;; PostgreSQL distributed operational store boundary.
+;;
+;; The provider stores mutable execution progress and a transactional outbox.
+;; Ignatius receipt publication remains a separate provider role. Portable Hara
+;; values cross the SQL boundary only as exact canonical HTA bytes plus a bound
+;; SHA-256 digest; indexed columns are operational projections of those bytes.
+
+(def provider-id :postgres)
+
+(def schema-version 1)
+
+(def migration-id "std.work.postgres/1")
+
+(def value-profile "hara.hta/0-alpha")
+
+(def schema-name "std_work")
+
+(def table-names
+  ["std_work.store_metadata"
+   "std_work.work_run"
+   "std_work.work_transition"
+   "std_work.work_event"
+   "std_work.work_checkpoint"
+   "std_work.work_outbox"])
+
+(defn capabilities
+  []
+  #{:runs
+    :transactions
+    :events
+    :checkpoints
+    :outbox
+    :persistent
+    :distributed-claims
+    :leases
+    :fencing})
+
+(defn describe
+  []
+  {:provider/role :work/store
+   :provider/id provider-id
+   :provider/schema-version schema-version
+   :provider/value-profile value-profile
+   :provider/capabilities (capabilities)})
+
+(def schema-statements
+  ["CREATE SCHEMA IF NOT EXISTS std_work"
+
+   "CREATE TABLE IF NOT EXISTS std_work.store_metadata (metadata_key text PRIMARY KEY, metadata_value text NOT NULL, updated_at timestamptz NOT NULL DEFAULT transaction_timestamp())"
+
+   "INSERT INTO std_work.store_metadata (metadata_key, metadata_value) VALUES ('schema-version', '1'), ('value-profile', 'hara.hta/0-alpha') ON CONFLICT (metadata_key) DO NOTHING"
+
+   "CREATE SEQUENCE IF NOT EXISTS std_work.run_id_sequence AS bigint MINVALUE 1"
+
+   "CREATE TABLE IF NOT EXISTS std_work.work_run (run_id text PRIMARY KEY, work_root_digest text NOT NULL, input_digest text NOT NULL, revision bigint NOT NULL DEFAULT 0 CHECK (revision >= 0), status text NOT NULL CHECK (status IN ('created','queued','running','completed','failed','cancelled')), execution_status text NOT NULL, receipt_status text NOT NULL, acceptance_status text NOT NULL, value_profile text NOT NULL DEFAULT 'hara.hta/0-alpha' CHECK (value_profile = 'hara.hta/0-alpha'), value_digest text NOT NULL, value_bytes bytea NOT NULL, created_at timestamptz NOT NULL DEFAULT transaction_timestamp(), updated_at timestamptz NOT NULL DEFAULT transaction_timestamp())"
+
+   "CREATE TABLE IF NOT EXISTS std_work.work_transition (run_id text NOT NULL REFERENCES std_work.work_run(run_id) ON DELETE CASCADE, revision bigint NOT NULL CHECK (revision > 0), expected_revision bigint NOT NULL CHECK (expected_revision >= 0), value_profile text NOT NULL DEFAULT 'hara.hta/0-alpha' CHECK (value_profile = 'hara.hta/0-alpha'), value_digest text NOT NULL, value_bytes bytea NOT NULL, committed_at timestamptz NOT NULL DEFAULT transaction_timestamp(), PRIMARY KEY (run_id, revision), CHECK (revision = expected_revision + 1))"
+
+   "CREATE TABLE IF NOT EXISTS std_work.work_event (event_sequence bigserial PRIMARY KEY, run_id text NOT NULL REFERENCES std_work.work_run(run_id) ON DELETE CASCADE, run_revision bigint NOT NULL CHECK (run_revision > 0), event_position integer NOT NULL CHECK (event_position >= 0), value_profile text NOT NULL DEFAULT 'hara.hta/0-alpha' CHECK (value_profile = 'hara.hta/0-alpha'), value_digest text NOT NULL, value_bytes bytea NOT NULL, committed_at timestamptz NOT NULL DEFAULT transaction_timestamp(), UNIQUE (run_id, run_revision, event_position))"
+
+   "CREATE TABLE IF NOT EXISTS std_work.work_checkpoint (checkpoint_key_digest text PRIMARY KEY, run_id text NOT NULL REFERENCES std_work.work_run(run_id) ON DELETE CASCADE, checkpoint_sequence bigserial UNIQUE, status text NOT NULL, value_profile text NOT NULL DEFAULT 'hara.hta/0-alpha' CHECK (value_profile = 'hara.hta/0-alpha'), value_digest text NOT NULL, value_bytes bytea NOT NULL, committed_at timestamptz NOT NULL DEFAULT transaction_timestamp(), updated_at timestamptz NOT NULL DEFAULT transaction_timestamp())"
+
+   "CREATE TABLE IF NOT EXISTS std_work.work_outbox (outbox_id bigserial PRIMARY KEY, outbox_sequence bigint NOT NULL UNIQUE DEFAULT nextval('std_work.work_outbox_outbox_id_seq'), intent_key_digest text NOT NULL UNIQUE, run_id text NOT NULL REFERENCES std_work.work_run(run_id) ON DELETE CASCADE, run_revision bigint NOT NULL CHECK (run_revision > 0), outbox_position integer NOT NULL CHECK (outbox_position >= 0), topic text NOT NULL, kind text NOT NULL, status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','claimed','acked','dead')), claim_id text, claim_generation bigint NOT NULL DEFAULT 0 CHECK (claim_generation >= 0), lease_expires_at timestamptz, attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0), value_profile text NOT NULL DEFAULT 'hara.hta/0-alpha' CHECK (value_profile = 'hara.hta/0-alpha'), intent_digest text NOT NULL, intent_bytes bytea NOT NULL, claim_bytes bytea, acknowledgement_bytes bytea, created_at timestamptz NOT NULL DEFAULT transaction_timestamp(), updated_at timestamptz NOT NULL DEFAULT transaction_timestamp(), UNIQUE (run_id, run_revision, outbox_position), CHECK ((status = 'claimed' AND claim_id IS NOT NULL AND lease_expires_at IS NOT NULL) OR status <> 'claimed'))"
+
+   "CREATE INDEX IF NOT EXISTS work_run_status_revision_idx ON std_work.work_run (status, revision, run_id)"
+
+   "CREATE INDEX IF NOT EXISTS work_event_run_sequence_idx ON std_work.work_event (run_id, event_sequence)"
+
+   "CREATE INDEX IF NOT EXISTS work_checkpoint_run_sequence_idx ON std_work.work_checkpoint (run_id, checkpoint_sequence)"
+
+   "CREATE INDEX IF NOT EXISTS work_outbox_claimable_idx ON std_work.work_outbox (status, lease_expires_at, outbox_sequence) WHERE status IN ('pending','claimed')"
+
+   "CREATE OR REPLACE FUNCTION std_work.reject_completed_checkpoint_change() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.status = 'completed' AND (NEW.value_digest <> OLD.value_digest OR NEW.value_bytes <> OLD.value_bytes OR NEW.run_id <> OLD.run_id) THEN RAISE EXCEPTION 'completed work checkpoint is immutable' USING ERRCODE = '23514'; END IF; RETURN NEW; END $$"
+
+   "DROP TRIGGER IF EXISTS work_checkpoint_completed_immutable ON std_work.work_checkpoint"
+
+   "CREATE TRIGGER work_checkpoint_completed_immutable BEFORE UPDATE ON std_work.work_checkpoint FOR EACH ROW EXECUTE FUNCTION std_work.reject_completed_checkpoint_change()"
+
+   "CREATE OR REPLACE FUNCTION std_work.reject_outbox_intent_change() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.intent_key_digest <> OLD.intent_key_digest OR NEW.run_id <> OLD.run_id OR NEW.run_revision <> OLD.run_revision OR NEW.outbox_position <> OLD.outbox_position OR NEW.intent_digest <> OLD.intent_digest OR NEW.intent_bytes <> OLD.intent_bytes THEN RAISE EXCEPTION 'work outbox intent is immutable' USING ERRCODE = '23514'; END IF; RETURN NEW; END $$"
+
+   "DROP TRIGGER IF EXISTS work_outbox_intent_immutable ON std_work.work_outbox"
+
+   "CREATE TRIGGER work_outbox_intent_immutable BEFORE UPDATE ON std_work.work_outbox FOR EACH ROW EXECUTE FUNCTION std_work.reject_outbox_intent_change()"])
+
+(def query-contracts
+  {:run/next-id
+   {:sql "SELECT 'run-' || nextval('std_work.run_id_sequence')::text AS run_id"
+    :returns :one}
+
+   :transition/create-run
+   {:sql "INSERT INTO std_work.work_run (run_id, work_root_digest, input_digest, revision, status, execution_status, receipt_status, acceptance_status, value_digest, value_bytes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (run_id) DO NOTHING RETURNING *"
+    :parameters
+    [:run/id
+     :run/work-root-digest
+     :run/input-digest
+     :run/revision
+     :run/status
+     :run/execution-status
+     :run/receipt-status
+     :run/acceptance-status
+     :value/digest
+     :value/bytes]
+    :idempotency :compare-existing-value
+    :returns :optional-one}
+
+   :run/load
+   {:sql "SELECT * FROM std_work.work_run WHERE run_id = $1"
+    :parameters [:run/id]
+    :returns :optional-one}
+
+   :run/list
+   {:sql "SELECT * FROM std_work.work_run WHERE ($1::text IS NULL OR status = $1) ORDER BY created_at, run_id"
+    :parameters [:status]
+    :returns :many}
+
+   :transition/lock
+   {:sql "SELECT * FROM std_work.work_run WHERE run_id = $1 FOR UPDATE"
+    :parameters [:transition/run-id]
+    :transactional true
+    :locking :row
+    :returns :one}
+
+   :transition/update-run
+   {:sql "UPDATE std_work.work_run SET revision = $3, status = $4, execution_status = $5, receipt_status = $6, acceptance_status = $7, value_digest = $8, value_bytes = $9, updated_at = transaction_timestamp() WHERE run_id = $1 AND revision = $2 RETURNING *"
+    :parameters
+    [:transition/run-id
+     :transition/expected-revision
+     :transition/revision
+     :run/status
+     :run/execution-status
+     :run/receipt-status
+     :run/acceptance-status
+     :value/digest
+     :value/bytes]
+    :transactional true
+    :cas :run/revision
+    :returns :one}
+
+   :transition/record
+   {:sql "INSERT INTO std_work.work_transition (run_id, revision, expected_revision, value_digest, value_bytes) VALUES ($1,$2,$3,$4,$5) RETURNING *"
+    :parameters
+    [:transition/run-id
+     :transition/revision
+     :transition/expected-revision
+     :value/digest
+     :value/bytes]
+    :transactional true
+    :returns :one}
+
+   :event/append
+   {:sql "INSERT INTO std_work.work_event (run_id, run_revision, event_position, value_digest, value_bytes) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (run_id, run_revision, event_position) DO NOTHING RETURNING *"
+    :parameters
+    [:run/id
+     :run/revision
+     :event/position
+     :value/digest
+     :value/bytes]
+    :transactional true
+    :idempotency :compare-existing-value
+    :returns :optional-one}
+
+   :event/list
+   {:sql "SELECT * FROM std_work.work_event WHERE run_id = $1 ORDER BY event_sequence"
+    :parameters [:run/id]
+    :returns :many}
+
+   :checkpoint/upsert
+   {:sql "INSERT INTO std_work.work_checkpoint (checkpoint_key_digest, run_id, status, value_digest, value_bytes) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (checkpoint_key_digest) DO UPDATE SET status = EXCLUDED.status, value_digest = EXCLUDED.value_digest, value_bytes = EXCLUDED.value_bytes, updated_at = transaction_timestamp() RETURNING *"
+    :parameters
+    [:checkpoint/key-digest
+     :run/id
+     :checkpoint/status
+     :value/digest
+     :value/bytes]
+    :transactional true
+    :completed-immutability true
+    :returns :one}
+
+   :checkpoint/load
+   {:sql "SELECT * FROM std_work.work_checkpoint WHERE checkpoint_key_digest = $1"
+    :parameters [:checkpoint/key-digest]
+    :returns :optional-one}
+
+   :checkpoint/list
+   {:sql "SELECT * FROM std_work.work_checkpoint WHERE run_id = $1 ORDER BY checkpoint_sequence"
+    :parameters [:run/id]
+    :returns :many}
+
+   :outbox/insert
+   {:sql "INSERT INTO std_work.work_outbox (intent_key_digest, run_id, run_revision, outbox_position, topic, kind, intent_digest, intent_bytes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (intent_key_digest) DO NOTHING RETURNING *"
+    :parameters
+    [:outbox/key-digest
+     :run/id
+     :run/revision
+     :outbox/position
+     :outbox/topic
+     :outbox/kind
+     :value/digest
+     :value/bytes]
+    :transactional true
+    :idempotency :compare-existing-value
+    :returns :optional-one}
+
+   :outbox/list
+   {:sql "SELECT * FROM std_work.work_outbox WHERE ($1::text IS NULL OR run_id = $1) AND ($2::text IS NULL OR status = $2) ORDER BY outbox_sequence"
+    :parameters [:run/id :status]
+    :returns :many}
+
+   :outbox/claim
+   {:sql "WITH candidate AS (SELECT outbox_id FROM std_work.work_outbox WHERE ($1::text IS NULL OR run_id = $1) AND (status = 'pending' OR (status = 'claimed' AND lease_expires_at <= $2)) ORDER BY outbox_sequence FOR UPDATE SKIP LOCKED LIMIT $3) UPDATE std_work.work_outbox AS target SET status = 'claimed', claim_id = $4, claim_generation = target.claim_generation + 1, lease_expires_at = $5, attempts = target.attempts + 1, claim_bytes = $6, updated_at = transaction_timestamp() FROM candidate WHERE target.outbox_id = candidate.outbox_id RETURNING target.*"
+    :parameters
+    [:run/id
+     :claim/now
+     :claim/limit
+     :claim/id
+     :claim/lease-expires-at
+     :claim/bytes]
+    :transactional true
+    :locking :skip-locked
+    :lease :required
+    :fencing :monotonic-generation
+    :returns :many}
+
+   :outbox/ack
+   {:sql "UPDATE std_work.work_outbox SET status = 'acked', acknowledgement_bytes = $4, lease_expires_at = NULL, updated_at = transaction_timestamp() WHERE outbox_id = $1 AND status = 'claimed' AND claim_id = $2 AND claim_generation = $3 RETURNING *"
+    :parameters
+    [:outbox/id
+     :claim/id
+     :claim/generation
+     :acknowledgement/bytes]
+    :transactional true
+    :fencing :claim-id-and-generation
+    :returns :one}})
+
+(defn schema
+  []
+  {:migration/id migration-id
+   :migration/version schema-version
+   :migration/schema schema-name
+   :migration/value-profile value-profile
+   :migration/tables table-names
+   :migration/statements schema-statements})
+
+(defn query
+  [operation]
+  (get query-contracts operation))
+
+(defn normalise-provider
+  "Normalises an operation implementation after the host has bound PostgreSQL
+   connections, canonical HTA encoding, transactions and clock authority."
+  [operations]
+  (store/normalise-provider
+   {:provider/role :work/store
+    :provider/id provider-id
+    :provider/schema-version schema-version
+    :provider/value-profile value-profile
+    :provider/capabilities (capabilities)
+    :provider/operations operations}))
+
+(defn postgres-store
+  "Creates a validated PostgreSQL store descriptor from bound operations.
+   The portable provider never carries a connection URL, password or handle."
+  [operations]
+  (normalise-provider operations))

@@ -1,0 +1,38 @@
+(ns work.agent-no-secondary-algebra-test
+  (:require [work.base :as work]
+            [work.agent :as agent]))
+
+(def sample-agent
+  {:agent/id :sample
+   :agent/driver
+   (agent/ephemeral-work-driver
+    :sample-drive
+    (fn [agent intent context input work-context]
+      intent))
+   :agent/coordinator (agent/ephemeral-coordinator)
+   :agent/authority (agent/ephemeral-authority)})
+
+(def openai-agent
+  {:agent/id :openai-sample
+   :agent/driver
+   (agent/openai-driver
+    {:client
+     (agent/openai-client
+      {:model "gpt-5"
+       :transport (fn [request] nil)})})})
+
+(defn operation
+  [value]
+  (:op (work/work-spec value)))
+
+(def results
+  [(test-check
+    "work.agent helpers lower only to canonical Work operations"
+    [(operation (agent/drive sample-agent :intent))
+     (operation (agent/drive openai-agent :intent))
+     (operation (agent/coordinate sample-agent {:task/id :one}))
+     (operation (agent/authorize sample-agent {:action :review}))
+     (operation (agent/sign sample-agent {:action :review}))]
+    [:step :bind :step :step :step])])
+
+results

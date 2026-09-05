@@ -1,0 +1,171 @@
+(ns work.base.model)
+
+(defstruct WorkValue [spec])
+(def Work WorkValue)
+(defstruct WorkRef [id])
+(defstruct WorkObserver [function state])
+
+(def runtime-keys
+  #{:work/executor
+    :work/store
+    :work/registry
+    :work/policy
+    :work/hooks})
+
+(defn runtime-map
+  [executor store registry policy hooks]
+  {:work/executor executor
+   :work/store store
+   :work/registry registry
+   :work/policy (or policy {})
+   :work/hooks (or hooks {})})
+
+(defn canonical-runtime?
+  [runtime]
+  (and (map? runtime)
+       (= runtime-keys (set (keys runtime)))))
+
+(defn runtime-mode
+  [runtime]
+  (:work/mode (:work/policy runtime)))
+
+(defn runtime-store
+  [runtime]
+  (:work/store runtime))
+
+(defn runtime-executor
+  [runtime]
+  (:work/executor runtime))
+
+(defn runtime-receipt
+  [runtime]
+  (:work/receipt (:work/hooks runtime)))
+
+(defn runtime-hooks
+  [runtime]
+  (:work/hooks runtime))
+
+(defn runtime-handlers
+  [runtime]
+  (or (:work/handlers (runtime-hooks runtime)) {}))
+
+(defn runtime-observer
+  [runtime]
+  (:work/observer (:work/hooks runtime)))
+
+(defn runtime-definitions
+  [runtime]
+  (:work/registry runtime))
+
+(defn runtime-code-version
+  [runtime]
+  (:work/runtime-version (:work/policy runtime)))
+
+(defn runtime-schema-version
+  [runtime]
+  (:work/schema-version (:work/policy runtime)))
+
+(extend-type WorkValue IWork
+  (work-spec [work]
+    (:spec work)))
+
+(extend-type WorkValue IFn
+  (invoke [work & arguments]
+    (let [function (:work/invoke (:spec work))]
+      (if function
+        (apply function work arguments)
+        (throw
+         (ex :generic {:work/id (:id (:spec work))} :ex/message "Work value is not directly callable"))))))
+
+(extend-type WorkRef IWorkRef
+  (work-id [reference]
+    (:id reference)))
+
+(defn observer-emit
+  [observer event]
+  ((:function observer) event))
+
+(defn work-value
+  [spec]
+  (work.base.model/WorkValue spec))
+
+(defn work-spec-map
+  [work]
+  (if (and (map? work)
+           (has? work :op))
+    work
+    (if (nil? work)
+      (throw (ex :argument {} :ex/message "Work value cannot be nil"))
+      (let [spec (IWork/work-spec work)]
+        (if (map? spec)
+          spec
+          (throw
+           (ex :generic {:work work
+                     :spec spec} :ex/message "IWork/work-spec must return a map")))))))
+
+(defn work-reference
+  [id]
+  (work.base.model/WorkRef id))
+
+(defn reference-id
+  [reference]
+  (cond
+    (instance? work.base.model/WorkRef reference)
+    (:id reference)
+
+    (and reference
+         (satisfies? IWorkRef reference))
+    (IWorkRef/work-id reference)
+
+    :else
+    reference))
+
+(defn observer
+  [function]
+  (work.base.model/WorkObserver function nil))
+
+(defn recording-observer
+  []
+  (let [state (atom [])]
+    (work.base.model/WorkObserver
+     (fn [event]
+       (swap! state conj event))
+     state)))
+
+(defn observer-events
+  [observer]
+  (let [state (if observer (:state observer) nil)]
+    (if state
+      (vec (deref state))
+      [])))
+
+(defn provider-capability?
+  [provider capability]
+  (let [provider (or (:descriptor provider) provider)]
+    (reduce
+     (fn [found installed]
+       (or found (= capability installed)))
+     false
+     (or (:provider/capabilities provider) []))))
+
+(defn compatible-run?
+  [existing proposed]
+  (and (= (:run/work-root existing) (:run/work-root proposed))
+       (= (:run/work-version existing) (:run/work-version proposed))
+       (= (:run/input existing) (:run/input proposed))))
+
+(defn durable?
+  [runtime]
+  (and (= :durable (runtime-mode runtime))
+       (provider-capability? (runtime-store runtime) :checkpoints)))
+
+(defn register-definition
+  [runtime root version work]
+  (swap! (runtime-definitions runtime) assoc [root version] work)
+  work)
+
+(defn resolve-definition
+  [runtime root version]
+  (get (deref (runtime-definitions runtime)) [root version]))
+
+;; ---------------------------------------------------------------------------

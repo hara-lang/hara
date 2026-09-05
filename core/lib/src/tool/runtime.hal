@@ -1,0 +1,114 @@
+(ns tool.runtime
+  (:config {:override [eval]})
+  (:require [tool.sh :as sh]))
+
+(def +runtimes+
+  {:js {:runtime/id :js
+        :runtime/language :js
+        :runtime/tag :js
+        :runtime/name "JavaScript"
+        :runtime/environment "HARA_NODE"
+        :runtime/executable "node"
+        :runtime/arguments ["--input-type=module" "--eval"]}
+   :python {:runtime/id :python
+            :runtime/language :python
+            :runtime/tag :py
+            :runtime/name "Python"
+            :runtime/environment "HARA_PYTHON"
+            :runtime/executable "python3"
+            :runtime/arguments ["-c"]}
+   :lua {:runtime/id :lua
+         :runtime/language :lua
+         :runtime/tag :lua
+         :runtime/name "Lua"
+         :runtime/environment "HARA_LUA"
+         :runtime/executable "lua"
+         :runtime/arguments ["-e"]}})
+
+(defn runtime
+  "Returns the immutable descriptor for a supported target language."
+  [language]
+  (or (get +runtimes+ language)
+      (throw
+       (ex :host {:runtime/language language
+                 :runtime/supported [:js :python :lua]} :ex/message "Unknown Hara target language"))))
+
+(defn executable
+  "Resolves a runtime executable from options, environment, or its default."
+  [descriptor options]
+  (or (:executable options)
+      (os/getenv (:runtime/environment descriptor))
+      (:runtime/executable descriptor)))
+
+(defn command
+  "Builds argv for one target-language source evaluation.
+
+   :arguments may override the descriptor arguments. Tahto uses this to select
+   Foundation programs such as Node :nodejs, Python :cpython, or Lua :lua
+   without duplicating process execution."
+  ([language source]
+   (command language source {}))
+  ([language source options]
+   (let [descriptor (runtime language)
+         arguments (or (:arguments options)
+                       (:runtime/arguments descriptor))]
+     (vec
+      (concat [(executable descriptor options)]
+              arguments
+              [source])))))
+
+(defn- process-options
+  [options]
+  (select-keys (or options {}) [:cwd :env :stdin]))
+
+(defn- decode-result
+  [descriptor result]
+  (merge
+   {:runtime/id (:runtime/id descriptor)
+    :runtime/language (:runtime/language descriptor)
+    :runtime/tag (:runtime/tag descriptor)
+    :runtime/name (:runtime/name descriptor)}
+   result))
+
+(defn execute
+  "Executes JavaScript, Python, or Lua source once and returns a promise.
+
+   Runtime selection uses the Foundation language names :js, :python, and
+   :lua. Their grammar tags are :js, :py, and :lua. Process launch requires
+   the host :process capability."
+  ([language source]
+   (execute language source {}))
+  ([language source options]
+   (let [descriptor (runtime language)
+         argv (command language source options)]
+     (promise/then
+      (sh/execute argv (process-options options))
+      (fn [result]
+        (decode-result descriptor result))))))
+
+(defn run
+  "Executes target source and rejects the returned promise on non-zero exit."
+  ([language source]
+   (run language source {}))
+  ([language source options]
+   (promise/then
+    (execute language source options)
+    (fn [result]
+      (if (= 0 (:exit result))
+        result
+        (throw
+         (ex :host result :ex/message "Target runtime execution failed")))))))
+
+(defn eval
+  "Compatibility spelling for run."
+  ([language source]
+   (run language source))
+  ([language source options]
+   (run language source options)))
+
+(defn oneshot
+  "Compatibility spelling for execute."
+  ([language source]
+   (execute language source))
+  ([language source options]
+   (execute language source options)))

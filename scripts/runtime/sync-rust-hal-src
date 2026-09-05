@@ -1,0 +1,201 @@
+#!/usr/bin/env python3
+"""Materialize the ignored Rust packaging snapshot from canonical HAL sources."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+
+REPOSITORY = Path(__file__).resolve().parents[2]
+CORE = REPOSITORY / "core"
+SOURCE_ROOTS = (
+    CORE / "lib" / "src",
+    CORE / "lib" / "src-lang",
+)
+MIRROR_ROOT = CORE / "rust" / "hal-src"
+INVENTORY = CORE / "rust" / "standard-library.namespaces"
+
+
+def editor_artifact(path: Path) -> bool:
+    name = path.name
+    return name.startswith(".#") or (name.startswith("#") and name.endswith("#"))
+
+
+def collect(root: Path) -> dict[Path, bytes]:
+    files: dict[Path, bytes] = {}
+    for path in sorted(root.rglob("*.hal")):
+        if path.is_file() and not editor_artifact(path):
+            files[path.relative_to(root)] = path.read_bytes()
+    return files
+
+
+def collect_sources() -> dict[Path, bytes]:
+    files: dict[Path, bytes] = {}
+    owners: dict[Path, Path] = {}
+    for root in SOURCE_ROOTS:
+        for relative, content in collect(root).items():
+            if relative in files:
+                raise RuntimeError(
+                    "duplicate canonical HAL path "
+                    f"{relative.as_posix()}: {owners[relative]} and {root}"
+                )
+            files[relative] = content
+            owners[relative] = root
+    return files
+
+
+def declared_namespace(path: Path, content: bytes) -> str:
+    source = content.decode("utf-8")
+    for line in source.splitlines():
+        line = line.lstrip()
+        for prefix in ("(ns ", "(ns+ "):
+            if line.startswith(prefix):
+                remainder = line[len(prefix) :]
+                namespace = remainder.split(maxsplit=1)[0].split(")", 1)[0]
+                if namespace:
+                    return namespace
+    raise RuntimeError(f"{path} does not declare an ns or ns+ namespace")
+
+
+def standard_library_namespace(namespace: str) -> bool:
+    return (
+        namespace == "db"
+        or namespace == "tool.runtime"
+        or namespace == "tool.sh"
+        or namespace.startswith(("std.", "code.", "lang.", "db.", "tool.sh."))
+    )
+
+
+def inventory_content(files: dict[Path, bytes]) -> bytes:
+    owners: dict[str, Path] = {}
+    namespaces: list[str] = []
+    for path, content in sorted(files.items()):
+        namespace = declared_namespace(path, content)
+        previous = owners.get(namespace)
+        if previous is not None:
+            raise RuntimeError(
+                f"duplicate HAL namespace {namespace}: {previous} and {path}"
+            )
+        owners[namespace] = path
+        if standard_library_namespace(namespace):
+            namespaces.append(namespace)
+    return ("\n".join(sorted(namespaces)) + "\n").encode("utf-8")
+
+
+def classify(
+    source: dict[Path, bytes], mirror: dict[Path, bytes]
+) -> tuple[list[Path], list[Path], list[Path]]:
+    source_paths = set(source)
+    mirror_paths = set(mirror)
+    missing = sorted(source_paths - mirror_paths)
+    stale = sorted(mirror_paths - source_paths)
+    changed = sorted(
+        path for path in source_paths & mirror_paths if source[path] != mirror[path]
+    )
+    return missing, stale, changed
+
+
+def display(paths: list[Path], label: str) -> None:
+    for path in paths:
+        print(f"{label}: {path.as_posix()}", file=sys.stderr)
+
+
+def prune_empty_directories(root: Path) -> None:
+    directories = sorted(
+        (path for path in root.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    )
+    for directory in directories:
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
+
+
+def check() -> int:
+    source = collect_sources()
+    mirror = collect(MIRROR_ROOT)
+    missing, stale, changed = classify(source, mirror)
+    display(missing, "missing from core/rust/hal-src")
+    display(stale, "stale in core/rust/hal-src")
+    display(changed, "different in core/rust/hal-src")
+    expected_inventory = inventory_content(source)
+    actual_inventory = INVENTORY.read_bytes() if INVENTORY.is_file() else b""
+    inventory_stale = actual_inventory != expected_inventory
+    if inventory_stale:
+        print(
+            f"{INVENTORY.relative_to(REPOSITORY)} is not synchronized; "
+            "run scripts/runtime/sync-rust-hal-src",
+            file=sys.stderr,
+        )
+    if missing or stale or changed or inventory_stale:
+        print(
+            "core/rust/hal-src is not synchronized; "
+            "run scripts/runtime/sync-rust-hal-src",
+            file=sys.stderr,
+        )
+        return 1
+    print(
+        f"core/rust/hal-src matches {len(source)} canonical HAL sources "
+        "and namespace inventory"
+    )
+    return 0
+
+
+def synchronize() -> int:
+    source = collect_sources()
+    mirror = collect(MIRROR_ROOT)
+    missing, stale, changed = classify(source, mirror)
+
+    for path in stale:
+        (MIRROR_ROOT / path).unlink()
+
+    for path in missing + changed:
+        target = MIRROR_ROOT / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source[path])
+
+    prune_empty_directories(MIRROR_ROOT)
+    expected_inventory = inventory_content(source)
+    inventory_changed = (
+        not INVENTORY.is_file() or INVENTORY.read_bytes() != expected_inventory
+    )
+    if inventory_changed:
+        INVENTORY.write_bytes(expected_inventory)
+    print(
+        "synchronized core/rust/hal-src: "
+        f"{len(missing)} added, {len(changed)} updated, {len(stale)} removed; "
+        f"namespace inventory {'updated' if inventory_changed else 'unchanged'}"
+    )
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Materialize core/rust/hal-src for Cargo packaging"
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="report drift without changing files",
+    )
+    arguments = parser.parse_args()
+
+    missing_roots = [root for root in SOURCE_ROOTS if not root.is_dir()]
+    if missing_roots:
+        parser.error(
+            "canonical source directories are missing: "
+            + ", ".join(str(root) for root in missing_roots)
+        )
+    if arguments.check and not MIRROR_ROOT.is_dir():
+        parser.error(f"generated mirror directory is missing: {MIRROR_ROOT}")
+
+    MIRROR_ROOT.mkdir(parents=True, exist_ok=True)
+    return check() if arguments.check else synchronize()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

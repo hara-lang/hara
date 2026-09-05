@@ -1,0 +1,148 @@
+(ns lang.core.script-port-test
+  (:use code.test)
+  (:require [tool.migrate :as migrate]
+            [lang.core]
+            [lang.core.script :as script]
+            [lang.core.script-annex :as annex]
+            [lang.core.script-def :as script-def]
+            [lang.core.script-lint :as script-lint]
+            [std.lib.component :as component]))
+
+(defn report-data [outcome] (Result/data outcome))
+(defn current-module [] (symbol (str (ns-current))))
+
+(def results
+  [(fact "the complete pinned script family has no hidden public gaps"
+     [(mapv (fn [unit]
+              [(str (get unit :namespace)) (count (get unit :references))])
+            migrate/+foundation-script-source-units+)
+      (let [audit (migrate/migration-ledger-audit
+                   migrate/+foundation-script-ledger+
+                   (migrate/foundation-script-inventory))]
+        [(get audit :valid)
+         (get audit :records)
+         (get audit :source/references)
+         (get audit :diagnostics)])]
+     => [[ ["tahto.core.script" 28]
+           ["tahto.core.script-annex" 16]
+           ["tahto.core.script-control" 7]
+           ["tahto.core.script-def" 2]
+           ["tahto.core.script-lint" 12]
+           ["tahto.core.script-macro" 21] ]
+         [true 86 86 []]])
+
+   (fact "script-def preserves Foundation entry and macro template semantics"
+     (let [entry-a (std.foundation/with-template-meta {:type :fragment :tag "js"}
+                     (script-def/tmpl-entry '[createObject create]))
+           entry-b (std.foundation/with-template-meta {:type :fragment
+                                          :base "Webassembly"
+                                          :prefix "ws-"
+                                          :tag "js"}
+                     (script-def/tmpl-entry 'compile))
+           macro-form (std.foundation/with-template-meta {:tag "js"}
+                        (script-def/tmpl-macro
+                         '[length [arr] {:property true :tag "js"}]))
+           macro-symbol (second macro-form)]
+       [entry-a entry-b (first macro-form) macro-symbol
+        (boolean (:standalone (meta macro-symbol)))])
+     => '[(def$.js createObject create)
+          (def$.js ws-compile Webassembly.compile)
+          defmacro.js length true])
+
+   (fact "script-lint retains pure helpers while tool.lint owns semantic diagnostics"
+     [(sort (map str (script-lint/collect-vars
+                       #{[(symbol "hello") #{(symbol "world")}]})))
+      (set? (script-lint/get-reserved-raw :lua))
+      (map :type
+           (:findings
+            (report-data
+             (script-lint/lint-source
+              "(ns demo.script-port)\n(defn foo [x] (+ x missing))"))))]
+     => [["hello" "world"] true [:tool.lint/unresolved-symbol]])
+
+   (fact "script-control semantics are explicit runtime lifecycle operations"
+     (let [instance (lang.core/rt-create :xtalk :default
+                                         {:module 'script.port.control})
+           started (lang.core/rt-start instance)
+           output (lang.core/rt-raw-eval started "portable")
+           stopped (lang.core/rt-stop started)]
+       [(:lang started) (:runtime started) output
+        (component/stopped? stopped)])
+     => [:xtalk :default "portable" true])
+
+   (fact "tagged script annex state preserves registration and lifecycle"
+     (let [namespace (current-module)
+           registry-before (deref annex/+registry+)
+           runtimes-before (deref annex/+runtimes+)]
+       (try
+         (let [registered (annex/register-tag-in
+                           namespace :PORT.0 :xtalk :default {})
+               before (annex/status-in namespace)
+               started (annex/start-tag-in namespace :PORT.0)
+               instance (second started)
+               during (annex/status-in namespace)
+               evaluated (annex/eval-tag-in namespace :PORT.0 '(+ 1 2))
+               stopped (annex/stop-tag-in namespace :PORT.0)
+               after (annex/status-in namespace)]
+           [registered before
+            (nil? (first started))
+            (:lang instance) (:runtime instance)
+            during (string? evaluated)
+            (not (nil? stopped)) after])
+         (finally
+           (annex/stop-all-in namespace)
+           (reset! annex/+registry+ registry-before)
+           (reset! annex/+runtimes+ runtimes-before))))
+     => [[nil :xtalk]
+         {:registered #{:PORT.0} :active #{}}
+         true :xtalk :default
+         {:registered #{:PORT.0} :active #{:PORT.0}}
+         true true
+         {:registered #{:PORT.0} :active #{}}])
+
+   (fact "script+ and tagged ! are generated from the portable annex"
+     [(first (macroexpand-1
+              '(lang.core/script+ [:PORT.1 :xtalk]
+                                  {:runtime :default})))
+      (first (macroexpand-1
+              '(lang.core/! [:PORT.1] (+ 1 2))))]
+     => ['do 'lang.core.script-annex/eval-tag-in])
+
+   (fact "representative def.xt and def.pg share the portable code-pointer contract"
+     (let [modules-before (deref script/+modules+)
+           scripts-before (deref script/+scripts+)
+           contexts-before (deref script/+module-contexts+)]
+       (try
+         (eval '(lang.core/script- :xtalk))
+         (eval '(def.xt PORTED-XT 1))
+         (eval '(lang.core/script- :postgres))
+         (eval '(def.pg PORTED-PG 1))
+         (let [xt (deref (resolve 'PORTED-XT))
+               pg (deref (resolve 'PORTED-PG))]
+           [(lang.core/code-pointer? xt)
+            (lang.core/code-pointer-val xt :lang)
+            (lang.core/code-pointer-val xt :op)
+            (lang.core/code-pointer-val xt :form-input)
+            (lang.core/code-pointer? pg)
+            (lang.core/code-pointer-val pg :lang)
+            (lang.core/code-pointer-val pg :op)
+            (lang.core/code-pointer-val pg :form-input)])
+         (finally
+           (reset! script/+modules+ modules-before)
+           (reset! script/+scripts+ scripts-before)
+           (reset! script/+module-contexts+ contexts-before))))
+     => [true :xtalk 'def '(def PORTED-XT 1)
+         true :postgres 'def '(def PORTED-PG 1)])
+
+   (fact "macro publication is grammar-derived and deterministic"
+     (let [first-run (lang.core/script-macro-forms :postgres)
+           second-run (lang.core/script-macro-forms :postgres)
+           symbols (mapv second first-run)
+           available (set symbols)]
+       [(= first-run second-run)
+        (= (count symbols) (count available))
+        (every? (fn [symbol] (has? available symbol))
+                '[!.pg !.postgres def$.pg defmacro.pg def.pg defn.pg])])
+     => [true true true])])
+
+(pr-str (run '[lang.core.script-port-test]))

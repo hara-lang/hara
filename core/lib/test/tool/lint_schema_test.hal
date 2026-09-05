@@ -1,0 +1,185 @@
+(ns tool.lint-schema-test
+  (:use code.test)
+  (:require [tool.lint :as lint]
+            [tool.lint.analyze :as analyze]
+            [tool.lint.schema :as lint-schema]))
+
+(defn report-data
+  [outcome]
+  (Result/data outcome))
+
+(defn finding-types
+  [report]
+  (vec (map :type (:findings report))))
+
+^{:refer 'tool.lint.schema/declaration-fields
+  :id 'typed-declaration-field-normalization}
+(fact "normalizes legacy and typed declaration fields through one field vector"
+  (let [scan
+        (analyze/scan-source
+         "(ns demo)\n(defstruct Host [environment [name :str] [limit {:optional true} :int]])")
+        definition (first (:definitions scan))]
+    (lint-schema/declaration-fields definition))
+  => '[environment :any [name :str] [limit {:optional true} :int]])
+
+^{:refer 'tool.lint.schema/declaration-descriptor
+  :id 'typed-declaration-descriptor}
+(fact "publishes one struct schema and constructor products"
+  (let [scan
+        (analyze/scan-source
+         "(ns demo)\n(defmutable Cursor [[position :int] [limit {:optional true} :int]])")
+        definition (first (:definitions scan))
+        descriptor (lint-schema/declaration-descriptor definition)]
+    [(:kind descriptor)
+     (:mutable? descriptor)
+     (map (fn [field] [(:name field) (:properties field)])
+          (:fields descriptor))
+     (map (fn [product] [(:name product) (:kind (:schema product))])
+          (:generated descriptor))])
+  => [:struct true
+      [['position nil]
+       ['limit {:optional true}]]
+      [['demo/->Cursor :fn]
+       ['demo/map->Cursor :fn]]])
+
+^{:refer 'tool.lint.schema/build-schema-index
+  :id 'project-registry-and-alias-resolution}
+(fact "builds one project schema registry and resolves metadata through aliases"
+  (let [contracts
+        (analyze/scan-source
+         (str "(ns demo.contracts)\n"
+              "(def Unary [:fn [:int] :str])")
+         {:file "contracts.hal"})
+        consumer
+        (analyze/scan-source
+         (str "(ns demo.consumer (:require [demo.contracts :as c]))\n"
+              "(defn ^{:schema #'c/Unary} label [value] \"ok\")")
+         {:file "consumer.hal"})
+        report (report-data (lint/lint-scans [consumer contracts]))]
+    [(has? (get-in report [:schema-index :definitions]) 'demo.contracts/Unary)
+     (get-in report [:schema-index :functions 'demo.consumer/label])
+     (finding-types report)])
+  => [true
+      {:kind :fn
+       :inputs {:fixed [{:kind :primitive :name :int}] :rest nil}
+       :output {:kind :primitive :name :str}}
+      []])
+
+^{:refer 'tool.lint/lint-source
+  :id 'metadata-contract-diagnostics}
+(fact "reports unresolved, value, function, arity, and return contract problems"
+  (let [source
+        (str "(ns demo)\n"
+             "(def ^{:schema :int} answer \"bad\")\n"
+             "(defn ^{:schema :int} not-contract [value] value)\n"
+             "(defn ^{:schema #'Missing} missing-contract [value] value)\n"
+             "(defn ^{:schema [:fn [:int :int] :str]} wrong-arity [value] \"ok\")\n"
+             "(defn ^{:schema [:fn [:int] :str]} wrong-return [value] 1)")
+        report (report-data (lint/lint-source source))
+        types (into #{} (finding-types report))]
+    (every? (fn [expected] (has? types expected))
+            #{:tool.lint/unresolved-schema
+              :tool.lint/invalid-function-schema
+              :tool.lint/schema-arity-mismatch
+              :tool.lint/schema-value-mismatch
+              :tool.lint/schema-return-mismatch}))
+  => true)
+
+^{:refer 'tool.lint/lint-source
+  :id 'schema-mode-policy}
+(fact "keeps schema indexing active when diagnostics are disabled"
+  (let [source "(ns demo)\n(def ^{:schema :int} answer \"bad\")"
+        warned (report-data (lint/lint-source source))
+        errored (report-data (lint/lint-source source {:schema-mode :error}))
+        disabled (report-data (lint/lint-source source {:schema-mode :off}))]
+    [(vec (map :level (:findings warned)))
+     (vec (map :level (:findings errored)))
+     (finding-types disabled)
+     (get-in disabled [:schema-index :values 'demo/answer])])
+  => [[:warning]
+      [:error]
+      []
+      {:kind :primitive :name :int}])
+
+^{:refer 'tool.lint.schema/annotated-top-level-forms
+  :id 'top-level-metadata}
+(fact "unwraps top-level metadata before analysis and retains its contract"
+  (let [source (str "(ns demo)\n"
+                    "^{:schema :int}\n"
+                    "(def answer \"bad\")")
+        report (report-data (lint/lint-source source))]
+    [(get-in report [:schema-index :values 'demo/answer])
+     (finding-types report)])
+  => [{:kind :primitive :name :int}
+      [:tool.lint/schema-value-mismatch]])
+
+^{:refer 'tool.lint.schema/build-schema-index
+  :id 'external-schema-index}
+(fact "uses supplied dependency schemas without evaluating project code"
+  (let [consumer
+        (analyze/scan-source
+         (str "(ns demo (:require [external.contracts :as ext]))\n"
+              "(defn ^{:schema #'ext/Unary} label [value] value)")
+         {:file "consumer.hal"})
+        index
+        (lint-schema/build-schema-index
+         [consumer]
+         {:schema-index
+          {:definitions
+           {'external.contracts/Unary
+            {:kind :fn
+             :inputs {:fixed [{:kind :primitive :name :int}] :rest nil}
+             :output {:kind :primitive :name :int}}}}})]
+    (get-in (lint-schema/public-index index)
+            [:functions 'demo/label]))
+  => {:kind :fn
+      :inputs {:fixed [{:kind :primitive :name :int}] :rest nil}
+      :output {:kind :primitive :name :int}})
+
+^{:refer 'tool.lint.schema/build-schema-index
+  :id 'declaration-registry-and-constructor-contracts}
+(fact "indexes immutable and mutable declarations with generated constructors"
+  (let [scan
+        (analyze/scan-source
+         (str "(ns demo)\n"
+              "(defstruct Host [[environment :any] [name :str]])\n"
+              "(defmutable Cursor [[position :int] [limit {:optional true} :int]])"))
+        index (lint-schema/build-schema-index [scan])]
+    [(get-in index [:types 'demo/Host :mutable?])
+     (get-in index [:types 'demo/Cursor :mutable?])
+     (map (fn [field] (:name field))
+          (get-in index [:types 'demo/Host :fields]))
+     (get-in index [:types 'demo/Cursor :fields 1 :properties :optional])
+     (get-in index [:functions 'demo/->Host :kind])
+     (get-in index [:functions 'demo/map->Cursor :kind])
+     (get-in index [:declarations 'demo/Host :kind])])
+  => [false true
+      ['environment 'name]
+      true
+      :fn
+      :fn
+      :struct])
+
+^{:refer 'tool.lint.schema/build-schema-index
+  :id 'invalid-declaration-fields}
+(fact "reports duplicate declaration fields before publishing a registry entry"
+  (let [scan (analyze/scan-source
+              "(ns demo)\n(defstruct Broken [value value])")
+        index (lint-schema/build-schema-index [scan])]
+    [(map :type (:findings index))
+     (has? (:definitions index) 'demo/Broken)])
+  => [[:tool.lint/invalid-declaration] false])
+
+^{:refer 'tool.lint.schema/declaration-finding
+  :id 'invalid-declaration-finding}
+(fact "anchors invalid declaration diagnostics at the declaration name"
+  (let [scan (analyze/scan-source
+              "(ns demo)\n(defstruct Broken [value value])")
+        definition (first (:definitions scan))
+        finding (lint-schema/declaration-finding definition {})]
+    [(:type finding)
+     (:level finding)
+     (:file finding)])
+  => [:tool.lint/invalid-declaration :warning "<memory>"])
+
+(pr-str (run '[tool.lint-schema-test]))

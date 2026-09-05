@@ -1,0 +1,189 @@
+;; Canonical portable explanation and Failure data for std.typed schemas.
+(ns std.typed.explain
+  (:require [std.typed.schema :as schema]))
+
+(def +failure-fields+
+  [:failure/code
+   :failure/path
+   :failure/in
+   :failure/actual
+   :failure/expected
+   :failure/message
+   :failure/context
+   :failure/children])
+
+(defn failure?
+  "Returns true only for strict portable Failure data."
+  [value]
+  (and (map? value)
+       (every? (fn [field] (has? value field)) +failure-fields+)
+       (keyword? (:failure/code value))
+       (vector? (:failure/path value))
+       (vector? (:failure/in value))
+       (string? (:failure/message value))
+       (map? (:failure/context value))
+       (vector? (:failure/children value))
+       (every? failure? (:failure/children value))))
+
+(defn- finding-code
+  [finding]
+  (let [finding-type (:finding/type finding)]
+    (cond
+      (= finding-type :std.typed.schema/unresolved-reference)
+      :typed/unresolved-reference
+
+      (= finding-type :std.typed.schema/cyclic-reference)
+      :typed/cyclic-reference
+
+      :else :typed/invalid-value)))
+
+(defn- failure-message
+  [code]
+  (cond
+    (= code :typed/no-alternative) "Value does not match any schema alternative"
+    (= code :typed/unresolved-reference) "Schema reference is unresolved"
+    (= code :typed/cyclic-reference) "Schema reference cycle does not consume input"
+    :else "Value does not conform to schema"))
+
+(defn- finding-context
+  [finding]
+  (if (= :std.typed.schema/missing-key (:finding/type finding))
+    {:present? false}
+    (or (:finding/context finding) {})))
+
+(defn- failure
+  [code path actual expected context children]
+  {:failure/code code
+   :failure/path (vec path)
+   :failure/in (vec path)
+   :failure/actual actual
+   :failure/expected expected
+   :failure/message (failure-message code)
+   :failure/context (or context {})
+   :failure/children (vec children)})
+
+(defn- validate-with
+  [schema-value value registry-value]
+  (if (nil? registry-value)
+    (schema/validate schema-value value)
+    (schema/validate schema-value value registry-value)))
+
+(declare failures-for)
+
+(defn- prefix-failure
+  [path value]
+  (let [combined (vec (concat path (:failure/path value)))]
+    (assoc value
+           :failure/path combined
+           :failure/in combined
+           :failure/children
+           (vec
+            (map (fn [child] (prefix-failure path child))
+                 (:failure/children value))))))
+
+(defn- alternative-children
+  [members value path registry-value]
+  (loop [remaining members
+         output []]
+    (if (empty? remaining)
+      output
+      (recur (rest remaining)
+             (vec
+              (concat output
+                      (map (fn [child] (prefix-failure path child))
+                           (failures-for (first remaining)
+                                         value
+                                         registry-value))))))))
+
+(defn- finding-failure
+  [finding value registry-value]
+  (let [expected (:finding/expected finding)
+        path (:finding/path finding)
+        context (finding-context finding)]
+    (if (= :union (:kind expected))
+      (failure :typed/no-alternative
+               path
+               (:finding/value finding)
+               expected
+               context
+               (alternative-children (:types expected)
+                                     (:finding/value finding)
+                                     path
+                                     registry-value))
+      (failure (finding-code finding)
+               path
+               (:finding/value finding)
+               expected
+               context
+               []))))
+
+(defn- failures-for
+  [schema-value value registry-value]
+  (vec
+   (map (fn [finding]
+          (finding-failure finding value registry-value))
+        (validate-with schema-value value registry-value))))
+
+(defn explain
+  "Returns nil for a match, or portable explanation data for a mismatch."
+  ([schema-value value]
+   (explain schema-value value nil))
+  ([schema-value value registry-value]
+   (let [failures (failures-for schema-value value registry-value)]
+     (if (empty? failures)
+       nil
+       {:schema (if (nil? registry-value)
+                  (schema/normalize schema-value)
+                  (schema/normalize-with schema-value registry-value))
+        :value value
+        :failures failures}))))
+
+(defn validator
+  "Compiles a pure schema predicate."
+  ([schema-value]
+   (fn [value] (schema/valid? schema-value value)))
+  ([schema-value registry-value]
+   (fn [value] (schema/valid? schema-value value registry-value))))
+
+(defn explainer
+  "Compiles a pure schema explainer."
+  ([schema-value]
+   (fn [value] (explain schema-value value)))
+  ([schema-value registry-value]
+   (fn [value] (explain schema-value value registry-value))))
+
+(defn failure-seq
+  "Returns deterministic depth-first Failure leaves."
+  [value]
+  (if (empty? (:failure/children value))
+    [value]
+    (loop [remaining (:failure/children value)
+           output []]
+      (if (empty? remaining)
+        output
+        (recur (rest remaining)
+               (vec (concat output (failure-seq (first remaining)))))))))
+
+(defn failure-count
+  "Counts Failure leaves only."
+  [value]
+  (count (failure-seq value)))
+
+(defn check
+  "Returns one native Result<boolean> with portable typed context."
+  ([schema-value value]
+   (check schema-value value nil))
+  ([schema-value value registry-value]
+   (try
+     (let [explanation (explain schema-value value registry-value)]
+       (Result/create
+        :success
+        (nil? explanation)
+        {:typed {:schema (if (nil? explanation)
+                           (if (nil? registry-value)
+                             (schema/normalize schema-value)
+                             (schema/normalize-with schema-value registry-value))
+                           (:schema explanation))}
+         :failures (if (nil? explanation) [] (:failures explanation))}))
+     (catch Throwable error
+       (Result/create :error error {:typed {:schema schema-value}})))))

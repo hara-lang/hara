@@ -1,0 +1,41 @@
+(ns work.agent.driver.openai
+  (:require [work.agent.protocol :as protocol]
+            [work.agent.openai :as openai]
+            [work.agent.tool :as agent-tool]
+            [work.agent.driver.openai.work :as openai-work]))
+
+(defstruct OpenAIDriver [options])
+
+(defn- configuration
+  [driver agent]
+  (let [options (merge (:options driver)
+                       (or (:agent/openai agent) {}))
+        client (:client options)
+        tools (agent-tool/normalize-all (:tools options))]
+    (if (nil? client)
+      (throw
+       (ex :dependency {:agent/id (:agent/id agent)}
+           :ex/message "OpenAI agent driver requires a client")))
+    {:client client
+     :instructions (:instructions options)
+     :tools tools
+     :tool-index (agent-tool/index tools)
+     :request (or (:request options) {})
+     :max-turns (or (:max-turns options) 8)
+     :max-tool-calls (or (:max-tool-calls options) 32)}))
+
+(extend-type OpenAIDriver protocol/IAgentDriver
+  (agent-drive [driver agent intent context]
+    (let [configuration (configuration driver agent)]
+      (openai-work/turn-work
+       configuration
+       (:agent/id agent)
+       [(openai/input-message intent)]
+       0
+       0))))
+
+(defn driver
+  ([]
+   (driver {}))
+  ([options]
+   (work.agent.driver.openai/OpenAIDriver (or options {}))))

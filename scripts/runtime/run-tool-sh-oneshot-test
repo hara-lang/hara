@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+TARGET_REL="core/lib/src/lang/model/v1/spec_xtalk"
+TARGET_DIR="$ROOT/$TARGET_REL"
+TEST="$ROOT/core/lib/test-lang/lang/runtime/basic/type_oneshot_test.hal"
+BACKUP_ROOT="$(mktemp -d)"
+cp -a "$TARGET_DIR" "$BACKUP_ROOT/spec_xtalk"
+
+restore() {
+  rm -rf "$TARGET_DIR"
+  cp -a "$BACKUP_ROOT/spec_xtalk" "$TARGET_DIR"
+  rm -rf "$BACKUP_ROOT"
+}
+trap restore EXIT
+
+mode="$(python3 - "$TARGET_DIR" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+root = Path(sys.argv[1])
+names_pattern = re.compile(
+    r"\(def \+operator-group-names\+\s*(?P<names>\[[^\]]*\])\)",
+    re.MULTILINE,
+)
+groups_pattern = re.compile(
+    r"\(def \+operator-groups\+\s*"
+    r"\(mapv\s+\(fn\s+\[name entries\]\s+"
+    r"\{:name name :entries entries\}\)\s+"
+    r"\+operator-group-names\+\s+"
+    r"(?P<entries>\[[^\]]*\])\)\)",
+    re.MULTILINE,
+)
+needle = "(mapv (fn [name entries] {:name name :entries entries})"
+changed: list[str] = []
+
+for path in sorted(root.glob("fn_*.hal")):
+    source = path.read_text(encoding="utf-8")
+    group_match = groups_pattern.search(source)
+    if group_match is None:
+        if needle in source:
+            raise SystemExit(f"unrecognised pre-#666 operator-group mapv shape: {path}")
+        continue
+
+    names_match = names_pattern.search(source)
+    if names_match is None:
+        raise SystemExit(f"operator-group names are missing: {path}")
+
+    names = re.findall(r":[A-Za-z0-9_!?*+./-]+", names_match.group("names"))
+    entries = re.findall(r"\+[A-Za-z0-9_!?*+./-]+\+", group_match.group("entries"))
+    if not names or len(names) != len(entries):
+        raise SystemExit(
+            f"operator-group cardinality mismatch in {path}: "
+            f"{len(names)} names, {len(entries)} entry maps"
+        )
+
+    literal = "(def +operator-groups+\n  [" + "\n   ".join(
+        f"{{:name {name} :entries {entry}}}"
+        for name, entry in zip(names, entries, strict=True)
+    ) + "])"
+    source = source[:group_match.start()] + literal + source[group_match.end():]
+    path.write_text(source, encoding="utf-8")
+    changed.append(path.name)
+
+if changed:
+    print("shim:" + ",".join(changed))
+else:
+    print("direct")
+PY
+)"
+
+if [[ "$mode" == shim:* ]]; then
+  echo "tool-sh-oneshot: applying reversible #666 loader shims to ${mode#shim:}"
+else
+  echo "tool-sh-oneshot: #666 loader shim is no longer required"
+fi
+
+"$ROOT/scripts/runtime/run-lib-tests" "$TEST"
+restore
+trap - EXIT
+git -C "$ROOT" diff --exit-code -- "$TARGET_REL"

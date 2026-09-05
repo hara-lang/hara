@@ -1,0 +1,121 @@
+(ns tool.cli.test-test
+  (:use code.test)
+  (:require [tool.cli.test :as test]
+            [work.flow.task :as task]
+            [work.base :as work]))
+
+(def current-project
+  {:project/id 'hara.lang
+   :project/root (File/resolve (os/cwd) "core")
+   :project/source-paths ["lib/src" "lib/src-lang"]
+   :project/test-paths ["lib/test" "lib/test-lang"]})
+
+[
+^{:refer tool.cli.test/cli-task-item-list}
+(test-check "CLI task items come from selected test files"
+            (test/cli-task-item-list {:test/files [:one :two]} {})
+            [:one :two])
+
+^{:refer tool.cli.test/cli-task-item-index}
+(test-check "CLI task item indexes come from the task command subject"
+            [(test/cli-task-item-index {:command/subject {:task/index 3}})
+             (test/cli-task-item-index {})]
+            [3 0])
+
+^{:refer tool.cli.test/cli-task-item-run}
+(test-check "CLI task item execution converts file errors to task data"
+            (let [result
+                  (test/cli-task-item-run
+                   {:path "core/missing-test-file.hal"
+                    :namespace 'missing-test}
+                   {:command/subject {:task/index 2}})]
+              (select-keys (:data result) [:path :namespace :passed :failed :test/status]))
+            {:path "core/missing-test-file.hal"
+             :namespace 'missing-test
+             :passed 0
+             :failed 1
+             :test/status :error})
+
+^{:refer tool.cli.test/cli-task-item-display}
+(test-check "CLI task rows use the Foundation passed count display"
+            [(test/cli-task-item-display {:passed 15})
+             (test/cli-task-item-display {})]
+            ["passed (15)" "passed (0)"])
+
+^{:refer tool.cli.test/cli-task-summary}
+(test-check "CLI task summaries aggregate file results"
+            (test/cli-task-summary
+             {:items 2}
+             [{:data {:passed 2 :failed 0}}
+              {:data {:passed 1 :failed 1}}]
+             [])
+            {:status :failed
+             :items 2
+             :files 2
+             :passed 3
+             :failed 1
+             :results [{:passed 2 :failed 0}
+                       {:passed 1 :failed 1}]})
+
+^{:refer tool.cli.test/cli-task-results}
+(test-check "CLI task results project task records back to file data"
+            (test/cli-task-results
+             {:records [{:data {:path "one"}}
+                        {:data {:path "two"}}]})
+            [{:path "one"} {:path "two"}])
+
+^{:refer tool.cli.test/+cli-task-work+}
+(test-check "CLI execution uses the shared task engine template"
+            [(task/task-work? test/+cli-task-work+)
+             (get-in (work/work-spec test/+cli-task-work+)
+                     [:template/definition :task/type])
+             (get-in (work/work-spec test/+cli-task-work+)
+                     [:template/definition :return :select])]
+            [true :cli-test :all])
+
+^{:refer tool.cli.test/parse-arguments}
+(test-check "public test parsing delegates to long-flag arguments"
+            (test/parse-arguments ["--only" "[std]"])
+            {:files [] :selector ['std] :selector-mode :only})
+
+^{:refer tool.cli.test/selected-records}
+(test-check "selected records filter project files by namespace"
+            (let [records
+                  (test/selected-records
+                   current-project
+                   {:files ["lib/test/std/config_test.hal"]
+                    :selector ['std]
+                    :selector-mode :only})]
+              [(count records) (:namespace (first records))])
+            [1 'std.config-test])
+
+^{:refer tool.cli.test/execute}
+(test-check "execute returns a resolution error for an empty selection"
+            (let [result
+                  (test/execute
+                   {:request/project current-project
+                    :request/arguments ["--only" "missing.namespace"]
+                    :request/cwd "."})]
+              [(:result/outcome result)
+               (get-in result [:result/data :test/selector])
+               (:result/exit result)])
+            [:tool.cli.outcome/resolution-error 'missing.namespace 2])
+
+^{:refer tool.cli.test/handler}
+(test-check "public test handler is callable by the registry"
+            (fn? test/handler)
+            true)
+
+^{:refer tool.cli.test/handler}
+(test-check "test handler executes through the default host value"
+            (:result/outcome
+             (test/handler
+              {:request/project current-project
+               :request/arguments ["--only" "missing.namespace"]
+               :request/cwd "."}))
+            :tool.cli.outcome/resolution-error)
+
+^{:refer work.base/default-host}
+(test-check "the CLI default host is an installed host value"
+            (satisfies? IWorkHost work/default-host)
+            true)]

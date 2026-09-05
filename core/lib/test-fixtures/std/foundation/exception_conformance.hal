@@ -1,0 +1,44 @@
+(defn exception-conformance-run-case
+  [test-case]
+  (if (= :direct (:execution test-case))
+    true
+    (let [expected (:expect test-case)
+          outcome (try
+                    {:status :value
+                     :value (eval (read-string (:source test-case)))}
+                    (catch error
+                      {:status :error}))]
+      (if (:error expected)
+        (= :error (:status outcome))
+        (and (= :value (:status outcome))
+             (= (:value expected) (:value outcome)))))))
+
+(defn exception-conformance-run-document
+  [document]
+  (if (every? exception-conformance-run-case (:cases document)) 42 0))
+
+(defn exception-conformance-failure
+  [document]
+  (loop [remaining (:cases document)]
+    (if (empty? remaining)
+      nil
+      (let [test-case (first remaining)]
+        (if (exception-conformance-run-case test-case)
+          (recur (rest remaining))
+          (:id test-case))))))
+
+(defn exception-conformance-direct-cases
+  [document]
+  (loop [remaining (:cases document)
+         output []]
+    (if (empty? remaining)
+      output
+      (let [test-case (first remaining)]
+        (recur (rest remaining)
+               (if (= :direct (:execution test-case))
+                 (conj output [(:id test-case) (:source test-case)])
+                 output))))))
+
+(defn exception-conformance-run
+  [corpus-source]
+  (exception-conformance-run-document (read-string corpus-source)))

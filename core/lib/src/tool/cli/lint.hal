@@ -1,0 +1,74 @@
+(ns tool.cli.lint
+  (:require
+            [work.base :as work]
+            [tool.cli.model :as model]
+            [tool.lint :as lint]
+            [tool.lint.model :as lint-model]
+            [tool.lint.profile :as profile]
+            [tool.lint.report :as report]
+            [code.project :as project]))
+
+(defn parse-arguments
+  [arguments]
+  (loop [remaining arguments format :text paths []]
+    (if (empty? remaining)
+      {:format format :paths paths}
+      (if (= "--format" (first remaining))
+        (if (< (count remaining) 2)
+          (throw (ex :syntax {} :ex/message "lint --format requires text or edn"))
+          (let [selected (keyword (second remaining))]
+            (if (or (= selected :text) (= selected :edn))
+              (recur (vec (drop 2 remaining)) selected paths)
+              (throw (ex :syntax {} :ex/message "lint --format requires text or edn")))))
+        (recur (vec (rest remaining)) format (conj paths (first remaining)))))))
+
+(defn lint-report
+  "Returns a completed lint report or throws the Result's native Error."
+  [outcome]
+  (if (Result/success? outcome)
+    (Result/data outcome)
+    (throw (Result/error-value outcome))))
+
+(defn lint-target
+  [path]
+  (let [metadata (deref (file/stat path))]
+    (if (= :directory (:type metadata))
+      (lint-report (lint/lint-project (project/discover path)))
+      (lint-report (lint/lint-file path)))))
+
+(defn combine-results
+  [results]
+  (let [findings (report/sort-findings
+                  (reduce (fn [output result]
+                            (into output (:findings result)))
+                          [] results))]
+    {:profile profile/+profile+
+     :documents (reduce (fn [output result]
+                          (into output (:documents result)))
+                        [] results)
+     :findings findings
+     :summary (lint-model/summarize findings)}))
+
+(defn execute
+  [request]
+  (let [parsed (parse-arguments (:request/arguments request))
+        cwd (or (:request/cwd request) (os/cwd))
+        paths (:paths parsed)
+        result (if (empty? paths)
+                 (lint-report (lint/lint-project (project/discover cwd)))
+                 (combine-results (map lint-target paths)))
+        findings (:findings result)
+        output (if (= :edn (:format parsed))
+                 (str (pr-str (report/edn findings profile/+profile+)) "\n")
+                 (report/text findings))
+        messages [(model/message output)]]
+    (if (pos? (get-in result [:summary :error]))
+      (model/result :tool.cli.outcome/failed result messages)
+      (model/success result messages))))
+
+(def +command-work+
+  (work/step {:id 'tool.cli/lint :version 1}
+             (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run work/default-host +command-work+ request))

@@ -1,0 +1,195 @@
+(ns tool.cli.asset
+  (:require [tool.cli.model :as model]
+            [tool.cli.project-command :as project-command]
+            [tool.metaspec.schema :as schema]
+            [code.project :as project]
+            [std.fs.path :as path]
+            [work.base :as work]))
+
+(def +route-operations+
+  {:tool.cli.route/asset-check :check
+   :tool.cli.route/asset-build :build
+   :tool.cli.route/asset-inspect :inspect
+   :tool.cli.route/asset-publish :publish
+   :tool.cli.route/asset-status :status
+   :tool.cli.route/asset-search :search
+   :tool.cli.route/asset-info :info
+   :tool.cli.route/asset-pull :pull
+   :tool.cli.route/asset-sync :sync
+   :tool.cli.route/asset-yank :yank})
+
+(defn operation-request [request]
+  (if (= :tool.cli.route/asset (:request/route request))
+    (let [arguments (:request/arguments request)]
+      (if (empty? arguments)
+        (throw (ex :io {} :ex/message "asset requires check, build, inspect, publish, status, search, info, pull, sync, or yank"))
+        {:operation (keyword (first arguments))
+         :arguments (vec (rest arguments))}))
+    {:operation (get +route-operations+ (:request/route request))
+     :arguments (:request/arguments request)}))
+
+(defn safe-path [value]
+  (let [normalized (str/replace value "\\" "/")
+        parts (str/split normalized "/")]
+    (if (or (str/blank? normalized)
+            (str/starts-with? normalized "/")
+            (not (every? (fn [part]
+                           (and (not= part ".") (not= part "..")))
+                         parts)))
+      (throw (ex :io {:path value} :ex/message (str "unsafe asset path: " value)))
+      normalized)))
+
+(defn required [document key]
+  (if (has? document key)
+    (get document key)
+    (throw (ex :not-found {:key key} :ex/message (str "asset.edn is missing " key)))))
+
+(defn string-value [value label]
+  (if (or (string? value) (symbol? value))
+    (str value)
+    (throw (ex :argument {:value value} :ex/message (str label " must be a string or symbol")))))
+
+(defn descriptor-path [input]
+  (let [metadata (deref (file/stat input))]
+    (if (= :directory (:type metadata))
+      (file/join input "asset.edn")
+      input)))
+
+(defn read-collection [input]
+  (let [descriptor (descriptor-path input)
+        document (Edn/read (project/read-text descriptor))]
+    (if (not (map? document))
+      (throw (ex :io {:path descriptor} :ex/message "asset.edn must be an EDN map"))
+      nil)
+    (if (not= "0.0.0-alpha" (required document :asset/format))
+      (throw (ex :dependency {} :ex/message "asset.edn requires alpha asset format"))
+      nil)
+    (let [coordinate (project-command/normalize-coordinate
+                      (string-value (required document :asset/coordinate)
+                                    ":asset/coordinate"))
+          version (string-value (required document :asset/version)
+                                ":asset/version")
+          declared (required document :asset/entries)]
+      (if (not (schema/version-string? version))
+        (throw (ex :serialization {:version version} :ex/message (str "asset.edn :asset/version is invalid: " version)))
+        nil)
+      (if (not (vector? declared))
+        (throw (ex :argument {} :ex/message ":asset/entries must be a vector"))
+        nil)
+      (let [entries
+            (vec
+             (map
+              (fn [entry]
+                (if (not (map? entry))
+                  (throw (ex :argument {:entry entry} :ex/message "asset entry must be a map"))
+                  {:entry/path
+                   (safe-path
+                    (string-value (required entry :entry/path) ":entry/path"))
+                   :entry/media-type
+                   (string-value (required entry :entry/media-type)
+                                 ":entry/media-type")}))
+              declared))
+            paths (map (fn [entry] (:entry/path entry)) entries)]
+        (if (empty? entries)
+          (throw (ex :serialization {} :ex/message "asset.edn :asset/entries must not be empty"))
+          nil)
+        (if (not= (count paths) (count (set paths)))
+          (throw (ex :conflict {} :ex/message "asset.edn contains duplicate :entry/path values"))
+          nil)
+        {:asset/root (path/parent descriptor)
+         :asset/descriptor descriptor
+         :asset/coordinate coordinate
+         :asset/version version
+         :asset/entries entries}))))
+
+(defn verify-files [collection]
+  (reduce
+   (fn [verified entry]
+     (let [path (file/join (:asset/root collection) (:entry/path entry))]
+       (if (and (deref (file/exists? path))
+                (= :file (:type (deref (file/stat path)))))
+         verified
+         (throw (ex :not-found {:path path} :ex/message (str "asset entry does not exist: " path))))))
+   collection
+   (:asset/entries collection)))
+
+(defn manifest-entry [root entry]
+  (let [contents (deref (file/read (file/join root (:entry/path entry))))]
+    (assoc entry
+           :entry/size (bytes/count contents)
+           :entry/sha256 (str "sha256:" (Crypto/sha256 contents)))))
+
+(defn build-manifest [collection]
+  (verify-files collection)
+  {:asset/format "0.0.0-alpha"
+   :asset/coordinate (:asset/coordinate collection)
+   :asset/version (:asset/version collection)
+   :asset/entries
+   (vec (map (fn [entry] (manifest-entry (:asset/root collection) entry))
+             (sort-by (fn [entry] (:entry/path entry))
+                      (:asset/entries collection))))})
+
+(defn positional [arguments]
+  (let [value (first arguments)]
+    (if (or (nil? value) (str/starts-with? value "-")) nil value)))
+
+(defn option-value [arguments option]
+  (loop [index 0]
+    (if (>= index (count arguments))
+      nil
+      (if (= option (nth arguments index))
+        (if (< (inc index) (count arguments))
+          (nth arguments (inc index))
+          nil)
+        (recur (inc index))))))
+
+(defn check-command [arguments]
+  (let [collection (verify-files (read-collection (or (positional arguments) ".")))]
+    (model/success
+     collection
+     [(model/message
+       (str "asset check: " (:asset/coordinate collection) " "
+            (:asset/version collection) " files="
+            (count (:asset/entries collection)) "\n"))])))
+
+(defn build-command [request arguments]
+  (let [collection (read-collection (or (positional arguments) "."))
+        output (or (:output (:request/options request))
+                   (option-value arguments "--output")
+                   (file/join (:asset/root collection) "target/asset-manifest.edn"))
+        manifest (build-manifest collection)]
+    (if-let [parent (path/parent output)]
+      (deref (file/mkdir parent))
+      nil)
+    (deref (file/write output (str/encode-utf8 (str (pr-str manifest) "\n"))))
+    (model/success manifest [(model/message (str "asset build: " output "\n"))])))
+
+(defn inspect-command [arguments]
+  (if (= 1 (count arguments))
+    (let [source (project/read-text (first arguments))]
+      (model/success source [(model/message source)]))
+    (throw (ex :dependency {} :ex/message "asset inspect requires MANIFEST"))))
+
+(defn unavailable [operation]
+  (throw (ex :dependency {:operation operation} :ex/message (str "unavailable: hara asset " (name operation)
+               " requires the packages.hara-lang.org registry client"))))
+
+(defn execute [request]
+  (let [resolved (operation-request request)
+        operation (:operation resolved)
+        arguments (:arguments resolved)]
+    (cond
+      (= operation :check) (check-command arguments)
+      (= operation :build) (build-command request arguments)
+      (= operation :inspect) (inspect-command arguments)
+      (get #{:publish :status :search :info :pull :sync :yank} operation)
+      (unavailable operation)
+      :else
+      (throw (ex :host {} :ex/message (str "unknown asset command: " (name operation)))))))
+
+(def +command-work+
+  (work/step {:id 'tool.cli/asset :version 1}
+             (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run work/default-host +command-work+ request))

@@ -1,0 +1,34 @@
+(ns std.typed.infer-test
+  (:use code.test)
+  (:require [std.typed.infer :as infer]
+            [tool.lint.profile :as profile]))
+
+^{:refer 'std.typed.infer/infer-result
+  :id 'shape-preserving-local-inference}
+(fact "carries materialized vector facts through locals and filter"
+  (infer/infer-result
+   '(let [covered (vec [])]
+      (filter identity covered))
+   {:profile profile/+profile+})
+  => {:schema {:kind :primitive :name :vector}
+      :refinements {:vector/backend :persistent
+                    :metadata :absent}})
+
+^{:refer 'std.typed.infer/infer-result
+  :id 'compact-vector-remains-distinct}
+(fact "retains compact vector provenance through filter"
+  (get-in (infer/infer-result
+           '(filter identity [])
+           {:profile profile/+profile+})
+          [:refinements :vector/backend])
+  => :compact)
+
+^{:refer 'std.typed.infer/literal-result
+  :id 'integer-width-literal-inference}
+(fact "infers long, bigint, and float literals distinctly"
+  [(get-in (infer/literal-result 42) [:schema :name])
+   (get-in (infer/literal-result 9223372036854775808) [:schema :name])
+   (get-in (infer/literal-result 42.0) [:schema :name])]
+  => [:long :bigint :num])
+
+(pr-str (run '[std.typed.infer-test]))

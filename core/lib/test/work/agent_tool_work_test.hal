@@ -1,0 +1,168 @@
+(ns work.agent-tool-work-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.agent :as agent]
+            [work.agent.tool :as agent-tool]
+            [work.agent.tool.work :as tool-work]))
+
+(def pure-tool
+  (agent/tool
+   "echo-pure"
+   "Returns decoded arguments."
+   {:type "object"
+    :properties {:value {:type "integer"}}
+    :required ["value"]
+    :additionalProperties false}
+   (fn [arguments]
+     arguments)))
+
+(def async-pure-tool
+  (agent/tool
+   "async-pure"
+   "Returns a Promise from a pure tool."
+   {:type "object"
+    :properties {:value {:type "integer"}}
+    :required ["value"]
+    :additionalProperties false}
+   (fn [arguments]
+     (Promise/run
+      (fn []
+        (inc (get arguments "value")))))))
+
+(def failing-pure-tool
+  (agent/tool
+   "failing-pure"
+   "Throws from a pure tool."
+   {:type "object"
+    :properties {}
+    :additionalProperties false}
+   (fn [arguments]
+     (throw
+      (ex :host
+          {:reason :tool-test}
+          :ex/message "pure tool failed")))))
+
+(def effect-tool
+  (agent/tool
+   "echo-effect"
+   "Executes decoded arguments through Work."
+   {:type "object"
+    :properties {:value {:type "integer"}}
+    :required ["value"]
+    :additionalProperties false}
+   (fn [arguments]
+     (work/step
+      {:id [:echo-effect (get arguments "value")]}
+      (fn [input context]
+        input)))
+   {:effect :external}))
+
+(def results
+  [(test-check
+    "pure tool Work uses decoded call arguments rather than ambient Work input"
+    (let [call
+          {:call/id "pure-1"
+           :tool/name "echo-pure"
+           :call/arguments {"value" 7}}
+          tool-index (agent-tool/index [pure-tool])
+          result
+          (work/run
+           (tool-work/call-work tool-index call)
+           :provider-response)]
+      [(:tool/status result)
+       (:tool/value result)])
+    [:ok {"value" 7}])
+
+   (test-check
+    "pure tool Promise results remain normalized through Work"
+    (let [call
+          {:call/id "async-1"
+           :tool/name "async-pure"
+           :call/arguments {"value" 9}}
+          result
+          (work/run
+           (tool-work/call-work
+            (agent-tool/index [async-pure-tool])
+            call)
+           :provider-response)]
+      [(:tool/status result)
+       (:tool/value result)])
+    [:ok 10])
+
+   (test-check
+    "pure tool exceptions remain structured results through Work"
+    (let [call
+          {:call/id "failed-1"
+           :tool/name "failing-pure"
+           :call/arguments {}}
+          result
+          (work/run
+           (tool-work/call-work
+            (agent-tool/index [failing-pure-tool])
+            call)
+           :provider-response)]
+      [(:tool/status result)
+       (get-in result [:tool/error :code])])
+    [:error :tool/failed])
+
+   (test-check
+    "effectful tool Work receives decoded call arguments as its canonical input"
+    (let [call
+          {:call/id "effect-1"
+           :tool/name "echo-effect"
+           :call/arguments {"value" 9}}
+          tool-index (agent-tool/index [effect-tool])
+          call-work (tool-work/call-work tool-index call)
+          result (work/run call-work :provider-response)]
+      [(:op (work/work-spec call-work))
+       (:tool/status result)
+       (:tool/value result)])
+    [:chain :ok {"value" 9}])
+
+   (test-check
+    "mixed model-selected tool Work preserves provider call order"
+    (let [calls
+          [{:call/id "first"
+            :tool/name "echo-pure"
+            :call/arguments {"value" 1}}
+           {:call/id "second"
+            :tool/name "echo-effect"
+            :call/arguments {"value" 2}}
+           {:call/id "third"
+            :tool/name "missing"
+            :call/arguments {}}]
+          tool-index (agent-tool/index [pure-tool effect-tool])
+          results
+          (work/run
+           (work/all
+            {:id :ordered-tool-round}
+            (tool-work/call-works tool-index calls))
+           :provider-response)]
+      (vec
+       (map
+        (fn [result]
+          [(:call/id result)
+           (:tool/status result)
+           (if (= :ok (:tool/status result))
+             (:tool/value result)
+             (get-in result [:tool/error :code]))])
+        results)))
+    [["first" :ok {"value" 1}]
+     ["second" :ok {"value" 2}]
+     ["third" :error :tool/unknown]])
+
+   (test-check
+    "unknown model-selected tools remain ordinary structured Work results"
+    (let [call
+          {:call/id "unknown-1"
+           :tool/name "missing"
+           :call/arguments {}}
+          result
+          (work/run
+           (tool-work/call-work {} call)
+           :provider-response)]
+      [(:tool/status result)
+       (get-in result [:tool/error :code])])
+    [:error :tool/unknown])])
+
+results

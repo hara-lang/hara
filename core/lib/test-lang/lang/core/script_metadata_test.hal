@@ -1,0 +1,164 @@
+(ns lang.core.script-metadata-test
+  (:use code.test)
+  (:require [lang.core.script :as script]))
+
+(defn current-module
+  []
+  (symbol (str (ns-current))))
+
+(def results
+  [(fact "module records retain target and compiler metadata"
+     (let [module (current-module)
+           require-spec (vector 'demo.dependency :as 'dependency)
+           _ (reset! script/+modules+ {})
+           configured
+           (script/configure-module
+            :postgres
+            {:require [require-spec]
+             :link {'ledger.contract 'ledger.backend}
+             :static {:mode :build}
+             :application {:name "ledger"}
+             :schema {:ledger {:version 1}}
+             :source {:path "gw/ledger/base.hal"}})]
+       [(:lang configured)
+        (= [require-spec] (:require configured))
+        (= module (get-in configured [:link '-]))
+        (get-in configured [:link 'dependency])
+        (get-in configured [:link 'ledger.contract])
+        (:static configured)
+        (:application configured)
+        (:schema configured)
+        (:source configured)
+        (:code configured)
+        (:fragment configured)])
+     => [:postgres
+         true
+         true
+         'demo.dependency
+         'ledger.backend
+         {:mode :build}
+         {:name "ledger"}
+         {:ledger {:version 1}}
+         {:path "gw/ledger/base.hal"}
+         {}
+         {}])
+
+   (fact "reconfiguration preserves registered code, fragments, and native data"
+     (let [module (current-module)
+           _ (reset! script/+modules+
+                     {module {:id module
+                              :lang :xtalk
+                              :link {'- module}
+                              :code {'function {:id 'function}}
+                              :fragment {'macro {:id 'macro}}
+                              :native {:provider :fixture}}})
+           configured
+           (script/configure-module
+            :postgres
+            {:schema {:ledger {:version 2}}})]
+       [(= {'function {:id 'function}} (:code configured))
+        (= {'macro {:id 'macro}} (:fragment configured))
+        (= {:provider :fixture} (:native configured))
+        (:schema configured)])
+     => [true true true {:ledger {:version 2}}])
+
+   (fact "module loading delegates to ordinary namespace require"
+     (let [modules-before (deref script/+modules+)
+           loaded-before (deref script/+loaded-modules+)
+           scripts-before (deref script/+scripts+)
+           contexts-before (deref script/+module-contexts+)
+           observed
+           (try
+             (reset! script/+modules+ {})
+             (reset! script/+loaded-modules+ {})
+             (reset! script/+scripts+ {})
+             (reset! script/+module-contexts+ {})
+             (let [loaded (script/load-module 'xt.lang.spec-base)]
+               [loaded
+                (get-in (deref script/+modules+)
+                        ['xt.lang.spec-base :id])
+                (boolean (get (deref script/+loaded-modules+)
+                              'xt.lang.spec-base))])
+             (finally
+               (reset! script/+modules+ modules-before)
+               (reset! script/+loaded-modules+ loaded-before)
+               (reset! script/+scripts+ scripts-before)
+               (reset! script/+module-contexts+ contexts-before)))]
+       observed)
+     => ['xt.lang.spec-base 'xt.lang.spec-base true])
+
+   (fact "registered modules with no entries are already loaded"
+     (let [module {:id 'demo.empty
+                   :lang :postgres
+                   :require []
+                   :link {'- 'demo.empty}
+                   :code {}
+                   :fragment {}}
+           _ (reset! script/+modules+ {'demo.empty module})
+           _ (reset! script/+loaded-modules+ {})
+           loaded (script/load-module 'demo.empty)]
+       [loaded
+        (script/module-loaded? 'demo.empty)])
+     => ['demo.empty true])
+
+   ^{:refer lang.core.script/script-require-target-id}
+   (fact "specialized module ids retain the source alias"
+     [(script/script-require-target-id 'demo.current 'demo.source nil)
+      (script/script-require-target-id 'demo.current 'demo.source 'src)
+      (script/script-require-target-id 'demo.current 'demo.source
+                                       (vector 'prefix 'src))]
+     => ['demo.current.demo.source
+         'demo.current.src
+         'demo.current.src])
+
+   (fact "setup coordinates namespace dependencies and primary modules"
+     (let [module (current-module)
+           modules-before (deref script/+modules+)
+           loaded-before (deref script/+loaded-modules+)
+           scripts-before (deref script/+scripts+)
+           contexts-before (deref script/+module-contexts+)
+           observed
+           (try
+             (reset! script/+modules+ {})
+             (reset! script/+loaded-modules+ {})
+             (reset! script/+scripts+ {})
+             (reset! script/+module-contexts+ {})
+             (let [config {:require (vector ['xt.lang.spec-base
+                                             :as 'script_metadata_xt
+                                             :primary true])
+                           :static {:mode :compile}
+                           :schema {:ledger {:version 1}}}
+                   _ (script/setup :xtalk module config false)
+                   configured (get (deref script/+modules+) module)]
+               [(:lang configured)
+                (:static configured)
+                (:schema configured)
+                (get-in configured [:link 'script_metadata_xt])
+                (get-in (ns-alias-state 'script_metadata_xt) [:target])
+                (:module/primary configured)])
+             (finally
+               (reset! script/+modules+ modules-before)
+               (reset! script/+loaded-modules+ loaded-before)
+               (reset! script/+scripts+ scripts-before)
+               (reset! script/+module-contexts+ contexts-before)))]
+       observed)
+     => [:xtalk
+         {:mode :compile}
+         {:ledger {:version 1}}
+         'xt.lang.spec-base
+         'xt.lang.spec-base
+         #{'xt.lang.spec-base}])
+
+   (fact "script contributors register entries in their logical module"
+     (let [source (current-module)
+           logical 'demo.public
+           _ (reset! script/+modules+ {})
+           _ (reset! script/+module-contexts+ {})
+           _ (script/configure-module :postgres logical {:static {:mode :macro}})
+           _ (script/register-code '(defn exposed [] 42))]
+       [(get (deref script/+module-contexts+) source)
+        (get-in (deref script/+modules+) [logical :code 'exposed :module])
+        (get-in (deref script/+modules+) [logical :static])])
+     => ['demo.public 'demo.public {:mode :macro}])])
+
+(pr-str (run '[lang.core.script-metadata-test]))

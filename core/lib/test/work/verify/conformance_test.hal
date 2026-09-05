@@ -1,0 +1,183 @@
+(ns work.verify.conformance-test
+  (:use code.test)
+  (:require [work.base :as work]
+            [work.flow :as flow]
+            [work.flow.task :as task]
+            [work.verify.conformance :as verify]))
+
+(def family
+  {:family/id :std_lib_zip
+   :family/path "std_lib_zip"
+   :family/contract "std_lib_zip/conformance.edn"
+   :contract {:target/namespaces ["std.lib.zip"]
+              :hara/test-paths ["core/lib/test/std/lib/zip_test.hal"]}})
+
+(def passed-report
+  {:report/schema :hara.conformance.library/0-alpha
+   :language :rust
+   :status :passed
+   :namespaces [{:namespace "std.lib.zip"
+                 :status :passed
+                 :passed 2
+                 :total 2}]
+   :functions [{:namespace "std.lib.zip"
+                :function "std.lib.zip/zipper?"
+                :status :passed}]
+   :families []})
+
+(def partial-report
+  {:report/schema :hara.conformance.library/0-alpha
+   :language :java
+   :status :partial
+   :namespaces [{:namespace "std.lib.zip"
+                 :status :not-implemented
+                 :passed 0
+                 :total 0}
+                {:namespace "code.project"
+                 :status :passed
+                 :passed 3
+                 :total 3}]
+   :functions [{:namespace "std.lib.zip"
+                :function "std.lib.zip/zipper?"
+                :status :not-implemented}]
+   :families []})
+
+^{:refer work.verify.conformance/registry-root}
+(fact "registry-root accepts an explicit registry location"
+  (verify/registry-root {:registry/root "/specs"})
+  => "/specs")
+
+^{:refer work.verify.conformance/project-root}
+(fact "project-root accepts an explicit Hara checkout"
+  (verify/project-root {:project/root "/hara"})
+  => "/hara")
+
+^{:refer work.verify.conformance/join-path}
+(fact "join-path preserves absolute paths and joins relative paths"
+  [(verify/join-path "/root" "a/b")
+   (verify/join-path "/root" "/a/b")]
+  => ["/root/a/b" "/a/b"])
+
+^{:refer work.verify.conformance/host-path}
+(fact "host-path keeps the external specs checkout outside project mounts"
+  [(verify/host-path "/hara" "../hara-specs")
+   (verify/host-path "/hara" "/specs")]
+  => ["/hara/../hara-specs" "/specs"])
+
+^{:refer work.verify.conformance/host-read}
+(fact "host-read is an explicit process-boundary operation"
+  (try
+    (verify/host-read "/path/that/does/not/exist")
+    false
+    (catch error true))
+  => true)
+
+^{:refer work.verify.conformance/read-document}
+(fact "read-document parses an EDN document from the project"
+  (:hara/type (verify/read-document "project.edn"))
+  => :project)
+
+^{:refer work.verify.conformance/read-host-document}
+(fact "read-host-document reports unavailable external documents explicitly"
+  (try
+    (verify/read-host-document "/path/that/does/not/exist")
+    false
+    (catch error true))
+  => true)
+
+^{:refer work.verify.conformance/registry-index}
+(fact "registry-index accepts the structured registry manifest"
+  (:document/type
+   (verify/registry-index {:registry/index
+                           {:document/type :foundation-library-conformance-index}}))
+  => :foundation-library-conformance-index)
+
+^{:refer work.verify.conformance/registry-families}
+(fact "registry-families accepts a resolved registry family set"
+  (verify/registry-families {:registry/families [family]})
+  => [family])
+
+^{:refer work.verify.conformance/selected-families}
+(fact "family selection filters the registry without changing its shape"
+  (mapv :family/id
+        (verify/selected-families {:family-specs [family]
+                                   :families [:std_lib_zip]}))
+  => [:std_lib_zip])
+
+^{:refer work.verify.conformance/runtime-items}
+(fact "runtime-items lists only selected runtimes and carries the registry"
+  (mapv :item/id
+        (verify/runtime-items {:languages [:jvm :wasm]
+                               :family-specs [family]
+                               :registry/index {}
+                               :registry/root "."}
+                              nil))
+  => [:jvm :wasm])
+
+^{:refer work.verify.conformance/read-runtime-report}
+(fact "read-runtime-report does not infer results when an EDN report is absent"
+  (:status (verify/read-runtime-report "." :jvm))
+  => :not-implemented)
+
+^{:refer work.verify.conformance/runtime-report}
+(fact "runtime-report accepts an injected registry result without probing"
+  (verify/runtime-report {:language :rust :report passed-report} nil)
+  => {:data passed-report})
+
+^{:refer work.verify.conformance/runtime-counts}
+(fact "runtime-counts includes namespace and function coverage"
+  (verify/runtime-counts partial-report)
+  => {:implemented 1
+      :namespace-total 2
+      :passed 3
+      :total 3
+      :functions-passed 0
+      :functions-total 1
+      :functions-not-implemented 1})
+
+^{:refer work.verify.conformance/task-summary}
+(fact "task-summary preserves partial runtime coverage and function counts"
+  (select-keys
+   (verify/task-summary
+    {:items 2 :results 2 :warnings 0 :errors 0}
+    []
+    [{:data passed-report} {:data partial-report}])
+   [:languages :implemented :namespace-total :passed :total
+    :functions-passed :functions-total :functions-not-implemented :status])
+  => {:languages 2 :implemented 2 :namespace-total 3 :passed 5 :total 5
+      :functions-passed 1 :functions-total 2
+      :functions-not-implemented 1 :status :partial})
+
+^{:refer work.verify.conformance/status-label}
+(fact "status-label renders stable runtime labels"
+  [(verify/status-label :passed)
+   (verify/status-label :partial)
+   (verify/status-label :not-implemented)]
+  => ["PASS" "PARTIAL" "NOT-IMPLEMENTED"])
+
+^{:refer work.verify.conformance/task-status}
+(fact "task-status maps verification state to work report state"
+  [(verify/task-status {:status :failed} nil)
+   (verify/task-status {:status :partial} nil)
+   (verify/task-status {:status :passed} nil)]
+  => [:failed :warning :completed])
+
+^{:refer work.verify.conformance/library-conformance}
+(fact "the registry conformance task is the registered work workflow"
+  (let [observer (work/recording-observer)
+        output
+        (work/run
+         (work/local-runtime {:observer observer})
+         verify/library-conformance
+         (task/invocation
+          {:languages [:rust]
+           :family-specs [family]
+           :registry/index {}
+           :registry/root "."
+           :reports {:rust passed-report}}))]
+    [(task/task-work? verify/library-conformance)
+     (:flow/path (flow/registered-flow [:task]))
+     (select-keys (:summary output) [:languages :implemented :passed :total :status])])
+  => [true [:task] {:languages 1 :implemented 1 :passed 2 :total 2 :status :passed}])
+
+(pr-str (run {:namespace "work.verify.conformance-test"}))

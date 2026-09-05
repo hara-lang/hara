@@ -1,0 +1,41 @@
+(ns db.sqlite.connection-test
+  (:use code.test)
+  (:require [db.protocol :as protocol]
+            [db.sqlite.connection :as connection]))
+
+(def operations
+  {:exec (fn [id sql parameters] [:exec id sql parameters])
+   :query (fn [id sql parameters] [:query id sql parameters])
+   :close (fn [id] [:close id])
+   :work-call (fn [id operation arguments]
+                [:work-call id operation arguments])})
+
+(def value
+  (connection/create
+   {"id" 7 "storage" "memory" "filename" ":memory:"}
+   :sqlite-test
+   operations))
+
+(fact "SQLite connections expose portable provider metadata"
+  [(protocol/db-engine value)
+   (protocol/db-provider value)
+   (protocol/db-info value)]
+  => [:sqlite
+      :sqlite-test
+      {:id 7
+       :engine :sqlite
+       :provider :sqlite-test
+       :storage :memory
+       :filename ":memory:"}])
+
+(fact "SQLite operations dispatch through the selected backend adapter"
+  [(connection/exec value "create table t (id integer)")
+   (connection/query value "select ?" [7])
+   (connection/work-call value :load-run ["run-1"])
+   (connection/close value)]
+  => [[:exec 7 "create table t (id integer)" []]
+      [:query 7 "select ?" [7]]
+      [:work-call 7 :load-run ["run-1"]]
+      [:close 7]])
+
+(pr-str (run '[db.sqlite.connection-test]))

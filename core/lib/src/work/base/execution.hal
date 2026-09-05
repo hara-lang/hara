@@ -1,0 +1,106 @@
+(ns work.base.execution
+  (:require [work.base.model :as base]
+            [work.base.frame :as frame]
+            [work.base.result :as result]
+            [work.base.execution.step :as step]
+            [work.base.execution.collection :as collection]
+            [work.base.execution.graph :as graph]
+            [work.base.execution.ensure :as ensure]
+            [work.base.execution.batch :as batch]
+            [work.base.execution.bind :as bind]
+            [work.base.execution.await :as await]))
+
+(defn normalise-provider
+  [provider]
+  (cond
+    (nil? provider)
+    (throw (ex :dependency {} :ex/message "Work runtime requires an executor provider"))
+
+    (satisfies? IWorkExecutor provider)
+    provider
+
+    :else
+    (throw
+     (ex :generic {:provider provider} :ex/message "Work executor must implement IWorkExecutor"))))
+
+(defn executor-descriptor
+  [executor]
+  (or (:descriptor executor) executor))
+
+(defn executor-id
+  [executor]
+  (or (:provider/id (executor-descriptor executor))
+      (:id executor)
+      :executor))
+
+(declare execute-node)
+
+(defn execute-work
+  [runtime frame work input]
+  (execute-node runtime frame work input))
+
+(def default-handlers
+  {:pure step/run-pure
+   :step step/run-step
+   :chain collection/run-chain
+   :each collection/run-each
+   :filter collection/run-filter
+   :fold collection/run-fold
+   :all collection/run-all
+   :choose collection/run-choose
+   :ensure ensure/run-ensure
+   :batch batch/run-batch
+   :bind bind/run-bind
+   :graph graph/run-graph
+   :await await/run-await})
+
+(defn evaluator-handlers
+  [runtime]
+  (merge default-handlers
+         (or (:work/handlers (base/runtime-hooks runtime)) {})))
+
+(defn execute-node-handler
+  [runtime frame spec operation handler input]
+  (result/attempt
+   (fn []
+     (result/then
+      (handler execute-node runtime frame spec input)
+      (fn [value]
+        (result/then
+         (frame/emit runtime frame :work/node-completed
+                      {:operation operation
+                       :node/id (:id spec)})
+         (fn [_]
+           value)))))
+   (fn [error]
+     (result/then
+      (frame/emit runtime frame :work/node-failed
+                   {:operation operation
+                    :node/id (:id spec)
+                    :error (str error)})
+      (fn [_]
+        (throw error))))))
+
+(defn execute-node
+  [runtime frame work input]
+  (result/then
+   (frame/assert-running runtime frame)
+   (fn [_]
+     (let [spec (base/work-spec-map work)
+           operation (:op spec)
+           handler (get (evaluator-handlers runtime) operation)]
+       (if (nil? handler)
+         (throw
+          (ex :io {:operation operation
+                    :node/path (:node/path frame)} :ex/message "Work operation is not installed"))
+         (result/then
+          (frame/emit runtime frame :work/node-started
+                       {:operation operation
+                        :node/id (:id spec)})
+          (fn [_]
+            (execute-node-handler runtime
+                                  frame
+                                  spec
+                                  operation
+                                  handler
+                                  input))))))))

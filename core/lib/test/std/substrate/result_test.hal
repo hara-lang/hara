@@ -1,0 +1,165 @@
+(ns std.substrate.result-test
+  (:use code.test)
+  (:require [std.foundation.promise :as promise]
+            [std.substrate :as substrate]
+            [std.substrate.json :as substrate-json]
+            [std.substrate.result :as result]
+            [std.substrate.transport-memory :as memory]))
+
+^{:refer std.substrate.result/result-context}
+(fact "builds a substrate context with optional transport and reply details"
+  [(result/result-context nil "sum" nil nil nil)
+   (result/result-context
+    "room/a"
+    "sum"
+    "transport-1"
+    "transport"
+    {"reply_to" "reply-1"})]
+  => [{"substrate" {"space" "__NODE__"
+                     "action" "sum"}}
+      {"substrate" {"space" "room/a"
+                     "action" "sum"
+                     "transport_id" "transport-1"
+                     "failure" "transport"
+                     "reply_to" "reply-1"}}])
+
+^{:refer std.substrate.result/response-error-value}
+(fact "normalizes response error payloads into application exceptions"
+  (let [string-error
+        (result/response-error-value
+         (substrate/response-error-frame "reply-1" "room/a" "denied" {}))
+        map-error
+        (result/response-error-value
+         (substrate/response-error-frame
+          "reply-1"
+          "room/a"
+          {"message" "invalid" "field" "name"}
+          {}))
+        nil-error
+        (result/response-error-value
+         (substrate/response-error-frame "reply-1" "room/a" nil {}))
+        value
+        (result/response-error-value
+         (substrate/response-error-frame "reply-1" "room/a" 42 {}))]
+    [(ex-message string-error)
+     (ex-message map-error)
+     (ex-message nil-error)
+     value])
+  => ["denied" "invalid" "substrate application error" 42])
+
+^{:refer std.substrate.result/request-error-result}
+(fact "classifies direct errors and response frames"
+  (let [application
+        (result/request-error-result
+         (ex-info "denied" {:code :app/denied})
+         "room/a"
+         "deny"
+         nil)
+        response
+        (result/request-error-result
+         (substrate/response-error-frame
+          "reply-1"
+          "room/a"
+          {"message" "denied"}
+          {})
+         "room/a"
+         "deny"
+         nil)]
+    [(Result/error? application)
+     (ex-message (Result/error-value application))
+     (get-in (Result/context application) ["substrate" "failure"])
+     (Result/error? response)
+     (ex-message (Result/error-value response))
+     (get-in (Result/context response) ["substrate" "reply_to"])])
+  => [true "denied" "application" true "denied" "reply-1"])
+
+^{:refer std.substrate.result/request-result}
+(fact "keeps request portable while offering an opt-in native Result"
+  (let [node
+        (substrate/node-create
+         {:id "node/local"
+          :handlers
+          {"sum" (fn [space args request current-node]
+                   (+ (nth args 0) (nth args 1)))}})
+        raw
+        (promise/value
+         (substrate/request node "room/a" "sum" [19 23] {:local true}))
+        result
+        (promise/value
+         (result/request-result
+          node "room/a" "sum" [19 23] {:local true}))]
+    [raw
+     (Result/success? result)
+     (Result/data result)
+     (get-in (Result/context result) ["substrate" "space"])
+     (get-in (Result/context result) ["substrate" "action"])])
+  => [42 true 42 "room/a" "sum"])
+
+(fact "classifies local handler failures as delivered application errors"
+  (let [node
+        (substrate/node-create
+         {:id "node/local-error"
+          :handlers
+          {"deny" (fn [space args request current-node]
+                    (throw (ex-info "denied" {:code :app/denied})))}})
+        output (substrate/request-result
+                node "room/a" "deny" [] {:local true})
+        result (promise/value output)]
+    [(promise/state output)
+     (Result/error? result)
+     (ex-message (Result/error-value result))
+     (get-in (Result/context result) ["substrate" "failure"])])
+  => [:fulfilled true "denied" "application"])
+
+(fact "classifies remote response frames without changing the JSON wire"
+  (let [client (substrate/node-create {:id "node/client"})
+        server
+        (substrate/node-create
+         {:id "node/server"
+          :handlers
+          {"sum" (fn [space args request current-node]
+                   (+ (nth args 0) (nth args 1)))
+           "deny" (fn [space args request current-node]
+                    (throw (ex-info "denied" {:code :app/denied})))}})]
+    (promise/value (memory/link-pair server client))
+    (let [success
+          (promise/value
+           (substrate/request-result client "room/a" "sum" [19 23] {}))
+          failure
+          (promise/value
+           (substrate/request-result client "room/a" "deny" [] {}))]
+      [(Result/success? success)
+       (Result/data success)
+       (Result/error? failure)
+       (ex-message (Result/error-value failure))
+       (get-in (Result/context failure) ["substrate" "failure"])
+       (string?
+        (get-in (Result/context failure) ["substrate" "reply_to"]))]))
+  => [true 42 true "denied" "application" true])
+
+(fact "classifies failures before a response frame as transport errors"
+  (let [node (substrate/node-create {:id "node/transport-error"})
+        output
+        (substrate/request-result
+         node "room/a" "sum" [] {:transport-id "missing"})
+        result (promise/value output)]
+    [(promise/state output)
+     (Result/error? result)
+     (get-in (Result/context result) ["substrate" "failure"])
+     (get-in (Result/context result) ["substrate" "transport_id"])])
+  => [:fulfilled true "transport" "missing"])
+
+(fact "preserves response NodeFrames as the top-level JSON protocol"
+  (let [response
+        (substrate/response-error-frame
+         "req-1" "room/a" {"message" "denied"} {"trace" "abc"})
+        encoded (substrate-json/encode-frame response)
+        decoded (substrate-json/decode-frame encoded)]
+    [(get decoded "kind")
+     (get decoded "reply_to")
+     (get decoded "status")
+     (get-in decoded ["error" "message"])
+     (nil? (get decoded "$hara"))])
+  => ["response" "req-1" "error" "denied" true])
+
+(pr-str (run '[std.substrate.result-test]))

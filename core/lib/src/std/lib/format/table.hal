@@ -1,0 +1,149 @@
+(ns std.lib.format.table
+  (:require [std.lib.format.common :as common]))
+
+(defn- record-role
+  [record]
+  (let [data (:data record)
+        status (or (:test/status record)
+                   (if (map? data) (:test/status data) nil)
+                   (:status record))]
+    (case status
+      :return :success
+      :passed :success
+      :warn :warning
+      :error :error
+      :failed :error
+      :timeout :timeout
+      :skipped :warning
+      :cancelled :warning
+      :critical :critical
+      :default)))
+
+(defn- column-label
+  [column-key]
+  (cond
+    (keyword? column-key) (name column-key)
+    (symbol? column-key) (name column-key)
+    (string? column-key) column-key
+    :else ""))
+
+(defn- normalise-column
+  [column]
+  (if (map? column)
+    (let [column-key (:key column)]
+      (merge
+       {:key column-key
+        :label (column-label column-key)
+        :align :left
+        :role nil}
+       column))
+    {:key column
+     :label (column-label column)
+     :align :left
+     :role nil}))
+
+(defn- column-value
+  [column row]
+  (let [column-key (:key column)]
+    (if (fn? column-key)
+      (column-key row)
+      (get row column-key))))
+
+(defn- column-width
+  [column rows]
+  (or (:width column)
+      (reduce
+       (fn [width row]
+         (max width
+              (str/length
+               (common/value-text
+                (column-value column row)))))
+       (str/length (common/value-text (:label column)))
+       rows)))
+
+(defn- realised-columns
+  [columns rows]
+  (vec
+   (map
+    (fn [column]
+      (let [column (normalise-column column)]
+        (assoc column :width (column-width column rows))))
+    columns)))
+
+(defn cells-with-separators
+  [cells]
+  (loop [remaining (vec cells)
+         output []]
+    (if (empty? remaining)
+      output
+      (let [cell (first remaining)
+            tail (vec (rest remaining))
+            output (conj output cell)]
+        (recur tail
+               (if (empty? tail)
+                 output
+                 (conj output (common/cell "  "))))))))
+
+(defn table-cells
+  [columns row]
+  (cells-with-separators
+   (vec
+    (map
+     (fn [column]
+       (common/cell
+        (common/pad
+         (column-value column row)
+         (:width column)
+         (:align column))
+        (or (:role column) (record-role row))))
+     columns))))
+
+(defn ^{:public true} table-lines
+  "Renders a table section into structured, width-aligned lines."
+  [section]
+  (let [rows (:section/entries section)
+        supplied (:section/columns section)]
+    (if (empty? supplied)
+      (vec
+       (map
+        (fn [row]
+          (common/line
+           (common/value-text row)
+           (record-role row)))
+        rows))
+      (let [columns (realised-columns supplied rows)
+            header
+            (assoc
+             (common/line-cells
+              (cells-with-separators
+               (vec
+                (map
+                 (fn [column]
+                   (common/cell
+                    (common/pad
+                     (:label column)
+                     (:width column)
+                     (:align column))
+                    :highlight))
+                 columns))))
+             :line/role :highlight)
+            separator
+            (assoc
+             (common/line-cells
+              (cells-with-separators
+               (vec
+                (map
+                 (fn [column]
+                   (common/cell
+                    (str/repeat "-" (:width column))
+                    :muted))
+                 columns))))
+             :line/role :muted)]
+        (vec
+         (concat
+          [header separator]
+          (map
+           (fn [row]
+             (assoc (common/line-cells (table-cells columns row))
+                    :line/role (record-role row)))
+           rows)))))))

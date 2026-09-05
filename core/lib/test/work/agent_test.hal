@@ -1,0 +1,360 @@
+(ns work.agent-test
+  (:require [work.base :as work]
+            [work.agent :as agent]
+            [work.agent.ephemeral :as ephemeral]
+            [work.agent.openai :as openai]
+            [work.agent.tool :as agent-tool]
+            [work.agent.tool.work :as tool-work]))
+
+(def response-one
+  {:id "resp_1"
+   :status "completed"
+   :output
+   [{:type "function_call"
+     :call_id "call_1"
+     :name "add"
+     :arguments "{\"a\":20,\"b\":22}"}]})
+
+(def response-two
+  {:id "resp_2"
+   :status "completed"
+   :output
+   [{:type "message"
+     :role "assistant"
+     :content
+     [{:type "output_text"
+       :text "42"}]}]})
+
+(defn fake-transport
+  [request]
+  (let [body (Json/read (:body request))
+        input (get body "input")
+        function-output (if (= 3 (count input)) (nth input 2) nil)
+        response
+        (cond
+          (= 1 (count input))
+          response-one
+
+          (and (= "gpt-5" (get body "model"))
+               (= "Use tools when useful." (get body "instructions"))
+               (= "add" (get-in body ["tools" 0 "name"]))
+               (= "function_call_output" (get function-output "type"))
+               (= "call_1" (get function-output "call_id"))
+               (= (openai/wire-value {:ok true :value 42})
+                  (Json/read (get function-output "output"))))
+          response-two
+
+          :else
+          (throw
+           (ex-info "OpenAI driver emitted an invalid request transcript"
+                    {:request/body body})))]
+    {:status 200
+     :body (Json/write (openai/wire-value response))}))
+
+(def add-tool
+  (agent/tool
+   "add"
+   "Adds two integers."
+   {:type "object"
+    :properties
+    {:a {:type "integer"}
+     :b {:type "integer"}}
+    :required ["a" "b"]
+    :additionalProperties false}
+   (fn [arguments]
+     (+ (get arguments "a")
+        (get arguments "b")))))
+
+(def effectful-tool
+  (agent/tool
+   "publish"
+   "Publishes an external action."
+   {:type "object"
+    :properties
+    {:value {:type "integer"}}
+    :required ["value"]
+    :additionalProperties false}
+   (fn [arguments]
+     (work/step
+      {:id [:publish (get arguments "value")]}
+      (fn [input context]
+        {:published (get arguments "value")})))
+   {:effect :external}))
+
+(def client
+  (agent/openai-client
+   {:model "gpt-5"
+    :api-key "test-key"
+    :transport fake-transport}))
+
+(def openai-agent
+  {:agent/id :calculator
+   :agent/driver
+   (agent/openai-driver
+    {:client client
+     :instructions "Use tools when useful."
+     :tools [add-tool]
+     :max-turns 4})})
+
+(def driven-work
+  (agent/drive openai-agent "What is 20 plus 22?"))
+
+(def final-result
+  (work/run driven-work nil))
+
+(def coordination
+  (agent/ephemeral-coordinator))
+
+(def authority
+  (agent/ephemeral-authority :test-authority {:release false}))
+
+(def chief-agent
+  {:agent/id :chief
+   :agent/driver
+   (agent/ephemeral-work-driver
+    :research
+    (fn [agent intent context input work-context]
+      {:agent/id (:agent/id agent)
+       :intent intent
+       :input input}))
+   :agent/coordinator coordination
+   :agent/authority authority})
+
+(def protocol-agent
+  (ephemeral/agent chief-agent))
+
+(def results
+  [(test-check
+    "Agent is ordinary data and protocol-backed agents project to the same map"
+    [(agent/agent-spec chief-agent)
+     (agent/agent-spec protocol-agent)
+     (agent/agent-id protocol-agent)]
+    [chief-agent chief-agent :chief])
+
+   (test-check
+    "drivers lower intent to canonical Work continuation"
+    [(satisfies? IWork driven-work)
+     (:op (work/work-spec driven-work))
+     final-result]
+    [true :bind "42"])
+
+   (test-check
+    "OpenAI pure tool execution and request transcripts stay inside canonical Work"
+    final-result
+    "42")
+
+   (test-check
+    "effectful model tools are exposed but direct invocation still refuses effects"
+    (let [body
+          (openai/request-body
+           client
+           {:input []
+            :tools [effectful-tool]})
+          call
+          {:call/id "effect-1"
+           :tool/name "publish"
+           :call/arguments {"value" 7}}
+          tool-index (agent-tool/index [effectful-tool])
+          invocation (agent-tool/invoke tool-index call)
+          call-work (tool-work/call-work tool-index call)]
+      [(get-in body ["tools" 0 "name"])
+       (:tool/status invocation)
+       (get-in invocation [:tool/error :code])
+       (get-in invocation [:tool/error :tool/effect])
+       (satisfies? IWork call-work)
+       (:op (work/work-spec call-work))])
+    ["publish"
+     :error
+     :tool/requires-work
+     :external
+     true
+     :chain])
+
+   (test-check
+    "effectful tool factories must return stable identified Work"
+    (let [non-work-tool
+          (agent/tool
+           "bad-value"
+           "Returns a value instead of Work."
+           {:type "object"
+            :properties {}
+            :additionalProperties false}
+           (fn [arguments]
+             {:not :work})
+           {:effect :external})
+          anonymous-work-tool
+          (agent/tool
+           "anonymous-work"
+           "Returns anonymous Work."
+           {:type "object"
+            :properties {}
+            :additionalProperties false}
+           (fn [arguments]
+             (work/definition
+              {:op :pure
+               :fn (fn [input context] input)}))
+           {:effect :external})
+          error-code
+          (fn [tool name]
+            (try
+              (tool-work/call-work
+               (agent-tool/index [tool])
+               {:call/id name
+                :tool/name name
+                :call/arguments {}})
+              :not-rejected
+              (catch Throwable error
+                (:work/error (ex-data error)))))]
+      [(error-code non-work-tool "bad-value")
+       (error-code anonymous-work-tool "anonymous-work")])
+    [:work/agent-tool-not-work
+     :work/agent-tool-unstable-work])
+
+   (test-check
+    "durable OpenAI effectful tools resume without repeating completed model or tool Work"
+    (let [transport-count (atom 0)
+          prepare-count (atom 0)
+          commit-count (atom 0)
+          publish-tool
+          (agent/tool
+           "publish"
+           "Publishes a value."
+           {:type "object"
+            :properties {:value {:type "integer"}}
+            :required ["value"]
+            :additionalProperties false}
+           (fn [arguments]
+             (work/chain
+              {:id [:publish (get arguments "value")]}
+              [(work/step :prepare-publish
+                 (fn [input context]
+                   (swap! prepare-count inc)
+                   (get arguments "value")))
+               (work/step :commit-publish
+                 (fn [value context]
+                   (let [attempt (swap! commit-count inc)]
+                     (if (= attempt 1)
+                       (throw
+                        (ex :host {:attempt attempt}
+                            :ex/message "publish interrupted"))
+                       {:published value}))))]))
+           {:effect :external})
+          transport
+          (fn [request]
+            (let [request-number (swap! transport-count inc)
+                  body (Json/read (:body request))
+                  input (get body "input")
+                  function-output (if (= 3 (count input)) (nth input 2) nil)
+                  response
+                  (cond
+                    (= request-number 1)
+                    {:id "publish_1"
+                     :status "completed"
+                     :output
+                     [{:type "function_call"
+                       :call_id "publish_call_1"
+                       :name "publish"
+                       :arguments "{\"value\":7}"}]}
+
+                    (and (= request-number 2)
+                         (= "function_call_output"
+                            (get function-output "type"))
+                         (= "publish_call_1"
+                            (get function-output "call_id"))
+                         (= (openai/wire-value
+                             {:ok true
+                              :value {:published 7}})
+                            (Json/read
+                             (get function-output "output"))))
+                    {:id "publish_2"
+                     :status "completed"
+                     :output
+                     [{:type "message"
+                       :role "assistant"
+                       :content
+                       [{:type "output_text"
+                         :text "published"}]}]}
+
+                    :else
+                    (throw
+                     (ex :state
+                         {:request-number request-number
+                          :request/body body}
+                         :ex/message "Unexpected publish transcript")))]
+              {:status 200
+               :body (Json/write (openai/wire-value response))}))
+          effect-client
+          (agent/openai-client
+           {:model "gpt-5"
+            :api-key "test-key"
+            :transport transport})
+          publisher
+          {:agent/id :publisher
+           :agent/driver
+           (agent/openai-driver
+            {:client effect-client
+             :tools [publish-tool]
+             :max-turns 4})}
+          effect-work (agent/drive publisher "Publish seven")
+          backend (work/memory-backend)
+          before (work/durable-runtime {:backend backend})
+          reference
+          (work/start before effect-work nil {:id "agent-publish"})
+          status-before (work/status before reference)
+          after (work/durable-runtime {:backend backend})
+          registration (work/register after effect-work)
+          resumed (work/resume after reference)
+          history (work/history after resumed)]
+      [status-before
+       (work/status after resumed)
+       (work/result after resumed)
+       [(deref transport-count)
+        (deref prepare-count)
+        (deref commit-count)]
+       (count
+        (filter
+         (fn [event]
+           (= :work/step-replayed (:event event)))
+         history))])
+    [:failed
+     :completed
+     "published"
+     [2 1 2]
+     2])
+
+   (test-check
+    "ephemeral coordination is a capability while execution remains Work"
+    (let [coordination-work
+          (agent/coordinate chief-agent {:task/id :compile})
+          value (work/run coordination-work {:source :unit})]
+      [(satisfies? IWork coordination-work)
+       (:op (work/work-spec coordination-work))
+       (:task/id value)
+       (:agent/id value)
+       (:work/input value)])
+    [true :step :compile :chief {:source :unit}])
+
+   (test-check
+    "ephemeral authority decisions and signatures are ordinary Work results"
+    (let [authorization
+          (work/run (agent/authorize chief-agent {:action :release}) nil)
+          signature
+          (work/run (agent/sign chief-agent {:action :handoff}) nil)]
+      [(:authorized? authorization)
+       (:authority/id authorization)
+       (:authority/id signature)
+       (first (:signature signature))])
+    [false :test-authority :test-authority :test-authority])
+
+   (test-check
+    "ephemeral drivers also return Work rather than executing intent"
+    (let [value (agent/drive chief-agent :inspect)]
+      [(satisfies? IWork value)
+       (:op (work/work-spec value))
+       (work/run value :payload)])
+    [true :step
+     {:agent/id :chief
+      :intent :inspect
+      :input :payload}])])
+
+results

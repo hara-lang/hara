@@ -1,0 +1,154 @@
+(ns tool.cli.identity
+  (:require [tool.cli.model :as model]
+            [tool.sh :as sh]
+            [work.base :as work]))
+
+(def +default-endpoint+ "https://id.hara-lang.org")
+
+(def +route-operations+
+  {:tool.cli.route/id-login :login
+   :tool.cli.route/id-enroll :enroll
+   :tool.cli.route/id-status :status
+   :tool.cli.route/id-key :key
+   :tool.cli.route/id-namespace :namespace})
+
+(defn operation-request [request]
+  (let [operation (get +route-operations+ (:request/route request))
+        arguments (:request/arguments request)]
+    (if operation
+      {:operation operation :arguments arguments}
+      (if (empty? arguments)
+        (throw (ex :io {} :ex/message "id requires login, enroll, status, namespace, or key"))
+        {:operation (keyword (first arguments))
+         :arguments (vec (rest arguments))}))))
+
+(defn endpoint []
+  (or (os/getenv "HARA_ID_ENDPOINT") +default-endpoint+))
+
+(defn trim-end-slash [value]
+  (if (str/ends-with? value "/")
+    (str/slice value 0 (dec (str/length value)))
+    value))
+
+(defn option [request name]
+  (get (:request/options request) name))
+
+(def +hex-characters+ (set "0123456789abcdef"))
+
+(defn hex-character? [value]
+  (has? +hex-characters+ value))
+
+(defn valid-hex? [value bytes]
+  (and (string? value)
+       (= (* bytes 2) (str/length value))
+       (every? (fn [index] (hex-character? (str/char-at value index)))
+               (range (str/length value)))))
+
+(defn canonical-enrollment [tap owner public-key challenge]
+  (str "{:enrollment/format \"0.0.0-alpha\" :enrollment/tap " (pr-str tap)
+       " :enrollment/provider :github :enrollment/owner " (pr-str owner)
+       " :enrollment/public-key " (pr-str public-key)
+       " :enrollment/challenge " (pr-str challenge) "}\n"))
+
+(defn run-process [argv input]
+  (let [options (if (nil? input) {} {:stdin input})
+        result (sh/result-record (sh/run argv options))
+        public (select-keys result [:stdout :stderr :exit])]
+    (if (= 0 (:exit public))
+      public
+      (throw (ex :host public :ex/message (str/trim (:stderr public)))))))
+
+(defn request [method path body]
+  (let [url (str (trim-end-slash (endpoint)) path)
+        base ["curl" "--fail-with-body" "--silent" "--show-error"
+              "-X" method "-H" "accept: application/edn"]
+        argv (if body
+               (vec (concat base ["-H" "content-type: application/edn"
+                                  "--data-binary" "@-" url]))
+               (conj base url))]
+    (:stdout (run-process argv body))))
+
+(defn fetch-challenge [owner]
+  (let [challenge (str/trim
+                   (request "GET"
+                            (str "/v1/enrollments/challenge?owner=" owner)
+                            nil))]
+    (if (str/blank? challenge)
+      (throw (ex :generic {} :ex/message "identity service returned an empty challenge"))
+      challenge)))
+
+(defn sign [source]
+  (let [signer (os/getenv "HARA_SIGNER")]
+    (if (or (nil? signer) (str/blank? signer))
+      (throw (ex :host {} :ex/message "HARA_SIGNER must name an external signer command"))
+      nil)
+    (let [response (Edn/read (:stdout (run-process [signer] source)))
+          key-id (:key/id response)
+          signature (:signature response)]
+      (if (and (string? key-id) (string? signature))
+        {:key-id key-id :signature signature}
+        (throw (ex :security {} :ex/message "signer response must contain :key/id and :signature"))))))
+
+(defn enroll [request]
+  (let [owner (option request :owner)
+        tap-option (or (option request :tap) "hara")
+        tap (if (= tap-option "official") "hara" tap-option)
+        public-key (os/getenv "HARA_SIGNER_PUBLIC_KEY")]
+    (if (str/blank? owner)
+      (throw (ex :dependency {} :ex/message "id enroll requires --owner"))
+      nil)
+    (if (valid-hex? public-key 32)
+      nil
+      (throw (ex :argument {} :ex/message "HARA_SIGNER_PUBLIC_KEY must be lowercase 32-byte hex")))
+    (let [challenge (or (option request :challenge) (fetch-challenge owner))
+          source (canonical-enrollment tap owner public-key challenge)
+          signed (sign source)]
+      (if (option request :dry-run)
+        (model/success signed
+                       [(model/message
+                         (str source "key-id=" (:key-id signed)
+                              " signature=" (:signature signed) "\n"))])
+        (let [envelope (str "{:enrollment/request " (pr-str source)
+                            " :enrollment/key-id " (pr-str (:key-id signed))
+                            " :enrollment/signature " (pr-str (:signature signed)) "}\n")
+              response (request "POST" "/v1/enrollments" envelope)]
+          (model/success response [(model/message response)]))))))
+
+(defn key-command [arguments]
+  (let [operation (first arguments)]
+    (cond
+      (= operation "list") (request "GET" "/v1/keys" nil)
+      (= operation "rotate") (request "POST" "/v1/keys/rotate" "{}\n")
+      (= operation "revoke")
+      (if (= 2 (count arguments))
+        (request "POST" (str "/v1/keys/" (nth arguments 1) "/revocations")
+                 "{:revocation/reason :publisher-request}\n")
+        (throw (ex :dependency {} :ex/message "id key revoke requires KEY_ID")))
+      :else (throw (ex :host {} :ex/message "usage: hara id key <list|rotate|revoke KEY_ID>")))))
+
+(defn execute [request]
+  (let [resolved (operation-request request)
+        operation (:operation resolved)
+        arguments (:arguments resolved)]
+    (cond
+      (= operation :login)
+      (let [url (str (trim-end-slash (endpoint)) "/login/github\n")]
+        (model/success url [(model/message url)]))
+      (= operation :enroll) (enroll request)
+      (= operation :status)
+      (let [response (request "GET" "/v1/status" nil)]
+        (model/success response [(model/message response)]))
+      (= operation :namespace)
+      (let [response (request "GET" "/v1/namespaces" nil)]
+        (model/success response [(model/message response)]))
+      (= operation :key)
+      (let [response (key-command arguments)]
+        (model/success response [(model/message response)]))
+      :else (throw (ex :host {} :ex/message (str "unknown id command: " (name operation)))))))
+
+(def +command-work+
+  (work/step {:id 'tool.cli/identity :version 1}
+             (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run work/default-host +command-work+ request))

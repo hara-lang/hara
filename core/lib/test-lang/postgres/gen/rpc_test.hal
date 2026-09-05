@@ -1,0 +1,135 @@
+(ns postgres.gen.rpc-test
+  (:require [postgres.gen.rpc :as rpc])
+  (:use code.test))
+
+(fact "normalizes names and infers aggregate ownership"
+  [(rpc/snake-name :User_Brand_Get)
+   (rpc/infer-aggregate {:function-name 'user-update})
+   (rpc/infer-aggregate {:function-name 'execute
+                         :source-tables ['CampaignAsset]})
+   (rpc/infer-aggregate {:function-name 'execute
+                         :notify {:entity :Topic}})]
+  => ["user-brand-get" "User" "Campaign" "Topic"])
+
+(fact "extracts typed rows and nested cardinality paths"
+  (rpc/shape-rows
+   {:source-table 'User
+    :fields
+    {:posts {:items {:shape {:source-table 'Post :fields {}}}}
+     :profile {:shape {:source-table 'Profile :fields {}}}}})
+  => [["User" [] :one]
+      ["Post" ["posts"] :many]
+      ["Profile" ["profile"] :one]])
+
+(fact "infers symbolic composite row paths from source tables"
+  (rpc/inferred-shape-rows
+   {:fields {:asset {:kind :symbol}
+             :ambiguous {:kind :unknown}}}
+   ['CampaignAsset 'UserAmbiguous 'BrandAmbiguous])
+  => [["CampaignAsset" ["asset"] :one]])
+
+(fact "infers session, argument, and result topic ids with has?"
+  [(rpc/infer-topic-id
+    {:aggregate "User"
+     :function-name 'user-update
+     :inputs [{:name 'i-user-id}]
+     :output-shape {}})
+   (rpc/infer-topic-id
+    {:aggregate "User"
+     :function-name 'super-user-update
+     :inputs [{:name 'i-target-id}]
+     :output-shape {}})
+   (rpc/infer-topic-id
+    {:aggregate "Brand"
+     :function-name 'brand-create
+     :inputs []
+     :output-shape {:source-table 'Brand}})
+   (rpc/infer-topic-id
+    {:aggregate "Topic"
+     :function-name 'topic-update
+     :inputs []
+     :output-shape {:fields {:topic-id {}}}})]
+  => [{:kind :session :name "i-user-id"}
+      {:kind :arg :name "i-target-id"}
+      {:kind :result :path ["id"]}
+      {:kind :result :path ["topic_id"]}])
+
+(fact "builds sync and remove notification plans"
+  [(rpc/notification-plan
+    {:function-name 'user-update
+     :inputs [{:name 'i-user-id}]
+     :report {:analysis {:mutating true :source-tables ['User]}}
+     :output-shape {:source-table 'User :fields {}}})
+   (rpc/notification-plan
+    {:function-name 'campaign-delete
+     :inputs [{:name 'i-campaign-id}]
+     :report {:analysis {:mutating true :source-tables ['Campaign]}}
+     :output-shape {:source-table 'Campaign :fields {}}})]
+  => [{:aggregate "User"
+       :topic-id {:kind :session :name "i-user-id"}
+       :event "db/sync"
+       :rows [["User" [] :one]]
+       :private true}
+      {:aggregate "Campaign"
+       :topic-id {:kind :arg :name "i-campaign-id"}
+       :event "db/remove"
+       :rows [["Campaign" [] :one]]
+       :private true}])
+
+(fact "rejects mutating entity plans without typed result rows"
+  (rpc/notification-plan
+   {:function-name 'user-update
+    :inputs [{:name 'i-user-id}]
+    :report {:analysis {:mutating true :source-tables ['User]}}
+    :output-shape {}})
+  => (throws))
+
+(fact "builds result path and topic forms"
+  [(rpc/result-path-form 'result ["user" "id"] true)
+   (rpc/topic-id-form
+    {:kind :session}
+    {:auth-form 'auth :result-sym 'result :arg-form identity})
+   (rpc/topic-id-form
+    {:kind :arg :name "i-user-id"}
+    {:auth-form 'auth
+     :result-sym 'result
+     :arg-form (fn [value] (list 'arg value))})]
+  => ['(:->> (:-> result "user") "id")
+      'auth
+      '(arg "i-user-id")])
+
+(fact "builds deterministic sync and remove payloads"
+  [(rpc/notification-payload
+    {:event "db/sync"
+     :rows [["User" [] :one]
+            ["Post" ["posts"] :many]]}
+    'result)
+   (rpc/notification-payload
+    {:event "db/remove"
+     :rows [["User" [] :one]
+            ["Post" ["posts"] :many]]}
+    'result)]
+  => [{"db/sync"
+       {"Post" '(:-> result "posts")
+        "User" ['result]}}
+      {"db/remove"
+       {"Post" '(pg/jsonb-path-query-array
+                  (:-> result "posts")
+                  "$[*].id")
+        "User" ['(:->> result "id")]}}])
+
+(fact "builds canonical realtime send forms"
+  (rpc/realtime-send-form
+   {:aggregate "User"
+    :topic-id {:kind :result :path ["id"]}
+    :event "db/sync"
+    :rows [["User" [] :one]]}
+   {:result-sym 'result
+    :auth-form 'auth
+    :arg-form identity})
+  => '(s/realtime-send-request
+       (|| "User:" (:->> result "id"))
+       {"db/sync" {"User" [result]}}
+       true))
+
+(pr-str (run '[postgres.gen.rpc-test]))

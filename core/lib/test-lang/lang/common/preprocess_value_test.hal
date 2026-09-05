@@ -1,0 +1,68 @@
+(ns lang.common.preprocess-value-test
+  (:use code.test)
+  (:require [lang.common.preprocess-value :as value]))
+
+(def block-macro
+  (with-meta
+    (fn [form]
+      (let [argument (second form)]
+        (list 'do (list 'return (list '+ argument 1)))))
+    {:arglists '([_ argument])}))
+
+(def block-grammar
+  {:reserved
+   {'x:block {:emit :macro
+              :macro block-macro
+              :value/standalone true
+              :op-spec {:allow-blocks true}}}})
+
+^{:refer lang.common.preprocess-value/value-block-entry :added "4.1"}
+(fact "selects only block-valued macro entries"
+  (boolean (value/value-block-entry '(x:block 1) block-grammar)) => true
+  (value/value-block-entry '(x:block 1)
+                           {:reserved {'x:block {:emit :macro
+                                                 :macro block-macro}}})
+  => nil
+  (value/value-block-entry 'x:block block-grammar) => nil)
+
+^{:refer lang.common.preprocess-value/expand-value-block :added "4.1"}
+(fact "expands block-valued macro calls"
+  (value/expand-value-block '(x:block 2) block-grammar nil {})
+  => '(do (return (+ 2 1)))
+  (value/expand-value-block '(other 2) block-grammar nil {}) => nil)
+
+^{:refer lang.common.preprocess-value/resolve-block-form :added "4.1"}
+(fact "resolves direct blocks and namespaced fragment wrappers"
+  (let [modules
+        {'U.test
+         {:fragment
+          {'my-op {:template (fn [argument]
+                               (list 'x:block argument))}}}}
+        options '{:module {:id app.core :link {u U.test}}}]
+    [(value/resolve-block-form '(x:block 1) block-grammar nil {})
+     (value/resolve-block-form '(other 1) block-grammar nil {})
+     (value/resolve-block-form
+      '(u/my-op 2) block-grammar modules options)])
+  => '[(x:block 1) nil (x:block 2)])
+
+^{:refer lang.common.preprocess-value/value-template-args :added "4.1"}
+(fact "derives value arguments from template metadata"
+  (value/value-template-args block-macro) => '[argument]
+  (value/value-template-args '([x y]) block-macro) => '[x y])
+
+^{:refer lang.common.preprocess-value/value-standalone :added "4.1"}
+(fact "compiles standalone block macros to callable values"
+  (value/value-standalone 'x:block block-grammar)
+  => '(fn [argument] (do (return (+ argument 1)))))
+
+^{:refer lang.common.preprocess-value/process-value-form :added "4.1"}
+(fact "lowers block macros in return and argument positions"
+  (value/process-value-form '(return (x:block 2)) block-grammar {})
+  => '(do (return (+ 2 1)))
+
+  (value/process-value-form '(consume (x:block 2)) block-grammar {})
+  => '(consume ((fn [argument]
+                  (do (return (+ argument 1))))
+                2)))
+
+(run {:namespace "lang.common.preprocess-value-test"})

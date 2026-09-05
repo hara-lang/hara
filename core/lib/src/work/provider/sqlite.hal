@@ -1,0 +1,71 @@
+(ns work.provider.sqlite
+  (:require [work.base.result :as result]
+            [work.base.store :as store]))
+
+;; Shared SQLite operational-store adapter. Concrete backend namespaces supply
+;; the connection operations explicitly; this namespace never selects one.
+
+(def schema-version 1)
+
+(defn connection [value]
+  (or (get-in value [:optional :connection])
+      (:provider/connection value)
+      value))
+
+(defn provider-id [backend]
+  (or (:provider backend)
+      (throw (ex :database {:backend backend} :ex/message "SQLite backend requires a provider identity"))))
+
+(defn capabilities []
+  #{:runs
+    :transactions
+    :events
+    :checkpoints
+    :outbox
+    :persistent})
+
+(defn describe [backend]
+  {:provider/role :work/store
+   :provider/id (provider-id backend)
+   :provider/schema-version schema-version
+   :provider/capabilities (capabilities)})
+
+(def operational-store-operations
+  (vec
+   (concat (store/baseline-operations)
+           (get store/optional-capabilities :outbox)
+           [:next-run-id :validate-run-id :create-run])))
+
+(defn operations [backend value]
+  (reduce
+   (fn [output operation]
+     (assoc output
+            operation
+            (fn [& arguments]
+              ((:work-call backend) value operation (vec arguments)))))
+   {}
+   operational-store-operations))
+
+(defn normalise-provider [backend operations]
+  (store/normalise-provider
+   (assoc (describe backend) :provider/operations operations)))
+
+(defn sqlite-store
+  "Opens and migrates the explicitly supplied SQLite backend."
+  ([backend]
+   (sqlite-store backend {}))
+  ([backend options]
+   (result/then
+    ((:open backend) options)
+    (fn [value]
+      (result/then
+       ((:work-call backend) value :migrate [])
+       (fn [_]
+         (let [provider
+               (normalise-provider backend (operations backend value))]
+           (assoc provider
+                  :optional
+                  (assoc (:optional provider) :connection value)))))))))
+
+(defn close [backend value]
+  ((:close backend) (connection value)))

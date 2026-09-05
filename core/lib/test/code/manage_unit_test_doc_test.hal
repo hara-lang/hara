@@ -1,0 +1,122 @@
+(ns code.manage.unit.test-doc-test
+  (:use code.test)
+  (:require [code.manage.unit.test-doc :as test-doc]))
+
+(def legacy-source
+  "(ns demo.test\n  (:use code.test)\n  (:require [demo.subject :as subject]))\n\n(def helper 1)\n\n(def results\n  [(fact \"runs\" (subject/run helper) => 2)\n   (fact \"stops\" (subject/stop) => nil)])\n")
+
+^{:refer code.manage.unit.test-doc/document :added "0.1"}
+(fact "documents every def results fact with its aliased subject"
+  (let [document
+        (test-doc/document
+         {:path "test/demo/test.hal"
+          :test-path "demo/test.hal"
+          :source legacy-source})]
+    [(:format document)
+     (:noncanonical document)
+     (:unresolved document)
+     (vec (map :refer (:facts document)))
+     (vec (map :refer-source (:facts document)))])
+  => ["code.manage.test-doc/2"
+      2
+      0
+      '[demo.subject/run demo.subject/stop]
+      [:qualified-call :qualified-call]])
+
+^{:refer code.manage.unit.test-doc/document :added "0.1"}
+(fact "leaves a direct fact with refer metadata out of migration"
+  (test-doc/document
+   {:path "test/demo/test.hal"
+    :test-path "demo/test.hal"
+    :source "(ns demo.test (:use code.test))\n\n^{:refer demo.subject/run}\n(fact \"runs\" 2 => 2)\n"})
+  => nil)
+
+^{:refer code.manage.unit.test-doc/document :added "0.1"}
+(fact "marks ambiguous facts unresolved instead of guessing"
+  (let [document
+        (test-doc/document
+         {:path "test/demo/test.hal"
+          :test-path "demo/test.hal"
+          :source "(ns demo.test (:use code.test) (:require [demo.subject :as subject]))\n\n(fact \"mixed\" (subject/left) (subject/right))\n"})]
+    [(:unresolved document)
+     (get-in document [:facts 0 :refer-source])
+     (get-in document [:facts 0 :refer-candidates])])
+  => [1 :unresolved '[demo.subject/left demo.subject/right]])
+
+^{:refer code.manage.unit.test-doc/document :added "0.1"}
+(fact "infers references through map literals"
+  (let [document
+        (test-doc/document
+         {:path "test/demo/test.hal"
+          :test-path "demo/test.hal"
+          :source "(ns demo.test (:use code.test) (:require [demo.subject :as subject]))\n\n(fact \"mapped\" (subject/run {:value 1}) => 1)\n"})]
+    [(get-in document [:facts 0 :refer])
+     (:unresolved document)])
+  => '[demo.subject/run 0])
+
+^{:refer code.manage.unit.test-doc/normalize-reader-macros :added "0.1"}
+(fact "rewrites pointer readers as ordinary constructor calls"
+  (test-doc/normalize-reader-macros
+   "[#ptr {:context :test} \"#uuid hidden\" ; #tag hidden\n]"
+   "demo.hal")
+  => "[(pointer {:context :test}) \"#uuid hidden\" ; #tag hidden\n]")
+
+^{:refer code.manage.unit.test-doc/normalize-reader-macros :added "0.1"}
+(fact "rejects other tagged reader macros in code"
+  (try
+    (test-doc/normalize-reader-macros "#uuid \"value\"" "demo.hal")
+    nil
+    (catch Throwable error
+      (select-keys (ex-data error) [:path :reader])))
+  => {:path "demo.hal" :reader "#uuid"})
+
+^{:refer code.manage.unit.test-doc/document-result :added "0.1"}
+(fact "isolates malformed source as a per-file analysis error"
+  (let [result
+        (test-doc/document-result
+         {:path "broken_test.hal"
+          :test-path "broken_test.hal"
+          :source "(ns broken-test (:use code.test))\n(fact \"broken\" true) => true)"})]
+    [(:status result)
+     (:test-path result)
+     (:error result)])
+  => [:error "broken_test.hal" "Unmatched delimiter: )"])
+
+^{:refer code.manage.unit.test-doc/render :added "0.1"}
+(fact "renders helpers in source order and removes def results"
+  (let [document
+        (test-doc/document
+         {:path "test/demo/test.hal"
+          :test-path "demo/test.hal"
+          :source legacy-source})
+        generated (test-doc/render document)]
+    [(str/includes? generated "(def helper 1)")
+     (str/includes? generated "def results")
+     (str/includes? generated "^{:refer demo.subject/run}")
+     (< (str/index-of generated "(def helper 1)")
+        (str/index-of generated "(fact \"runs\""))])
+  => [true false true true])
+
+^{:refer code.manage.unit.test-doc/document :added "0.1"}
+(fact "preserves non-reference metadata while normalizing legacy ref"
+  (let [document
+        (test-doc/document
+         {:path "test/demo/test.hal"
+          :test-path "demo/test.hal"
+          :source "(ns demo.test (:use code.test))\n\n(def results [^{:ref demo.subject/run :added \"3.2\" :unchecked true}\n(fact \"runs\" 2)])\n"})
+        generated (test-doc/render document)]
+    [(str/includes? generated ":refer demo.subject/run")
+     (str/includes? generated ":added \"3.2\"")
+     (str/includes? generated ":unchecked true")
+     (str/includes? generated ":ref ")])
+  => [true true true false])
+
+^{:refer code.manage.unit.test-doc/target-path :added "0.1"}
+(fact "maps inputs into separate EDN and generated-test roots"
+  (test-doc/target-path "/repo/core/lib/test/code/demo_test.hal"
+                        "/repo/core/lib/test"
+                        "/repo/core/test-docs/lib"
+                        ".edn")
+  => "/repo/core/test-docs/lib/code/demo_test.edn")
+
+(pr-str (run {:namespace "code.manage.unit.test-doc-test"}))

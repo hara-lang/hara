@@ -1,0 +1,101 @@
+(ns code.framework.source-test
+  (:use code.test)
+  (:require [code.framework.source :as source]
+            [code.manage.unit :as unit]))
+
+(def same-file
+  {:path "src/demo.hal"
+   :source "alpha beta\n"})
+
+(fact "source operations normalise string and structured transformer results"
+  [(select-keys
+    (source/transform-code
+     same-file
+     (fn [text] (str text "gamma\n")))
+    [:path :source/path :target/path :before :after :changed :create :write])
+   (select-keys
+    (source/transform-code
+     {:source/path "src/demo.clj"
+      :source/text "(ns demo)"
+      :target/path "src/demo.hal"
+      :target/text nil}
+     (fn [text]
+       {:after (str text "\n")
+        :rules [:demo/rule]
+        :diagnostics [{:type :demo/finding}]
+        :provenance {:profile/id :demo}}))
+    [:path :source/path :target/path :before :after :changed :create
+     :rules :diagnostics :provenance])]
+  =>
+  [{:path "src/demo.hal"
+    :source/path "src/demo.hal"
+    :target/path "src/demo.hal"
+    :before "alpha beta\n"
+    :after "alpha beta\ngamma\n"
+    :changed true
+    :create false
+    :write false}
+   {:path "src/demo.hal"
+    :source/path "src/demo.clj"
+    :target/path "src/demo.hal"
+    :before nil
+    :after "(ns demo)\n"
+    :changed true
+    :create true
+    :rules [:demo/rule]
+    :diagnostics [{:type :demo/finding}]
+    :provenance
+    {:operation :code.framework/transform-code
+     :source/path "src/demo.clj"
+     :target/path "src/demo.hal"
+     :profile/id :demo}}])
+
+(fact "code.manage unit transformations are exactly the framework operation"
+  (let [transform (fn [text] (str/replace text "beta" "delta"))]
+    (mapv
+     (fn [edit]
+       (select-keys edit [:path :after :changed]))
+     [(source/transform-code same-file transform)
+      (unit/transform-code same-file transform)]))
+  => [{:path "src/demo.hal"
+       :after "alpha delta\n"
+       :changed true}
+      {:path "src/demo.hal"
+       :after "alpha delta\n"
+       :changed true}])
+
+(fact "literal grep and replacement preserve exact source outside matches"
+  [(source/grep-code same-file "a")
+   (:after (source/grep-replace same-file "beta" "delta"))]
+  => [[{:path "src/demo.hal" :line 1 :column 1 :text "alpha beta"}
+       {:path "src/demo.hal" :line 1 :column 5 :text "alpha beta"}
+       {:path "src/demo.hal" :line 1 :column 10 :text "alpha beta"}]
+      "alpha delta\n"])
+
+(fact "overlapping edits are rejected before source application"
+  (try
+    (source/apply-edits
+     "abcdef"
+     [(source/replacement 1 4 "x")
+      (source/replacement 3 5 "y")])
+    :not-thrown
+    (catch Throwable error
+      (:ex/code (ex-data error))))
+  => :code.framework/edit-conflict)
+
+(fact "writes remain explicit and injected"
+  (let [writes (atom [])
+        result
+        (source/apply-edit-record
+         (source/transform-code same-file (fn [_] "changed"))
+         (fn [path text]
+           (swap! writes conj [path text])
+           :written))]
+    [result (deref writes)])
+  => [{:path "src/demo.hal"
+       :write true
+       :changed true
+       :result :written}
+      [["src/demo.hal" "changed"]]])
+
+(pr-str (run {:namespace "code.framework.source-test"}))

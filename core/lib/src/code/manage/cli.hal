@@ -1,0 +1,299 @@
+(ns code.manage.cli
+  (:require [code.manage :as manage]
+            [code.manage.context :as context]
+            [code.manage.editor :as editor]
+            [tool.cli.model :as model]
+            [code.project :as project]
+            [work.base :as work]
+            [work.flow.task.selector :as selector]))
+
+(def +value-options+
+  {"--match" :match "--replacement" :replacement
+   "--from" :from "--to" :to "--needle" :needle
+   "--form" :form "--var" :var
+   "--added" :added "--format" :format})
+
+(def +formats+ #{:edn :editor-json})
+
+(def +direct-operations+ #{:contract-check :issue-contract})
+
+(def +test-only+ context/+test-only+)
+
+(def +source-and-test+ context/+source-and-test+)
+
+(defn tail [values] (vec (rest values)))
+
+(defn required [remaining option]
+  (if (empty? remaining)
+    (throw (ex :dependency {:option option} :ex/message (str option " requires a value")))
+    (first remaining)))
+
+(defn validate-parsed
+  [parsed]
+  (let [operation (:operation parsed)
+        raw-options (:options parsed)
+        format (keyword (or (:format raw-options) "edn"))
+        options (dissoc raw-options :format)]
+    (cond
+      (not (has? +formats+ format))
+      (throw (ex :syntax {:format format} :ex/message (str "unsupported manage format " format)))
+
+      (and (has? +direct-operations+ operation)
+           (not= 1 (count (:namespaces parsed))))
+      (throw (ex :dependency {:operation operation}
+                  :ex/message (str (name operation) " requires one contract path")))
+
+      (and (:complete? options)
+           (not (has? +direct-operations+ operation)))
+      (throw (ex :syntax {:operation operation :option "--complete"}
+                  :ex/message "--complete is only supported by contract-check"))
+
+      (and (= operation :import) (:form options))
+      (throw (ex :syntax {:operation operation :option "--form"} :ex/message "import --form is obsolete; import reads matching fact titles"))
+
+      (and (= operation :purge) (:patterns options))
+      (throw (ex :syntax {:operation operation :option "--pattern"} :ex/message "purge --pattern is obsolete; purge removes docstrings and :added metadata"))
+
+      :else
+      (assoc parsed :format format :options options))))
+
+(defn parse-arguments [arguments]
+  (let [operation (keyword (or (first arguments) "analyse"))]
+    (if (and (nil? (get manage/parity-inventory operation))
+             (not (has? +direct-operations+ operation)))
+      (throw (ex :syntax {:operation operation} :ex/message (str "unsupported manage operation " operation)))
+      (loop [remaining (tail arguments)
+             write false
+             namespaces []
+             patterns []
+             options {}]
+        (if (empty? remaining)
+          (validate-parsed
+           {:operation operation
+            :write write
+            :namespaces namespaces
+            :options (if (empty? patterns)
+                       options
+                       (assoc options :patterns patterns))})
+          (let [argument (first remaining)
+                more (tail remaining)
+                option-key (get +value-options+ argument)
+                next-state
+                (cond
+                  (= argument "--write")
+                  {:remaining more
+                   :write true
+                   :namespaces namespaces
+                   :patterns patterns
+                   :options options}
+
+                  (= argument "--complete")
+                  {:remaining more
+                   :write write
+                   :namespaces namespaces
+                   :patterns patterns
+                   :options (assoc options :complete? true)}
+
+                  (= argument "--pattern")
+                  {:remaining (tail more)
+                   :write write
+                   :namespaces namespaces
+                   :patterns (conj patterns (required more argument))
+                   :options options}
+
+                  option-key
+                  {:remaining (tail more)
+                   :write write
+                   :namespaces namespaces
+                   :patterns patterns
+                   :options (assoc options option-key (required more argument))}
+
+                  (str/starts-with? argument "-")
+                  (throw (ex :syntax {:option argument} :ex/message (str "unknown manage option " argument)))
+
+                  :else
+                  {:remaining more
+                   :write write
+                   :namespaces (conj namespaces argument)
+                   :patterns patterns
+                   :options options})]
+            (recur (:remaining next-state)
+                   (:write next-state)
+                   (:namespaces next-state)
+                   (:patterns next-state)
+                   (:options next-state))))))))
+
+(defn parsed-selector
+  [namespaces]
+  (cond
+    (empty? namespaces) :all
+    (= 1 (count namespaces)) (first namespaces)
+    :else (vec namespaces)))
+
+
+(defn path-selector-candidates
+  [path]
+  (let [path (str/replace (str path) "\\" "/")
+        path (if (str/ends-with? path ".hal")
+               (str/slice path 0 (- (str/length path) 4))
+               path)
+        parts (vec (filter (fn [part] (not (str/blank? part)))
+                           (str/split path "/")))]
+    (loop [remaining parts
+           output []]
+      (if (empty? remaining)
+        output
+        (recur (vec (rest remaining))
+               (conj output
+                     (str/replace (str/join "." remaining) "_" "-")))))))
+
+(defn selected?
+  [path namespaces]
+  (if (empty? namespaces)
+    true
+    (let [selection (if (= 1 (count namespaces))
+                      (first namespaces)
+                      (vec namespaces))]
+      (reduce
+       (fn [matched candidate]
+         (or matched (selector/matches? selection candidate)))
+       false
+       (path-selector-candidates path)))))
+
+(defn roots-for [project operation]
+  (context/roots-for project operation))
+
+(defn unit [path type]
+  (context/unit path type))
+
+(defn versioned-unit
+  [base version]
+  (context/versioned-unit base version))
+
+(defn paired-source-unit
+  "Adds the mapped test and project-version fields required by manage workflows."
+  [base version test-path test-source]
+  (context/paired-source-unit base version test-path test-source))
+
+(defn project-test-path
+  "Maps an absolute source PATH through the project's corresponding test root."
+  [current-project path]
+  (context/project-test-path current-project path))
+
+(defn paired-unit
+  [current-project path type]
+  (context/paired-unit current-project path type))
+
+
+(defn units-for
+  [project parsed]
+  (context/units-for project (:operation parsed)))
+
+
+(defn current-input
+  "Constructs the ns-current input used by callable code.manage tasks."
+  ([operation namespace]
+   (context/current-input operation namespace))
+  ([operation namespace invocation]
+   (context/current-input operation namespace invocation)))
+
+(defn current-source [path]
+  (if (deref (File/exists? path)) (project/read-text path) ""))
+
+(defn strip-trailing-separator
+  [path]
+  (if (and (> (str/length path) 1)
+           (str/ends-with? path "/"))
+    (strip-trailing-separator
+     (str/slice path 0 (dec (str/length path))))
+    path))
+
+(defn normalized-path-text
+  [path]
+  (strip-trailing-separator
+   (str/replace (str path) "\\" "/")))
+
+(defn path-under-root?
+  [root path]
+  (let [root (normalized-path-text root)
+        path (normalized-path-text path)]
+    (or (= root path)
+        (str/starts-with? path (str root "/")))))
+
+(defn resolve-edit-path
+  [root path]
+  (let [resolved-root (File/resolve root "")
+        resolved-path (File/resolve root path)]
+    (if (path-under-root? resolved-root resolved-path)
+      resolved-path
+      (throw
+       (ex :io {:root resolved-root :path path :resolved resolved-path} :ex/message (str "code.manage edit escapes project root: " path))))))
+
+(defn validate-edit
+  [root edit]
+  (let [path (resolve-edit-path root (:path edit))
+        current (current-source path)]
+    (if (= (:before edit) current)
+      (assoc edit :resolved-path path)
+      (throw (ex :conflict {:path path} :ex/message (str "code.manage stale edit: " path))))))
+
+(defn preflight
+  [root edits]
+  (vec (map (fn [edit] (validate-edit root edit)) edits)))
+
+(defn write-edit
+  [edit]
+  (let [path (:resolved-path edit)
+        parent (File/parent path)]
+    (if parent (deref (File/mkdir parent)) nil)
+    (deref (File/write path (str/encode-utf8 (:after edit))))
+    edit))
+
+(defn apply-edits
+  [root edits]
+  (let [validated (preflight root edits)]
+    (vec (map write-edit validated))))
+
+(defn render-plan
+  [plan parsed]
+  (if (= :editor-json (:format parsed))
+    (Json/write (editor/payload plan (:write parsed)))
+    (pr-str plan)))
+
+(defn execute [request]
+  (let [parsed (parse-arguments (:request/arguments request))
+        start (or (:project (:request/options request))
+                  (:root (:request/options request))
+                  (:request/cwd request)
+                  (OS/cwd))
+        current-project (project/discover start)]
+    (if (has? +direct-operations+ (:operation parsed))
+      (let [contract
+            (manage/check-contract
+             {:source (current-source (first (:namespaces parsed)))
+              :complete? (= true (get-in parsed [:options :complete?]))})
+            output (pr-str contract)]
+        (if (:valid? contract)
+          (model/success contract [(model/message (str output "\n"))])
+          (model/result
+           :tool.cli.outcome/failed
+           contract
+           [(model/message :stderr (str output "\n"))])))
+      (let [plan (manage/plan (:operation parsed)
+                              {:units (units-for current-project parsed)
+                               :options (:options parsed)
+                               :selector (parsed-selector (:namespaces parsed))})
+            output (render-plan plan parsed)]
+        (if (:write parsed)
+          (apply-edits (:project/root current-project) (:edits plan))
+          nil)
+        (model/success plan [(model/message (str output "\n"))])))))
+
+
+(def +command-work+
+  (work/step
+   {:id 'code.manage/cli :version 1}
+   (fn [request context] (execute request))))
+
+(defn handler [request]
+  (work/run work/default-host +command-work+ request))

@@ -1,0 +1,48 @@
+(ns std.config.global
+  (:require [std.config.common :as common]
+            [code.project :as project]))
+
+(def +session+
+  (atom {}))
+
+(defn environment
+  [context]
+  (or (:env context)
+      (:config/env context)
+      {}))
+
+(defn current-project
+  [context]
+  (or (:project context)
+      (:config/project context)
+      (try
+        (project/discover (or (:root context) (os/cwd)))
+        (catch Throwable error nil))
+      {}))
+
+(defn session
+  []
+  (deref +session+))
+
+(defn global-all
+  [context]
+  (common/merge-all
+   [(environment context)
+    (current-project context)
+    (session)]))
+
+(defn global
+  "Returns portable global configuration. Session overrides project data, and
+   project data overrides explicit environment data."
+  ([]
+   (global :all {}))
+  ([kind]
+   (global kind {}))
+  ([kind context]
+   (case kind
+     :env (environment context)
+     :project (current-project context)
+     :session (session)
+     :all (global-all context)
+     (throw
+      (ex :generic {:source kind} :ex/message "Unknown global configuration source")))))

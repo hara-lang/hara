@@ -1,0 +1,173 @@
+(ns std.lib.format.prose)
+
+(defn has-quotes?
+  "Returns true when a string starts and ends with double quotes."
+  [value]
+  (and (str/starts-with? value "\"")
+       (str/ends-with? value "\"")))
+
+(defn strip-quotes
+  "Removes one surrounding pair of double quotes when present."
+  [value]
+  (if (has-quotes? value)
+    (str/slice value 1 (dec (str/length value)))
+    value))
+
+(defn whitespace?
+  "Returns true when a string is empty or contains only whitespace."
+  [value]
+  (boolean (or (= "" value)
+               (re-matches #"^[\s\t]+$" value))))
+
+(defn escape-dollars
+  "Escapes dollar signs for use in regular-expression replacements."
+  [value]
+  (str/replace value "$" "\\$"))
+
+(defn escape-newlines
+  "Replaces literal newlines with printable slash-n sequences."
+  [value]
+  (str/replace value "\n" "\\n"))
+
+(defn escape-escapes
+  "Duplicates a backslash before an alphabetic escape character."
+  [value]
+  (re-replace #"(\\)([A-Za-z])" value "$1$1$2"))
+
+(defn escape-quotes
+  "Escapes double quotes while preserving an existing backslash."
+  [value]
+  (loop [index 0
+         output ""]
+    (if (= index (str/length value))
+      output
+      (let [character (str/slice value index (inc index))]
+        (recur
+         (inc index)
+         (str output
+              (if (= character "\"")
+                "\\\""
+                character)))))))
+
+(defn filter-empty-lines
+  "Removes blank lines from a multiline string."
+  [value]
+  (str/join
+   "\n"
+   (remove
+    (fn [line] (re-matches #"^\s*$" line))
+    (str/split-lines value))))
+
+(defn single-line
+  "Replaces line boundaries with spaces."
+  [value]
+  (str/join " " (str/split-lines value)))
+
+(defn join-lines
+  "Joins strings using newline separators."
+  [values]
+  (str/join "\n" values))
+
+(defn |
+  "Joins arguments using newline separators."
+  [& values]
+  (str/join "\n" values))
+
+(defn lines
+  "Turns newline-separated text into a namespaced line form."
+  [value]
+  (cons 'std.lib.format.prose/|
+        (str/split-lines value)))
+
+(defn spaces
+  "Creates a string containing n spaces."
+  [n]
+  (str/repeat " " n))
+
+(defn write-line
+  "Writes one nested data value as a compact line."
+  [value]
+  (if (vector? value)
+    (let [tag (first (keys (meta value)))
+          body (str/join " " (map write-line value))]
+      (if (or (= tag "")
+              (= tag :quote))
+        (str "'" body "'")
+        body))
+    (if (keyword? value)
+      (name value)
+      (str value))))
+
+(defn write-lines
+  "Writes nested data values as newline-separated text."
+  [values]
+  (str/join "\n" (map write-line values)))
+
+(defn indent
+  "Prefixes every line with n spaces and an optional custom prefix."
+  ([block n]
+   (indent block n {}))
+  ([block n options]
+   (let [custom (or (:custom options) "")]
+     (if (and (not (pos? n))
+              (empty? custom))
+       block
+       (str/join
+        "\n"
+        (map (fn [line]
+               (str (spaces n) custom line))
+             (str/split-lines block)))))))
+
+(defn indent-rest
+  "Prefixes every line after the first with n spaces and a custom prefix."
+  ([block n]
+   (indent-rest block n {}))
+  ([block n options]
+   (let [custom (or (:custom options) "")
+         values (str/split-lines block)
+         head (first values)
+         rest-values (rest values)]
+     (if (and (not (pos? n))
+              (empty? custom))
+       block
+       (if (empty? rest-values)
+         head
+         (str head "\n"
+              (str/join
+               "\n"
+               (map (fn [line]
+                      (str (spaces n) custom line))
+                    rest-values))))))))
+
+(defn multi-line?
+  "Returns true when text contains a newline."
+  [value]
+  (and value (boolean (re-find #"\n" value))))
+
+(defn single-line?
+  "Returns true when text contains no newline."
+  [value]
+  (not (multi-line? value)))
+
+(defn layout-lines
+  "Packs tokens into newline-separated lines below a maximum width."
+  ([tokens]
+   (layout-lines tokens 80))
+  ([tokens max-width]
+   (if (empty? tokens)
+     ""
+     (loop [remaining (rest tokens)
+            lines []
+            current (str (first tokens))]
+       (if (empty? remaining)
+         (str/join "\n" (conj lines current))
+         (let [token (str (first remaining))]
+           (if (< (inc (+ (str/length current)
+                           (str/length token)))
+                  max-width)
+             (recur (rest remaining)
+                    lines
+                    (str current " " token))
+             (recur (rest remaining)
+                    (conj lines current)
+                    token))))))))

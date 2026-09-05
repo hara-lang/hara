@@ -1,0 +1,137 @@
+(ns postgres.gen.bind-macro-test
+  (:require [postgres.gen.bind-macro :as bind]
+            [lang.core.script :as script])
+  (:use code.test))
+
+(fact "creates lookup maps and identifies plain symbols"
+  (bind/to-lookup [:a :b :c]) => {:a true :b true :c true}
+  (bind/to-lookup []) => {}
+  (bind/plain-symbol? 'value) => true
+  (bind/plain-symbol? 'demo/value) => false
+  (bind/plain-symbol? :value) => false)
+
+(fact "splits the Foundation set-vector OR representation"
+  (bind/transform-query-or
+   #{[:name "hello" :id "one"
+      [:or]
+      :name "world" :id "two"]})
+  => [{:name "hello" :id "one"}
+      {:name "world" :id "two"}])
+
+(fact "classifies function, quote, and select forms"
+  (bind/transform-query-classify ''("hello" "world"))
+  => [["hello" "world"]]
+  (bind/transform-query-classify '(jsonb-array-elements-text input))
+  => '{"::" "sql/fn"
+       :name "jsonb_array_elements_text"
+       :args [input]}
+  (bind/transform-query-classify '[:select * :from demo/Task])
+  => '{"::" "sql/select" :args [* :from demo/Task]})
+
+(fact "transforms query identifiers to Hara wire spellings"
+  (bind/transform-query [:id :first-name])
+  => ["id" "first_name"])
+
+(fact "transforms and filters application schemas"
+  (bind/bind-schema
+   {:tree
+    {:User
+     {:first-name [{:type :text
+                    "sql" {"default" "unknown" "unique" true}}
+                   0]
+      :secret [{:type :text} 1]}}}
+   #{:secret})
+  => {"User"
+      {"first_name"
+       {"type" "text" "sql" {"default" "unknown"}}}})
+
+(fact "binds PostgreSQL function signatures without host-only metadata types"
+  (bind/bind-function
+   {:id 'account-view
+    :static/schema "app"
+    :static/input [{:symbol 'i-account-id :modifiers [:uuid]}]
+    :static/return [:jsonb]
+    :api/flags [:public]
+    :api/mq.event true
+    :api/meta {:notify {:event-type :account-created}}})
+  => {:id "account_view"
+      :schema "app"
+      :input [{:symbol "i_account_id" :type "uuid"}]
+      :return "jsonb"
+      :flags {:public true :mq.event true}
+      :notify {"event_type" "account_created"}})
+
+(fact "binds PostgreSQL views and uses has? for argument lookup"
+  (bind/bind-view
+   {:id 'user-account-all
+    :static/schema "app"
+    :static/input [{:symbol 'input :modifiers [:uuid]}]
+    :static/return [:jsonb]
+    :api/flags [:public]
+    :static/view {:table 'UserAccount
+                  :type :select
+                  :args ['input]
+                  :query {:account 'input}}}
+   {:mode :cached})
+  => {:id "user_account_all"
+      :schema "app"
+      :input [{:symbol "input" :type "uuid"}]
+      :return "jsonb"
+      :flags {:public true}
+      :view {:table "UserAccount"
+             :type "select"
+             :tag "all"
+             :query {"account" "{{input}}"}
+             :mode :cached}})
+
+(fact "binds table and application descriptions deterministically"
+  (let [user {:id 'User
+              :module 'demo
+              :line 1
+              :static/schema "app"
+              :static/schema-primary {:type :uuid :id :id}
+              :static/public true}
+        task {:id 'Task
+              :module 'demo
+              :line 2
+              :static/schema "app"
+              :static/schema-primary {:type :uuid :id :id}
+              :static/public false}]
+    (bind/bind-app {:pointers {:user user :task task}}))
+  => {"User"
+      {:schema "app"
+       :schema-primary {"type" "uuid" "id" "id"}
+       :public true
+       :schema-update false
+       :position 0}
+      "Task"
+      {:schema "app"
+       :schema-primary {"type" "uuid" "id" "id"}
+       :public false
+       :schema-update false
+       :position 1}})
+
+(fact "lists registered view, API, debug, and function entries"
+  (let [module 'postgres.gen.bind-fixture
+        view {:id 'account-all
+              :module module
+              :op-key :defn
+              :api/flags [:public]
+              :static/view {:type :select}}
+        debug {:id 'account-debug
+               :module module
+               :op-key :defn}
+        _ (swap! script/+modules+
+                 assoc module {:code {'account-all view
+                                      'account-debug debug}})]
+    [(bind/list-view module :select)
+     (bind/list-api module)
+     (bind/list-debug module)
+     (sort-by first (bind/list-all module))])
+  => [[['account-all 'postgres.gen.bind-fixture/account-all]]
+      [['account-all 'postgres.gen.bind-fixture/account-all]]
+      [['account-debug 'postgres.gen.bind-fixture/account-debug]]
+      [['account-all 'postgres.gen.bind-fixture/account-all]
+       ['account-debug 'postgres.gen.bind-fixture/account-debug]]])
+
+(pr-str (run '[postgres.gen.bind-macro-test]))

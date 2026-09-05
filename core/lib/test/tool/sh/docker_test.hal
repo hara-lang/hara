@@ -1,0 +1,76 @@
+(ns tool.sh.docker-test
+  (:require [tool.sh.docker :as docker]))
+
+(def calls (atom []))
+
+(defn fake-runner
+  [argv options]
+  (swap! calls conj [argv options])
+  {:command argv :stdout "ok\n" :stderr "" :exit 0})
+
+(defn lifecycle-runner
+  [argv options]
+  (cond
+    (= "inspect" (nth argv 1))
+    {:command argv :stdout "" :stderr "" :exit 1}
+
+    (= "run" (nth argv 1))
+    {:command argv :stdout "container-id\n" :stderr "" :exit 0}
+
+    (= "port" (nth argv 1))
+    {:command argv :stdout "0.0.0.0:49152\n" :stderr "" :exit 0}
+
+    :else
+    {:command argv :stdout "" :stderr "" :exit 0}))
+
+(def results
+  [(test-check
+    "Docker map options are emitted deterministically"
+    (docker/append-map ["docker" "run"] "-e"
+                       {"Z" "9" "A" "1"})
+    ["docker" "run" "-e" "A=1" "-e" "Z=9"])
+
+   (test-check
+    "Docker run is an argv-only builder"
+    (docker/run-command
+     {:id :pg
+      :image "postgres:16"
+      :environment {"POSTGRES_USER" "hara"}
+      :ports [5432]
+      :cmd ["postgres" "-c" "fsync=off"]})
+    ["docker" "run"
+     "-e" "POSTGRES_USER=hara"
+     "-p" "127.0.0.1::5432"
+     "-d" "--rm"
+     "--add-host=host.docker.internal:host-gateway"
+     "--name" "testing_pg" "postgres:16"
+     "postgres" "-c" "fsync=off"])
+
+   (test-check
+    "Docker execution strips domain options before an injected runner"
+    (do
+      (reset! calls [])
+      (docker/command-result
+       ["docker" "version"]
+       {:tool.sh/runner fake-runner
+        :cwd "/tmp"
+        :container-only true})
+      (deref calls))
+    [[["docker" "version"] {:cwd "/tmp"}]])
+
+   (test-check
+    "Docker lifecycle uses one runner and trims semantic identifiers"
+    (select-keys
+     (docker/start-container
+      {:id :pg
+       :image "postgres:16"
+       :ports [5432]}
+      {:tool.sh/runner lifecycle-runner})
+     [:container-id :host :port :owned? :secondary])
+    {:container-id "container-id"
+     :host "127.0.0.1"
+     :port 49152
+     :owned? true
+     :secondary false})])
+
+results

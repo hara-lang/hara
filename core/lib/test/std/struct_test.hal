@@ -1,0 +1,73 @@
+(ns std.struct-test)
+
+(defstruct Point [x y])
+
+(defstruct InlinePoint [x]
+  ICount
+  (count [point] (:x point)))
+
+(def results
+  [(test-check "keyword field lookup" (:x (Point 1 2)) 1)
+   (test-check "get field" (get (Point 1 2) :y) 2)
+   (test-check "get missing with fallback" (get (Point 1 2) :z :missing) :missing)
+   (test-check "constructors handle missing and extra map fields"
+               [(map->Point {:x 1})
+                (map->Point {:x 1 :y 2 :extra 9})]
+               [(Point 1 nil) (Point 1 2)])
+   (test-check "assoc updates persistently and preserves the type"
+               (let [source (Point 1 2)
+                     updated (assoc source :x 10)]
+                 [(:x source) (:x updated) (instance? Point updated)])
+               [1 10 true])
+   (test-check "nested persistent updates preserve aliases"
+               (let [source (Point {:nested {:value 1}} 2)
+                     updated (assoc-in source [:x :nested :value] 10)]
+                 [(get-in source [:x :nested :value])
+                  (get-in updated [:x :nested :value])])
+               [1 10])
+   (test-check "count" (count (Point 1 2)) 2)
+   (test-check "keys" (first (keys (Point 1 2))) :x)
+   (test-check "vals" (first (vals (Point 1 2))) 1)
+   (test-check "dissoc of a declared field returns a persistent map"
+               (let [value (dissoc (Point 1 2) :x)]
+                 [(map? value) (instance? Point value) value])
+               [true false {:y 2}])
+   (test-check "empty preserves the struct type"
+               (let [value (empty (Point 1 2))]
+                 [(instance? Point value) (:x value) (:y value)])
+               [true nil nil])
+   (test-check "struct equality and hashing include type identity"
+               (do (defstruct OtherPoint [x y])
+                   (let [left (Point 1 2)
+                         right (Point 1 2)]
+                     [(= left right)
+                      (= left (OtherPoint 1 2))
+                      (= (hash left) (hash right))]))
+               [true false true])
+   (test-check "metadata survives persistent updates"
+               (let [value (with-meta (Point 1 2) {:tag :point})
+                     updated (assoc value :x 10)]
+                 [(meta updated) (:x updated)])
+               [{:tag :point} 10])
+   (test-check "field rejects immutable structs"
+               (try
+                 (field (Point 1 2) :x)
+                 false
+                 (catch Throwable error true))
+               true)
+   (test-check "extend-type override"
+               (do (extend-type Point ICount (count [p] 2))
+                   (count (Point 1 2)))
+               2)
+   (test-check "defstruct installs protocol implementations"
+               (ICount/count (InlinePoint 7))
+               7)
+   (test-check "multimethod exact default and replacement"
+               (do (defmulti classify (fn [value] value))
+                   (defmethod classify :point [value] 1)
+                   (defmethod classify :point [value] 2)
+                   (defmethod classify :default [value] 3)
+                   [(classify :point) (classify :other)])
+               [2 3])])
+
+results

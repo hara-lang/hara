@@ -1,0 +1,171 @@
+(ns tool.lint.flow
+  (:require [tool.lint.analyze :as analyze]
+            [tool.lint.model :as model]
+            [tool.lint.profile :as profile]
+            [tool.lint.report :as report]
+            [tool.lint.schema :as lint-schema]
+            [tool.lint.schema.call :as schema-call]
+            [code.project :as project]
+            [work.base :as work :refer [def.work]]
+            [work.flow.task :as task]))
+
+(defn scan-namespaces
+  "Returns the project namespace set discovered before document analysis."
+  [scans]
+  (into #{}
+        (filter identity
+                (map (fn [scan]
+                       (get-in scan [:namespace :name]))
+                     scans))))
+
+(defn portable-definition
+  [definition]
+  (select-keys definition
+               [:name :qualified :kind :visibility :signature]))
+
+(defn portable-document
+  "Projects a host-side block analysis to portable lint data."
+  [document]
+  {:document (select-keys (:document document) [:file :source])
+   :namespace (select-keys (:namespace document)
+                           [:name :aliases :refers :requires])
+   :definitions (vec (map portable-definition (:definitions document)))
+   :reader-findings (:reader-findings document)
+   :findings (:findings document)
+   :inferences (:inferences document)
+   :inferred-functions (:inferred-functions document)})
+
+(defn prepare-scans
+  "Builds schema context and host-side analyses before the work boundary."
+  [scans options]
+  (let [scans (vec scans)
+        options (or options {})
+        known-namespaces (scan-namespaces scans)
+        schema-index (lint-schema/build-schema-index scans options)
+        documents
+        (vec
+         (map
+          (fn [scan]
+            (let [analyzed
+                  (analyze/analyze-scan
+                   scan
+                   (assoc options
+                          :known-namespaces known-namespaces
+                          :schema-index schema-index))
+                  contracted
+                  (lint-schema/enrich-document
+                   analyzed
+                   schema-index
+                   options)
+                  called
+                  (schema-call/enrich-document
+                   scan
+                   contracted
+                   schema-index
+                   options)]
+              (portable-document called)))
+          scans))]
+    {:documents documents
+     :options options
+     :known-namespaces known-namespaces
+     :schema-index schema-index}))
+
+(defn task-input
+  "Returns only values that may cross the work task boundary."
+  [prepared]
+  (select-keys prepared [:documents :options :known-namespaces]))
+
+(defn lint-items
+  [input context]
+  (:documents input))
+
+(defn lint-item
+  "Task item boundary over already-portable lint analysis."
+  [document context]
+  {:data document})
+
+(def.work lint-scans-work
+  [:task]
+  {:item {:list lint-items
+          :list-mode :input-context
+          :run lint-item}
+   :execution {:order :input
+               :parallel false
+               :fail-fast false}
+   :return {:select [:results :errors]
+            :package :records}})
+
+(defn flow-documents
+  [output]
+  (let [errors (:errors output)]
+    (if (empty? errors)
+      (vec (map :data (:results output)))
+      (throw
+       (ex :state {:tool.lint/error :tool.lint/work-flow-failed
+                 :errors errors} :ex/message "Project lint flow failed")))))
+
+(defn run-scans
+  "Runs portable analyses through the canonical work.flow.task definition."
+  [prepared]
+  (flow-documents
+   (work/run
+    (work/local-runtime)
+    lint-scans-work
+    (task/invocation (task-input prepared)))))
+
+(defn finish
+  "Builds the stable public lint result from ordered document analyses."
+  [documents options]
+  (let [documents (vec documents)
+        findings
+        (report/sort-findings
+         (reduce (fn [output document]
+                   (into output (:findings document)))
+                 []
+                 documents))
+        output
+        {:profile (or (:profile options) profile/+profile+)
+         :documents documents
+         :findings findings
+         :summary (model/summarize findings)}
+        schema-index (:schema-index options)]
+    (if schema-index
+      (assoc output :schema-index (lint-schema/public-index schema-index))
+      output)))
+
+(defn lint-scans
+  "Lints scans host-side, then routes portable analyses through work.flow.task.
+
+   std.block values and schema annotation records never enter work state. The
+   work layer owns ordered orchestration and aggregation over immutable data."
+  ([scans]
+   (lint-scans scans {}))
+  ([scans options]
+   (let [prepared (prepare-scans scans options)]
+     (finish (run-scans prepared)
+             (assoc options :schema-index (:schema-index prepared))))))
+
+(defn project-paths
+  [current-project]
+  (project/files-in
+   current-project
+   (vec (concat (:project/source-paths current-project)
+                (:project/test-paths current-project)))
+   ".hal"))
+
+(defn project-scans
+  "Reads and scans every project HAL source before task execution."
+  [current-project]
+  (vec
+   (map (fn [path]
+          (analyze/scan-source
+           (project/read-text path)
+           {:file path}))
+        (project-paths current-project))))
+
+(defn lint-project
+  "Lints one project through host analysis plus canonical task aggregation."
+  ([current-project]
+   (lint-project current-project {}))
+  ([current-project options]
+   (lint-scans (project-scans current-project) options)))

@@ -1,0 +1,105 @@
+(ns std.block.layout.estimate-test
+  (:require [std.block.layout.estimate :as est]
+    [std.lib.encode.base64 :as base64]
+    [code.test.base.process :as process]
+    [code.test.checker.common :as checker]
+    [code.test.checker.collection :as collection]
+    [code.test.checker.logic :as logic]))
+
+(defn migration-test-check
+  [test expected]
+  (let [result (process/check test expected)]
+    (if (not (Test/passed? result))
+      (println :failure
+               {:actual (Test/actual result)
+                :expected (Test/expected result)
+                :failures (Test/failures result)}))
+    result))
+
+(defn migration-meta-tree
+  [value]
+  (let [metadata   (select-keys (or (meta value) {}) [:readable-len :tag :spec])
+        normalized (cond
+                    (vector? value) (mapv migration-meta-tree value)
+                    (map? value)    (reduce-kv
+                                     (fn
+                                      [output key item] (assoc output (migration-meta-tree key) (migration-meta-tree item))) {}
+                                     value)
+                    (set? value)    (set (map migration-meta-tree value))
+                    (seq? value)    (apply list (map migration-meta-tree value))
+                    :else           value)]
+    {:meta metadata :value normalized}))
+
+^{:refer std.block.layout.estimate/get-max-width :added "4.0"}
+(Test/run
+ [{:name "gets the max width of whole form #1"
+   :test (fn [] (est/get-max-width [:a :b :c]))
+   :expected 10}
+  {:name "gets the max width of whole form #2"
+   :test (fn [] (est/get-max-width [:a :b :c :d]))
+   :expected 13}]
+ migration-test-check)
+
+^{:refer std.block.layout.estimate/get-max-width-children :added "4.0"}
+(Test/run
+ [{:name "gets the max with of the children #1"
+   :test (fn [] (est/get-max-width-children [:a :b :c]))
+   :expected 8}
+  {:name "gets the max with of the children #2"
+   :test (fn [] (est/get-max-width-children [:a :b :c :d]))
+   :expected 11}]
+ migration-test-check)
+
+^{:refer std.block.layout.estimate/estimate-multiline-basic :added "4.0"}
+(Test/run
+ [{:name "does basic estimation #1"
+   :test (fn [] (est/estimate-multiline-basic [1 2 3] {:readable-len 10}))
+   :expected false}
+  {:name "does basic estimation #2"
+   :test (fn []
+             (est/estimate-multiline-basic [1 2 3 4 5 6 7 8 9 10 11] {:readable-len 10}))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.layout.estimate/estimate-multiline-data :added "4.0"}
+(Test/run
+ [{:name "estimation for maps and sets #1"
+   :test (fn [] (est/estimate-multiline-data {:a 1} {:readable-len 10}))
+   :expected false}
+  {:name "estimation for maps and sets #2"
+   :test (fn [] (est/estimate-multiline-data #{1 3 2} {:readable-len 10}))
+   :expected false}]
+ migration-test-check)
+
+^{:refer std.block.layout.estimate/estimate-multiline-vector :added "4.0"}
+(Test/run
+ [{:name "estimation for vectors"
+   :test (fn [] (est/estimate-multiline-vector [1 2 3] {:readable-len 10}))
+   :expected false}]
+ migration-test-check)
+
+^{:refer std.block.layout.estimate/estimate-multiline-list :added "4.0"}
+(Test/run
+ [{:name "estimates if special forms are multilined #1"
+   :test (fn [] (est/estimate-multiline-list (quote (let [] a)) {:readable-len 30}))
+   :expected false}
+  {:name "estimates if special forms are multilined #2"
+   :test (fn [] (est/estimate-multiline-list (quote (let [a 1] a)) {:readable-len 10}))
+   :expected true}]
+ migration-test-check)
+
+^{:refer std.block.layout.estimate/estimate-multiline :added "4.0"}
+(Test/run
+ [{:name "creates multiline function #1"
+   :test (fn []
+             (est/estimate-multiline (quote (a-function that does this)) {:readable-len 30}))
+   :expected false}
+  {:name "creates multiline function #2"
+   :test (fn []
+             (est/estimate-multiline (quote (a-really-long funtion with lots of parameters))
+                                     {:readable-len 30}))
+   :expected true}
+  {:name "creates multiline function #3"
+   :test (fn [] (est/estimate-multiline (quote (let [a 1] a)) {:readable-len 30}))
+   :expected false}]
+ migration-test-check)

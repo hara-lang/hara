@@ -1,0 +1,81 @@
+(ns std.mutable-test)
+
+(defmutable Cursor [x y])
+
+(defmutable InlineCursor [value]
+  ICount
+  (count [cursor] (field cursor :value)))
+
+(defmutable Incrementer [base]
+  IFn
+  (invoke [cursor amount]
+    (+ (field cursor :base) amount)))
+
+(defn throws? [f]
+  (try
+    (f)
+    false
+    (catch Throwable error
+      true)))
+
+(def results
+  [(test-check "constructors and direct read"
+               [(field (Cursor 1 2) :x)
+                (field (->Cursor 1 2) :y)
+                (field (map->Cursor {:x 1 :extra 9}) :y)]
+               [1 2 nil])
+   (test-check "associative read surface"
+               (let [cursor (Cursor 1 2)]
+                 [(:x cursor)
+                  (get cursor :y)
+                  (keys cursor)
+                  (vals cursor)
+                  (count cursor)])
+               [1 2 [:x :y] [1 2] 2])
+   (test-check "mutation is visible through aliases and returns the replacement"
+               (let [cursor (Cursor 1 2)
+                     alias cursor
+                     result (set! (field cursor :x) 10)]
+                 [result (field alias :x) (= cursor alias) (= cursor (Cursor 10 2))])
+               [10 10 true false])
+   (test-check "receiver and replacement evaluate once from left to right"
+               (let [cursor (Cursor 1 2)
+                     order (atom [])
+                     result (set! (field (do (swap! order conj :receiver) cursor) :x)
+                                  (do (swap! order conj :replacement) 10))]
+                 [result @order (field cursor :x)])
+               [10 [:receiver :replacement] 10])
+   (test-check "metadata wrappers preserve storage identity"
+               (let [cursor (Cursor 1 2)
+                     tagged (with-meta cursor {:tag :cursor})]
+                 (set! (field tagged :y) 20)
+                 [(field cursor :y) (meta tagged) (= cursor tagged)])
+               [20 {:tag :cursor} true])
+   (test-check "persistent snapshots are shallow and isolated"
+               (let [cursor (Cursor 1 2)
+                     snapshot (into {} cursor)]
+                 (set! (field cursor :x) 10)
+                 [snapshot (into {} cursor)])
+               [{:x 1 :y 2} {:x 10 :y 2}])
+   (test-check "persistent updates are rejected"
+               [(throws? (fn [] (assoc (Cursor 1 2) :x 10)))
+                (throws? (fn [] (dissoc (Cursor 1 2) :x)))
+                (throws? (fn [] (assoc-in (Cursor {:nested 1} 2) [:x :nested] 10)))]
+               [true true true])
+   (test-check "field is mutable-only and validates names"
+               [(throws? (fn [] (field (Cursor 1 2) :missing)))
+                (throws? (fn [] (set! (field (Cursor 1 2) :missing) 10)))
+                (throws? (fn [] (do (defstruct Immutable [x])
+                                    (field (Immutable 1) :x))))]
+               [true true true])
+   (test-check "named-value integration"
+               [(instance? Cursor (Cursor 1 2))
+                (instance? Cursor {:x 1 :y 2})
+                (ICount/count (InlineCursor 7))
+                ((Incrementer 40) 2)
+                (try
+                  (throw (Cursor 7 8))
+                  (catch Cursor cursor (field cursor :x)))]
+               [true false 7 42 7])])
+
+results

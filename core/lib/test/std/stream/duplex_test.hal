@@ -1,0 +1,33 @@
+(ns std.stream.duplex-test
+  (:require [std.stream.duplex :as duplex]))
+
+(Test/run
+ [{:name "creates a protocol-composed Duplex"
+   :test (fn []
+           (let [closed (atom 0)
+                 source (stream (fn [] (co/yield :received)))
+                 connection (duplex/create
+                             source
+                             (fn [value] (promise/from [:sent value]))
+                             (fn [] (swap! closed inc)))]
+             (let [received (deref (IStream/next connection))
+                   sent (deref (IStreamWrite/write connection :value))]
+               (IClose/close connection)
+               (IClose/close connection)
+               [(duplex/duplex? connection)
+                (satisfies? IStream connection)
+                (satisfies? IStreamWrite connection)
+                received sent (deref closed) (IClosed/closed? connection)])))
+   :expected [true true true :received [:sent :value] 1 true]}
+  {:name "adapts processes without a native Duplex value"
+   :test (fn []
+           (let [process (Process/spawn
+                          ["sh" "-c" "read line; printf reply:$line"])
+                 connection (duplex/from-process process)]
+             (deref (IStreamWrite/write connection (str/encode-utf8 "hello\n")))
+             (Process/close-input process)
+             (let [reply (str/decode-utf8 (deref (IStream/next connection)))
+                   status (deref (Process/wait process))]
+               (IClose/close connection)
+               [reply status])))
+   :expected ["reply:hello" 0]}])

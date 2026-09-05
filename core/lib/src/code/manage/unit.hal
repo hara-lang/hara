@@ -1,0 +1,318 @@
+(ns code.manage.unit
+  (:require [code.framework.source :as source]
+            [code.framework :as framework]
+            [code.manage.unit.scaffold :as scaffold]
+            [code.manage.unit.structure :as structure]))
+
+(defn analyse
+  [unit]
+  (let [source (:source unit)]
+    (merge {:path (:path unit)
+            :test-runs (framework/analyse-test-runs source)}
+           (framework/analyse-source source))))
+
+(defn extract
+  [unit]
+  (:definitions (analyse unit)))
+
+(defn vars
+  [unit]
+  (vec
+   (map
+    (fn [entry]
+      (:source entry))
+    (extract unit))))
+
+(defn docstrings
+  [unit]
+  (:docstrings (analyse unit)))
+
+(def transform-function source/transform-function)
+
+
+(def transform-code source/transform-code)
+
+
+(def grep source/grep-code)
+
+
+(def grep-replace source/grep-replace)
+
+
+(defn heal-code
+  [unit]
+  (transform-code
+   unit
+   (fn [source]
+     (str (str/trim-right source) "\n"))))
+
+(defn unclean
+  [unit]
+  (if (= (:source unit) (:after (heal-code unit)))
+    []
+    [(:path unit)]))
+
+(defn unclean-findings
+  "Reports normalisation issues without modifying the source."
+  [unit]
+  (let [lines (str/split-lines (:source unit))
+        trailing
+        (loop [index 0 output []]
+          (if (= index (count lines))
+            output
+            (let [line (nth lines index)]
+              (recur
+               (inc index)
+               (if (not= line (str/trim-right line))
+                 (conj output
+                       {:path (:path unit)
+                        :line (inc index)
+                        :column 1
+                        :kind :trailing-whitespace})
+                 output)))))]
+    (if (str/ends-with? (:source unit) "\n")
+      trailing
+      (conj trailing
+            {:path (:path unit)
+             :line (count lines)
+             :column 1
+             :kind :missing-final-newline}))))
+
+(defn definition-names
+  [unit]
+  (vec
+   (map
+    (fn [entry]
+      (:name entry))
+    (extract unit))))
+
+(defn public-definitions
+  [unit]
+  (structure/public-definitions (analyse unit)))
+
+(defn reachable-definitions
+  [unit]
+  (structure/reachable-definitions (analyse unit)))
+
+(defn public-definition-names
+  [unit]
+  (vec
+   (map
+    (fn [entry]
+      (:name entry))
+    (public-definitions unit))))
+
+(defn reachable-definition-names
+  [unit]
+  (vec
+   (map
+    (fn [entry]
+      (:name entry))
+    (reachable-definitions unit))))
+
+(defn fact-source
+  [unit]
+  (if (= :test (:type unit))
+    (:source unit)
+    (or (:test-source unit) "")))
+
+(defn fact-path
+  [unit]
+  (if (= :test (:type unit))
+    (:path unit)
+    (or (:test-path unit) (:path unit))))
+
+(defn facts
+  [unit]
+  (structure/facts-from-source (fact-source unit) (fact-path unit)))
+
+(defn missing
+  [unit options]
+  (structure/missing-findings unit (analyse unit) (facts unit)))
+
+(defn todos
+  [unit]
+  (structure/todo-findings (facts unit)))
+
+(defn incomplete
+  [unit]
+  (vec (concat (missing unit {}) (todos unit))))
+
+(defn commented
+  [unit]
+  (structure/commented-findings (facts unit)))
+
+(defn unchecked
+  [unit]
+  (structure/unchecked-findings (facts unit)))
+
+(defn pedantic
+  "Returns Foundation's historical M/T/N/C classifications in that order."
+  [unit]
+  (vec
+   (concat
+    (missing unit {})
+    (todos unit)
+    (unchecked unit)
+    (commented unit))))
+
+(defn in-order?
+  [unit]
+  (let [names (definition-names unit)]
+    (= names (vec (sort names)))))
+
+(defn orphaned-meta
+  [unit]
+  (let [analysis (framework/analyse-structure (:source unit))
+        forms (:form-records analysis)]
+    (vec
+     (keep
+      (fn [form]
+        (if (and (not (empty? (:prefix-metadata form)))
+                 (nil? (framework/definition-info (:source unit) form)))
+          {:path (:path unit)
+           :line (:line (first (:prefix-metadata form)))
+           :column (:column (first (:prefix-metadata form)))
+           :kind :orphaned-metadata}
+          nil))
+      forms))))
+
+(defn orphaned
+  [unit]
+  (orphaned-meta unit))
+
+(defn purge
+  "Removes definition docstrings and :added metadata, preserving all else."
+  [unit options]
+  (let [before (:source unit)
+        analysis (framework/analyse-structure before)
+        edits
+        (reduce
+         (fn [output definition]
+           (into output
+                 (structure/definition-purge-edits definition)))
+         []
+         (:definitions analysis))
+        after (structure/apply-edits before edits)]
+    {:path (:path unit)
+     :changed (not= before after)
+     :before before
+     :after after
+     :create false
+     :write false
+     :purged (count edits)}))
+
+(def replacements source/replacements)
+
+
+(def replace-all source/replace-all)
+
+
+(defn refactor-code
+  [unit options]
+  (transform-code
+   unit
+   (fn [source]
+     (replace-all source
+                  (replacements options)))))
+
+(defn refactor-test
+  [unit options]
+  (refactor-code unit options))
+
+(defn refactor-swap
+  [unit pairs]
+  (refactor-code unit
+                 {:replacements pairs}))
+
+(defn arrange
+  [unit]
+  (if (in-order? unit)
+    (transform-code unit identity)
+    (assoc
+     (transform-code unit identity)
+     :finding
+     {:path (:path unit)
+      :kind :definitions-out-of-order
+      :definitions (definition-names unit)})))
+
+(defn scaffold
+  [unit options]
+  (let [analysis (framework/analyse-structure (:source unit))
+        source-namespace (:namespace analysis)
+        test-namespace
+        (scaffold/test-namespace-for
+         unit
+         options
+         source-namespace)
+        alias (or (:alias options) "subject")
+        definitions (structure/reachable-definitions analysis)
+        before (or (:test-source unit) "")
+        test-path (scaffold/test-path-for unit options)
+        missing
+        (scaffold/missing-definitions
+         source-namespace
+         definitions
+         before
+         test-path)
+        scaffold-options
+        (merge
+         {:version (:version unit)
+          :test-source before
+          :test-path test-path}
+         (or options {}))
+        after
+        (if (empty? definitions)
+          before
+          (scaffold/scaffold-source
+           source-namespace
+           test-namespace
+           alias
+           definitions
+           scaffold-options))]
+    {:path test-path
+     :changed (not= before after)
+     :before before
+     :after after
+     :functions (vec (map (fn [entry] (:name entry)) definitions))
+     :new (vec (map (fn [entry] (:name entry)) missing))
+     :write false
+     :create (and (str/blank? before) (not= before after))
+     :added (scaffold/added-version scaffold-options)}))
+
+(defn create-tests
+  [unit options]
+  (scaffold unit options))
+
+(defn locate-code
+  [unit]
+  (if (= (:type unit) :test)
+    nil
+    (:path unit)))
+
+(defn locate-test
+  [unit]
+  (if (= (:type unit) :test)
+    (:path unit)
+    (:test-path unit)))
+
+;; Retained compatibility helpers. Purge no longer uses pattern deletion.
+(defn includes-any?
+  [line patterns]
+  (loop [remaining patterns]
+    (if (empty? remaining)
+      false
+      (if (str/includes? line (first remaining))
+        true
+        (recur (rest remaining))))))
+
+(defn remove-matching-lines
+  [source patterns]
+  (str
+   (str/join
+    "\n"
+    (filter
+     (fn [line]
+       (not (includes-any? line patterns)))
+     (str/split-lines source)))
+   "\n"))

@@ -1,0 +1,166 @@
+(ns work.agent
+  (:require [work.base :as work]
+            [work.agent.protocol :as protocol]
+            [work.agent.ephemeral :as ephemeral]
+            [work.agent.openai :as openai]
+            [work.agent.driver.openai :as openai-driver]
+            [work.agent.tool :as agent-tool]))
+
+(defn tool
+  "Creates one schema-backed tool callable by an agent driver."
+  ([name description parameters invoke]
+   (agent-tool/tool name description parameters invoke))
+  ([name description parameters invoke options]
+   (agent-tool/tool name description parameters invoke options)))
+
+(defn openai-client
+  "Creates an OpenAI Responses client with an injected HTTP transport."
+  [options]
+  (openai/client options))
+
+(defn openai-driver
+  "Creates an OpenAI-backed IAgentDriver that lowers intent to Work."
+  [options]
+  (openai-driver/driver options))
+
+(defn agent-spec
+  "Returns the canonical Agent map.
+
+   Plain maps are already canonical Agent values. Protocol-backed values may
+   project to the same representation through IAgent."
+  [agent]
+  (cond
+    (map? agent)
+    agent
+
+    (satisfies? protocol/IAgent agent)
+    (let [spec (protocol/agent-spec agent)]
+      (if (map? spec)
+        spec
+        (throw
+         (ex :state
+             {:agent/spec spec}
+             :ex/message "IAgent must project to a map"))))
+
+    :else
+    (throw
+     (ex :argument
+         {:agent agent}
+         :ex/message "Agent must be a map or implement IAgent"))))
+
+(defn agent-id
+  [agent]
+  (:agent/id (agent-spec agent)))
+
+(defn capability
+  [agent key]
+  (get (agent-spec agent) key))
+
+(defn- require-capability
+  [agent key protocol-name predicate]
+  (let [value (capability agent key)]
+    (if (nil? value)
+      (throw
+       (ex :not-found
+           {:agent/id (agent-id agent)
+            :agent/capability key}
+           :ex/message "Agent capability is not configured")))
+    (if (not (predicate value))
+      (throw
+       (ex :state
+           {:agent/id (agent-id agent)
+            :agent/capability key
+            :agent/protocol protocol-name}
+           :ex/message "Agent capability does not satisfy its protocol")))
+    value))
+
+(defn- assert-work
+  [value boundary]
+  (if (not (satisfies? IWork value))
+    (throw
+     (ex :state
+         {:agent/boundary boundary
+          :agent/value value}
+         :ex/message "Agent capability must lower to Work")))
+  value)
+
+(defn drive
+  "Turns intent into Work through the agent's IAgentDriver."
+  ([agent intent]
+   (drive agent intent {}))
+  ([agent intent context]
+   (let [driver
+         (require-capability
+          agent
+          :agent/driver
+          :IAgentDriver
+          (fn [value]
+            (satisfies? protocol/IAgentDriver value)))]
+     (assert-work
+      (protocol/agent-drive driver
+                            (agent-spec agent)
+                            intent
+                            (or context {}))
+      :driver))))
+
+(defn coordinate
+  "Creates a Work step for one coordinator request."
+  [agent request]
+  (let [coordinator
+        (require-capability
+         agent
+         :agent/coordinator
+         :IAgentCoordinator
+         (fn [value]
+           (satisfies? protocol/IAgentCoordinator value)))]
+    (work/step
+     {:id [:agent/coordinate (agent-id agent)]}
+     (fn [input context]
+       (protocol/agent-coordinate
+        coordinator
+        (assoc (or request {})
+               :agent/id (agent-id agent)
+               :work/input input))))))
+
+(defn authorize
+  "Creates a Work step for one authority decision."
+  [agent request]
+  (let [authority
+        (require-capability
+         agent
+         :agent/authority
+         :IAgentAuthority
+         (fn [value]
+           (satisfies? protocol/IAgentAuthority value)))]
+    (work/step
+     {:id [:agent/authorize (agent-id agent)]}
+     (fn [input context]
+       (protocol/agent-authorize
+        authority
+        (assoc (or request {})
+               :agent/id (agent-id agent)
+               :work/input input))))))
+
+(defn sign
+  "Creates a Work step for one authority signature."
+  [agent request]
+  (let [authority
+        (require-capability
+         agent
+         :agent/authority
+         :IAgentAuthority
+         (fn [value]
+           (satisfies? protocol/IAgentAuthority value)))]
+    (work/step
+     {:id [:agent/sign (agent-id agent)]}
+     (fn [input context]
+       (protocol/agent-sign
+        authority
+        (assoc (or request {})
+               :agent/id (agent-id agent)
+               :work/input input))))))
+
+(def ephemeral-driver ephemeral/driver)
+(def ephemeral-work-driver ephemeral/work-driver)
+(def ephemeral-coordinator ephemeral/coordinator)
+(def ephemeral-authority ephemeral/authority)

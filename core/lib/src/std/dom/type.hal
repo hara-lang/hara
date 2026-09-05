@@ -1,0 +1,57 @@
+(ns std.dom.type)
+
+(def +metaclass+ (atom {}))
+(def +metaprops-tag+ (atom {}))
+
+(defn metaclass
+  ([] @+metaclass+)
+  ([id] (get @+metaclass+ id)))
+
+(defn metaclass-remove
+  [id]
+  (when-let [res (metaclass id)]
+    (swap! +metaclass+ dissoc id)
+    res))
+
+(defn metaclass-add
+  [id entry]
+  (if-not (:metatype entry)
+    (throw (ex :dependency {:id id :entry entry} :ex/message "requires metatype")))
+  (let [entry (assoc entry :id id)]
+    (swap! +metaclass+ assoc id entry)
+    entry))
+
+(defn metaprops
+  ([] @+metaprops-tag+)
+  ([tag]
+   (if (keyword? tag)
+     (get @+metaprops-tag+ tag)
+     (throw (ex :not-found {:tag tag} :ex/message "Cannot find metaprops information")))))
+
+(defn metaprops-add
+  [id entry]
+  (if-not (metaclass id)
+    (throw (ex :generic {:type id
+                     :input entry
+                     :available (vec (sort (keys (metaclass))))} :ex/message "No meta type available")))
+  (let [{:keys [metatype]} (metaclass id)
+        {:keys [tag] :as entry} (assoc entry :metaclass id :metatype metatype)]
+    (if-not tag
+      (throw (ex :dependency {:input entry} :ex/message ":tag required")))
+    (swap! +metaprops-tag+ assoc tag entry)
+    entry))
+
+(defn metaprops-remove
+  [tag]
+  (let [{stored-tag :tag :as result} (metaprops tag)]
+    (if stored-tag
+      (swap! +metaprops-tag+ dissoc stored-tag))
+    result))
+
+(defn metaprops-install
+  [entries]
+  (swap! +metaprops-tag+ merge entries))
+
+(def +init+
+  (do (metaclass-add :dom/value {:metatype :dom/value})
+      (metaclass-add :dom/element {:metatype :dom/element})))

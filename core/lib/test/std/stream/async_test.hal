@@ -1,0 +1,55 @@
+(ns std.stream.async-test
+  (:require [std.stream.async :as async]
+            [std.stream.channel :as channel]
+            [std.stream.common :as common]))
+
+(Test/run
+ [{:name "async facade creates and coordinates channels"
+   :test (fn []
+           (let [port (async/chan)
+                 pending (async/put port :ready)]
+             [(deref (async/take port)) (deref pending)]))
+   :expected [:ready true]}
+  {:name "go runs coroutine bodies and returns completion promise"
+   :test (fn []
+           (let [port (async/chan 1)]
+             (channel/offer port 41)
+             (deref
+              (async/go
+               (fn []
+                 (inc (co/await (async/take port))))))))
+   :expected 42}
+  {:name "alts selects ready reads and supports default"
+   :test (fn []
+           (let [left (async/chan 1)
+                 right (async/chan 1)]
+             (channel/offer right :right)
+             (let [selected (deref (async/alts [left right] {:priority true}))]
+               [(first selected)
+                (= right (second selected))
+                (deref (async/alts [left] {:default :none}))])))
+   :expected [:right true [:none :default]]}
+  {:name "alts supports write operations"
+   :test (fn []
+           (let [port (async/chan 1)
+                 selected (deref (async/alts [[port :value]]))]
+             [(first selected) (= port (second selected)) (deref (async/take port))]))
+   :expected [true true :value]}
+  {:name "from-stream pumps values and closes at EOF"
+   :test (fn []
+           (let [port (async/from-stream (common/from-iterator [1 2 3]) 3)]
+             [(deref (async/take port))
+              (deref (async/take port))
+              (deref (async/take port))
+              (deref (async/take port))]))
+   :expected [1 2 3 nil]}
+  {:name "async facade exposes optional channel capabilities"
+   :test (fn []
+           (let [port (async/chan 1)]
+             [(nil? (async/poll port))
+              (async/offer port :value)
+              (:value (async/poll port))
+              (deref (async/flush port))
+              (async/closed? port)
+              (do (async/close port) (async/closed? port))]))
+   :expected [true true :value true false true]}])

@@ -1,0 +1,352 @@
+(ns postgres.gen.rpc)
+
+(def +entity-aggregates+
+  ["User" "Brand" "Campaign" "Topic"])
+
+(defn- identifier-name
+  [value]
+  (if (string? value) value (name value)))
+
+(defn snake-name
+  [value]
+  (if (nil? value)
+    nil
+    (str/lower
+     (str/replace (identifier-name value) "_" "-"))))
+
+(defn- aggregate-token
+  [aggregate]
+  (str/lower aggregate))
+
+(defn- first-value
+  [function values]
+  (loop [remaining (vec values)]
+    (if (empty? remaining)
+      nil
+      (let [value (function (first remaining))]
+        (if value
+          value
+          (recur (vec (rest remaining))))))))
+
+(defn- name-token?
+  [value token]
+  (if (nil? value)
+    false
+    (reduce (fn [found part]
+              (or found (= part token)))
+            false
+            (str/split (snake-name value) "-"))))
+
+(defn infer-aggregate
+  "Infers the owning entity aggregate for a typed PostgreSQL function."
+  [options]
+  (let [function-name (:function-name options)
+        source-tables (:source-tables options)
+        output-shape (:output-shape options)
+        notify (:notify options)]
+    (or (if (:entity notify) (name (:entity notify)) nil)
+        (first-value
+         (fn [aggregate]
+           (if (name-token? function-name (aggregate-token aggregate))
+             aggregate
+             nil))
+         +entity-aggregates+)
+        (first-value
+         (fn [table]
+           (first-value
+            (fn [aggregate]
+              (if (str/starts-with? (identifier-name table) aggregate)
+                aggregate
+                nil))
+            +entity-aggregates+))
+         (filter identity
+                 (concat [(:source-table output-shape)]
+                         (or source-tables [])))))))
+
+(defn shape-rows
+  "Returns [table path cardinality] rows represented by a typed output shape."
+  ([shape] (shape-rows shape []))
+  ([shape path]
+   (let [table (:source-table shape)
+         here (if table [[(identifier-name table) path :one]] [])
+         nested
+         (mapcat
+          (fn [field-entry]
+            (let [field (first field-entry)
+                  raw-child (second field-entry)
+                  field-path (conj path (identifier-name field))
+                  item-shape (get-in raw-child [:items :shape])
+                  child (or (:shape raw-child) raw-child)]
+              (cond
+                item-shape
+                (map (fn [row]
+                       [(first row)
+                        (into field-path (second row))
+                        :many])
+                     (shape-rows item-shape []))
+
+                (map? child)
+                (shape-rows child field-path)
+
+                (sequential? child)
+                (mapcat (fn [value]
+                          (if (map? value)
+                            (shape-rows value field-path)
+                            []))
+                        child)
+
+                :else [])))
+          (:fields shape))]
+     (vec (distinct (concat here nested))))))
+
+(defn- normal-token
+  [value]
+  (let [source (str/lower (identifier-name value))
+        allowed "abcdefghijklmnopqrstuvwxyz0123456789"]
+    (loop [index 0 output ""]
+      (if (= index (str/length source))
+        output
+        (let [character (str/char-at source index)]
+          (recur (inc index)
+                 (if (str/includes? allowed (str/to-string character))
+                   (str output (str/to-string character))
+                   output)))))))
+
+(defn inferred-shape-rows
+  "Recovers row paths for symbolic composite fields."
+  [shape source-tables]
+  (let [tables (map identifier-name (or source-tables []))]
+    (vec
+     (keep
+      (fn [field-entry]
+        (let [field (first field-entry)
+              value (second field-entry)
+              value-shape (:shape value)
+              usable? (or (= :symbol (:kind value))
+                          (= :unknown (:kind value))
+                          (and value-shape
+                               (nil? (:source-table value-shape))
+                               (not (empty? (:fields value-shape)))))]
+          (if usable?
+            (let [field-token (normal-token field)
+                  matches
+                  (filter
+                   (fn [table]
+                     (str/ends-with? (normal-token table)
+                                        field-token))
+                   tables)]
+              (if (= 1 (count matches))
+                [(first matches) [(identifier-name field)] :one]
+                nil))
+            nil)))
+      (:fields shape)))))
+
+(defn- input-names
+  [inputs]
+  (set (map (fn [input] (snake-name (:name input))) inputs)))
+
+(defn infer-topic-id
+  "Infers the aggregate topic id expression strategy."
+  [options]
+  (let [aggregate (:aggregate options)
+        function-name (:function-name options)
+        inputs (or (:inputs options) [])
+        output-shape (or (:output-shape options) {})
+        notify (:notify options)
+        explicit (if (:arg notify) (snake-name (:arg notify)) nil)
+        explicit-path (:path notify)
+        expected (str "i-" (aggregate-token aggregate) "-id")
+        inputs-lookup (input-names inputs)
+        output-table (if (:source-table output-shape)
+                       (identifier-name (:source-table output-shape))
+                       nil)
+        output-fields (:fields output-shape)]
+    (cond
+      explicit-path
+      {:kind :result :path (vec (map identifier-name explicit-path))}
+
+      explicit
+      {:kind :arg :name explicit}
+
+      (and (= aggregate "User")
+           (str/starts-with? (snake-name function-name) "super-user-")
+           (has? inputs-lookup "i-target-id"))
+      {:kind :arg :name "i-target-id"}
+
+      (has? inputs-lookup expected)
+      {:kind (if (and (= aggregate "User")
+                      (= expected
+                         (if (first inputs)
+                           (snake-name (:name (first inputs)))
+                           nil)))
+               :session
+               :arg)
+       :name expected}
+
+      (and (= aggregate "User")
+           (has? inputs-lookup "i-target-id"))
+      {:kind :arg :name "i-target-id"}
+
+      (and (map? output-fields) (has? output-fields :topic-id))
+      {:kind :result :path ["topic_id"]}
+
+      (= aggregate output-table)
+      {:kind :result :path ["id"]}
+
+      :else nil)))
+
+(defn notification-plan
+  "Builds a canonical private entity-topic notification plan."
+  [function]
+  (let [function-name (:function-name function)
+        inputs (or (:inputs function) [])
+        report (:report function)
+        output-shape (or (:output-shape function) {})
+        notify (:notify function)]
+    (if (get-in report [:analysis :mutating])
+      (let [source-tables (get-in report [:analysis :source-tables])
+            aggregate
+            (infer-aggregate
+             {:function-name function-name
+              :source-tables source-tables
+              :output-shape output-shape
+              :notify notify})]
+        (if aggregate
+          (let [rows (vec (distinct
+                           (concat (shape-rows output-shape)
+                                   (inferred-shape-rows output-shape
+                                                        source-tables))))
+                topic-id
+                (infer-topic-id
+                 {:aggregate aggregate
+                  :function-name function-name
+                  :inputs inputs
+                  :output-shape output-shape
+                  :notify notify})]
+            (if (empty? rows)
+              (throw
+               (ex :database {:function function-name
+                         :aggregate aggregate
+                         :output-shape output-shape} :ex/message "Entity mutation has no typed notification result"))
+              nil)
+            (if (nil? topic-id)
+              (throw
+               (ex :database {:function function-name
+                         :aggregate aggregate
+                         :inputs (vec (map :name inputs))
+                         :output-shape output-shape} :ex/message "Cannot infer entity topic id"))
+              nil)
+            {:aggregate aggregate
+             :topic-id topic-id
+             :event (if (or (name-token? function-name "purge")
+                            (name-token? function-name "delete"))
+                      "db/remove"
+                      "db/sync")
+             :rows rows
+             :private true})
+          nil))
+      nil)))
+
+(defn result-path-form
+  "Builds the PostgreSQL DSL form for reading a JSON result path."
+  [root path text?]
+  (loop [remaining (vec path)
+         index 0
+         form root]
+    (if (empty? remaining)
+      form
+      (recur (vec (rest remaining))
+             (inc index)
+             (list (if (and text? (= index (dec (count path))))
+                     :->>
+                     :->)
+                   form
+                   (first remaining))))))
+
+(defn notification-payload
+  "Builds a canonical db/sync or db/remove request."
+  [plan result-sym]
+  (let [event (:event plan)
+        rows (:rows plan)
+        table-rows
+        (reduce
+         (fn [output row]
+           (let [table (nth row 0)
+                 path (nth row 1)
+                 cardinality (nth row 2)]
+             (assoc output table
+                    (conj (or (get output table) [])
+                          [path (or cardinality :one)]))))
+         {}
+         rows)
+        tables (sort-by str (keys table-rows))]
+    {event
+     (into
+      {}
+      (map
+       (fn [table]
+         (let [entries (get table-rows table)
+               expressions
+               (vec
+                (map
+                 (fn [entry]
+                   (let [path (first entry)
+                         cardinality (second entry)
+                         row-form (if (empty? path)
+                                    result-sym
+                                    (result-path-form result-sym path false))]
+                     (cond
+                       (and (= event "db/remove")
+                            (= cardinality :many))
+                       (list 'pg/jsonb-path-query-array
+                             row-form
+                             "$[*].id")
+
+                       (= event "db/remove")
+                       [(result-path-form result-sym
+                                          (conj (vec path) "id")
+                                          true)]
+
+                       (= cardinality :many)
+                       row-form
+
+                       :else [row-form])))
+                 entries))
+               all-single?
+               (reduce (fn [all entry]
+                         (and all (= :one (second entry))))
+                       true
+                       entries)
+               table-value
+               (cond all-single? (vec (map first expressions))
+                     (= 1 (count expressions)) (first expressions)
+                     :else (reduce (fn [left right]
+                                     (list '|| left right))
+                                   expressions))]
+           [table table-value]))
+       tables))}))
+
+(defn topic-id-form
+  [topic forms]
+  (let [kind (:kind topic)
+        topic-name (:name topic)
+        path (:path topic)
+        auth-form (:auth-form forms)
+        result-sym (:result-sym forms)
+        arg-form (:arg-form forms)]
+    (cond (= kind :session) auth-form
+          (= kind :result) (result-path-form result-sym path true)
+          (= kind :arg) (arg-form topic-name)
+          :else nil)))
+
+(defn realtime-send-form
+  "Builds the canonical private realtime-send-request wrapper form."
+  [plan forms]
+  (let [result-sym (:result-sym forms)
+        id-form (topic-id-form (:topic-id plan) forms)]
+    (list 's/realtime-send-request
+          (list '|| (str (:aggregate plan) ":") id-form)
+          (notification-payload plan result-sym)
+          true)))
+
+(def __tahto_load__ true)

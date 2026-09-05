@@ -1,0 +1,107 @@
+(ns tool.migrate.render-ex-info-review-script
+  (:require [std.foundation :refer :all]
+            [std.fs.path :as path]
+            [tool.sh :as sh]))
+
+(defn host-read [file]
+  (let [outcome (sh/run ["/bin/cat" file])]
+    (if (Result/success? outcome)
+      (:stdout (Result/data outcome))
+      (let [error (Result/error-value outcome)
+            data (ex-data error)]
+        (if (and (map? data) (has? data :exit))
+          (throw (ex :tool.migrate/review-read
+                     {:ex/message "Cannot read classified ex-info catalog"
+                      :path file}))
+          (throw error))))))
+
+(defn host-write [file text]
+  (let [process (Process/spawn ["/usr/bin/tee" file])]
+    (Process/write process (str/encode-utf8 text))
+    (Process/close-input process)
+    (let [values (deref (promise/all [(Process/stdout process)
+                                      (Process/stderr process)
+                                      (Process/wait process)]))]
+      (if (= 0 (nth values 2))
+        file
+        (throw (ex :tool.migrate/review-write
+                   {:ex/message "Cannot write ex-info review document"
+                    :path file
+                    :stderr (str/decode-utf8 (nth values 1))}))))))
+
+(defn display [value]
+  (if (nil? value) "—" (str value)))
+
+(defn type-line [type]
+  (str "- `" (:ex/class type) "` — " (:description type)))
+
+(defn review-entry [index site]
+  (let [range (:source/range site)
+        definition (:context/definition site)]
+    (str "## " (inc index) ". " (:source/repository site)
+         " — `" (:source/path site) ":" (:line range) "`\n\n"
+         "- [ ] Reviewed\n"
+         "- **Site ID:** `" (pr-str (:site/id site)) "`\n"
+         "- **Role:** `" (:source/role site) "`\n"
+         "- **Definition:** `" (display (:name definition)) "`\n"
+         "- **Legacy code:** `" (display (:legacy/error-code site)) "`\n"
+         "- **Proposed code:** `" (display (:ex/code site)) "`\n"
+         "- **Proposed class:** `" (display (:ex/class site)) "`\n"
+         "- **Shared base class:** `" (display (:classification/base-type site)) "`\n"
+         "- **Application:** `" (display (:classification/application site)) "`\n"
+         "- **Selected code:** `________________`\n"
+         "- **Selected class:** `________________`\n"
+         "- **Reviewer notes:**\n\n"
+         "### Message expression\n\n"
+         "```hara\n" (display (:legacy/message site)) "\n```\n\n"
+         "### Legacy form\n\n"
+         "```hara\n" (:source/form site) "\n```\n\n"
+         "### Enclosing definition\n\n"
+         "```hara\n" (display (:source definition)) "\n```\n\n"
+         "---\n")))
+
+(defn render-review [catalog]
+  (let [sites (vec
+               (filter
+                (fn [site]
+                  (= :ex.class/internal (:classification/base-type site)))
+                (:catalog/sites catalog)))]
+    (str "# Exception Classification Review\n\n"
+         "This document contains the " (count sites)
+         " low-confidence sites whose shared base classification is `:ex.class/internal`. "
+         "Application-owned proposals use `:<application>.ex/...` codes and "
+         "`:<application>.class/...` classes. Greenways products share "
+         "`:greenways.ex/...` and `:greenways.class/...`. Unresolved sites use `/generic`. "
+         "Replace the selected code and class fields, add notes where useful, "
+         "and check each item after review.\n\n"
+         "## Classification types\n\n"
+         (str/join "\n" (map type-line (:classification/types catalog)))
+         "\n\n## Review queue\n\n"
+         (str/join "\n" (map-indexed review-entry sites)))))
+
+(defn run
+  ([] (run "write"))
+  ([mode]
+   (let [hara-root (OS/cwd)
+         workspace (path/parent (path/parent hara-root))
+         input (path/join workspace "ex-info-catalog-classified.edn")
+         output (path/join workspace "ex-info-catalog-review.md")
+         rendered (render-review (Edn/read (host-read input)))]
+     (cond
+       (= mode "write")
+       (do (host-write output rendered)
+           {:mode :write :input input :output output})
+
+       (= mode "verify")
+       (if (= rendered (host-read output))
+         {:mode :verify :input input :output output :valid true}
+         (throw (ex :tool.migrate/review-stale
+                    {:ex/message "Exception classification review is stale"
+                     :path output})))
+
+       :else
+       (throw (ex :tool.migrate/review-mode
+                  {:ex/message "Review mode must be write or verify"
+                   :mode mode}))))))
+
+(run)

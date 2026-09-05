@@ -1,0 +1,170 @@
+(ns std.lib.format.version)
+
+(def +qualifiers+
+  {"alpha" 0
+   "beta" 1
+   "milestone" 2
+   "rc" 3
+   "snapshot" 5
+   "final" 6
+   "stable" 6})
+
+(def +qualifier-order+
+  ["alpha" "beta" "milestone" "rc" "snapshot" "final" "stable"])
+
+(def +order+
+  [:major :minor :incremental :qualifier :release :build])
+
+(defn parse-number
+  "Parses an optional numeric version component."
+  [value]
+  (if (and value (not (empty? value)))
+    (std.foundation/parse-long value)))
+
+(defn parse-qualifier
+  "Maps a release qualifier to its comparison rank."
+  [release build]
+  (if (empty? release)
+    (if (empty? build) 6 -1)
+    (loop [names +qualifier-order+]
+      (if (empty? names)
+        -1
+        (let [name (first names)]
+          (if (str/starts-with? release name)
+            (std.foundation/get +qualifiers+ name)
+            (recur (rest names))))))))
+
+(defn separator-index
+  [value]
+  (let [dash-value (str/index-of value "-")
+        underscore-value (str/index-of value "_")
+        dash (if (< dash-value 0) nil dash-value)
+        underscore (if (< underscore-value 0) nil underscore-value)]
+    (if (nil? dash)
+      underscore
+      (if (nil? underscore)
+        dash
+        (min dash underscore)))))
+
+(defn parse
+  "Parses a version string into comparable components."
+  [value]
+  (let [build-parts (str/split value "+")
+        base (first build-parts)
+        build (if (> (count build-parts) 1)
+                (str/lower (std.foundation/get build-parts 1))
+                "")
+        separator (separator-index base)
+        numbers (str/split (if separator
+                            (str/slice base 0 separator)
+                            base)
+                           ".")
+        release (if separator
+                  (str/lower (str/slice base
+                                         (inc separator)
+                                         (str/length base)))
+                  "")]
+    {:major (if (< 0 (count numbers))
+              (parse-number (std.foundation/get numbers 0)))
+     :minor (if (< 1 (count numbers))
+              (parse-number (std.foundation/get numbers 1)))
+     :incremental (if (< 2 (count numbers))
+                    (parse-number (std.foundation/get numbers 2)))
+     :qualifier (parse-qualifier release build)
+     :release release
+     :build build}))
+
+(defn version
+  "Normalises a version string or preserves an existing version map."
+  [value]
+  (cond (string? value) (parse value)
+        (map? value) value
+        :else (throw (ex :argument {:input value}
+                          :ex/message "Not a valid input"))))
+
+(defn order
+  "Returns the fields used for version comparison."
+  [value]
+  (mapv (fn [key] (std.foundation/get (version value) key)) +order+))
+
+(defn equal?
+  "Returns true when two versions have equal comparison fields."
+  [left right]
+  (= (dissoc (version left) :release)
+     (dissoc (version right) :release)))
+
+(defn newer?
+  "Returns true when the first version is newer than the second."
+  [left right]
+  (pos? (compare (order left) (order right))))
+
+(defn older?
+  "Returns true when the first version is older than the second."
+  [left right]
+  (neg? (compare (order left) (order right))))
+
+(defn not-equal?
+  [left right]
+  (not (equal? left right)))
+
+(defn not-newer?
+  [left right]
+  (not (newer? left right)))
+
+(defn not-older?
+  [left right]
+  (not (older? left right)))
+
+(def +lookup+
+  {:newer newer?
+   :not-newer not-newer?
+   :older older?
+   :not-older not-older?
+   :equal equal?
+   :not-equal not-equal?})
+
+(defn clojure-version
+  "Returns the portable Clojure compatibility version for Hara."
+  []
+  (parse "0.0.0"))
+
+(defn java-version
+  "Returns the portable Java compatibility version for Hara.
+
+   Hara keeps version comparisons target-neutral, so host-specific JVM
+   properties are intentionally not required by this function."
+  []
+  (parse "0.0.0"))
+
+(defn system-version
+  "Returns the version for a supported system tag."
+  [tag]
+  (case tag
+    :clojure (clojure-version)
+    :java (java-version)))
+
+(defn satisfied
+  "Checks whether a system version satisfies a comparison constraint."
+  ([entry]
+   (let [[type comparison constraint] entry]
+     (satisfied entry (system-version type))))
+  ([[type comparison constraint] current]
+   (let [predicate (std.foundation/get +lookup+ comparison)]
+     (if predicate
+       (predicate current constraint)
+       (throw (ex :argument
+                  {:input comparison
+                   :options (keys +lookup+)}
+                  :ex/message "input not valid"))))))
+
+(defmacro init
+  "Expands the supplied forms only when all constraints are satisfied."
+  [constraints & statements]
+  (if (every? true? (map satisfied constraints))
+    (cons 'do statements)))
+
+(defmacro run
+  "Runs the supplied forms only when all constraints are satisfied."
+  [constraints & body]
+  (if (every? true? (map satisfied constraints))
+    (cons 'do body)))

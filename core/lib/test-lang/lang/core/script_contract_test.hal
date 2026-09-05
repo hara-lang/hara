@@ -1,0 +1,258 @@
+(ns lang.core.script-contract-test
+  (:use code.test)
+  (:require [lang.core]
+            [lang.core.runtime :as runtime]
+            [lang.core.script :as script]
+            [std.lib.context.definition :as definition]
+            [std.lib.component :as component]))
+
+(defn current-module
+  []
+  (symbol (str (ns-current))))
+
+(defn macro-var?
+  [symbol]
+  (let [value (resolve symbol)]
+    (boolean (and value (:macro (meta value))))))
+
+(defn symbols-present?
+  [available required]
+  (every? (fn [symbol]
+            (not (nil? (get available symbol))))
+          required))
+
+(def results
+  [(fact "script returns a runtime, installs evaluator macros, and interns pointer Vars"
+     (let [module (current-module)
+           modules-before (deref script/+modules+)
+           scripts-before (deref script/+scripts+)
+           contexts-before (deref script/+module-contexts+)]
+       (try
+         (let [default-runtime (eval '(lang.core/script :xtalk))]
+           (try
+             (let [short-eval-var (resolve '!.xt)
+                   grammar-eval-var (resolve '!.xtalk)
+                   default-evaluated (eval '(!.xt (+ 1 2)))
+                   _ (eval '(def.xt HEX
+                              (tab ["A" 10]
+                                   ["F" 15])))
+                   _ (eval '(defn.xt ADD [x y]
+                              (+ x y)))
+                   code-var (resolve 'HEX)
+                   pointer (deref code-var)
+                   function-var (resolve 'ADD)
+                   function-pointer (deref function-var)
+                   default-invoked (eval '(ADD 3 4))
+                   basic-runtime
+                   (eval '(lang.core/script :xtalk {:runtime :basic}))]
+               (try
+                 (let [evaluated (eval '(!.xt (+ 1 2)))
+                       invoked (eval '(ADD 3 4))
+                       invoked-in
+                       (std.protocol.iinvokein.IInvokeIn/invoke-in
+                        function-pointer basic-runtime 5 6)]
+                   [(:lang default-runtime)
+                    (:runtime default-runtime)
+                    (:module default-runtime)
+                    (component/stopped? default-runtime)
+                    (boolean (and short-eval-var
+                                  (:macro (meta short-eval-var))))
+                    (boolean (and grammar-eval-var
+                                  (:macro (meta grammar-eval-var))))
+                    (string? default-evaluated)
+                    (var? code-var)
+                    (lang.core/code-pointer? pointer)
+                    (lang.core/code-pointer-context pointer)
+                    (lang.core/code-pointer-val pointer :namespace)
+                    (lang.core/code-pointer-val pointer :module)
+                    (lang.core/code-pointer-val pointer :id)
+                    (lang.core/code-pointer-val pointer :form-input)
+                    (:lang pointer)
+                    (= (lang.core/code-pointer-val pointer :form-input)
+                       (:form-input (deref pointer)))
+                    (string? default-invoked)
+                    (:lang basic-runtime)
+                    (:runtime basic-runtime)
+                    (component/started? basic-runtime)
+                    evaluated
+                    (lang.core/code-pointer? function-pointer)
+                    invoked
+                    invoked-in
+                    (= basic-runtime
+                       (lang.core/code-pointer-runtime pointer))
+                    (= basic-runtime
+                       (lang.core/code-pointer-runtime function-pointer))
+                    (= basic-runtime
+                       (get-in (deref script/+scripts+)
+                               [[module :xtalk] :runtime]))])
+                 (finally
+                   (runtime/rt-stop basic-runtime))))
+             (finally
+               (if (not (component/stopped? default-runtime))
+                 (runtime/rt-stop default-runtime)))))
+         (finally
+           (reset! script/+modules+ modules-before)
+           (reset! script/+scripts+ scripts-before)
+           (reset! script/+module-contexts+ contexts-before))))
+     => [:xtalk
+         :default
+         'lang.core.script-contract-test
+         true
+         true
+         true
+         true
+         true
+         true
+         :lang/xtalk
+         'lang.core.script-contract-test
+         'lang.core.script-contract-test
+         'HEX
+         '(def HEX
+            (tab ["A" 10]
+                 ["F" 15]))
+         :xtalk
+         true
+         true
+         :xtalk
+         :basic
+         true
+         3
+         true
+         7
+         11
+         true
+         true
+         true])
+
+   (fact "script imports every Foundation grammar macro and highlight"
+     (let [languages [:xtalk :hara :js :python :lua :postgres]
+           modules-before (deref script/+modules+)
+           scripts-before (deref script/+scripts+)
+           contexts-before (deref script/+module-contexts+)]
+       (try
+         (let [installed
+               (every?
+                (fn [lang]
+                  (eval (list 'lang.core/script- lang))
+                  (let [symbols (lang.core/script-import-symbols lang)]
+                    (and (> (count symbols) 0)
+                         (every? macro-var? symbols))))
+                languages)
+               xtalk-imports
+               (set (lang.core/script-import-symbols :xtalk))
+               postgres-imports
+               (set (lang.core/script-import-symbols :postgres))]
+           [installed
+            (symbols-present?
+             xtalk-imports
+             '[!.xt !.xtalk
+               def$.xt def$.xtalk
+               defmacro.xt defmacro.xtalk
+               def.xt defn.xt defn-.xt defabstract.xt
+               defrun.xt defglobal.xt deftemp.xt
+               defclass.xt defgen.xt
+               return break set= br])
+            (not (has? xtalk-imports 'defspec.xt))
+            (symbols-present?
+             postgres-imports
+             '[!.pg !.postgres
+               def$.pg def$.postgres
+               defmacro.pg defmacro.postgres
+               def.pg defn.pg deftype.pg deftrigger.pg
+               defenum.pg defconst.pg])])
+         (finally
+           (reset! script/+modules+ modules-before)
+           (reset! script/+scripts+ scripts-before)
+           (reset! script/+module-contexts+ contexts-before))))
+     => [true true true true])
+
+   (fact "script macro discovery publishes exact language definition families"
+     (let [_ (lang.core/script-import-symbols :postgres)
+           function-family (definition/match-family "defn.pg")
+           type-family (definition/match-family "deftype.pg")
+           macro-family (definition/match-family "defmacro.pg")]
+       [(select-keys function-family [:kind :language :operation])
+        (select-keys type-family [:kind :language :operation])
+        (select-keys macro-family [:kind :language :operation])])
+     => [{:kind :function :language :postgres :operation 'defn}
+         {:kind :type :language :postgres :operation 'deftype}
+         {:kind :macro :language :postgres :operation 'defmacro}])
+
+   (fact "imported fragment and definition families preserve language"
+     (let [module (current-module)
+           modules-before (deref script/+modules+)
+           scripts-before (deref script/+scripts+)
+           contexts-before (deref script/+module-contexts+)]
+       (try
+         (let [default-runtime (eval '(lang.core/script :lua))]
+           (try
+             (let [_ (eval '(def$.lua LUA-CONST 7))
+                   _ (eval '(defmacro.lua import-plus-one [x]
+                              (list '+ x 1)))
+                   _ (eval '(defn-.lua PRIVATE [x]
+                              (return x)))
+                   value-fragment
+                   (get-in (deref script/+modules+)
+                           [module :fragment 'LUA-CONST])
+                   macro-fragment
+                   (get-in (deref script/+modules+)
+                           [module :fragment 'import-plus-one])
+                   value-var (resolve 'LUA-CONST)
+                   value-pointer (deref value-var)
+                   private-var (resolve 'PRIVATE)
+                   private-pointer (deref private-var)]
+               [(:lang value-fragment)
+                (:lang macro-fragment)
+                (var? value-var)
+                (lang.core/code-pointer? value-pointer)
+                (lang.core/code-pointer-val value-pointer :section)
+                (:lang value-pointer)
+                (macroexpand-1 '(import-plus-one value))
+                (var? private-var)
+                (lang.core/code-pointer? private-pointer)
+                (lang.core/code-pointer-val private-pointer :op)
+                (:lang private-pointer)])
+             (finally
+               (if (not (component/stopped? default-runtime))
+                 (runtime/rt-stop default-runtime)))))
+         (finally
+           (reset! script/+modules+ modules-before)
+           (reset! script/+scripts+ scripts-before)
+           (reset! script/+module-contexts+ contexts-before))))
+     => [:lua
+         :lua
+         true
+         true
+         :fragment
+         :lua
+         '(quote (+ value 1))
+         true
+         true
+         'defn-
+         :lua])
+
+   (fact "the default runtime is compile-only and available to every language"
+     (let [runtime-value
+           (runtime/rt-start
+            (runtime/rt-create :postgres :default
+                               {:module 'postgres.core.system}))]
+       (try
+         [(:lang runtime-value)
+          (:runtime runtime-value)
+          (:module runtime-value)
+          (component/started? runtime-value)
+          (runtime/runtime-installed? :postgres :default)
+          (boolean (get (set (runtime/available-runtimes :postgres))
+                        :default))
+          (runtime/rt-raw-eval runtime-value "SELECT 1")]
+         (finally
+           (runtime/rt-stop runtime-value))))
+     => [:postgres
+         :default
+         'postgres.core.system
+         true
+         true
+         true
+         "SELECT 1"])])
+
+(pr-str (run '[lang.core.script-contract-test]))

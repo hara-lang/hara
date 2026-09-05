@@ -1,0 +1,240 @@
+(ns work.flow.task.command-task-test
+  (:require
+            [work.base :as work]
+            [work.flow.task.command :as command]
+            [work.flow.task.command-task :as task]
+            [work.flow.task.engine :as task-template]))
+
+(def unit-work
+  (task/unit
+   {:id :example/unit
+    :version 1
+    :item-key identity
+    :pre (fn [value] (+ value 1))
+    :run (fn [value context] (* value 2))
+    :post (fn [value] (+ value 3))
+    :output (fn [value] (- value 1))
+    :display (fn [value] (str "value=" value))}))
+
+(def direct-observer (work/recording-observer))
+(def direct-result
+  (work/run
+   (work/local-runtime {:observer direct-observer})
+   unit-work
+   1))
+
+(def batch-observer (work/recording-observer))
+(def batch-work
+  (command/batch
+   {:id :example/unit-batch :version 1}
+   {:list
+    (work/pure
+     :example/list
+     (fn [values context] values))
+    :process unit-work
+    :batch-options {:item-key identity}}))
+
+(def batch-result
+  (work/run
+   (work/local-runtime {:observer batch-observer})
+   batch-work
+   [1]))
+
+(def batch-item-result
+  (:item/value (first (:results batch-result))))
+
+(def template-definition
+  {:id :example/template-unit
+   :version 1
+   :item
+   {:list (fn [values context] values)
+    :pre (fn [value] (+ value 1))
+    :run (fn [value context] (* value 2))
+    :post (fn [value] (+ value 3))
+    :display (fn [value] (str "value=" value))}
+   :return {:select :results :package :vector}})
+
+(def normalised-template
+  (task-template/normalise-definition template-definition))
+
+(def template-unit-work
+  (task-template/unit-work normalised-template))
+
+(def template-direct-result
+  (work/run
+   (work/local-runtime)
+   template-unit-work
+   {:task/value 1
+    :task/item-id 1
+    :task/index 0
+    :task/source-index 0
+    :task/total 1}))
+
+(def template-bulk-result
+  (work/run
+   (work/local-runtime)
+   (task-template/template template-definition)
+   [1]))
+
+(def template-work-spec (work/work-spec (task-template/template template-definition)))
+(def template-batch-spec
+  (work/work-spec (nth (:children template-work-spec) 2)))
+
+(def failing-template
+  (task-template/template
+   {:id :example/failing-template
+    :execution {:on-error :fail}
+    :item
+    {:list (fn [values context] values)
+     :run
+     (fn [value context]
+       (throw (ex-info "template infrastructure failure" {:value value})))}}))
+
+(def failing-template-status
+  (let [runtime (work/durable-runtime)
+        reference (work/start runtime failing-template [1]
+                              {:id "failing-task-template"})]
+    (work/status runtime reference)))
+
+(def subject-work
+  (task/unit
+   {:id :example/prepared-subject
+    :input (fn [subject context] (:value subject))
+    :item-key identity
+    :item/meta
+    (fn [subject context]
+      {:item/index (:index subject)
+       :item/source-index (:source-index subject)})
+    :run
+    (fn [value context]
+      (+ value (:offset (:command/subject context))))}))
+
+(def subject-result
+  (work/run
+   (work/local-runtime)
+   subject-work
+   {:value 2 :offset 3 :index 0 :source-index 4}))
+
+(def warning-observer (work/recording-observer))
+(def warning-result
+  (work/run
+   (work/local-runtime {:observer warning-observer})
+   (task/unit
+    {:id :example/warning
+     :item-key identity
+     :run
+     (fn [value context]
+       {:status :warn :data value})})
+   7))
+
+(def recorded-error
+  (work/run
+   (work/local-runtime)
+   (task/unit
+    {:id :example/recorded-error
+     :item-key identity
+     :run
+     (fn [value context]
+       (throw
+        (ex-info "unit failure" {:value value})))})
+   9))
+
+(defn event-count
+  [observer event]
+  (count
+   (filter
+    (fn [record] (= event (:event record)))
+    (work/observer-events observer))))
+
+(def results
+  [(test-check
+    "a unit task command compiles to an ordinary work leaf"
+    [(task/task-work? unit-work)
+     (:op (work/work-spec unit-work))
+     (:id (work/work-spec unit-work))
+     (:command/schema (work/work-spec unit-work))]
+    [true :step :example/unit "work.flow.task.command-task/0-alpha"])
+
+   (test-check
+    "direct unit execution owns pre, run, post, output, display and result normalisation"
+    direct-result
+    {:item/id 1
+     :item/input 1
+     :status :return
+     :data 6
+     :item/prepared 2
+     :item/display "value=6"})
+
+   (test-check
+    "command.batch expands the exact unit without changing its item result"
+    batch-item-result
+    direct-result)
+
+   (test-check
+    "the task template delegates processing before configured result packaging"
+    [(task/task-work? template-unit-work)
+     (:command/schema (work/work-spec template-unit-work))
+     (first template-bulk-result)]
+   [true "work.flow.task.command-task/0-alpha" [1 7]])
+
+   (test-check
+    "task templates checkpoint the enumerated manifest before processing"
+    (:op (work/work-spec (:list template-batch-spec)))
+    :step)
+
+   (test-check
+    "task execution policy can leave infrastructure failure ownership with std.work"
+    failing-template-status
+    :failed)
+
+   (test-check
+    "prepared subjects can project input and metadata while remaining available to the run function"
+    subject-result
+    {:item/id 2
+     :item/index 0
+     :item/source-index 4
+     :item/input 2
+     :status :return
+     :data 5
+     :item/prepared 2
+     :item/display 5})
+
+   (test-check
+    "direct and bulk execution emit the unit lifecycle exactly once"
+    [(event-count direct-observer :task/item-started)
+     (event-count direct-observer :task/item-completed)
+     (event-count batch-observer :task/item-started)
+     (event-count batch-observer :task/item-completed)]
+    [1 1 1 1])
+
+   (test-check
+    "warning results remain data and emit the warning event"
+    [(:item/id warning-result)
+     (:status warning-result)
+     (:data warning-result)
+     (event-count warning-observer :task/item-warning)]
+    [7 :warn 7 1])
+
+   (test-check
+    "unit failures are normalised as command errors by default"
+    [(:item/id recorded-error)
+     (:status recorded-error)
+     (string? (:error recorded-error))]
+    [9 :error true])
+
+   (test-check "the explicit fail policy leaves failure ownership with std.work" (try (do (work/run
+     (work/local-runtime)
+     (task/unit
+      {:id :example/failing
+       :on-error :fail
+       :run
+       (fn [value context]
+         (throw
+          (ex-info "unit failure" {:value value})))})
+     11) false) (catch Throwable test_error__ true)) true)
+
+   (test-check "unit task commands require an id" (try (do (task/unit {:run (fn [value context] value)}) false) (catch Throwable test_error__ true)) true)
+
+   (test-check "unit task commands require a run function" (try (do (task/unit {:id :invalid/unit}) false) (catch Throwable test_error__ true)) true)])
+
+results

@@ -1,0 +1,122 @@
+(ns tool.cli.deploy-manifest)
+
+(def +app+
+  {:app/id :tool.cli/deployment
+   :app/summary "Run dependency-ordered native Hara deployment workflows."
+   :app/routes [:tool.cli.route/deploy]})
+
+(def +route+
+  {:route/id :tool.cli.route/deploy
+   :route/path ["deploy"]
+   :route/aliases []
+   :route/handler :tool.cli.handler/deploy
+   :route/execution :finite
+   :route/tier :public
+   :route/summary
+   "Check, package, install or publish packages from config/deploy.edn."
+   :route/arguments
+   [{:argument/id :tool.cli.argument/deploy-arguments
+     :argument/cardinality :one-or-more
+     :argument/type :string}]
+   :route/options
+   [:tool.cli.option/project
+    :tool.cli.option/config
+    :tool.cli.option/tap
+    :tool.cli.option/dry-run
+    :tool.cli.option/format]
+   :route/formats [:text :edn]})
+
+(def +config-option+
+  {:option/id :tool.cli.option/config
+   :option/names ["--config"]
+   :option/type :path
+   :option/scope :route})
+
+(def +project-option+
+  {:option/id :tool.cli.option/project
+   :option/names ["--project" "--root"]
+   :option/type :path
+   :option/scope :global})
+
+(def +tap-option+
+  {:option/id :tool.cli.option/tap
+   :option/names ["--tap"]
+   :option/type :string
+   :option/scope :route})
+
+(def +dry-run-option+
+  {:option/id :tool.cli.option/dry-run
+   :option/names ["--dry-run"]
+   :option/type :boolean
+   :option/scope :route})
+
+(def +format-option+
+  {:option/id :tool.cli.option/format
+   :option/names ["--format"]
+   :option/type :enum
+   :option/values [:text :edn]
+   :option/scope :route})
+
+(def +handler+
+  {:handler/id :tool.cli.handler/deploy
+   :handler/input :tool.cli.schema/request
+   :handler/output :tool.cli.schema/result
+   :handler/registry :closed})
+
+(defn declared?
+  [values id-key id]
+  (reduce
+   (fn [found value]
+     (or found (= id (get value id-key))))
+   false
+   values))
+
+(defn append-declaration
+  [values id-key declaration]
+  (let [values (vec (or values []))
+        id (get declaration id-key)]
+    (if (declared? values id-key id)
+      values
+      (conj values declaration))))
+
+(defn extend
+  "Adds the deploy app, route, option and closed handler declaration to the
+   effective embedded manifest. The operation is idempotent for hosts that
+   already provide the declarations."
+  [manifest]
+  (let [options (append-declaration
+                 (append-declaration
+                  (append-declaration
+                   (append-declaration
+                    (append-declaration
+                     (:cli/options manifest)
+                     :option/id
+                     +project-option+)
+                    :option/id
+                    +config-option+)
+                   :option/id
+                   +tap-option+)
+                  :option/id
+                  +dry-run-option+)
+                 :option/id
+                 +format-option+)
+        manifest (assoc manifest
+                        :cli/apps
+                        (append-declaration
+                         (:cli/apps manifest)
+                         :app/id
+                         +app+))
+        manifest (assoc manifest
+                        :cli/routes
+                        (append-declaration
+                         (:cli/routes manifest)
+                         :route/id
+                         +route+))
+        manifest (assoc manifest :cli/options options)
+        manifest (assoc manifest
+                        :cli/handlers
+                        (append-declaration
+                         (:cli/handlers manifest)
+                         :handler/id
+                         +handler+))]
+    manifest))

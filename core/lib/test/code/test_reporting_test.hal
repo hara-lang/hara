@@ -1,0 +1,81 @@
+(ns code.test.reporting-test
+  (:use code.test)
+  (:require [code.test.base.listener :as listener]
+            [code.test.base.print :as print]
+            [code.test.work :as test-work]
+            [work.flow.task.report :as report]))
+
+(def summary
+  {:files 2 :facts 3 :checks 4 :passed 3 :failed 1 :throw 0 :timeout 0})
+
+(fact "reporting renders portable text summaries without a terminal host"
+  (print/format-summary summary)
+  => "Summary (2 files)\n  facts: 3\n  checks: 4\n  passed: 3\n  failed: 1\n  thrown: 0\n  timeout: 0")
+
+(fact "listener summaries retain source and assertion diagnostics"
+  (listener/summarise-verify
+   (comparison-result
+    'sample.core/answer 41 42 (compare 41 42)))
+  => {:status :failed
+      :name 'sample.core/answer
+      :path nil
+      :line nil
+      :expected 42
+      :actual 41
+      :error nil})
+
+(fact "listener evaluation summaries consume native Results"
+  [(listener/summarise-evaluate (Result/create :success 42))
+   (:status
+    (listener/summarise-evaluate
+     (Result/create :error (ex-info "boom" {:id 1}))))]
+  => [{:status :success
+       :name nil
+       :path nil
+       :line nil
+       :error nil
+       :data 42}
+      :error])
+
+(register "predicate"
+          (fn [options]
+            [(compare 41 42)])
+          {:test/namespace "code.test.reporting-test"})
+
+(def task-summary
+  (test-work/run
+   {:namespace "code.test.reporting-test"
+    :name "predicate"
+    :test/revision 101}))
+
+(def task-report (:report task-summary))
+
+(remove-fact "code.test.reporting-test" "predicate")
+
+(fact "test reports use the shared task document and namespace rows"
+  (let [sections (:report/sections task-report)
+        items (report/section-by-id task-report :items)
+        results (report/section-by-id task-report :results)
+        summary-section (report/section-by-id task-report :summary)
+        item-row (first (:section/entries items))
+        result-row (first (:section/entries results))
+        summary-row (first (:section/entries summary-section))]
+    [(:report/status task-report)
+     (vec (map (fn [section] (:section/id section)) sections))
+     (:item/display item-row)
+     [(:key result-row) (:failed result-row) (:throw result-row) (:timeout result-row)]
+     (select-keys summary-row [:files :facts :checks :passed :failed :throw :timeout :skipped])])
+  => [:failed
+      [:items :results :summary]
+      "passed (0), errors: 1"
+      ["code.test.reporting-test" 1 0 0]
+      {:files 1
+       :facts 1
+       :checks 1
+       :passed 0
+       :failed 1
+       :throw 0
+       :timeout 0
+       :skipped 0}])
+
+(pr-str (run {:namespace "code.test.reporting-test"}))

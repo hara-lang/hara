@@ -1,0 +1,292 @@
+(ns std.typed.infer
+  (:require [std.typed.schema :as schema])
+  (:config {:override [result]}))
+
+(def +unknown-schema+ {:kind :unknown})
+
+(defn result
+  "Creates an inferred expression result from a schema and optional refinements."
+  ([inferred-schema] (result inferred-schema {}))
+  ([inferred-schema refinements]
+   {:schema (schema/normalize inferred-schema)
+    :refinements (or refinements {})}))
+
+(defn unknown
+  "Returns the conservative unknown inference result."
+  []
+  (result +unknown-schema+))
+
+(defn known?
+  "Returns true when result carries a concrete inferred schema."
+  [inferred]
+  (not= :unknown (get-in inferred [:schema :kind])))
+
+(defn literal-result
+  "Infers a normalized schema and representation facts for a literal value."
+  [value]
+  (cond
+    (nil? value) (result :nil)
+    (boolean? value) (result :bool)
+    (long? value) (result :long)
+    (bigint? value) (result :bigint)
+    (number? value) (result :num)
+    (string? value) (result :str)
+    (keyword? value) (result :keyword)
+    (symbol? value) (unknown)
+    (vector? value)
+    (result :vector
+            {:vector/backend (if (<= (count value) 8) :compact :persistent)
+             :metadata (if (nil? (meta value)) :absent :present)})
+    (map? value) (result :map {:metadata (if (nil? (meta value)) :absent :present)})
+    (set? value) (result :set {:metadata (if (nil? (meta value)) :absent :present)})
+    (list? value) (result :list {:metadata (if (nil? (meta value)) :absent :present)})
+    :else (unknown)))
+
+(defn collection-rule
+  "Returns the arity-specific collection-result rule for a call."
+  [head argument-count profile]
+  (let [rules (get-in profile [:collection-results head])]
+    (or (get rules argument-count) (:variadic rules))))
+
+(defn collection-result
+  "Transfers collection schema and representation facts from a call argument."
+  [source items]
+  (if (nil? source)
+    (unknown)
+    (let [source-schema (:schema source)
+          inferred-schema
+          (if (= items :same)
+            source-schema
+            (cond
+              (= :vector (:kind source-schema))
+              {:kind :vector :item +unknown-schema+}
+
+              (and (= :primitive (:kind source-schema))
+                   (= :vector (:name source-schema)))
+              (schema/normalize :vector)
+
+              :else source-schema))]
+      (result inferred-schema (:refinements source)))))
+
+(defn result-schema
+  ([data] (result-schema data {}))
+  ([data properties]
+   (schema/normalize [:result properties data])))
+
+(defn result-schema? [value]
+  (= :result (:kind value)))
+
+(defn result-operation [head]
+  (let [operation (if (symbol? head) (name head) nil)
+        operation-ns (if (symbol? head) (namespace head) nil)
+        foundation? (or (nil? operation-ns)
+                        (= operation-ns "std.foundation"))
+        native? (= operation-ns "Result")]
+    (cond
+      (and foundation? (= operation "result")) :result/constructor
+      (and foundation? (= operation "result?")) :result/result?
+      (and native? (= operation "success?")) :result/success?
+      (and native? (= operation "error?")) :result/error?
+      (and native? (= operation "data")) :result/data
+      (and native? (= operation "error-value")) :result/error-value
+      (and native? (= operation "context")) :result/context
+      (and native? (= operation "with-context")) :result/with-context
+      (and foundation? (= operation "deref")) :result/deref
+      :else nil)))
+
+(defn result-data-schema [value]
+  (if (result-schema? value)
+    (let [status (get-in value [:properties :status])]
+      (cond
+        (= status :success) (:data value)
+        (= status :error) (schema/normalize :nil)
+        :else (schema/normalize [:or (:data value) :nil])))
+    +unknown-schema+))
+
+(defn result-transfer [operation arguments forms]
+  (let [first-argument (if (empty? arguments) (unknown) (first arguments))
+        first-schema (:schema first-argument)
+        status (get-in first-schema [:properties :status])]
+    (cond
+      (= operation :result/constructor)
+      (if (and (<= 2 (count forms))
+               (keyword? (first forms))
+               (has? #{:success :error} (first forms)))
+        (if (= :success (first forms))
+          (result (result-schema (:schema (second arguments)) {:status :success}))
+          (result (result-schema :any {:status :error})))
+        (result (if (result-schema? first-schema)
+                  first-schema
+                  (result-schema first-schema))))
+
+      (has? #{:result/result? :result/success? :result/error?} operation)
+      (result :bool)
+
+      (= operation :result/status)
+      (result (if status
+                [:enum status]
+                [:enum :success :error]))
+
+      (= operation :result/data)
+      (result (result-data-schema first-schema))
+
+      (= operation :result/error-value)
+      (result (if (= status :success) :nil :any))
+
+      (= operation :result/context) (result :map)
+      (= operation :result/with-context) first-argument
+      (= operation :result/deref)
+      (result (if (result-schema? first-schema) (:data first-schema) +unknown-schema+))
+      :else (unknown))))
+
+(defn call-result
+  "Infers a call result from analyzed arguments and a lint profile."
+  [head arguments context]
+  (let [profile (:profile context)
+        local-result (get (:returns context) head)
+        signature (get-in profile [:signatures head])
+        rule (collection-rule head (count arguments) profile)
+        result-op (result-operation head)]
+    (cond
+      result-op (result-transfer result-op arguments (:argument-forms context))
+
+      local-result local-result
+
+      (and rule (< (:source-arg rule) (count arguments)))
+      (collection-result (nth arguments (:source-arg rule)) (:items rule))
+
+      signature
+      (result (or (:return signature) +unknown-schema+)
+              (or (:refinements signature) {}))
+
+      :else (unknown))))
+
+(defn join
+  "Conservatively joins inferred results, retaining only common facts."
+  [results]
+  (let [known (vec (filter known? results))]
+    (if (or (empty? known) (not= (count known) (count results)))
+      (unknown)
+      (let [first-result (first known)
+            same-schema (every? (fn [item] (= (:schema first-result) (:schema item))) known)
+            same-refinements
+            (every? (fn [item]
+                      (= (:refinements first-result) (:refinements item)))
+                    known)]
+        (result (if same-schema (:schema first-result) +unknown-schema+)
+                (if same-refinements (:refinements first-result) {}))))))
+
+(defn narrow-result [inferred operation]
+  (let [current (:schema inferred)]
+    (if (result-schema? current)
+      (cond
+        (= operation :result/success?)
+        (result (assoc current
+                       :properties
+                       (assoc (:properties current) :status :success))
+                (:refinements inferred))
+
+        (= operation :result/error?)
+        (result (assoc current
+                       :properties
+                       (assoc (:properties current) :status :error))
+                (:refinements inferred))
+
+        :else inferred)
+      inferred)))
+
+(defn condition-context [condition context]
+  (if (and (list? condition)
+           (= 2 (count condition))
+           (symbol? (second condition)))
+    (let [operation (result-operation (first condition))
+          target (second condition)
+          current (get (:locals context) target)]
+      (if (and current
+               (has? #{:result/success? :result/error?} operation))
+        (assoc context
+               :locals
+               (assoc (:locals context)
+                      target
+                      (narrow-result current operation)))
+        context))
+    context))
+
+(declare infer-result)
+
+(defn infer-let
+  [form context]
+  (let [bindings (second form)
+        body (vec (drop 2 form))]
+    (if (not (vector? bindings))
+      (unknown)
+      (loop [remaining bindings
+             locals (or (:locals context) {})]
+        (if (empty? remaining)
+          (if (empty? body)
+            (result :nil)
+            (last (map (fn [item]
+                         (infer-result item (assoc context :locals locals)))
+                       body)))
+          (if (= 1 (count remaining))
+            (unknown)
+            (let [binding (first remaining)
+                  initializer (second remaining)
+                  inferred (infer-result initializer (assoc context :locals locals))]
+              (recur (vec (drop 2 remaining))
+                     (if (symbol? binding)
+                       (assoc locals binding inferred)
+                       locals)))))))))
+
+(defn infer-result
+  "Infers a normalized schema and conservative refinements for form."
+  ([form] (infer-result form {}))
+  ([form context]
+   (cond
+     (symbol? form) (or (get (:locals context) form) (unknown))
+     (not (list? form)) (literal-result form)
+     (empty? form) (result :list)
+     (= 'quote (first form))
+     (if (= 2 (count form)) (literal-result (second form)) (unknown))
+     (or (= 'let (first form)) (= 'loop (first form))) (infer-let form context)
+     (= 'do (first form))
+     (if (= 1 (count form))
+       (result :nil)
+       (last (map (fn [item] (infer-result item context)) (rest form))))
+     (= 'if (first form))
+     (if (or (= 3 (count form)) (= 4 (count form)))
+       (join [(infer-result (nth form 2)
+                            (condition-context (second form) context))
+              (if (= 4 (count form))
+                (infer-result (nth form 3) context)
+                (result :nil))])
+       (unknown))
+     :else
+     (call-result (first form)
+                  (vec (map (fn [argument] (infer-result argument context))
+                            (rest form)))
+                  (assoc context :argument-forms (vec (rest form)))))))
+
+(defn infer
+  "Returns the normalized inferred schema for form."
+  ([form] (:schema (infer-result form {})))
+  ([form context] (:schema (infer-result form context))))
+
+(defn infer-function-arity
+  "Builds a conservative function schema from parameters and inferred body."
+  [parameters body context]
+  (let [locals (reduce (fn [output parameter]
+                         (if (symbol? parameter)
+                           (assoc output parameter (unknown))
+                           output))
+                       (or (:locals context) {})
+                       parameters)
+        output (if (empty? body)
+                 (result :nil)
+                 (last (map (fn [form]
+                              (infer-result form (assoc context :locals locals)))
+                            body)))]
+    {:kind :fn
+     :inputs {:fixed (vec (map (fn [_] +unknown-schema+) parameters))
+              :rest nil}
+     :output (:schema output)}))
