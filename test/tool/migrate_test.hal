@@ -1,0 +1,87 @@
+(ns tool.migrate-test
+  (:use code.test)
+  (:require [std.foundation.string :as str]
+            [tool.migrate :as migrate]))
+
+(def catalog
+  {:document/id :demo/transform
+   :document/type :code-migration-spec
+   :migration/rules
+   [{:rule/id :demo/rename
+     :rule/languages [:clojure :hara]
+     :rule/phase :expression
+     :rule/priority 1
+     :rule/kind :token
+     :rule/match {:clojure {:text "old"}
+                  :hara {:text "legacy"}}
+     :rule/rewrite {:clojure {:op :replace-token :text "new"}
+                    :hara {:op :replace-token :text "native"}}
+     :rule/safety :safe
+     :rule/evidence {:source/path "src/demo.clj"
+                     :target/spec :hara/foundation}}]})
+
+^{:refer tool.migrate/transform-code}
+(fact "the root facade publishes the registry-backed transform"
+  ((fn [result]
+     [(:target/path result)
+      (:changed result)
+      (str/includes? (:after result) "new")
+      (count (:rules/applied result))])
+   (migrate/transform-code
+    {:source/path "src/demo.clj"
+     :source/text "(ns demo)\n(def old 1)\n"
+     :target/path "lib/demo.hal"}
+    {:catalog catalog
+     :mode :safe}))
+  => ["lib/demo.hal" true true 1])
+
+^{:refer tool.migrate/transform-code}
+(fact "tool.migrate keeps the implementation owner behind the facade"
+  [(get (Runtime/namespace 'tool.migrate) :namespace/role)
+   (get (Runtime/namespace 'tool.migrate.common.transform) :namespace/role)
+   (nil? (get (ns-publics 'tool.migrate) 'language))
+   (nil? (get (ns-publics 'tool.migrate) 'target-language))
+   (nil? (get (ns-publics 'tool.migrate)
+             'canonicalize-public-metadata))]
+  => [:facade :internal false false false])
+
+^{:refer tool.migrate/canonicalize-public-metadata}
+(fact "the migration facade exposes public metadata canonicalization"
+  (:output
+   (migrate/canonicalize-public-metadata
+    "^{:public true} (defn old [] 1)"))
+  => "(defn ^{:public true} old [] 1)")
+
+^{:refer tool.migrate/project-plan}
+(fact "the migration facade exposes a read-only project plan"
+  (let [plan
+        (migrate/project-plan
+         {:units [{:source/path "/authority/demo.clj"
+                   :source/root "/authority"
+                   :source/text "(ns demo.core)\n(def value 1)\n"
+                   :source/sha256 "sha256:source"
+                   :target/path "/hara/demo.hal"
+                   :target/root "/hara"}]})]
+    [(:operation plan)
+     (:write plan)
+     (count (:units plan))
+     (fn? migrate/project-validate-write-plan)])
+  => [:tool.migrate/project false 1 true])
+
+^{:refer tool.migrate/foundation-lang-plan}
+(fact "the migration facade publishes the Foundation lang compiler closure"
+  (let [units [{:source/path "src/tahto/base/emit_data.clj"
+                :source/namespace 'tahto.base.emit-data
+                :source "(ns tahto.base.emit-data)\n(def value 1)"}]
+        inventory (migrate/foundation-lang-inventory units)
+        plan (migrate/foundation-lang-plan units)]
+    [(mapv :target/path inventory)
+     (:valid plan)
+     (get-in plan [:records 0 :data :target/namespace])
+     (migrate/foundation-lang-validate-plan "." {:records []})
+     (migrate/foundation-lang-apply-plan "." {:records []})])
+  => [["src/lang/common/emit_data.hal"]
+      true
+      'lang.common.emit-data
+      {:valid? true :write false :edits [] :diagnostics []}
+      []])

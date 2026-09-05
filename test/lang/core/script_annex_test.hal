@@ -1,5 +1,6 @@
 (ns lang.core.script-annex-test
-  (:require [lang.core.library :as library]
+  (:require [code.test.context :as context]
+            [lang.core.library :as library]
             [lang.core.script :as script]
             [lang.core.script-annex :as annex]
             [lang.core.runtime :as runtime]))
@@ -63,8 +64,10 @@
               :test (fn [] (isolated (fn []
                                        (let [first (annex/annex-in 'demo.source)]
                                          [(annex/annex? first)
-                                          (= first (annex/annex-in 'demo.source))]))))
-              :expected [true true]}])
+                                          (= first (annex/annex-in 'demo.source))
+                                          (= (:library first)
+                                             (library/namespace-library 'demo.source))]))))
+              :expected [true true true]}])
 
 ^{:refer lang.core.script-annex/annex-snapshot}
 (Test/check [{:name "captures empty tagged-runtime state"
@@ -393,11 +396,79 @@
                                        (annex/eval-tag :one '(+ 1 2)))))
               :expected "1 + 2"}])
 
+^{:refer lang.core.script-annex/script-test-mode?}
+(Test/check [{:name "suppresses configured test startup only in runner eval mode"
+              :test (fn [] [(binding [context/*eval-mode* true]
+                              (annex/script-test-mode? {:test-mode true}))
+                            (binding [context/*eval-mode* false]
+                              (annex/script-test-mode? {:test-mode true}))
+                            (binding [context/*eval-mode* false]
+                              (annex/script-test-mode? {}))])
+              :expected [false true false]}])
+
+^{:refer lang.core.script-annex/script-test-in}
+(Test/check [{:name "records l/script- source only in its namespace child Library in runner mode"
+              :test (fn [] (isolated (fn []
+                                       (binding [context/*eval-mode* false]
+                                         (let [namespace 'demo.source
+                                               result (annex/script-test-in
+                                                       namespace :postgres 'demo.module
+                                                       {:test-mode true})
+                                               current (annex/annex-library-in namespace)]
+                                           [result
+                                            (not (nil? (get (library/library-raw-book-modules
+                                                             current :postgres)
+                                                            'demo.module)))
+                                            (get (library/library-raw-book-modules
+                                                  (library/default-library) :postgres)
+                                                 'demo.module)
+                                            (= current (get-in (deref script/+scripts+)
+                                                               [['demo.module :postgres] :library]))])))))
+              :expected [nil true nil true]}
+             {:name "starts configured test scripts during ordinary direct evaluation"
+              :test (fn [] (isolated (fn []
+                                       (binding [context/*eval-mode* true]
+                                         (let [instance (annex/script-test-in
+                                                         'demo.source :postgres 'demo.module
+                                                         {:test-mode true})]
+                                           (:status (deref (:state instance))))))))
+              :expected :started}
+             {:name "does not start source runtimes during dependency loading"
+              :test (fn [] (isolated (fn []
+                                       (binding [script/*loading-module* true]
+                                         (let [result (annex/script-test-in
+                                                       'demo.source
+                                                       :postgres
+                                                       'demo.module
+                                                       {})]
+                                           [result
+                                            (:runtime (get (deref script/+scripts+)
+                                                           ['demo.module :postgres]))])))))
+              :expected [nil nil]}])
+
+^{:refer lang.core.script-annex/script-test-form}
+(Test/check [{:name "builds namespace-annex setup forms for l/script-"
+              :test (fn [] (first (annex/script-test-form 'demo.source :postgres [])))
+              :expected 'lang.core.script-annex/script-test-in}])
+
+^{:refer lang.core.script-annex/script-}
+(Test/check [{:name "expands l/script- through namespace-annex setup"
+              :test (fn [] (first (macroexpand-1 '(lang.core.script-annex/script- :postgres))))
+              :expected 'lang.core.script-annex/script-test-in}])
+
+^{:refer lang.core.script-annex/script-ext-in}
+(Test/check [{:name "registers l/script+ tags without startup only in runner mode"
+              :test (fn [] (isolated (fn []
+                                       (binding [context/*eval-mode* false]
+                                         [(annex/script-ext-in 'demo.source [:one :postgres]
+                                                               {:test-mode true})
+                                          (annex/status-in 'demo.source)]))))
+              :expected [nil {:registered #{:one} :active #{}}]}])
+
 ^{:refer lang.core.script-annex/script-ext-form}
-(Test/check [{:name "builds registration and start forms for a tagged script"
-              :test (fn [] (map first (rest (annex/script-ext-form 'demo.source [:one :postgres] {}))))
-              :expected ['lang.core.script-annex/register-tag-in
-                         'lang.core.script-annex/start-tag-in]}])
+(Test/check [{:name "builds one tagged script lifecycle form"
+              :test (fn [] (first (annex/script-ext-form 'demo.source [:one :postgres] {})))
+              :expected 'lang.core.script-annex/script-ext-in}])
 
 ^{:refer lang.core.script-annex/script-eval-form}
 (Test/check [{:name "builds a tagged evaluation form only for vector tags"
@@ -408,7 +479,7 @@
 ^{:refer lang.core.script-annex/script+}
 (Test/check [{:name "expands to portable tagged script setup"
               :test (fn [] (first (macroexpand-1 '(lang.core.script-annex/script+ [:one :postgres]))))
-              :expected 'do}])
+              :expected 'lang.core.script-annex/script-ext-in}])
 
 ^{:refer lang.core.script-annex/!}
 (Test/check [{:name "expands to portable tagged evaluation"

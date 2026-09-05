@@ -1,0 +1,620 @@
+(ns lang.model.v1.spec-xtalk.fn-dart-test
+  (:use code.test)
+  (:require [lang.model.v1.spec-xtalk.fn-dart :as subject]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-method0}
+(fact "wraps Dart method receivers before a zero-argument call"
+  (subject/dart-method0 -1.2 'ceil)
+  => '(:% (:- "(") -1.2 (:- ").") ceil (:- "()")))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-call}
+(fact "lowers a callback with its positional argument vector"
+  (subject/dart-call 'callback (vector 'a 'b))
+  => '(Function.apply callback [a b]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-runtime-type-string}
+(fact "gets the Dart runtime type spelling"
+  (subject/dart-runtime-type-string 'value)
+  => '(:% (:- "(") (. value runtimeType) (:- ").") toString (:- "()")))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-string-compare-expr}
+(fact "compares Dart values through their string representation"
+  (subject/dart-string-compare-expr 'left 'right)
+  => '(. (:% (:- "(") left (:- ").") toString (:- "()"))
+         (compareTo (:% (:- "(") right (:- ").") toString (:- "()")))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-comparison-form}
+(fact "uses lexical comparison when either operand is a String"
+  (let [form (subject/dart-comparison-form 'left 'right '< '<)]
+    [(first form) (first (second form)) (first (nth form 2)) (nth form 3)])
+  => [:? 'or '< '(< left right)])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-is-map}
+(fact "builds a Dart map type test"
+  (subject/dart-is-map 'value)
+  => '(:% (:- "(") value (:- " is Map)")))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-map-get}
+(fact "casts map values before indexed lookup"
+  (subject/dart-map-get 'value "__type__")
+  => '(:% (:- "((") value (:- " as Map)[\"__type__\"])")))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-xt-exception?}
+(fact "recognizes the canonical XTalk exception map"
+  (subject/dart-xt-exception? 'value)
+  => '(and (:% (:- "(") value (:- " is Map)"))
+           (== "xt.exception"
+               (:% (:- "((") value (:- " as Map)[\"__type__\"])")))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-len}
+(fact "lowers length to a Dart property"
+  (subject/dart-tf-x-len '(x:len values))
+  => '(. values length))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-cat}
+(fact "joins all string operands"
+  (subject/dart-tf-x-cat '(x:cat "a" "b" "c"))
+  => '(+ "a" "b" "c"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-print}
+(fact "creates an immediately invoked print block"
+  (let [form (subject/dart-tf-x-print '(x:print value))]
+    [(count form) (first (first form)) (first (nth (first form) 2))])
+  => [1 'fn 'print])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-arr-push}
+(fact "lowers array push to List.add"
+  (subject/dart-tf-x-arr-push '(x:arr-push values value))
+  => '(. values (add value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-apply}
+(fact "applies a function through Function.apply"
+  (subject/dart-tf-x-apply '(x:apply f args))
+  => '(Function.apply f [args]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-construct}
+(fact "constructs through Function.apply"
+  (subject/dart-tf-x-construct '(x:construct ctor args))
+  => '(Function.apply ctor [args]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-now-ms}
+(fact "gets milliseconds from DateTime.now"
+  (subject/dart-tf-x-now-ms '(x:now-ms))
+  => '(. (DateTime.now) millisecondsSinceEpoch))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-random}
+(fact "uses Random.nextDouble"
+  (subject/dart-tf-x-random '(x:random))
+  => '(:% (:- "(") (math.Random) (:- ").") nextDouble (:- "()")))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-type-native}
+(fact "uses runtimeType and toString in the native type classifier"
+  (let [form (subject/dart-tf-x-type-native '(x:type-native value))
+        body (first form)]
+    [(first body)
+     (first (nth body 3))
+     (first (nth body 4))
+     (first (last body))])
+  => ['fn 'var 'var 'return])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-del}
+(fact "deletes indexed members and whole values through remove"
+  [(subject/dart-tf-x-del
+    (list 'x:del (list '. 'table (vector 'key))))
+   (subject/dart-tf-x-del '(x:del values))]
+  => ['(. table (remove key))
+      '(. values (remove nil))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-eval}
+(fact "rejects unsupported Dart eval explicitly"
+  (subject/dart-tf-x-eval '(x:eval source))
+  => '(throw "eval not supported in Dart"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-ex-native?}
+(fact "uses the canonical exception predicate"
+  (first (subject/dart-tf-x-ex-native? '(x:ex-native? error)))
+  => 'and)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-ex-new}
+(fact "constructs a stable exception data map with optional data"
+  [(subject/dart-tf-x-ex-new '(x:ex-new message))
+   (subject/dart-tf-x-ex-new '(x:ex-new message data))]
+  => [{"__type__" "xt.exception" "message" 'message "data" nil}
+      {"__type__" "xt.exception" "message" 'message "data" 'data}])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-ex-message}
+(fact "reads the exception message only for exception maps"
+  (let [form (subject/dart-tf-x-ex-message '(x:ex-message error))]
+    [(first form) (nth form 2) (nth form 3)])
+  => [:? '(:% (:- "((") error (:- " as Map)[\"message\"])")) nil])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-ex-data}
+(fact "reads the exception data only for exception maps"
+  (let [form (subject/dart-tf-x-ex-data '(x:ex-data error))]
+    [(first form) (nth form 2) (nth form 3)])
+  => [:? '(:% (:- "((") error (:- " as Map)[\"data\"])")) nil])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-has-key?}
+(fact "supports key presence and exact-value checks"
+  [(subject/dart-tf-x-has-key? '(x:has-key? table key))
+   (subject/dart-tf-x-has-key? '(x:has-key? table key value))]
+  => ['(. table (containsKey key))
+      '(and (. table (containsKey key))
+            (== value (. table [key])))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-del-key}
+(fact "removes a map key"
+  (subject/dart-tf-x-del-key '(x:del-key table key))
+  => '(. table (remove key)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-lt}
+(fact "lowers lexical-aware less-than"
+  (nth (subject/dart-tf-x-lt '(x:lt a b)) 3)
+  => '(< a b))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-lte}
+(fact "lowers lexical-aware less-than-or-equal"
+  (nth (subject/dart-tf-x-lte '(x:lte a b)) 3)
+  => '(<= a b))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-gt}
+(fact "lowers lexical-aware greater-than"
+  (nth (subject/dart-tf-x-gt '(x:gt a b)) 3)
+  => '(> a b))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-gte}
+(fact "lowers lexical-aware greater-than-or-equal"
+  (nth (subject/dart-tf-x-gte '(x:gte a b)) 3)
+  => '(>= a b))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-core+}
+(fact "registers the complete historical Dart core operator group"
+  [(count subject/+dart-core+)
+   (get-in subject/+dart-core+ [:x-print :emit])
+   (get-in subject/+dart-core+ [:x-unpack :raw])]
+  => [22 :macro '...])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-abs}
+(fact "wraps a negative receiver for abs"
+  (subject/dart-tf-x-m-abs '(x:m-abs -5))
+  => '(:% (:- "(") -5 (:- ").") abs (:- "()")))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-ceil}
+(fact "lowers ceil to a zero-argument method"
+  (last (subject/dart-tf-x-m-ceil '(x:m-ceil value)))
+  => '(:- "()"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-floor}
+(fact "lowers floor to a zero-argument method"
+  (nth (subject/dart-tf-x-m-floor '(x:m-floor value)) 4)
+  => 'floor)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-sin}
+(fact "lowers sine to dart:math"
+  (subject/dart-tf-x-m-sin '(x:m-sin value))
+  => '(math.sin value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-cos}
+(fact "lowers cosine to dart:math"
+  (subject/dart-tf-x-m-cos '(x:m-cos value))
+  => '(math.cos value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-tan}
+(fact "lowers tangent to dart:math"
+  (subject/dart-tf-x-m-tan '(x:m-tan value))
+  => '(math.tan value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-asin}
+(fact "lowers arcsine to dart:math"
+  (subject/dart-tf-x-m-asin '(x:m-asin value))
+  => '(math.asin value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-acos}
+(fact "lowers arccosine to dart:math"
+  (subject/dart-tf-x-m-acos '(x:m-acos value))
+  => '(math.acos value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-atan}
+(fact "lowers arctangent to dart:math"
+  (subject/dart-tf-x-m-atan '(x:m-atan value))
+  => '(math.atan value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-sqrt}
+(fact "lowers square root to dart:math"
+  (subject/dart-tf-x-m-sqrt '(x:m-sqrt value))
+  => '(math.sqrt value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-exp}
+(fact "lowers exponentiation to dart:math"
+  (subject/dart-tf-x-m-exp '(x:m-exp value))
+  => '(math.exp value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-loge}
+(fact "lowers natural log to dart:math"
+  (subject/dart-tf-x-m-loge '(x:m-loge value))
+  => '(math.log value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-log10}
+(fact "derives base-10 log using ln10"
+  (subject/dart-tf-x-m-log10 '(x:m-log10 value))
+  => '(/ (math.log value) math.ln10))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-max}
+(fact "folds maximum through a value-preserving ternary"
+  (subject/dart-tf-x-m-max '(x:m-max a b c))
+  => '(:? (> (:? (> a b) a b) c) (:? (> a b) a b) c))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-min}
+(fact "folds minimum through a value-preserving ternary"
+  (subject/dart-tf-x-m-min '(x:m-min a b c))
+  => '(:? (< (:? (< a b) a b) c) (:? (< a b) a b) c))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-mod}
+(fact "emits Dart remainder"
+  (subject/dart-tf-x-m-mod '(x:m-mod a b))
+  => '(:% a (:- " % ") b))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-pow}
+(fact "lowers power to dart:math"
+  (subject/dart-tf-x-m-pow '(x:m-pow a b))
+  => '(math.pow a b))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-quot}
+(fact "emits Dart integer division"
+  (subject/dart-tf-x-m-quot '(x:m-quot a b))
+  => '(:% a (:- " ~/ ") b))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-cosh}
+(fact "derives hyperbolic cosine"
+  (first (subject/dart-tf-x-m-cosh '(x:m-cosh value)))
+  => '/)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-sinh}
+(fact "derives hyperbolic sine"
+  (first (subject/dart-tf-x-m-sinh '(x:m-sinh value)))
+  => '/)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-tanh}
+(fact "derives hyperbolic tangent"
+  (first (subject/dart-tf-x-m-tanh '(x:m-tanh value)))
+  => '/)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-math+}
+(fact "registers every supported Dart math operator"
+  [(count subject/+dart-math+) (get-in subject/+dart-math+ [:x-m-quot :emit])]
+  => [21 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-to-string}
+(fact "uses Dart toString"
+  (nth (subject/dart-tf-x-to-string '(x:to-string value)) 4)
+  => 'toString)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-to-number}
+(fact "uses num.parse"
+  (subject/dart-tf-x-to-number '(x:to-number value))
+  => '(num.parse value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-is-string?}
+(fact "tests String runtime type"
+  (first (subject/dart-tf-x-is-string? '(x:is-string? value)))
+  => '==)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-is-number?}
+(fact "recognizes int double and num"
+  [(first (subject/dart-tf-x-is-number? '(x:is-number? value)))
+   (count (subject/dart-tf-x-is-number? '(x:is-number? value)))]
+  => ['or 4])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-is-integer?}
+(fact "tests the int runtime type"
+  (second (subject/dart-tf-x-is-integer? '(x:is-integer? value)))
+  => "int")
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-is-boolean?}
+(fact "tests the bool runtime type"
+  (second (subject/dart-tf-x-is-boolean? '(x:is-boolean? value)))
+  => "bool")
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-is-function?}
+(fact "recognizes Function and closure type strings"
+  [(first (subject/dart-tf-x-is-function? '(x:is-function? value)))
+   (count (subject/dart-tf-x-is-function? '(x:is-function? value)))]
+  => ['or 4])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-is-object?}
+(fact "recognizes Dart map implementations"
+  (first (subject/dart-tf-x-is-object? '(x:is-object? value)))
+  => 'or)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-is-array?}
+(fact "recognizes Dart list implementations"
+  (first (subject/dart-tf-x-is-array? '(x:is-array? value)))
+  => 'or)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-type+}
+(fact "registers the complete Dart type group"
+  [(count subject/+dart-type+) (get-in subject/+dart-type+ [:x-is-array? :emit])]
+  => [9 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-char}
+(fact "adjusts source offsets before codeUnitAt"
+  (subject/dart-tf-x-str-char '(x:str-char text index))
+  => '(. text (codeUnitAt (- index (x:offset)))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-split}
+(fact "lowers string split"
+  (subject/dart-tf-x-str-split '(x:str-split text separator))
+  => '(. text (split separator)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-join}
+(fact "lowers string join on the list receiver"
+  (subject/dart-tf-x-str-join '(x:str-join separator values))
+  => '(. values (join separator)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-index-of}
+(fact "converts Dart indexOf back to the XTalk offset"
+  (subject/dart-tf-x-str-index-of '(x:str-index-of text sub))
+  => '(+ (. text (indexOf sub 0)) (x:offset)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-last-index-of}
+(fact "lowers lastIndexOf"
+  (subject/dart-tf-x-str-last-index-of '(x:str-last-index-of text sub))
+  => '(. text (lastIndexOf sub)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-substring}
+(fact "supports two- and three-argument Dart substring forms"
+  [(subject/dart-tf-x-str-substring '(x:str-substring text start))
+   (subject/dart-tf-x-str-substring '(x:str-substring text start end))]
+  => ['(. text (substring (- start (x:offset))))
+      '(. text (substring (- start (x:offset)) end))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-to-upper}
+(fact "uses Dart toUpperCase"
+  (nth (subject/dart-tf-x-str-to-upper '(x:str-to-upper text)) 4)
+  => 'toUpperCase)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-to-lower}
+(fact "uses Dart toLowerCase"
+  (nth (subject/dart-tf-x-str-to-lower '(x:str-to-lower text)) 4)
+  => 'toLowerCase)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-to-fixed}
+(fact "uses toStringAsFixed"
+  (subject/dart-tf-x-str-to-fixed '(x:str-to-fixed value digits))
+  => '(. value (toStringAsFixed digits)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-replace}
+(fact "uses replaceAll"
+  (subject/dart-tf-x-str-replace '(x:str-replace text pattern replacement))
+  => '(. text (replaceAll pattern replacement)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-trim}
+(fact "uses trim"
+  (nth (subject/dart-tf-x-str-trim '(x:str-trim text)) 4)
+  => 'trim)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-trim-left}
+(fact "uses trimLeft"
+  (subject/dart-tf-x-str-trim-left '(x:str-trim-left text))
+  => '(. text (trimLeft)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-trim-right}
+(fact "uses trimRight"
+  (subject/dart-tf-x-str-trim-right '(x:str-trim-right text))
+  => '(. text (trimRight)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-starts-with?}
+(fact "uses startsWith"
+  (subject/dart-tf-x-str-starts-with? '(x:str-starts-with? text prefix))
+  => '(. text (startsWith prefix)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-ends-with?}
+(fact "uses endsWith"
+  (subject/dart-tf-x-str-ends-with? '(x:str-ends-with? text suffix))
+  => '(. text (endsWith suffix)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-includes?}
+(fact "uses contains"
+  (subject/dart-tf-x-str-includes? '(x:str-includes? text needle))
+  => '(. text (contains needle)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-str+}
+(fact "preserves the historical string group surface"
+  [(count subject/+dart-str+)
+   (get-in subject/+dart-str+ [:x-str-replace :emit])]
+  => [13 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-lu-create}
+(fact "creates a mutable Dart lookup map"
+  (subject/dart-tf-x-lu-create '(x:lu-create))
+  => {})
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-lu-get}
+(fact "indexes a lookup map"
+  (subject/dart-tf-x-lu-get '(x:lu-get table key))
+  => '(. table [key]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-lu-set}
+(fact "assigns an indexed lookup map value"
+  (subject/dart-tf-x-lu-set '(x:lu-set table key value))
+  => '(:= (. table [key]) value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-lu-del}
+(fact "removes a lookup map value"
+  (subject/dart-tf-x-lu-del '(x:lu-del table key))
+  => '(. table (remove key)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-lu+}
+(fact "registers the four lookup-map operators"
+  [(count subject/+dart-lu+) (get-in subject/+dart-lu+ [:x-lu-create :emit])]
+  => [4 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-json-compact-expr}
+(fact "builds the self-contained JSON compaction expression"
+  (let [form (subject/dart-json-compact-expr 'value)]
+    [(first form) (nth form 2) (first (second form))])
+  => [:% 'value :-])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-obj-keys}
+(fact "converts Dart map keys to a dynamic list"
+  (subject/dart-tf-x-obj-keys '(x:obj-keys table))
+  => '(:% (:- "List<dynamic>.from((") table (:- ").keys)")))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-obj-vals}
+(fact "converts Dart map values to a dynamic list"
+  (subject/dart-tf-x-obj-vals '(x:obj-vals table))
+  => '(:% (:- "List<dynamic>.from((") table (:- ").values)")))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-obj-pairs}
+(fact "converts Dart map entries to key-value pairs"
+  (subject/dart-tf-x-obj-pairs '(x:obj-pairs table))
+  => '(:% (:- "List<List<dynamic>>.from((")
+         table
+         (:- ").entries.map((entry) => [entry.key, entry.value]))")))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-obj+}
+(fact "registers all Dart object projection operators"
+  [(count subject/+dart-obj+) (get-in subject/+dart-obj+ [:x-obj-pairs :emit])]
+  => [3 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-json+}
+(fact "uses Dart's jsonEncode and jsonDecode aliases"
+  [(get-in subject/+dart-json+ [:x-json-encode :raw])
+   (get-in subject/+dart-json+ [:x-json-decode :raw])]
+  => ['jsonEncode 'jsonDecode])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-arr-pop}
+(fact "pops the final element"
+  (nth (subject/dart-tf-x-arr-pop '(x:arr-pop values)) 4)
+  => 'removeLast)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-arr-slice}
+(fact "adjusts only the start index for Dart sublists"
+  [(subject/dart-tf-x-arr-slice '(x:arr-slice values start))
+   (subject/dart-tf-x-arr-slice '(x:arr-slice values start end))]
+  => ['(. values (sublist (- start (x:offset))))
+      '(. values (sublist (- start (x:offset)) end))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-arr-push-first}
+(fact "inserts an element at index zero"
+  (subject/dart-tf-x-arr-push-first '(x:arr-push-first values value))
+  => '(. values (insert 0 value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-arr-pop-first}
+(fact "removes the element at index zero"
+  (subject/dart-tf-x-arr-pop-first '(x:arr-pop-first values))
+  => '(. values (removeAt 0)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-arr-insert}
+(fact "inserts an element at the requested index"
+  (subject/dart-tf-x-arr-insert '(x:arr-insert values index value))
+  => '(. values (insert index value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-arr-remove}
+(fact "removes an element by index"
+  (subject/dart-tf-x-arr-remove '(x:arr-remove values index))
+  => '(. values (removeAt index)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-arr-sort}
+(fact "builds a key-aware comparator for Dart sort"
+  (let [form (subject/dart-tf-x-arr-sort '(x:arr-sort values key-fn compare-fn))]
+    [(first form) (second form) (first (nth form 2))])
+  => ['. 'values 'sort])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-str-comp}
+(fact "uses compareTo for string ordering"
+  (let [form (subject/dart-tf-x-str-comp '(x:str-comp left right))]
+    [(first form) (last form) (first (second form))])
+  => ['< 0 '.])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-arr+}
+(fact "retains the supported Dart array and string-comparison operators"
+  [(count subject/+dart-arr+)
+   (get-in subject/+dart-arr+ [:x-arr-push :type])
+   (get-in subject/+dart-arr+ [:x-str-comp :emit])]
+  => [8 :template :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-iter-eq}
+(fact "builds an immediately invoked iterator equality loop"
+  (let [form (subject/dart-tf-x-iter-eq '(x:iter-eq left right equal?))
+        body (first form)]
+    [(count form) (first body) (first (nth body 2)) (first (last body))])
+  => [1 'fn 'while 'return])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-iter-from}
+(fact "gets the iterator from an iterable"
+  (subject/dart-tf-x-iter-from '(x:iter-from values))
+  => '(. values iterator))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-iter-from-arr}
+(fact "gets the iterator from a list"
+  (subject/dart-tf-x-iter-from-arr '(x:iter-from-arr values))
+  => '(. values iterator))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-iter-from-obj}
+(fact "maps Dart map entries into XTalk key-value tuples"
+  (let [form (subject/dart-tf-x-iter-from-obj '(x:iter-from-obj table))]
+    [(first form) (last form) (first (second form))])
+  => ['. 'iterator '.])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-iter-has?}
+(fact "recognizes native iterators and iterable runtime types"
+  [(first (subject/dart-tf-x-iter-has? '(x:iter-has? values)))
+   (count (subject/dart-tf-x-iter-has? '(x:iter-has? values)))]
+  => ['or 5])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-iter-native?}
+(fact "recognizes Iterator runtime types"
+  [(first (subject/dart-tf-x-iter-native? '(x:iter-native? iterator)))
+   (first (nth (subject/dart-tf-x-iter-native? '(x:iter-native? iterator)) 2))]
+  => ['and '.])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-iter-next}
+(fact "reads the current iterator value"
+  (subject/dart-tf-x-iter-next '(x:iter-next iterator))
+  => '(. iterator current))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-iter-null}
+(fact "creates an iterator from an empty vector"
+  (subject/dart-tf-x-iter-null '(x:iter-null))
+  => '(. [] iterator))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-iter+}
+(fact "registers the full Dart iterator group"
+  [(count subject/+dart-iter+) (get-in subject/+dart-iter+ [:x-iter-eq :emit])]
+  => [8 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-prototype-create}
+(fact "uses the prototype map directly"
+  (subject/dart-tf-x-prototype-create '(prototype-create methods))
+  => 'methods)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-prototype-get}
+(fact "reads the reserved prototype field"
+  (subject/dart-tf-x-prototype-get '(prototype-get value))
+  => '(x:get-key value "_xt_proto" nil))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-prototype-set}
+(fact "stores and returns the prototype"
+  (let [body (first (subject/dart-tf-x-prototype-set
+                     '(prototype-set value methods)))]
+    [(first body) (first (nth body 2)) (first (last body))])
+  => ['fn 'x:set-key 'return])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-prototype-method}
+(fact "resolves own then prototype methods"
+  (let [body (first (subject/dart-tf-x-prototype-method
+                     '(prototype-method value key)))]
+    [(first body) (first (nth body 2)) (first (last body))])
+  => ['fn 'var 'return])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-prototype-tostring}
+(fact "uses Dart's toString name"
+  (subject/dart-tf-x-prototype-tostring '(prototype-tostring value))
+  => "toString")
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-proto+}
+(fact "registers the prototype operator surface"
+  [(count subject/+dart-proto+)
+   (get-in subject/+dart-proto+ [:prototype-method :emit])]
+  => [5 :macro])

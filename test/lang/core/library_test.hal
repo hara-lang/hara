@@ -15,6 +15,15 @@
   [language module id]
   {:lang language :module module :section :code :id id})
 
+(defn with-namespace-libraries
+  [function]
+  (let [snapshot (library/namespace-library-snapshot)]
+    (try
+      (library/namespace-library-reset!)
+      (function)
+      (finally
+        (library/namespace-library-restore! snapshot)))))
+
 ^{:refer lang.core.library/library?}
 (Test/check [{:name "identifies state-owning Library values"
               :test (fn [] [(library/library? (temporary-library))
@@ -203,6 +212,22 @@
                                       [:books [:xtalk :default 1] :book])]))
               :expected [{:id 'demo.module :lang :xtalk} nil nil]}])
 
+^{:refer lang.core.library/library-get-local-source-module}
+(Test/check [{:name "distinguishes a child-owned source module from an inherited one"
+              :test (fn [] (let [parent (temporary-library)
+                                 module (module-value :xtalk 'demo.module)
+                                 _ (library/library-add-module! parent :xtalk module)
+                                 child (temporary-library parent)]
+                             [(= module
+                                 (library/library-get-source-module child :js 'demo.module))
+                              (nil? (library/library-get-local-source-module
+                                     child :js 'demo.module))
+                              (do (library/library-add-module! child :xtalk module)
+                                  (= module
+                                     (library/library-get-local-source-module
+                                      child :js 'demo.module)))]))
+              :expected [true true true]}])
+
 ^{:refer lang.core.library/library-find-module}
 (Test/check [{:name "finds one source module in the selected Library snapshot"
               :test (fn [] (let [value (temporary-library)
@@ -342,9 +367,80 @@
                                (finally (library/library-restore! value before)))))
               :expected [[] []]}])
 
+^{:refer lang.core.library/namespace-library}
+(Test/check [{:name "does not create a namespace Library during lookup"
+              :test (fn [] (with-namespace-libraries
+                             (fn [] (library/namespace-library 'demo.source))))
+              :expected nil}])
+
+^{:refer lang.core.library/namespace-library-register!}
+(Test/check [{:name "selects a supplied child Library for its namespace"
+              :test (fn [] (with-namespace-libraries
+                             (fn [] (let [current (temporary-library)]
+                                      [(= current (library/namespace-library-register!
+                                                  'demo.source current))
+                                       (= current (library/namespace-library 'demo.source))]))))
+              :expected [true true]}])
+
+^{:refer lang.core.library/namespace-library-remove!}
+(Test/check [{:name "removes and returns one namespace child Library"
+              :test (fn [] (with-namespace-libraries
+                             (fn [] (let [current (temporary-library)]
+                                      (library/namespace-library-register! 'demo.source current)
+                                      [(= current (library/namespace-library-remove! 'demo.source))
+                                       (library/namespace-library 'demo.source)]))))
+              :expected [true nil]}])
+
+^{:refer lang.core.library/namespace-library-snapshot}
+(Test/check [{:name "captures selected child Libraries without copying them"
+              :test (fn [] (with-namespace-libraries
+                             (fn [] (let [current (temporary-library)]
+                                      (library/namespace-library-register! 'demo.source current)
+                                      (= current (get (library/namespace-library-snapshot)
+                                                      'demo.source))))))
+              :expected true}])
+
+^{:refer lang.core.library/namespace-library-restore!}
+(Test/check [{:name "restores a prior namespace child-Library snapshot"
+              :test (fn [] (with-namespace-libraries
+                             (fn [] (let [first (temporary-library)
+                                          second (temporary-library)]
+                                      (library/namespace-library-register! 'demo.source first)
+                                      (let [snapshot (library/namespace-library-snapshot)]
+                                        (library/namespace-library-register! 'demo.source second)
+                                        [(= first (get (library/namespace-library-restore! snapshot)
+                                                       'demo.source))
+                                         (= first (library/namespace-library 'demo.source))])))))
+              :expected [true true]}])
+
+^{:refer lang.core.library/namespace-library-reset!}
+(Test/check [{:name "clears selected child Libraries idempotently"
+              :test (fn [] (with-namespace-libraries
+                             (fn [] (library/namespace-library-register!
+                                     'demo.source (temporary-library))
+                                    [(library/namespace-library-reset!)
+                                     (library/namespace-library-reset!)])))
+              :expected [{} {}]}])
+
+^{:refer lang.core.library/with:namespace-library}
+(Test/check [{:name "binds the selected namespace child Library for registration"
+              :test (fn [] (with-namespace-libraries
+                             (fn [] (let [current (temporary-library)]
+                                      (library/namespace-library-register! 'demo.source current)
+                                      (library/with:namespace-library ['demo.source]
+                                        (= current (library/runtime-library)))))))
+              :expected true}
+             {:name "falls back to the default Library when no namespace is selected"
+              :test (fn [] (with-namespace-libraries
+                             (fn [] (library/with:namespace-library ['demo.source]
+                                      (= (library/default-library)
+                                         (library/runtime-library))))))
+              :expected true}])
+
 ^{:refer lang.core.library/runtime-library}
 (Test/check [{:name "uses the default Library outside an explicit binding"
-              :test (fn [] (= (library/default-library) (library/runtime-library)))
+              :test (fn [] (with-namespace-libraries
+                             (fn [] (= (library/default-library) (library/runtime-library)))))
               :expected true}])
 
 ^{:refer lang.core.library/with:library}

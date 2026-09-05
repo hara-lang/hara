@@ -10,6 +10,13 @@
 
 (def +state+ (atom +defaults+))
 
+(def ^{:dynamic true} *eval-mode* true)
+
+(defn ^{:public true} eval-mode?
+  "Returns whether directly evaluated fact declarations execute immediately."
+  []
+  *eval-mode*)
+
 (defn ^{:public true} state
   "Returns the process-local code.test control state."
   []
@@ -80,10 +87,15 @@
   index, and control state on every exit path. Native Test currently scopes a
   namespace snapshot rather than a host-level Test/with-context binding."
   [options & body]
-  `(let [snapshot# (code.test.context/snapshot)]
-     (try
-       (code.test.context/reset)
-       (code.test.context/configure ~options)
-       ~@body
-       (finally
-         (code.test.context/restore snapshot#)))))
+  `(let [snapshot# (code.test.context/snapshot)
+         options# (or ~options {})]
+     (binding [code.test.context/*eval-mode*
+               (if (has? options# :eval-mode)
+                 (:eval-mode options#)
+                 code.test.context/*eval-mode*)]
+       (try
+         (code.test.context/reset)
+         (code.test.context/configure options#)
+         ~@body
+         (finally
+           (code.test.context/restore snapshot#))))))

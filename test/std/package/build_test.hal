@@ -1,5 +1,6 @@
 (ns std.package.build-test
-  (:require [std.package.build :as build]))
+  (:require [std.package.build :as build]
+            [code.deploy.package :as deploy]))
 
 ^{:refer std.package.build/executable-config}
 (Test/check
@@ -115,7 +116,13 @@
                 (IPromise/finally
                  (Promise/run
                   (fn []
-                    (let [archive (build/build "spec" "target/hara-package-build-test.harp")]
+                    (let [archive (build/build
+                                   {:identity "hara:example/package"
+                                    :version "1.0.0"
+                                    :output "target/hara-package-build-test.harp"
+                                    :files [{:path "payload.txt"
+                                             :bytes (String/encode-utf8 "payload")}]
+                                    :resources {}})]
                       [archive
                        (string? (build/inspect archive))])))
                  (fn []
@@ -142,27 +149,6 @@
              (catch error true)))
    :expected true}])
 
-^{:refer std.package.build/build-specs}
-(Test/check
- [{:name "preserves curated catalogue and conformance payload boundaries"
-   :test (fn []
-           (let [output "/target/hara-specs-curation-test.harp"]
-             (IPromise/then
-              (std.native.File/delete output {:missing-ok? true})
-              (fn [_]
-                (IPromise/finally
-                 (Promise/run
-                  (fn []
-                    (let [archive (build/build-specs "spec" "target/hara-specs-curation-test.harp")
-                          manifest (build/inspect archive)]
-                      [(std.native.String/includes? manifest "content/registry-index.json")
-                       (std.native.String/includes? manifest "content/01-lang/009-halc/draft/conformance/complete.hal")
-                       (std.native.String/includes? manifest "00-unsorted/contrib")
-                       (std.native.String/includes? manifest "99-archive")])))
-                 (fn []
-                   (std.native.File/delete output {:missing-ok? true})))))))
-   :expected [true true false false]}])
-
 ^{:refer std.package.build/read-spec-content}
 (Test/check
  [{:name "reports the unavailable Foundation specification package exactly"
@@ -176,19 +162,6 @@
                   (:package/coordinate (ex-data error))))))
    :expected true}])
 
-^{:refer std.package.build/build-distribution}
-(Test/check
- [{:name "builds the declared native host and primary HARP without a specs companion"
-   :test (fn []
-           (IPromise/then
-            (build/build-distribution)
-            (fn [manifest]
-              (select-keys manifest [:distribution/format :launcher :entry :archive]))))
-   :expected {:distribution/format "hara-distribution/v1"
-              :launcher "hara"
-              :entry 'hara.command/main
-              :archive "lib/hara.harp"}}])
-
 ^{:refer std.package.build/distribute}
 (Test/check
  [{:name "validates companion distribution descriptors at the native package boundary"
@@ -199,42 +172,15 @@
              (catch error true)))
    :expected true}])
 
-^{:refer std.package.build/seal-project}
+^{:refer code.deploy.package/seal-project}
 (Test/check
- [{:name "builds and verifies a one-file executable with its HARP payload"
+ [{:name "keeps the source-owned operation's arity explicit"
    :test (fn []
-           (let [output "/target/hara-sealed/hara"
-                 specs-output "/target/hara-sealed/hara-specs.harp"
-                 primary-output "/target/hara-sealed/hara-primary.harp"]
-             (IPromise/then
-              (std.native.File/delete output {:missing-ok? true})
-              (fn [_]
-                (IPromise/then
-                 (std.native.File/delete specs-output {:missing-ok? true})
-                 (fn [_]
-                   (IPromise/then
-                    (std.native.File/delete primary-output {:missing-ok? true})
-                    (fn [_]
-                      (IPromise/finally
-                       (IPromise/then
-                        (build/seal-project)
-                        (fn [manifest]
-                          (let [inspected (build/inspect-seal "target/hara-sealed/hara")
-                                verified (build/verify-seal "target/hara-sealed/hara")]
-                            [(:executable/format manifest)
-                             (:entry manifest)
-                             (count (:archives manifest))
-                             (:executable/format inspected)
-                             (:executable/format verified)])))
-                       (fn []
-                         (IPromise/then
-                          (std.native.File/delete output {:missing-ok? true})
-                          (fn [_]
-                            (IPromise/then
-                             (std.native.File/delete specs-output {:missing-ok? true})
-                             (fn [_]
-                               (std.native.File/delete primary-output {:missing-ok? true})))))))))))))))
-   :expected ["hara-executable/v1" 'hara.command/main 2 "hara-executable/v1" "hara-executable/v1"]}])
+           (try
+             (deploy/seal-project true)
+             false
+             (catch error true)))
+   :expected true}])
 
 ^{:refer std.package.build/inspect-seal}
 (Test/check

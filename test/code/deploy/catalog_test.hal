@@ -149,6 +149,10 @@
                                          (:deploy/unowned-namespaces plan)))
               :core/context (:package/context-dependencies (get packages "hara/lang.core"))
               :legacy/model? (has? packages "hara/lang.model")
+              :generic/project? (has? (set (:package/namespaces (get packages "hara/std.package")))
+                                      'std.package.project)
+              :deploy/project? (has? (set (:package/namespaces (get packages "hara/code.deploy")))
+                                    'std.package.project)
               :xtalk/fn-js? (has? (set (:package/namespaces (get packages "hara/lang.model.xtalk")))
                                   'lang.model.v1.spec-xtalk.fn-js)
               :js/fn-js? (has? (set (:package/namespaces (get packages "hara/lang.model.js")))
@@ -158,6 +162,8 @@
    :expected {:lang/unowned []
               :core/context []
               :legacy/model? false
+              :generic/project? false
+              :deploy/project? true
               :xtalk/fn-js? false
               :js/fn-js? true
               :go/fn-go? true}}])
@@ -416,7 +422,7 @@
 ^{:refer code.deploy.catalog/plan}
 (Test/check
  [{:name "merges explicit and inferred package edges into a deterministic plan"
-   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "hara-deploy-plan-"}))]
+   :test (fn [] (let [root (deref (File/temp-directory "test-temp" {:prefix "hara-deploy-plan-"}))]
                   (try
                     (deref (File/write (File/join root "project.edn")
                                         (String/encode-utf8 "{:project/version \"1.2.3\" :project/source-paths [\"src\"] :project/source-files [\"src/demo/base.hal\" \"src/demo/app.hal\"] :project/deploy {:catalog \"config/packages.edn\"}}")
@@ -430,14 +436,17 @@
                     (deref (File/write (File/join root "src/demo/app.hal")
                                         (String/encode-utf8 "(ns demo.app (:require [demo.base]))")
                                         {:mode :replace :parents? true}))
-                    (mapv
-                     (fn [package]
-                       (select-keys package [:package/name
-                                             :package/coordinate
-                                             :package/version
-                                             :package/internal-dependencies
-                                             :package/external-dependencies]))
-                     (:deploy/packages (catalog/plan root)))
+                    (let [plan
+                          (mapv
+                           (fn [package]
+                             (select-keys package [:package/name
+                                                   :package/coordinate
+                                                   :package/version
+                                                   :package/internal-dependencies
+                                                   :package/external-dependencies]))
+                           (:deploy/packages (catalog/plan root)))]
+                      [(str/includes? (str root) "test-temp/")
+                       plan])
                     (finally
                       (clean-root root ["src/demo/app.hal"
                                         "src/demo/base.hal"
@@ -450,13 +459,14 @@
                                         ".hara/code/framework"
                                         ".hara/code"
                                         ".hara"])))))
-   :expected [{:package/name "hara/app"
-               :package/coordinate "hara:hara/app"
-               :package/version "1.2.3"
-               :package/internal-dependencies ["hara/base"]
-               :package/external-dependencies ["hara:external/http"]}
-              {:package/name "hara/base"
-               :package/coordinate "hara:hara/base"
-               :package/version "1.2.3"
-               :package/internal-dependencies []
-               :package/external-dependencies []}]}])
+   :expected [true
+              [{:package/name "hara/app"
+                :package/coordinate "hara:hara/app"
+                :package/version "1.2.3"
+                :package/internal-dependencies ["hara/base"]
+                :package/external-dependencies ["hara:external/http"]}
+               {:package/name "hara/base"
+                :package/coordinate "hara:hara/base"
+                :package/version "1.2.3"
+                :package/internal-dependencies []
+                :package/external-dependencies []}]]}])

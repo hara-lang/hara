@@ -1,0 +1,80 @@
+(ns lang.model.v1.spec-js.jsx-test
+  (:use code.test)
+  (:require [lang.common.emit :as emit]
+            [lang.model.v1.spec-js :as js]
+            [lang.model.v1.spec-js.jsx :as jsx]))
+
+^{:refer lang.model.v1.spec-js.jsx/jsx-key-fn}
+(fact "converts Foundation JSX keys to camel case"
+  [(jsx/jsx-key-fn :class-name)
+   (jsx/jsx-key-fn 'already)]
+  => [:className 'already])
+
+^{:refer lang.model.v1.spec-js.jsx/jsx-arr-prep}
+(fact "preserves ordinary JSX arrays and expands fragment tags"
+  [(jsx/jsx-arr-prep [:div {:className 'a}] js/+grammar+ {})
+   (jsx/jsx-arr-prep [:<> [:p "hello"]] js/+grammar+ {})]
+  => [[:div {:className 'a}]
+      [:React.Fragment [:p "hello"]]])
+
+^{:refer lang.model.v1.spec-js.jsx/jsx-standardise-params}
+(fact "normalizes class aliases into JavaScript className values"
+  [(jsx/jsx-standardise-params {:class ["hello" "world"]})
+   (jsx/jsx-standardise-params {:className "ready"})]
+  => [{:className "hello world"} {:className "ready"}])
+
+^{:refer lang.model.v1.spec-js.jsx/jsx-arr-norm}
+(fact "normalizes JSX tags parameters and children"
+  [(jsx/jsx-arr-norm [:div])
+   (jsx/jsx-arr-norm [:div {:class "hero"} "hello"])]
+  => [[:div {} []]
+      [:div {:className "hero"} ["hello"]]])
+
+^{:refer lang.model.v1.spec-js.jsx/emit-jsx-map-params}
+(fact "emits JSX map attributes with JavaScript expression values"
+  (emit/with:emit
+   (jsx/emit-jsx-map-params {:a 'value :b "abc"} js/+grammar+ {}))
+  => ["a={value}" "b=\"abc\""])
+
+^{:refer lang.model.v1.spec-js.jsx/emit-jsx-set-params}
+(fact "emits packed JSX symbol and spread attributes"
+  (emit/with:emit
+   (jsx/emit-jsx-set-params #{[ 'a 'b '(:.. props)]} js/+grammar+ {}))
+  => [["a={a}" "b={b}"] "{...props}"])
+
+^{:refer lang.model.v1.spec-js.jsx/emit-jsx-params}
+(fact "joins JSX attributes into an inline parameter segment"
+  (emit/with:emit
+   (jsx/emit-jsx-params {:a 1 :b 2} js/+grammar+ {}))
+  => [" " "a={1} b={2}"])
+
+^{:refer lang.model.v1.spec-js.jsx/emit-jsx-inner}
+(fact "emits nested JSX children"
+  (emit/with:emit
+   (jsx/emit-jsx-inner [:div {:className 'a} [:p "hello"]] js/+grammar+ {}))
+  => "<div className={a}><p>hello</p></div>")
+
+^{:refer lang.model.v1.spec-js.jsx/emit-jsx-raw}
+(fact "wraps the Foundation JSX body in the JavaScript expression layout"
+  (emit/with:emit
+   (jsx/emit-jsx-raw [:div {:className 'a} [:p "hello"]] js/+grammar+ {}))
+  => "(\n  <div className={a}><p>hello</p></div>)")
+
+^{:refer lang.model.v1.spec-js.jsx/jsx-react-form}
+(fact "converts a JSX element into React.createElement data"
+  (jsx/jsx-react-form [:div {:class "hero"} [:p "hello"]])
+  => '(React.createElement "div" {"className" "hero"}
+                        (React.createElement "p" {} "hello")))
+
+^{:refer lang.model.v1.spec-js.jsx/jsx-react-output}
+(fact "emits React.createElement output without re-entering JSX vector emission"
+  (jsx/jsx-react-output [:div {:class "hero"} [:p "hello"]] js/+grammar+ {})
+  => "React.createElement(\"div\",{\"className\":\"hero\"},React.createElement(\"p\",{},\"hello\"))")
+
+^{:refer lang.model.v1.spec-js.jsx/emit-jsx}
+(fact "selects raw JSX or React.createElement emission from compiler options"
+  (emit/with:emit
+   [(jsx/emit-jsx [:div "hello"] js/+grammar+ {})
+    (jsx/emit-jsx [:div "hello"] js/+grammar+ {:emit {:lang/jsx false}})])
+  => ["(\n  <div>hello</div>)"
+      "React.createElement(\"div\",{},\"hello\")"])

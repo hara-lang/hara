@@ -120,6 +120,19 @@
       (catch err
         (return (-/internal-settle-action child "rejected" err drive-fn))))))
 
+(defn.xt internal-run-thunk
+  "runs a promise thunk and settles its wrapper"
+  {:added "4.1"}
+  [out thunk]
+  (try
+    (return
+     (-/internal-adopt-action out
+                              (xt/x:apply thunk [])
+                              -/internal-drive-action))
+    (catch err
+      (return
+       (-/internal-settle-action out "rejected" err -/internal-drive-action)))))
+
 (defn.xt ^{:schema [:fn [[:xt/fn]] :xt/promise]} promise
   "wraps thunk execution in the common xt.promise model"
   {:added "4.1"}
@@ -131,12 +144,8 @@
      "is_async"
      (xt/x:async-run
       (fn []
-        (try
-         (return (-/internal-adopt-action out
-                                          (xt/x:apply thunk [])
-                                          -/internal-drive-action))
-         (catch err
-           (return (-/internal-settle-action out "rejected" err -/internal-drive-action)))))))
+        (return
+         (-/internal-run-thunk out thunk)))))
     (return out)
     (catch err
         (return (-/make-rejected-state err)))))
@@ -204,6 +213,16 @@
      (fn [_]
        (return out)))))
 
+(defn.xt internal-delay-thunk
+  "runs a delayed thunk in a named target function"
+  {:added "4.1"}
+  [ms thunk]
+  (var start (xt/x:now-ms))
+  (while (< (- (xt/x:now-ms) start) ms)
+    (:= start start))
+  (return
+   (xt/x:apply thunk [])))
+
 (defn.xt ^{:schema [:fn [:xt/int [:xt/fn]] :xt/promise]} with-delay
   "delays thunk execution inside the common xt.promise model"
   {:added "4.1"}
@@ -211,10 +230,8 @@
   (return
    (-/promise
     (fn []
-      (var start (xt/x:now-ms))
-      (while (< (- (xt/x:now-ms) start) ms)
-        (:= start start))
-      (return (xt/x:apply thunk []))))))
+      (return
+       (-/internal-delay-thunk ms thunk))))))
 
 (defn.xt ^{:schema [:fn [:xt/promise [:xt/fn]] :xt/promise]} promise-finally
   "runs a finalizer and preserves the original settlement unless cleanup fails"

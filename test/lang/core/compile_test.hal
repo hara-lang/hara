@@ -1,8 +1,10 @@
 (ns lang.core.compile-test
+  (:use code.test)
   (:require [lang.core.compile :as compile]
             [lang.core.library :as library]
             [lang.core.registry :as registry]
-            [lang.core.script :as script]))
+            [lang.core.script :as script]
+            [lang.model.v1.spec-js.meta :as js-meta]))
 
 (defn isolated
   [function]
@@ -47,6 +49,26 @@
   [options]
   (binding [compile/*entry-compiler* fixture-compiler]
     (compile/compile-module options)))
+
+^{:refer lang.core.compile/compile-entry-safe}
+(Test/check
+ [{:name "passes the graph key as module identity when source metadata omits it"
+   :test (fn []
+           (let [module (dissoc
+                         (fixture-module 'demo.self []
+                                         {'self (fixture-entry 'self "BODY" [] 0 1)}
+                                         {})
+                         :id)
+                 entry (assoc (get-in module [:code 'self])
+                              :id 'self :module 'demo.self)]
+             (binding [compile/*entry-compiler*
+                       (fn [_ _ current _]
+                         {:output (str (:id current))
+                          :dependencies {:code #{} :fragment #{} :native #{}}
+                          :diagnostics [] :provenance {}})]
+               (get-in (compile/compile-entry-safe {} {'demo.self module} entry)
+                       [:item :output]))))
+   :expected "demo.self"}])
 
 ^{:refer lang.core.compile/diagnostic}
 (Test/check [{:name "creates stable diagnostic data"
@@ -271,6 +293,13 @@
                              {:emit {:code {:transforms {:entry ['fixture/append]}}}}))
               :expected ['fixture/append]}])
 
+^{:refer lang.core.compile/module-entry-transforms}
+(Test/check [{:name "falls back to the language BookMeta entry transforms"
+              :test (fn [] (compile/module-entry-transforms
+                             {}
+                             {:book {:meta {:transforms {:entry ['fixture/append]}}}}))
+              :expected ['fixture/append]}])
+
 ^{:refer lang.core.compile/resolve-entry-transform}
 (Test/check [{:name "resolves a linked transform function"
               :test (fn [] (let [transform (compile/resolve-entry-transform
@@ -291,6 +320,18 @@
                              {:id 'entry}
                              {:entry {:id 'hydrated} :grammar {:grammar {:reserved {}}}}))
               :expected "BODY::hydrated"}])
+
+^{:refer lang.core.compile/apply-entry-transforms}
+(fact "applies JavaScript BookMeta transforms when no module override is present"
+  (compile/apply-entry-transforms
+   "const answer = 42"
+   {:lang :js :book {:meta js-meta/+meta+}}
+   {'demo.main {:id 'demo.main}}
+   {:id 'demo.main}
+   {:id 'answer :op-key :defn}
+   {:entry {:id 'answer :op-key :defn}
+    :grammar {:grammar {:reserved {}}}})
+  => "export const answer = 42")
 
 ^{:refer lang.core.compile/compile-entry-safe}
 (Test/check [{:name "retains failed entries as diagnostics"
@@ -416,3 +457,131 @@
                    (compile/compile-module
                     {:lang :postgres :main 'demo.main :book book})))))))
    :expected "-- setup-demo.main\n\n-- native-dependency\n\nBODY\n\n-- export-demo.main"}])
+
+^{:refer lang.core.compile/compile-module}
+(fact "compile-module loads the historical graph and emits every entry deterministically"
+  (isolated
+   (fn []
+     (let [modules
+           {'demo.base
+            (fixture-module
+             'demo.base
+             [(vector 'demo.dep :as 'dep)]
+             {'a (fixture-entry 'a "CREATE A;" ['demo.dep/z] 10 20)
+              'b (fixture-entry 'b "CREATE B;" ['demo.dep/z] 1 30)}
+             {:base {:version 1}})
+            'demo.dep
+            (fixture-module
+             'demo.dep
+             []
+             {'z (fixture-entry 'z "CREATE Z;" [] 0 10)}
+             {:dependency {:version 1}})}
+           _ (register-fixture-modules modules)
+           options {:lang :postgres
+                    :main 'demo.base
+                    :layout :module
+                    :emit {:code {:label true}}}
+           compiled
+           (binding [compile/*entry-compiler* fixture-compiler]
+             [(compile/compile-module options)
+              (compile/compile-module options)])
+           first-result (first compiled)
+           second-result (second compiled)]
+       [(= first-result second-result)
+        (vec (map :id (:modules first-result)))
+        (get-in first-result [:provenance :entry-order])
+        (:output first-result)
+        (vec (map :code (:diagnostics first-result)))])))
+  => [true
+      ['demo.dep 'demo.base]
+      ['demo.dep/z 'demo.base/b 'demo.base/a]
+      (str "-- demo.dep/z\nCREATE Z;\n\n"
+           "-- demo.base/b\nCREATE B;\n\n"
+           "-- demo.base/a\nCREATE A;")
+      []])
+
+^{:refer lang.core.compile/compile-module}
+(fact "missing historical code dependencies produce a stable diagnostic"
+  (isolated
+   (fn []
+     (let [modules
+           {'demo.root
+            (fixture-module
+             'demo.root
+             []
+             {'a (fixture-entry 'a "A" ['demo.root/missing] 0 1)}
+             {})}
+           _ (register-fixture-modules modules)
+           result (compile-fixture {:lang :postgres :main 'demo.root :layout :module})]
+       [(vec (map :code (:diagnostics result)))
+        (get-in result [:diagnostics 0 :data])])))
+  => [[:lang/missing-entry]
+      {:entry 'demo.root/a :dependency 'demo.root/missing}])
+
+^{:refer lang.core.compile/compile-module}
+(fact "historical module dependency cycles are deterministic and non-destructive"
+  (isolated
+   (fn []
+     (let [modules
+           {'demo.a (fixture-module 'demo.a ['demo.b]
+                                    {'a (fixture-entry 'a "A" [] 0 1)} {})
+            'demo.b (fixture-module 'demo.b ['demo.a]
+                                    {'b (fixture-entry 'b "B" [] 0 1)} {})}
+           _ (register-fixture-modules modules)
+           result (compile-fixture {:lang :postgres :main 'demo.a :layout :module})]
+       [(get-in result [:provenance :module-order])
+        (vec (map :code (:diagnostics result)))
+        (get-in result [:diagnostics 0 :data :modules])])))
+  => [['demo.a 'demo.b]
+      [:lang/module-cycle]
+      ['demo.a 'demo.b]])
+
+^{:refer lang.core.compile/compile-module}
+(fact "historical conflicting schema definitions name both modules"
+  (isolated
+   (fn []
+     (let [modules
+           {'demo.base (fixture-module 'demo.base ['demo.dep]
+                                       {'base (fixture-entry 'base "BASE" [] 0 1)}
+                                       {:ledger {:version 2}})
+            'demo.dep (fixture-module 'demo.dep []
+                                      {'dep (fixture-entry 'dep "DEP" [] 0 1)}
+                                      {:ledger {:version 1}})}
+           _ (register-fixture-modules modules)
+           result (compile-fixture {:lang :postgres :main 'demo.base :layout :module})]
+       [(vec (map :code (:diagnostics result)))
+        (get-in result [:diagnostics 0 :data])])))
+  => [[:lang/conflicting-schema]
+      {:schema :ledger :module 'demo.base :previous-module 'demo.dep}])
+
+^{:refer lang.core.compile/compile-module}
+(fact "historical entry dependency cycles retain stable ordering and diagnostics"
+  (isolated
+   (fn []
+     (let [modules
+           {'demo.root (fixture-module 'demo.root []
+                                       {'a (fixture-entry 'a "A" ['demo.root/b] 2 20)
+                                        'b (fixture-entry 'b "B" ['demo.root/a] 1 10)}
+                                       {})}
+           _ (register-fixture-modules modules)
+           result (compile-fixture {:lang :postgres :main 'demo.root :layout :module})]
+       [(get-in result [:provenance :entry-order])
+        (vec (map :code (:diagnostics result)))
+        (get-in result [:diagnostics 0 :data :entries])])))
+  => [['demo.root/a 'demo.root/b]
+      [:lang/entry-cycle]
+      ['demo.root/a 'demo.root/b]])
+
+^{:refer lang.core.compile/compile-module}
+(fact "historical unsupported entries stay represented and do not write output"
+  (isolated
+   (fn []
+     (let [bad-entry (assoc (fixture-entry 'bad "BAD" [] 0 1) :fixture/error true)
+           modules {'demo.root (fixture-module 'demo.root [] {'bad bad-entry} {})}
+           _ (register-fixture-modules modules)
+           result (compile-fixture {:lang :postgres :main 'demo.root :layout :module})]
+       [(:output result)
+        (vec (map :symbol (:entries result)))
+        (vec (map :output (:entries result)))
+        (vec (map :code (:diagnostics result)))])))
+  => ["" ['demo.root/bad] [nil] [:lang/unsupported-form]])

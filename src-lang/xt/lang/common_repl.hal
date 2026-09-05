@@ -5,28 +5,34 @@
 (l/script :xtalk
   {:require [[xt.lang.spec-base :as xt]
              [xt.lang.spec-link :as xt-link]
-             [xt.lang.spec-promise :as promise]
+             [xt.lang.spec-promise :as xtp]
              [xt.lang.common-lib :as xt-lib]]})
 
 (defn.xt notify-with-promise
   "promise-compatible socket notification"
   {:added "4.1"}
   [notify-fn host port value id key opts]
-  (if (not (promise/x:promise-native? value))
-    (return
-     (notify-fn host port value id key opts))
-    (-> value
-        (promise/x:promise-then
-         (fn [out]
-           (return
-            (-/notify-with-promise notify-fn host port out id key opts))))
-        (promise/x:promise-catch
-         (fn [err]
-           (var out (:? (xt/x:ex-message err)
-                        (xt/x:ex-message err)
-                        err))
-           (return
-            (notify-fn host port out id key opts)))))))
+  (var result)
+  (if (not (xtp/x:promise-native? value))
+    (:= result (notify-fn host port value id key opts))
+    (:= result
+        (-> value
+            (xtp/x:promise-then
+             (fn [out]
+               (return
+                (notify-fn host port out id key opts))))
+            (xtp/x:promise-catch
+             (fn [err]
+               (return
+                (notify-fn host
+                           port
+                           (:? (xt/x:ex-message err)
+                               (xt/x:ex-message err)
+                               err)
+                           id
+                           key
+                           opts)))))))
+  (return result))
 
 ;;
 ;; SOCKET

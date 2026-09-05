@@ -1,0 +1,87 @@
+(ns lang.model.v1.spec-js.qml-test
+  (:use code.test)
+  (:require [lang.common.emit :as emit]
+            [lang.model.v1.spec-js :as js]
+            [lang.model.v1.spec-js.qml :as qml]))
+
+^{:refer lang.model.v1.spec-js.qml/qml-props?}
+(fact "ports Foundation QML property shapes"
+  [(qml/qml-props? #{[:hello 1]})
+   (qml/qml-props? {:a 1 :b 2})
+   (qml/qml-props? [])]
+  => [true true false])
+
+^{:refer lang.model.v1.spec-js.qml/qml-container?}
+(fact "recognizes namespaced QML container forms"
+  [(qml/qml-container? [:qml/Item #{}])
+   (qml/qml-container? 1)]
+  => [true false])
+
+^{:refer lang.model.v1.spec-js.qml/classify-props}
+(fact "classifies Foundation QML property pairs"
+  (qml/classify-props #{[:a 1 :b [:qml/Item]]} qml/classify)
+  => [[:a {:type :qml/value :value 1}]
+      [:b {:type :qml/container :title "Item" :props [] :children []}]])
+
+^{:refer lang.model.v1.spec-js.qml/classify-container}
+(fact "classifies a QML container with properties and children"
+  (qml/classify-container
+   [:qml/Window #{[:a 1 :b [:qml/Item]]}
+    '(fn hello [] (+ 1 2))]
+   qml/classify)
+  => '{:type :qml/container
+       :title "Window"
+       :props [[:a {:type :qml/value :value 1}]
+               [:b {:type :qml/container :title "Item" :props [] :children []}]]
+       :children [{:type :qml/value :value (fn hello [] (+ 1 2))}]})
+
+^{:refer lang.model.v1.spec-js.qml/classify}
+(fact "recursively classifies Foundation QML trees"
+  (let [tree (qml/classify [:qml/Item {:width (symbol "bg.width")}
+                            [:qml/Image {:id (symbol "bg")
+                                         :source "assets/background.png"}]])
+        child (first (:children tree))]
+    [(:type tree)
+     (:title tree)
+     (into {} (:props tree))
+     (:type child)
+     (:title child)
+     (into {} (:props child))
+     (:children child)])
+  => [:qml/container
+      "Item"
+      {:width {:type :qml/value :value (symbol "bg.width")}}
+      :qml/container
+      "Image"
+      {:id {:type :qml/value :value (symbol "bg")}
+       :source {:type :qml/value :value "assets/background.png"}}
+      []])
+
+^{:refer lang.model.v1.spec-js.qml/emit-value}
+(fact "emits ordinary QML values through the selected JavaScript grammar"
+  (emit/with:emit
+   (qml/emit-value {:type :qml/value :value 1} js/+grammar+ {}))
+  => "1")
+
+^{:refer lang.model.v1.spec-js.qml/emit-container}
+(fact "emits a QML container with stable indentation"
+  (emit/with:emit
+   (qml/emit-container {:type :qml/container
+                        :title "Item"
+                        :props [[:width {:type :qml/value :value 1}]]
+                        :children []}
+                       js/+grammar+
+                       {}))
+  => "Item {\n  width: 1\n}")
+
+^{:refer lang.model.v1.spec-js.qml/emit-node}
+(fact "emits a classified QML node"
+  (emit/with:emit
+   (qml/emit-node {:type :qml/value :value 1} js/+grammar+ {}))
+  => "1")
+
+^{:refer lang.model.v1.spec-js.qml/emit-qml}
+(fact "round-trips a QML tree through classification and emission"
+  (emit/with:emit
+   (qml/emit-qml [:qml/Item {:width 1}] js/+grammar+ {}))
+  => "Item {\n  width: 1\n}")

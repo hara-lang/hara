@@ -1,0 +1,75 @@
+(ns lang.core.rewrite.fn-test
+  (:use code.test)
+  (:require [lang.core.rewrite.fn :as subject]))
+
+^{:refer lang.core.rewrite.fn/do-form?}
+(fact "identifies do and do* forms"
+  [(subject/do-form? '(do 1))
+   (subject/do-form? '(do* 1))
+   (subject/do-form? '(fn [value] value))
+   (subject/do-form? 1)]
+  => ['do 'do* nil false])
+
+^{:refer lang.core.rewrite.fn/fn-form?}
+(fact "identifies anonymous and named functions"
+  [(subject/fn-form? '(fn [value] value))
+   (subject/fn-form? '(fn named [value] value))
+   (subject/fn-form? '(do 1))]
+  => [true true false])
+
+^{:refer lang.core.rewrite.fn/fn-parts}
+(fact "splits function names, arguments, and bodies without losing the tail"
+  [(subject/fn-parts '(fn [value] (return value)))
+   (subject/fn-parts '(fn named [value] (return value)))]
+  => [[nil '[value] '((return value))]
+      '[named [value] ((return value))]])
+
+^{:refer lang.core.rewrite.fn/splice-do*}
+(fact "splices nested do* bodies into their parent body"
+  (subject/splice-do* '[(do* 1 2) 3])
+  => '(1 2 3))
+
+^{:refer lang.core.rewrite.fn/wrap-body}
+(fact "wraps only multi-form function bodies"
+  [(subject/wrap-body [])
+   (subject/wrap-body '[(return value)])
+   (subject/wrap-body '[(step value) (return value)])]
+  => [[]
+      '((return value))
+      '((do (step value) (return value)))])
+
+^{:refer lang.core.rewrite.fn/rewrite-fn-form}
+(fact "rewrites a function body with the supplied preparation"
+  (subject/rewrite-fn-form
+   '(fn named [value] (step value) (return value))
+   identity
+   {:prepare-body reverse})
+  => '(fn named [value] (do (return value) (step value))))
+
+^{:refer lang.core.rewrite.fn/rewrite-fn-body}
+(fact "rewrites multi-form function bodies through the common owner"
+  (subject/rewrite-fn-body
+   '(fn [value] (step value) (return value))
+   identity)
+  => '(fn [value] (do (step value) (return value))))
+
+^{:refer lang.core.rewrite.fn/normalize-fn}
+(fact "removes a lifted function name while retaining its body"
+  (subject/normalize-fn
+   '(fn named [value] (return value))
+   identity)
+  => '(fn [value] (return value)))
+
+^{:refer lang.core.rewrite.fn/lambda-compatible?}
+(fact "accepts only anonymous single-expression functions"
+  [(subject/lambda-compatible? '(fn [value] (return value)))
+   (subject/lambda-compatible? '(fn named [value] (return value)))
+   (subject/lambda-compatible? '(fn [value] (do (step value) (return value))))]
+  => [true false false])
+
+^{:refer lang.core.rewrite.fn/lift-named-lambda}
+(fact "lifts named lambdas into a preceding var binding"
+  (subject/lift-named-lambda
+   '(fn named [value] (return value))
+   identity)
+  => '[[(var named (fn [value] (return value)))] named])

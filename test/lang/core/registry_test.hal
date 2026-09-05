@@ -1,7 +1,8 @@
 (ns lang.core.registry-test
+  (:use code.test)
   (:require [lang.common.book :as book]
-            [lang.core.registry :as registry]
-            [lang.model.v1.spec-xtalk :as spec-xtalk]))
+            [lang.common.registry :as catalog]
+            [lang.core.registry :as registry]))
 
 (defn isolated
   [function]
@@ -14,6 +15,96 @@
       (finally
         (registry/registry-restore! before)
         (reset! registry/+book-image-registry+ image-before)))))
+
+^{:refer lang.core.registry/registry-snapshot}
+(fact "the registry declaration leaves grammar and Book images unmaterialized"
+  (isolated
+   (fn []
+     [(:grammars (registry/registry-snapshot))
+      (deref registry/+book-image-registry+)]))
+  => [nil {}])
+
+^{:refer lang.core.registry/registry-grammar-list}
+(fact "an exact grammar query loads only its selected model specification"
+  (isolated
+   (fn []
+     (let [sources (registry/registry-grammar-list {:source/id :c :source/kind :grammar})]
+       [(mapv (fn [source] (:source/id source)) sources)
+        (mapv (fn [grammar-id]
+                (catalog/versions (deref registry/+grammar-registry+) grammar-id))
+              [:xtalk :hara :postgres :c :js :py :lua :go])])))
+  => [[:c] [[1] [] [] [1] [] [] [] []]])
+
+^{:refer lang.core.registry/registry-grammar-load}
+(fact "grammar loading is idempotent through the lazy registry"
+  (isolated
+   (fn []
+     (let [first-catalog (registry/registry-grammar-load :c)
+           second-catalog (registry/registry-grammar-load :c)]
+       [(= first-catalog second-catalog)
+        (registry/registry-grammar-versions :c)])))
+  => [true [1]])
+
+^{:refer lang.core.registry/registry-grammar}
+(fact "grammar resolution is independent and exactly versioned"
+  (isolated
+   (fn []
+     (let [selection (registry/registry-grammar :c 1)]
+       [(:coordinate selection)
+        (registry/registry-grammar-versions :c)])))
+  => [{:grammar/release "foundation-v1"
+       :grammar/version 1
+       :grammar/id :c
+       :grammar/facets []}
+      [1]])
+
+^{:refer lang.core.registry/registry-grammar-list}
+(fact "the current source grammar set includes every target-owned grammar"
+  (isolated
+   (fn []
+     (set (map (fn [source] (:source/id source))
+               (registry/registry-grammar-list {:source/kind :grammar})))))
+  => #{:xtalk :hara :postgres :c :js :py :lua :go})
+
+^{:refer lang.core.registry/registry-book}
+(fact "language books remain immutable values pinned to supported grammar coordinates"
+  (isolated
+   (fn []
+     (mapv (fn [language]
+             (let [value (registry/registry-book language)]
+               [language (book/book? value) (:grammar-coordinate value)]))
+           [:xtalk :hara :js :python :lua :postgres :c :go])))
+  => [[:xtalk true {:grammar/release "foundation-v1" :grammar/version 1 :grammar/id :xtalk :grammar/facets []}]
+      [:hara true {:grammar/release "hara-v1" :grammar/version 1 :grammar/id :hara :grammar/facets []}]
+      [:js true {:grammar/release "alpha" :grammar/version 1 :grammar/id :js :grammar/facets []}]
+      [:python true {:grammar/release "alpha" :grammar/version 1 :grammar/id :py :grammar/facets []}]
+      [:lua true {:grammar/release "alpha" :grammar/version 1 :grammar/id :lua :grammar/facets []}]
+      [:postgres true {:grammar/release "alpha" :grammar/version 1 :grammar/id :postgres :grammar/facets []}]
+      [:c true {:grammar/release "foundation-v1" :grammar/version 1 :grammar/id :c :grammar/facets []}]
+      [:go true {:grammar/release "alpha" :grammar/version 1 :grammar/id :go :grammar/facets []}]])
+
+^{:refer lang.core.registry/registry-book}
+(fact "caches a dynamically loaded Book as an image for later registry lookups"
+  (isolated
+   (fn []
+     (let [value (registry/registry-book :js)
+           cached (get (deref registry/+book-image-registry+)
+                       [:js :default 1])]
+       [(book/book? cached)
+        (= (:grammar-coordinate value) (:grammar-coordinate cached))
+        (= value cached)])))
+  => [true true true])
+
+^{:refer lang.core.registry/registry-book}
+(fact "target books retain their explicit source provenance"
+  (isolated
+   (fn []
+     (mapv (fn [language]
+             [language (:provenance (:selection (registry/registry-book language)))])
+           [:js :python :lua])))
+  => [[:js [[:emit-template :js 1] [:profile :js 1] [:grammar :js 1]]]
+      [:python [[:emit-template :py 1] [:profile :py 1] [:grammar :py 1]]]
+      [:lua [[:emit-template :lua 1] [:profile :lua 1] [:grammar :lua 1]]]])
 
 ^{:refer lang.core.registry-test/isolated}
 (Test/check
@@ -85,8 +176,12 @@
 ^{:refer lang.core.registry/registry-namespace-loaded?}
 (Test/check
  [{:name "distinguishes loaded sources from unknown namespaces"
-   :test (fn [] [(registry/registry-namespace-loaded? 'lang.model.v1.spec-xtalk)
-                 (registry/registry-namespace-loaded? 'fixture.absent)])
+   :test (fn []
+           (isolated
+            (fn []
+              (registry/registry-grammar-load :xtalk)
+              [(registry/registry-namespace-loaded? 'lang.model.v1.spec-xtalk)
+               (registry/registry-namespace-loaded? 'fixture.absent)])))
    :expected [true false]}])
 
 ^{:refer lang.core.registry/registry-list}
@@ -127,6 +222,7 @@
    :test (fn []
            (isolated
             (fn []
+              (registry/registry-grammar-load :xtalk)
               (registry/registry-add :fixture :host 'lang.model.v1.spec-xtalk)
               (registry/registry-runtime :fixture :host))))
    :expected 'lang.model.v1.spec-xtalk}])
@@ -220,8 +316,7 @@
    :test (fn []
            (isolated
             (fn []
-              (let [info {:ns 'lang.model.v1.spec-xtalk
-                          :load (fn [] spec-xtalk/+book+)}]
+              (let [info {:ns 'lang.model.v1.spec-xtalk :book '+book+}]
                 (select-keys (registry/registry-book-add :fixture 1 info)
                              [:language :key :version :ns])))))
    :expected {:language :fixture :key :default :version 1
@@ -233,8 +328,7 @@
    :test (fn []
            (isolated
             (fn []
-              (let [info {:ns 'lang.model.v1.spec-xtalk
-                          :load (fn [] spec-xtalk/+book+)}]
+              (let [info {:ns 'lang.model.v1.spec-xtalk :book '+book+}]
                 (registry/registry-book-add :fixture 1 info)
                 (registry/registry-book-add :fixture 2 info)
                 [(registry/registry-book-set-default :fixture 2)
@@ -247,8 +341,7 @@
    :test (fn []
            (isolated
             (fn []
-              (let [info {:ns 'lang.model.v1.spec-xtalk
-                          :load (fn [] spec-xtalk/+book+)}]
+              (let [info {:ns 'lang.model.v1.spec-xtalk :book '+book+}]
                 (registry/registry-book-add :fixture 1 info)
                 (registry/registry-book-add :fixture 2 info)
                 [(select-keys (registry/registry-book-remove :fixture 1)

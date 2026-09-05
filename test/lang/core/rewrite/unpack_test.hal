@@ -1,0 +1,32 @@
+(ns lang.core.rewrite.unpack-test
+  (:use code.test)
+  (:require [lang.core.rewrite.unpack :as subject]))
+
+^{:refer lang.core.rewrite.unpack/unpack-form?}
+(fact "recognizes an exact unpacking expression"
+  [(subject/unpack-form? '(x:unpack xs))
+   (subject/unpack-form? '(x:unpack))
+   (subject/unpack-form? '(x:unpack xs ys))
+   (subject/unpack-form? '(call xs))
+   (subject/unpack-form? (vector 'x:unpack 'xs))]
+  => [true false false false false])
+
+^{:refer lang.core.rewrite.unpack/any-unpack?}
+(fact "detects any unpacking argument"
+  [(subject/any-unpack? '((x:unpack xs) value))
+   (subject/any-unpack? '(value other))
+   (subject/any-unpack? '())]
+  => [true false false])
+
+^{:refer lang.core.rewrite.unpack/rewrite-arg}
+(fact "routes one rewritten argument to scalar or unpack output"
+  [(subject/rewrite-arg '(x:unpack xs) #(list 'expr %) identity #(list 'spread %))
+   (subject/rewrite-arg 'value #(list 'expr %) #(list 'scalar %) #(list 'spread %))]
+  => '[(spread (expr xs)) (scalar (expr value))])
+
+^{:refer lang.core.rewrite.unpack/rewrite-args}
+(fact "rewrites an argument sequence with its matching wrappers"
+  (vec (subject/rewrite-args
+        '((x:unpack xs) value)
+        #(list 'expr %) #(list 'scalar %) #(list 'spread %)))
+  => '[(spread (expr xs)) (scalar (expr value))])

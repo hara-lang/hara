@@ -1,0 +1,126 @@
+(ns code.deploy.package-test
+  (:require [code.deploy.package :as package]
+            [code.project :as project]))
+
+^{:refer code.deploy.package/check}
+(Test/check
+ [{:name "checks the project declaration in Hara"
+   :test (fn []
+           (select-keys (package/check "spec")
+                        [:identity :version]))
+   :expected {:identity "hara/foundation.specs"
+              :version "0.1.0"}}])
+
+^{:refer code.deploy.package/source-record}
+(Test/check
+ [{:name "records the declared namespace and original source bytes"
+   :test (fn []
+           (let [record (package/source-record
+                         "."
+                         {:project/root "."}
+                         "src/std/package/build.hal")]
+             [(= 'std.package.build (:namespace record))
+              (= (:source record)
+                 (String/decode-utf8 (:bytes record)))]))
+   :expected [true true]}])
+
+^{:refer code.deploy.package/source-records}
+(Test/check
+ [{:name "uses the project source graph for deterministic records"
+   :test (fn []
+           (let [project (project/read-project ".")
+                 records (package/source-records "." project)]
+             [(empty? records)
+              (= 'hara.command (first (map :namespace records)))]))
+   :expected [false true]}])
+
+^{:refer code.deploy.package/artifact-files}
+(Test/check
+ [{:name "copies declared artifact roots as opaque bytes"
+   :test (fn []
+           (let [project (project/read-project "spec")
+                 files (package/artifact-files (project/project-root project) project)
+                 paths (set (map :path files))]
+             [(has? paths "content/registry-index.json")
+              (has? paths "content/provenance.edn")]))
+   :expected [true true]}])
+
+^{:refer code.deploy.package/selected-source-records}
+(Test/check
+ [{:name "keeps the complete graph when no package is selected"
+   :test (fn []
+           (let [records [{:namespace 'demo.one} {:namespace 'demo.two}]]
+             (= records
+                (package/selected-source-records "." {} records nil nil))))
+   :expected true}])
+
+^{:refer code.deploy.package/module-values}
+(Test/check
+ [{:name "exposes only the generic namespace and source module fields"
+   :test (fn []
+           (package/module-values [{:namespace 'demo.core
+                                    :path "src/demo/core.hal"
+                                    :source "(ns demo.core) 42"}]))
+   :expected [{:module/namespace "demo.core"
+               :module/source "(ns demo.core) 42"}]}])
+
+^{:refer code.deploy.package/artifact-spec}
+(Test/check
+ [{:name "prepares an artifact-only specification project without bytecode"
+   :test (fn []
+           (let [spec (package/artifact-spec
+                       "spec"
+                       "target/deploy-package-spec-test.harp")]
+             [(:identity spec)
+              (:version spec)
+              (nil? (:bytecode spec))
+              (has? (set (map :path (:files spec)))
+                    "content/registry-index.json")]))
+   :expected ["hara:hara/foundation.specs" "0.1.0" true true]}])
+
+^{:refer code.deploy.package/build}
+(Test/check
+ [{:name "builds the artifact specification through std.package.build"
+   :test (fn []
+           (let [output "/target/deploy-package-build-test.harp"]
+             (IPromise/then
+              (std.native.File/delete output {:missing-ok? true})
+              (fn [_]
+                (IPromise/finally
+                 (Promise/run
+                  (fn []
+                    (string? (package/build
+                              "spec"
+                              "target/deploy-package-build-test.harp"))))
+                 (fn []
+                   (std.native.File/delete output {:missing-ok? true})))))))
+   :expected true}])
+
+^{:refer code.deploy.package/build-specs}
+(Test/check
+ [{:name "uses the same project planner for specification archives"
+   :test (fn []
+           (string? (package/build-specs
+                     "spec"
+                     "target/deploy-package-specs-test.harp")))
+   :expected true}])
+
+^{:refer code.deploy.package/build-distribution}
+(Test/check
+ [{:name "keeps the source-owned distribution operation's arity explicit"
+   :test (fn []
+           (try
+             (package/build-distribution true)
+             false
+             (catch error true)))
+   :expected true}])
+
+^{:refer code.deploy.package/seal-project}
+(Test/check
+ [{:name "keeps the source-owned sealing operation's arity explicit"
+   :test (fn []
+           (try
+             (package/seal-project true)
+             false
+             (catch error true)))
+   :expected true}])

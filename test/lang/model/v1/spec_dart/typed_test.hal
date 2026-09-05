@@ -1,0 +1,155 @@
+(ns lang.model.v1.spec-dart.typed-test
+  (:use code.test)
+  (:require [lang.core.script :as script]
+            [lang.model.v1.spec-dart.typed :as subject]))
+
+^{:refer lang.model.v1.spec-dart.typed/sanitize-ident}
+(fact "sanitizes Dart identifiers"
+  [(subject/sanitize-ident "hello-world")
+   (subject/sanitize-ident "123hello")]
+  => ["hello_world" "_123hello"])
+
+^{:refer lang.model.v1.spec-dart.typed/lower-camel}
+(fact "converts Dart identifiers to lower camel case"
+  [(subject/lower-camel "display-name")
+   (subject/lower-camel "UserMap")]
+  => ["displayName" "userMap"])
+
+^{:refer lang.model.v1.spec-dart.typed/upper-camel}
+(fact "converts Dart identifiers to upper camel case"
+  [(subject/upper-camel "display-name")
+   (subject/upper-camel "userMap")]
+  => ["DisplayName" "UserMap"])
+
+^{:refer lang.model.v1.spec-dart.typed/named-dart-ident}
+(fact "keeps local Dart type names and qualifies foreign ones"
+  [(subject/named-dart-ident 'sample.user/User 'sample.user)
+   (subject/named-dart-ident 'other.ns/User 'sample.user)
+   (subject/named-dart-ident "user-map" 'sample.user)]
+  => ["User" "OtherNsUser" "UserMap"])
+
+^{:refer lang.model.v1.spec-dart.typed/lossy-dart-type}
+(fact "uses the fallback unless strict Dart emission is requested"
+  [(subject/lossy-dart-type :union)
+   (try
+     (binding [lang.model.v1.spec-dart.typed/*emit-options*
+               {:strict? true :lossy-fallback "Object?"}]
+       (subject/lossy-dart-type :union))
+     :missing
+     (catch error true))]
+  => ["Object?" true])
+
+^{:refer lang.model.v1.spec-dart.typed/emit-dart-type}
+(fact "emits the supported Dart type forms"
+  [(subject/emit-dart-type {:kind :primitive :name :xt/str} nil)
+   (subject/emit-dart-type {:kind :array
+                            :item {:kind :primitive :name :xt/int}} nil)
+   (subject/emit-dart-type {:kind :dict
+                            :key {:kind :primitive :name :xt/str}
+                            :value {:kind :primitive :name :xt/num}} nil)
+   (subject/emit-dart-type {:kind :maybe
+                            :item {:kind :named :name 'sample.user/User}}
+                           'sample.user)]
+  => ["String" "List<int>" "Map<String, double>" "User?"])
+
+^{:refer lang.model.v1.spec-dart.typed/maybe-unwrapped}
+(fact "unwraps an optional maybe field exactly once"
+  [(subject/maybe-unwrapped {:kind :maybe
+                             :item {:kind :primitive :name :xt/str}}
+                            true)
+   (subject/maybe-unwrapped {:kind :maybe
+                             :item {:kind :primitive :name :xt/str}}
+                            false)]
+  => [{:kind :primitive :name :xt/str}
+      {:kind :maybe :item {:kind :primitive :name :xt/str}}])
+
+^{:refer lang.model.v1.spec-dart.typed/emit-class-field}
+(fact "emits required and optional Dart record fields"
+  [(subject/emit-class-field {:name "id"
+                              :type {:kind :primitive :name :xt/str}
+                              :optional? false}
+                             'sample.user)
+   (subject/emit-class-field {:name "display-name"
+                              :type {:kind :maybe
+                                     :item {:kind :primitive :name :xt/str}}
+                              :optional? true}
+                             'sample.user)]
+  => ["  final String id;" "  final String? displayName;"])
+
+^{:refer lang.model.v1.spec-dart.typed/emit-class-constructor}
+(fact "emits Dart required and optional constructor parameters"
+  (subject/emit-class-constructor
+   "User"
+   [{:name "id" :optional? false}
+    {:name "display-name" :optional? true}])
+  => "  const User({required this.id, this.displayName});")
+
+^{:refer lang.model.v1.spec-dart.typed/emit-record-class}
+(fact "emits a Dart record class"
+  (subject/emit-record-class
+   "User"
+   {:fields [{:name "id" :type {:kind :primitive :name :xt/str} :optional? false}
+             {:name "display-name"
+              :type {:kind :maybe :item {:kind :primitive :name :xt/str}}
+              :optional? true}]}
+   'sample.user)
+  => "class User {\n  final String id;\n  final String? displayName;\n  const User({required this.id, this.displayName});\n}")
+
+^{:refer lang.model.v1.spec-dart.typed/declaration-ns}
+(fact "normalizes declaration namespaces before matching named types"
+  [(subject/declaration-ns {:ns "sample.user"})
+   (subject/declaration-ns {})]
+  => ['sample.user nil])
+
+^{:refer lang.model.v1.spec-dart.typed/emit-spec-declaration}
+(fact "emits record and alias Dart declarations"
+  [(subject/emit-spec-declaration
+    {:ns "sample.user" :name "User"
+     :type {:kind :record
+            :fields [{:name "id" :type {:kind :primitive :name :xt/str}
+                      :optional? false}]}})
+   (subject/emit-spec-declaration
+    {:ns "sample.user" :name "UserMap"
+     :type {:kind :dict
+            :key {:kind :primitive :name :xt/str}
+            :value {:kind :named :name 'sample.user/User}}})]
+  => ["class User {\n  final String id;\n  const User({required this.id});\n}"
+      "typedef UserMap = Map<String, User>;"])
+
+^{:refer lang.model.v1.spec-dart.typed/emit-function-declaration}
+(fact "emits a typed Dart function declaration"
+  (subject/emit-function-declaration
+   {:ns "sample.user" :name "find-user"
+    :inputs [{:type {:kind :named :name 'sample.user/UserMap}}
+             {:type {:kind :primitive :name :xt/str}}]
+    :output {:kind :maybe :item {:kind :named :name 'sample.user/User}}})
+  => "typedef FindUser = User? Function(UserMap arg0, String arg1);")
+
+^{:refer lang.model.v1.spec-dart.typed/emit-value-declaration}
+(fact "emits a typed Dart value declaration"
+  (subject/emit-value-declaration
+   {:ns "sample.user" :name "default-id"
+    :type {:kind :primitive :name :xt/str}})
+  => "late final String defaultId;")
+
+^{:refer lang.model.v1.spec-dart.typed/emit-analysis-declarations}
+(fact "emits declarations in source analysis order"
+  (subject/emit-analysis-declarations
+   {:specs [{:ns "sample.user" :name "User"
+             :type {:kind :primitive :name :xt/str}}]
+    :functions [{:ns "sample.user" :name "find-user"
+                 :inputs [] :output {:kind :primitive :name :xt/int}}]
+    :values [{:ns "sample.user" :name "default-id"
+              :type {:kind :primitive :name :xt/str}}]})
+  => "typedef User = String;\n\ntypedef FindUser = int Function();\n\nlate final String defaultId;")
+
+^{:refer lang.model.v1.spec-dart.typed/emit-namespace-declarations}
+(fact "emits declarations from a registered script module and restores the registry"
+  (let [before (script/script-snapshot)]
+    (try
+      (script/script-reset!)
+      (script/configure-module :xtalk 'dart.typed.demo {})
+      (script/register-code '(defn ping [] 1))
+      (subject/emit-namespace-declarations 'dart.typed.demo)
+      (finally (script/script-restore! before))))
+  => "typedef Ping = Object? Function();")

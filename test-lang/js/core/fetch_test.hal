@@ -1,0 +1,106 @@
+(ns js.core.fetch-test
+  (:require [lang.core :as l])
+  (:use code.test))
+
+(l/script- :js
+  {:runtime :basic
+   :require [[js.core.fetch :as fetch]
+             [js.core.impl :as j]]})
+
+(fact:global
+ {:setup [(l/rt:restart)]
+  :teardown [(l/rt:stop)]})
+
+^{:refer js.core.fetch/fetch :added "4.0"}
+(fact "starts a fetch request and decodes the requested response form"
+  (!.js
+   (var called nil)
+   (var fetch
+        (fn [url opts]
+          (:= called [url opts])
+          (return
+           (new j/JSPromise
+                (fn [resolve]
+                  (resolve {:json (fn [] (return {:ok true}))}))))))
+   (. (fetch/fetch "/items" {:method "POST" :as "json"})
+      (then (fn [result]
+              (return [called result])))))
+  => [["/items" {"method" "POST"}] {"ok" true}])
+
+^{:refer js.core.fetch/toText :added "4.0"}
+(fact "decodes a response promise as text"
+  (!.js
+   (fetch/toText
+    (new j/JSPromise
+         (fn [resolve]
+           (resolve {:text (fn [] (return "body"))})))))
+  => "body")
+
+^{:refer js.core.fetch/toJson :added "4.0"}
+(fact "decodes a response promise as JSON"
+  (!.js
+   (fetch/toJson
+    (new j/JSPromise
+         (fn [resolve]
+           (resolve {:json (fn [] (return {:id 17}))})))))
+  => {"id" 17})
+
+^{:refer js.core.fetch/toBlob :added "4.0"}
+(fact "decodes a response promise as a blob value"
+  (!.js
+   (fetch/toBlob
+    (new j/JSPromise
+         (fn [resolve]
+           (resolve {:blob (fn [] (return [1 2 3]))})))))
+  => [1 2 3])
+
+^{:refer js.core.fetch/toPrint :added "4.0"}
+(fact "logs and preserves a response promise value"
+  (!.js
+   (fetch/toPrint
+    (new j/JSPromise
+         (fn [resolve]
+           (resolve "visible")))))
+  => "visible")
+
+^{:refer js.core.fetch/toAssign :added "4.0"}
+(fact "assigns a response object while preserving the resolved result"
+  (!.js
+   (var state {:current 1})
+   (. (fetch/toAssign
+       (new j/JSPromise
+            (fn [resolve]
+              (resolve {:next 2})))
+       state)
+      (then (fn [result]
+              (return [result state])))))
+  => [{"current" 1 "next" 2} {"current" 1 "next" 2}])
+
+^{:refer js.core.fetch/fetch-api :added "4.0"}
+(fact "returns data from a successful API response"
+  (!.js
+   (:= (. globalThis fetch)
+       (fn [_ _]
+         (return
+          (new j/JSPromise
+               (fn [resolve]
+                 (resolve {:status 200
+                           :json (fn []
+                                   (return {:status "ok"
+                                            :data {:id 17}}))}))))))
+   (fetch/fetch-api "/items" {:method "GET"}))
+  => {"id" 17})
+
+^{:refer js.core.fetch/fetch-api :added "4.0"}
+(fact "rejects an API response with a non-success HTTP status"
+  (!.js
+   (:= (. globalThis fetch)
+       (fn [_ _]
+         (return
+          (new j/JSPromise
+               (fn [resolve]
+                 (resolve {:status 503}))))))
+   (. (fetch/fetch-api "/items" {:method "GET"})
+      (then (fn [_] (return "unexpected"))
+            (fn [response] (return (. response ["status"]))))) )
+  => 503)

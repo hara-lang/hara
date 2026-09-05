@@ -1,0 +1,75 @@
+(ns lang.model.v1.spec-js.meta-test
+  (:use code.test)
+  (:require [lang.common.book-meta :as book-meta]
+            [lang.model.v1.spec-js.meta :as meta]))
+
+^{:refer lang.model.v1.spec-js.meta/js-module-import-async}
+(fact "builds a lazy ESM proxy import"
+  (let [form (meta/js-module-import-async "react" '{:as React})]
+    [(first form) (second form) (first (nth form 2))])
+  => ['const 'React 'new])
+
+^{:refer lang.model.v1.spec-js.meta/js-module-import}
+(fact "ports Foundation JavaScript module imports across ESM CommonJS and globals"
+  [(meta/js-module-import 'react '{:as React} {})
+   (meta/js-module-import 'react '{:as [:* React]
+                                      :refer [hello world]} {})
+   (meta/js-module-import 'react '{:as [:* React]
+                                      :refer [hello world]}
+                          {:emit {:lang/format :commonjs}})
+   (meta/js-module-import 'react '{:as [:* React]
+                                      :refer [hello world]}
+                          {:emit {:lang/format :global}})]
+  => ['(:- :import (quote [React]) :from "'react'")
+      '(:- :import (quote [(:- :* :as React) #{hello world}]) :from "'react'")
+      '(const React := (require "react"))
+      '(Object.defineProperty !:G "React" {:value (require "react")})])
+
+^{:refer lang.model.v1.spec-js.meta/js-module-import}
+(fact "keeps scoped npm links as bare package specifiers"
+  (meta/js-module-import
+   "@xtalk/lang/common-data"
+   '{:as xtd :suffix ".js"}
+   {:emit {:import :link :lang/format :commonjs}})
+  => '(const xtd := (require "@xtalk/lang/common-data.js")))
+
+^{:refer lang.model.v1.spec-js.meta/js-module-export}
+(fact "ports Foundation JavaScript module export forms"
+  [(meta/js-module-export {} {:emit {:lang/export true}})
+   (meta/js-module-export {} {:emit {:lang/format :commonjs}})]
+  => ['(:- :export :default (tab))
+      '(:= module.exports (tab))])
+
+^{:refer lang.model.v1.spec-js.meta/js-module-link}
+(fact "preserves Foundation relative JavaScript module links"
+  [(meta/js-module-link 'kmi.common {:base 'kmi.hello})
+   (meta/js-module-link 'kmi.exchange {:base 'kmi :target "src"})
+   (meta/js-module-link 'kmi.exchange
+                        {:base 'kmi.other.namespace :target "src"})
+   (meta/js-module-link 'js.core
+                        {:base 'kmi.other.main :target "src"})]
+  => ["./common" "./kmi/exchange" "../exchange" "../../js/core"])
+
+^{:refer lang.model.v1.spec-js.meta/js-transform-entry}
+(fact "adds export only to JavaScript module declaration entries"
+  [(meta/js-transform-entry "const answer = 42"
+                            {:entry {:op-key :defn}
+                             :mopts {:emit {:lang/format :module}}})
+   (meta/js-transform-entry "const answer = 42"
+                            {:entry {:op-key :defn}
+                             :mopts {:emit {:lang/format :commonjs}}})
+   (meta/js-transform-entry "const answer = 42"
+                            {:entry {:op-key :defn}
+                             :mopts {:emit {:type :script}}})]
+  => ["export const answer = 42"
+      "const answer = 42"
+      "const answer = 42"])
+
+^{:refer lang.model.v1.spec-js.meta/+meta+}
+(fact "materializes the complete JavaScript BookMeta hook surface"
+  [(book-meta/book-meta? meta/+meta+)
+   (mapv fn? [(:module-import meta/+meta+)
+              (:module-export meta/+meta+)
+              (:module-link meta/+meta+)])
+   (mapv fn? (get-in meta/+meta+ [:transforms :entry]))]
+  => [true [true true true] [true]])

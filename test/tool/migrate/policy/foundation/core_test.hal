@@ -1,0 +1,329 @@
+(ns tool.migrate.policy.foundation.core-test
+  (:use code.test)
+  (:require [tool.migrate.policy.foundation.core :as core]))
+
+
+   ^{:refer tool.migrate.policy.foundation.core/plan}
+   (fact "empty migration plans are valid"
+     (let [result (core/plan {:migration :lang.model/v1 :units []})]
+       [(:write result) (:records result) (empty? (:diagnostics result))])
+     => [nil [] true])
+
+   ^{:refer tool.migrate.policy.foundation.core/rewrite-requires}
+   (fact "rewrite-requires emits only the current native Work frontend requires"
+     (let [canonical (core/rewrite-requires "(:require [std.task :as task] [std.work :as work])")
+           retired "[std.work.template.task :as task]"]
+       [(str/includes? canonical "[work.flow.task :as task]")
+        (str/includes? canonical "[work.flow :refer [def.work]]")
+        (str/includes? canonical "[work.core :as work]")
+        (not (str/includes? canonical retired))])
+     => [true true true true])
+
+   ^{:refer tool.migrate.policy.foundation.core/normalize-foundation-source}
+   (fact "normalize-foundation-source removes redundant intrinsic aliases"
+     (let [source "(ns demo.core (:require [std.foundation :as h] [std.foundation :as walk])) (defn apply-value [value] (h/apply-with value (walk/prewalk identity)))"
+           output (core/normalize-foundation-source source)]
+       [(str/includes? output "std.foundation/apply-with")
+        (str/includes? output "std.foundation/prewalk")
+        (not (str/includes? output "[std.foundation :as h]"))
+        (not (str/includes? output "[std.foundation :as walk]"))])
+     => [true true true true])
+
+   ^{:refer tool.migrate.policy.foundation.core/migrate-foundation-common-test-source}
+   (fact "migrate-foundation-common-test-source normalizes intrinsic aliases"
+     (let [result (core/migrate-foundation-common-test-source
+                   "(ns demo.core (:require [std.foundation :as h] [std.foundation :as walk])) (fact value (= 1 (h/apply-with 1 (walk/prewalk identity))))"
+                   "demo.core-test")
+           output (:after result)]
+       [(str/includes? output "std.foundation/apply-with")
+        (str/includes? output "std.foundation/prewalk")
+        (not (str/includes? output "[std.foundation :as h]"))
+        (not (str/includes? output "[std.foundation :as walk]"))
+        (not (str/includes? output "(pr-str"))])
+     => [true true true true true])
+
+   ^{:refer tool.migrate.policy.foundation.core/migrate-source}
+   (fact "migrate-source applies intrinsic alias normalization after policy edits"
+     (let [result (core/migrate-source
+                   "(ns demo.core (:require [std.foundation :as h] [std.foundation :as walk])) (defn apply-value [value] (h/apply-with value (walk/prewalk identity)))")
+           output (:after result)]
+       [(= true (:changed result))
+        (str/includes? output "std.foundation/apply-with")
+        (str/includes? output "std.foundation/prewalk")
+        (not (str/includes? output "[std.foundation :as h]"))
+        (not (str/includes? output "[std.foundation :as walk]"))])
+     => [true true true true true])
+
+   ^{:refer tool.migrate.policy.foundation.core/lang-model-v1-test-source-path}
+   (fact "model test sources follow the versioned test tree"
+     (core/lang-model-v1-test-source-path "src/tahto/model/spec_c.clj")
+     => "test/tahto/model/spec_c.clj")
+
+   ^{:refer tool.migrate.policy.foundation.core/route-lang-model-v1-namespace}
+   (fact "model namespaces route from reference and legacy names"
+     [(core/route-lang-model-v1-namespace 'tahto.model.spec-c)
+      (core/route-lang-model-v1-namespace 'lang.model.spec-c)
+      (core/route-lang-model-v1-namespace 'lang.model.v1.spec-c)
+      (core/route-lang-model-v1-namespace 'demo.core)]
+     => ["lang.model.v1.spec-c" "lang.model.v1.spec-c" "lang.model.v1.spec-c" "demo.core"])
+
+   ^{:refer tool.migrate.policy.foundation.core/route-lang-model-v1-path}
+   (fact "model source and test paths route without changing target paths"
+     [(core/route-lang-model-v1-path "src/tahto/model/spec_c.clj")
+      (core/route-lang-model-v1-path "test/tahto/model/spec_c.clj")
+      (core/route-lang-model-v1-path "src/lang/model/v1/spec_c.hal")
+      (core/route-lang-model-v1-path "docs/spec_c.clj")]
+     => ["src/lang/model/v1/spec_c.hal" "test/lang/model/v1/spec_c.hal" "src/lang/model/v1/spec_c.hal" "docs/spec_c.hal"])
+
+   ^{:refer tool.migrate.policy.foundation.core/lang-model-v1-source-namespace}
+   (fact "model source paths produce canonical reference namespaces"
+     [(core/lang-model-v1-source-namespace "src/tahto/model/spec_c.clj")
+      (core/lang-model-v1-source-namespace "src/tahto/model/sql/spec_common/form_defn.clj")]
+     => ["tahto.model.spec-c" "tahto.model.sql.spec-common.form-defn"])
+
+   ^{:refer tool.migrate.policy.foundation.core/lang-model-v1-unit}
+   (fact "model units retain provenance while routing targets"
+     (let [unit (core/lang-model-v1-unit
+                 "src/tahto/model/spec_c.clj"
+                 "(ns tahto.model.spec-c)"
+                 {:source/namespace 'tahto.model.spec-c :language :c :status :pending})]
+       [(:path unit) (:target/path unit) (:target/namespace unit) (:kind unit)
+        (:language unit) (:create unit) (:move unit)])
+     => ["src/tahto/model/spec_c.clj" "src/lang/model/v1/spec_c.hal"
+         "lang.model.v1.spec-c" :source :c true true])
+
+   ^{:refer tool.migrate.policy.foundation.core/lang-model-v1-unit-for}
+   (fact "model inventory lookup distinguishes known and unknown paths"
+     (let [known (core/lang-model-v1-unit-for "src/tahto/model/spec_glsl.clj")
+           c-unit (core/lang-model-v1-unit-for "src/tahto/model/spec_c.clj")]
+       [(:id known) (:status known) (:status c-unit)
+        (nil? (core/lang-model-v1-unit-for "src/tahto/model/missing.clj"))])
+     => ["spec_glsl" :ported :ported true])
+
+   ^{:refer tool.migrate.policy.foundation.core/lang-model-v1-inventory}
+   (fact "model inventory includes all planned source-owned units"
+     (let [inventory (core/lang-model-v1-inventory)]
+       [(count inventory) (:target/path (first inventory))
+        (:target/namespace (first inventory)) (:target/namespace (last inventory))
+        (count (filter (fn [unit] (= :pending (:status unit))) inventory))])
+     => [39 "src/lang/model/v1/spec_xtalk.hal"
+         "lang.model.v1.spec-xtalk" "lang.model.v1.spec-xtalk.fn-scheme" 8])
+
+   ^{:refer tool.migrate.policy.foundation.core/rewrite-lang-model-v1-source}
+   (fact "model rewrite preserves canonical names and is idempotent"
+     (let [source "(ns tahto.model.spec-c (:require [tahto.base.emit :as emit] [clojure.string]))"
+           output (core/rewrite-lang-model-v1-source source)]
+       [(str/includes? output "lang.model.v1.spec-c")
+        (str/includes? output "lang.common.emit")
+        (str/includes? output "std.foundation.string")
+        (= output (core/rewrite-lang-model-v1-source output))])
+     => [true true true true])
+
+   ^{:refer tool.migrate.policy.foundation.core/lang-model-v1-diagnostics}
+   (fact "model diagnostics classify source constructs without blocking warnings"
+     (let [diagnostics (core/lang-model-v1-diagnostics
+                        "(defn- hidden [] #'hidden) #( + 1 2) ^:private")]
+       [(count diagnostics) (:level (first diagnostics))
+        (:migration/error (first diagnostics))
+        (nil? (core/lang-model-v1-blocking? diagnostics))
+        (core/lang-model-v1-blocking? [{:level :error}])])
+     => [4 :warning :lang.model-v1/private-definition true true])
+
+   ^{:refer tool.migrate.policy.foundation.core/lang-model-v1-blocking?}
+   (fact "model blocking policy rejects errors and accepts warnings"
+     [(core/lang-model-v1-blocking? [])
+      (nil? (core/lang-model-v1-blocking? [{:level :warning}]))
+      (core/lang-model-v1-blocking? [{:level :error}])]
+     => [nil true true])
+
+   ^{:refer tool.migrate.policy.foundation.core/migrate-lang-model-v1-source}
+   (fact "model source migration records the route and clean diagnostics"
+     (let [result (core/migrate-lang-model-v1-source
+                   "(ns tahto.model.spec-c (:require [tahto.base.emit :as emit]))")]
+       [(:changed result) (:rules result) (:diagnostics result)
+        (str/includes? (:after result) "lang.model.v1.spec-c")])
+     => [true [:lang.model-v1/route] [] true])
+
+   ^{:refer tool.migrate.policy.foundation.core/migrate-lang-model-v1-unit}
+   (fact "model unit migration returns the routed target and provenance"
+     (let [result (core/migrate-lang-model-v1-unit
+                   {:source/path "src/tahto/model/spec_c.clj"
+                    :target/path "src/lang/model/v1/spec_c.hal"
+                    :source/namespace 'tahto.model.spec-c
+                    :source "(ns tahto.model.spec-c)"})]
+       [(:path result) (:target/path result) (:target/namespace result)
+        (:move result) (:create result) (:changed result)])
+     => ["src/lang/model/v1/spec_c.hal"
+         "src/lang/model/v1/spec_c.hal" "lang.model.v1.spec-c" true true true])
+
+   ^{:refer tool.migrate.policy.foundation.core/+lang-model-v1-units+}
+   (fact "model migration inventory exposes the source-owned unit catalog"
+     [(count core/+lang-model-v1-units+)
+      (:status (first core/+lang-model-v1-units+))
+      (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_js/jsx.clj"))
+      (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_js/html.clj"))
+      (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_js/meta.clj"))
+      (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_js/qml.clj"))
+      (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_dart/rewrite.clj"))
+      (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_dart/typed.clj"))
+      (:status (last core/+lang-model-v1-units+))]
+     => [39 :ported :ported :ported :ported :ported :ported :ported :pending])
+
+   ^{:refer tool.migrate.policy.foundation.core/+foundation-lang-compiler-scopes+}
+   (fact "the compiler closure declares the canonical source, target, and test roots"
+     (mapv (fn [scope]
+             [(:id scope) (:stage scope)
+              (:source/prefix scope) (:target/prefix scope)
+              (:test/source-prefix scope) (:test/target-prefix scope)])
+           core/+foundation-lang-compiler-scopes+)
+     => [[:lang.common :common
+          "src/tahto/base/" "src/lang/common/"
+          "test/tahto/base/" "test/lang/common/"]
+         [:lang.common.book :common
+          "src/tahto/common/" "src/lang/common/"
+          "test/tahto/common/" "test/lang/common/"]
+         [:lang.core :core
+          "src/tahto/core/" "src/lang/core/"
+          "test/tahto/core/" "test/lang/core/"]
+         [:lang.model/v1 :model
+          "src/tahto/model/" "src/lang/model/v1/"
+          "test/tahto/model/" "test/lang/model/v1/"]
+         [:lang.runtime.basic :runtime
+          "src/tahto/runtime/basic/" "src/lang/runtime/basic/"
+          "test/tahto/runtime/basic/" "test/lang/runtime/basic/"]])
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-compiler-scope}
+   (fact "the compiler closure accepts only the selected model catalog"
+     [(select-keys
+       (core/foundation-lang-compiler-scope "src/tahto/base/emit_data.clj")
+       [:id :stage])
+      (select-keys
+       (core/foundation-lang-compiler-scope "src/tahto/model/spec_js/meta.clj")
+       [:id :stage])
+      (core/foundation-lang-compiler-scope
+       "src/tahto/model/annex/spec_rust.clj")]
+     => [{:id :lang.common :stage :common}
+         {:id :lang.model/v1 :stage :model}
+         nil])
+
+   ^{:refer tool.migrate.policy.foundation.core/route-foundation-lang-compiler-path}
+   (fact "compiler source paths route into the canonical Hara owners"
+     [(core/route-foundation-lang-compiler-path "src/tahto/base/emit_data.clj")
+      (core/route-foundation-lang-compiler-path "src/tahto/common/book.clj")
+      (core/route-foundation-lang-compiler-path "src/tahto/core/compile.clj")
+      (core/route-foundation-lang-compiler-path "src/tahto/model/spec_js/meta.clj")
+      (core/route-foundation-lang-compiler-path "src/tahto/runtime/basic/type_basic.clj")
+      (core/route-foundation-lang-compiler-path "src/tahto/model/annex/spec_rust.clj")]
+     => ["src/lang/common/emit_data.hal"
+         "src/lang/common/book.hal"
+         "src/lang/core/compile.hal"
+         "src/lang/model/v1/spec_js/meta.hal"
+         "src/lang/runtime/basic/type_basic.hal"
+         nil])
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-compiler-test-paths}
+   (fact "compiler units retain their paired historical and target tests"
+     (core/foundation-lang-compiler-test-paths "src/tahto/model/spec_js/meta.clj")
+     => {:source/path "test/tahto/model/spec_js/meta_test.clj"
+         :target/path "test/lang/model/v1/spec_js/meta_test.hal"})
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-plus-groups}
+   (fact "compiler migration records source-owned construction groups"
+     (core/foundation-lang-plus-groups
+      "(def +features+ {})\n(def +grammar+ {})\n(def +book+ {})\n(def +init+ +book+)")
+     => ['+features+ '+grammar+ '+book+ '+init+])
+
+   ^{:refer tool.migrate.policy.foundation.core/rewrite-foundation-lang-compiler-source}
+   (fact "compiler source rewrites follow the selected owning stage"
+     [(core/rewrite-foundation-lang-compiler-source
+       :common
+       "(ns tahto.base.emit-data (:require [tahto.common.book]))")
+      (core/rewrite-foundation-lang-compiler-source
+       :core
+       "(ns tahto.core.compile (:require [tahto.core.runtime]))")
+      (core/rewrite-foundation-lang-compiler-source
+       :runtime
+       "(ns tahto.runtime.basic.type-basic)")]
+     => ["(ns lang.common.emit-data (:require [lang.common.book]))"
+         "(ns lang.core.compile (:require [lang.core.runtime]))"
+         "(ns lang.runtime.basic.type-basic)"])
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-compiler-unit}
+   (fact "compiler units carry routing, stage, paired test, and group provenance"
+     (let [unit (core/foundation-lang-compiler-unit
+                 {:source/path "src/tahto/model/spec_js/meta.clj"
+                  :source/namespace 'tahto.model.spec-js.meta
+                  :source "(def +meta+ {})"})]
+       [(select-keys unit [:source/path :target/path :source/namespace
+                           :target/namespace :migration :stage :groups])
+        (:test unit)])
+     => [{:source/path "src/tahto/model/spec_js/meta.clj"
+          :target/path "src/lang/model/v1/spec_js/meta.hal"
+          :source/namespace 'tahto.model.spec-js.meta
+          :target/namespace 'lang.model.v1.spec-js.meta
+          :migration :foundation/lang-compiler
+          :stage :model
+          :groups ['+meta+]}
+         {:source/path "test/tahto/model/spec_js/meta_test.clj"
+          :target/path "test/lang/model/v1/spec_js/meta_test.hal"}])
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-inventory}
+   (fact "the lang inventory preserves one selected unit per supplied Foundation source"
+     (let [inventory
+           (core/foundation-lang-inventory
+            [{:source/path "src/tahto/base/emit_data.clj"
+              :source/namespace 'tahto.base.emit-data
+              :source "(def value 1)"}
+             {:source/path "src/tahto/model/spec_js/meta.clj"
+              :source/namespace 'tahto.model.spec-js.meta
+              :source "(def +meta+ {})"}
+             {:source/path "src/tahto/model/annex/spec_rust.clj"
+              :source/namespace 'tahto.model.annex.spec-rust
+              :source "(def ignored 1)"}])]
+       [(mapv :target/path inventory)
+        (mapv :stage inventory)])
+     => [["src/lang/common/emit_data.hal"
+          "src/lang/model/v1/spec_js/meta.hal"]
+         [:common :model]])
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-plan}
+   (fact "the compiler closure produces a dry plan with routed edits"
+     (let [result
+           (core/foundation-lang-plan
+            [{:source/path "src/tahto/base/emit_data.clj"
+              :source/namespace 'tahto.base.emit-data
+              :source "(ns tahto.base.emit-data)\n(def value 1)"}])]
+       [(:write result)
+        (:valid result)
+        (get-in result [:records 0 :data :target/path])
+        (get-in result [:records 0 :data :stage])])
+     => [nil true "src/lang/common/emit_data.hal" :common])
+
+   ^{:refer tool.migrate.policy.foundation.core/migrate-selected-unit}
+   (fact "the selected compiler migration retains the routed source and rewrite"
+     (let [unit
+           (core/foundation-lang-compiler-unit
+            {:source/path "src/tahto/base/emit_data.clj"
+             :source/namespace 'tahto.base.emit-data
+             :source "(ns tahto.base.emit-data)\n(def value 1)"})
+           result (core/migrate-selected-unit unit)]
+       [(:path result)
+        (:target/namespace result)
+        (:stage result)
+        (str/includes? (:after result) "lang.common.emit-data")
+        (:rules result)])
+     => ["src/lang/common/emit_data.hal"
+         'lang.common.emit-data
+         :common
+         true
+         [:foundation/lang-compiler-route]])
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-validate-plan}
+   (fact "an empty compiler plan validates without a write"
+     (core/foundation-lang-validate-plan "." {:records []})
+     => {:valid? true :write false :edits [] :diagnostics []})
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-apply-plan}
+   (fact "an empty compiler plan is an idempotent no-op apply boundary"
+     (core/foundation-lang-apply-plan "." {:records []})
+     => [])

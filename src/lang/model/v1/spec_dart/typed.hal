@@ -1,0 +1,204 @@
+(ns lang.model.v1.spec-dart.typed
+  (:config {:role :internal})
+  (:require [lang.typed.xtalk-parse :as xtalk-parse]))
+
+(declare emit-dart-type)
+(declare lossy-dart-type)
+
+(def ^:dynamic *emit-options*
+  {:strict? false
+   :lossy-fallback "Object?"})
+
+(defn sanitize-ident
+  [value]
+  (re-replace #"^[0-9]"
+              (re-replace #"[^A-Za-z0-9_]" (str value) "_")
+              "_$0"))
+
+(defn lower-camel
+  [value]
+  (let [base (sanitize-ident value)]
+    (if (str/includes? base "_")
+      (let [parts (str/split base "_")
+            head (str/lower-case (first parts))
+            tail (map (fn [part] (str/capitalize part)) (rest parts))]
+        (str (or head "x") (str/join "" tail)))
+      (str (str/lower-case (str/slice base 0 1))
+           (str/slice base 1)))))
+
+(defn upper-camel
+  [value]
+  (let [base (sanitize-ident value)]
+    (if (str/includes? base "_")
+      (str/join "" (map (fn [part] (str/capitalize part))
+                        (str/split base "_")))
+      (str (str/upper-case (str/slice base 0 1))
+           (str/slice base 1)))))
+
+(defn named-dart-ident
+  [type-name current-ns]
+  (cond
+    (symbol? type-name)
+    (let [type-ns (namespace type-name)]
+      (if (= (str current-ns) type-ns)
+        (upper-camel (name type-name))
+        (upper-camel (str type-ns "_" (name type-name)))))
+
+    (string? type-name)
+    (upper-camel type-name)
+
+    :else
+    "Object?"))
+
+(defn lossy-dart-type
+  [kind]
+  (if (:strict? *emit-options*)
+    (throw (ex :conversion
+               {:kind kind
+                :fallback (:lossy-fallback *emit-options*)}
+               :ex/message "Lossy xtalk->dart type conversion"))
+    (:lossy-fallback *emit-options*)))
+
+(defn emit-dart-type
+  [type current-ns]
+  (case (:kind type)
+    :primitive
+    (case (:name type)
+      :xt/str "String"
+      :xt/bool "bool"
+      :xt/int "int"
+      :xt/num "double"
+      :xt/kw "String"
+      :xt/nil "Null"
+      :xt/any "Object?"
+      :xt/unknown "Object?"
+      :xt/obj "Map<String, Object?>"
+      :xt/fn "Object? Function(List<Object?>)"
+      "Object?")
+
+    :named
+    (named-dart-ident (:name type) current-ns)
+
+    :maybe
+    (str (emit-dart-type (:item type) current-ns) "?")
+
+    :union
+    (lossy-dart-type :union)
+
+    :intersection
+    (lossy-dart-type :intersection)
+
+    :tuple
+    (lossy-dart-type :tuple)
+
+    :array
+    (str "List<" (emit-dart-type (:item type) current-ns) ">")
+
+    :dict
+    (str "Map<" (emit-dart-type (:key type) current-ns)
+         ", " (emit-dart-type (:value type) current-ns) ">")
+
+    :record
+    "Map<String, Object?>"
+
+    :fn
+    (str (emit-dart-type (:output type) current-ns)
+         " Function("
+         (str/join ", " (map (fn [input]
+                               (emit-dart-type input current-ns))
+                             (:inputs type)))
+         ")")
+
+    :apply
+    (lossy-dart-type :apply)
+
+    "Object?"))
+
+(defn maybe-unwrapped
+  [type optional?]
+  (if (and optional? (= :maybe (:kind type)))
+    (:item type)
+    type))
+
+(defn emit-class-field
+  [{:keys [name type optional?]} current-ns]
+  (let [base-type (maybe-unwrapped type optional?)]
+    (str "  final "
+         (emit-dart-type base-type current-ns)
+         (when optional? "?")
+         " "
+         (lower-camel name)
+         ";")))
+
+(defn emit-class-constructor
+  [class-name fields]
+  (str "  const " class-name "({"
+       (str/join ", "
+                 (map (fn [{:keys [name optional?]}]
+                        (str (if optional? "" "required ")
+                             "this." (lower-camel name)))
+                      fields))
+       "});"))
+
+(defn emit-record-class
+  [name type current-ns]
+  (str "class " name " {\n"
+       (str/join "\n" (map (fn [field]
+                              (emit-class-field field current-ns))
+                            (:fields type)))
+       (when (seq (:fields type)) "\n")
+       (emit-class-constructor name (:fields type))
+       "\n}"))
+
+(defn declaration-ns
+  [declaration]
+  (when-let [value (:ns declaration)]
+    (symbol (str value))))
+
+(defn emit-spec-declaration
+  [spec]
+  (let [current-ns (declaration-ns spec)
+        name (upper-camel (:name spec))
+        type (:type spec)]
+    (if (= :record (:kind type))
+      (emit-record-class name type current-ns)
+      (str "typedef " name " = " (emit-dart-type type current-ns) ";"))))
+
+(defn emit-function-declaration
+  [fn-def]
+  (let [current-ns (declaration-ns fn-def)
+        name (upper-camel (:name fn-def))]
+    (str "typedef " name " = "
+         (emit-dart-type (:output fn-def) current-ns)
+         " Function("
+         (str/join ", "
+                   (map-indexed (fn [index input]
+                                  (str (emit-dart-type (:type input) current-ns)
+                                       " arg" index))
+                                (:inputs fn-def)))
+         ");")))
+
+(defn emit-value-declaration
+  [value-def]
+  (let [current-ns (declaration-ns value-def)]
+    (str "late final "
+         (emit-dart-type (:type value-def) current-ns)
+         " " (lower-camel (:name value-def)) ";")))
+
+(defn emit-analysis-declarations
+  ([analysis]
+   (emit-analysis-declarations analysis {}))
+  ([{:keys [specs functions values]} options]
+   (binding [*emit-options* (merge *emit-options* options)]
+     (str/join "\n\n"
+               (concat (map emit-spec-declaration specs)
+                       (map emit-function-declaration functions)
+                       (map emit-value-declaration values))))))
+
+(defn emit-namespace-declarations
+  ([ns-sym]
+   (emit-namespace-declarations ns-sym {}))
+  ([ns-sym options]
+   (-> ns-sym
+       xtalk-parse/analyze-namespace
+       (emit-analysis-declarations options))))

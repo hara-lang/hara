@@ -1,0 +1,79 @@
+(ns lang.model.v1.spec-js.html
+  (:config {:role :internal})
+  (:require [lang.common.emit-common :as common]))
+
+(defn wrap-indent-inner
+  "Increases indentation while a nested HTML vector is visited."
+  [function]
+  (fn [form]
+    (if (and (vector? form) (keyword? (first form)))
+      (binding [common/*indent* (+ common/*indent* 2)]
+        (function form))
+      (function form))))
+
+(defn wrap-indent-outer
+  "Decreases indentation while a nested HTML vector is unwound."
+  [function]
+  (fn [form]
+    (if (and (vector? form) (keyword? (first form)))
+      (binding [common/*indent* (- common/*indent* 2)]
+        (function form))
+      (function form))))
+
+(defn prewalk-indent
+  "Walks an HTML tree depth-first while preserving the emitter indentation scope."
+  [function form]
+  (let [visit (wrap-indent-inner (fn [value] (prewalk-indent function value)))
+        finish (wrap-indent-outer identity)
+        value (function form)]
+    (if (vector? value)
+      (finish (mapv visit value))
+      value)))
+
+(defn prepare-html
+  "Retains the Foundation HTML tree; embedded-script expansion remains source-owned."
+  [tree namespace-options]
+  tree)
+
+(defn html-render
+  "Renders the portable vector HTML representation used by the Tahto emitter."
+  [tree]
+  (cond (vector? tree)
+        (let [tag (name (first tree))
+              values (vec (rest tree))
+              attrs (if (map? (first values)) (first values) {})
+              children (if (map? (first values)) (rest values) values)
+              attributes
+              (str/join
+               " "
+               (sort-by str
+                        (reduce-kv
+                         (fn [output key value]
+                           (let [value (if (vector? value)
+                                         (str/join " " (map str value))
+                                         (str value))]
+                             (conj output
+                                   (str (name key) "=\"" value "\""))))
+                         []
+                         attrs)))
+              start (str "<" tag (if (empty? attributes) "" (str " " attributes)) ">")
+              end (str "</" tag ">")]
+          (cond (empty? children) (str start end)
+                (and (= 1 (count children)) (string? (first children)))
+                (str start (first children) end)
+                :else
+                (str start "\n"
+                     (str/join
+                      "\n"
+                      (map (fn [child]
+                             (str "  "
+                                  (str/replace (html-render child) "\n" "\n  ")))
+                           children))
+                     "\n" end)))
+
+        :else (str tree)))
+
+(defn emit-html
+  "Emits HTML from a prepared Foundation vector tree."
+  [array grammar namespace-options]
+  (html-render (prepare-html array namespace-options)))

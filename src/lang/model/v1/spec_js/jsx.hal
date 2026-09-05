@@ -1,0 +1,274 @@
+(ns lang.model.v1.spec-js.jsx
+  (:config {:role :internal})
+  (:require [lang.common.emit :as emit]
+            [lang.common.emit-common :as common]
+            [lang.common.emit-data :as data]
+            [std.lib.format.prose :as prose]))
+
+(defn jsx-key-fn
+  "Converts Foundation JSX keyword properties into JavaScript camelCase keys."
+  [key]
+  (if (keyword? key)
+    (keyword (str/camel-case (name key)))
+    key))
+
+(defn jsx-arr-prep
+  "Expands special JSX tags while preserving ordinary JSX data arrays."
+  [array grammar mopts]
+  (cond (= :% (first array))
+        (if (second array)
+          (cons (keyword (emit/emit-main (second array) grammar mopts))
+                (drop 2 array))
+          (throw (ex :argument {:array array}
+                     :ex/message "JSX percent form requires a tag")))
+
+        (= :<> (first array))
+        (cons :React.Fragment (rest array))
+
+        :else array))
+
+(defn jsx-standardise-params
+  "Normalizes :class and :className into one JavaScript className property."
+  [params]
+  (let [class-name (or (:class params) (:className params))
+        value (if (vector? class-name)
+                (str/join " " (map str class-name))
+                class-name)
+        params (if value (assoc params :className value) params)]
+    (dissoc params :class)))
+
+(defn jsx-arr-norm
+  "Normalizes JSX vectors into [tag params children]."
+  [array]
+  (let [tag (first array)
+        children (vec (rest array))
+        params (first children)]
+    (cond (map? params)
+          [tag
+           (jsx-standardise-params
+            (reduce-kv (fn [output key value]
+                         (assoc output (jsx-key-fn key) value))
+                       {}
+                       params))
+           (vec (rest children))]
+
+          (set? params) [tag params (vec (rest children))]
+          :else [tag {} children])))
+
+(defn emit-jsx-map-params
+  "Emits mapped JSX attributes as either literals or brace expressions."
+  [params grammar mopts]
+  (let [entries
+        (reduce-kv (fn [output key value]
+                     (if (or (= :.. key) (= :# key))
+                       output
+                       (conj output [key value])))
+                   []
+                   params)
+        base
+        (binding [common/*indent* (+ common/*indent* 2)]
+          (vec
+           (map
+            (fn [pair]
+              (let [key (first pair)
+                    value (second pair)
+                    output (if (string? value)
+                             (emit/emit-main value grammar mopts)
+                             (let [body (emit/emit-main value grammar mopts)
+                                   body (if (prose/multi-line? body)
+                                          (prose/indent-rest body 2)
+                                          body)]
+                               (str "{" body "}")))]
+                (str (name key) "=" output)))
+            (sort-by (fn [pair] (str (first pair)))
+                     entries))))
+        shorthand (:# params)
+        spread (:.. params)
+        with-shorthand
+        (if shorthand
+          (into base (flatten (emit-jsx-set-params #{shorthand} grammar mopts)))
+          base)]
+    (if spread
+      (conj with-shorthand
+            (str "{..."
+                 (emit/emit-main (if (vector? spread) (first spread) spread)
+                                 grammar mopts)
+                 "}"))
+      with-shorthand)))
+
+(defn emit-jsx-set-params
+  "Emits packed JSX symbol, mapped, form, and spread attributes."
+  [params grammar mopts]
+  (let [is-symbol
+        (fn [value]
+          (and (symbol? value)
+               (not (str/starts-with? (name value) "..."))))
+        emit-form
+        (fn [symbols mapped forms]
+          (let [mapped (merge mapped (zipmap symbols symbols))
+                mapped-output (if (not-empty mapped)
+                                (emit-jsx-map-params mapped grammar mopts))
+                form-values
+                (vec
+                 (map (fn [form]
+                        (if (and (list? form) (= :.. (first form)))
+                          (str "{..." (emit/emit-main (second form) grammar mopts) "}")
+                          (emit/emit-main form grammar mopts)))
+                      forms))
+                form-output (if (= 1 (count form-values))
+                              (first form-values)
+                              form-values)]
+            (vec (filter not-empty [mapped-output form-output]))))]
+    (if (and (= 1 (count params)) (vector? (first params)))
+      (let [groups (data/emit-table-group (first params))
+            symbols (filter is-symbol groups)
+            mapped
+            (jsx-standardise-params
+             (into {} (filter vector? groups)))
+            forms (remove (fn [value]
+                            (or (vector? value) (is-symbol value)))
+                          groups)]
+        (emit-form symbols mapped forms))
+      (let [symbols (filter is-symbol params)
+            mapped (apply merge (filter map? params))
+            forms (remove (fn [value]
+                            (or (map? value) (is-symbol value)))
+                          params)]
+        (emit-form symbols mapped forms)))))
+
+(defn emit-jsx-params
+  "Builds the separator and rendered attribute body for one JSX node."
+  [params grammar mopts]
+  (let [body
+        (cond (empty? params) []
+              (set? params) (flatten (emit-jsx-set-params params grammar mopts))
+              (map? params) (emit-jsx-map-params params grammar mopts)
+              :else
+              (throw (ex :argument {:params params}
+                         :ex/message "JSX parameters must be a map or set")))]
+    (cond (empty? body) ["" ""]
+          (data/emit-singleline-array? body) [" " (str/join " " body)]
+          :else
+          (let [separator (str (common/newline-indent) "  ")]
+            [separator (str/join separator body)]))))
+
+(defn emit-jsx-inner
+  "Emits the element body and recursively emitted JSX children."
+  [array grammar mopts]
+  (let [[tag params children] (jsx-arr-norm (jsx-arr-prep array grammar mopts))
+        tag-name (name tag)
+        tag-name (if (str/starts-with? tag-name "<") (str/slice tag-name 1) tag-name)
+        tag-name (if (str/ends-with? tag-name ">")
+                   (str/slice tag-name 0 (dec (str/length tag-name)))
+                   tag-name)
+        pair (emit-jsx-params params grammar mopts)
+        prefix (first pair)
+        params-output (second pair)]
+    (if (empty? children)
+      (str "<" tag-name prefix params-output "/>")
+      (let [start (str "<" tag-name prefix params-output ">")
+            end (str "</" tag-name ">")
+            indent common/*indent*
+            body
+            (binding [common/*indent* 0]
+              (mapv (fn [form]
+                      (cond (and (vector? form) (keyword? (first form)))
+                            (emit-jsx-inner form grammar mopts)
+                            (string? form) form
+                            :else (str "{" (emit/emit-main form grammar mopts) "}")))
+                    children))
+            single? (data/emit-singleline-array? body)
+            output (if single?
+                     (str/join "" body)
+                     (prose/indent (str/join "\n" body) (+ 2 indent)))]
+        (str start
+             (if single? "" "\n")
+             output
+             (if (or (not single?) (prose/multi-line? start))
+               (common/newline-indent)
+               "")
+             end)))))
+
+(defn emit-jsx-raw
+  "Wraps emitted JSX in the JavaScript parenthesized expression layout."
+  [array grammar mopts]
+  (binding [common/*indent* (+ common/*indent* 2)]
+    (str "(" (common/newline-indent)
+         (emit-jsx-inner array grammar mopts) ")")))
+
+(defn jsx-react-form
+  "Converts a JSX vector recursively into React.createElement source data."
+  [form]
+  (if (and (vector? form) (keyword? (first form)))
+    (let [tag (first form)
+          values (vec (rest form))
+          params (first values)
+          params? (map? params)
+          children (if params? (rest values) values)
+          params (if params? (jsx-standardise-params params) {})
+          params
+          (reduce-kv (fn [output key value]
+                       (assoc output (name (jsx-key-fn key)) value))
+                     {}
+                     params)
+          tag
+          (cond (= :<> tag) 'React.Fragment
+                (= :% tag) (second values)
+                (= (name tag) (str/lower-case (name tag))) (name tag)
+                :else (symbol (name tag)))]
+      (apply list 'React.createElement tag params (map jsx-react-form children)))
+    form))
+
+(defn jsx-react-output
+  "Emits React.createElement output without feeding JSX vectors back into the vector emitter."
+  [form grammar mopts]
+  (if (and (vector? form) (keyword? (first form)))
+    (let [tag (first form)
+          values (vec (rest form))
+          params (first values)
+          params? (map? params)
+          children (if params? (rest values) values)
+          params (if params? (jsx-standardise-params params) {})
+          entries
+          (sort-by first
+                   (reduce-kv (fn [output key value]
+                                (conj output [(name (jsx-key-fn key)) value]))
+                              []
+                              params))
+          params-output
+          (if (empty? entries)
+            "{}"
+            (str "{"
+                 (str/join
+                  ","
+                  (map (fn [pair]
+                         (str (pr-str (first pair)) ":"
+                              (let [value (second pair)]
+                                (cond (string? value) (pr-str value)
+                                      (and (vector? value) (keyword? (first value)))
+                                      (jsx-react-output value grammar mopts)
+                                      :else (emit/emit-main value grammar mopts)))))
+                       entries))
+                 "}"))
+          tag-output
+          (cond (= :<> tag) "React.Fragment"
+                (= :% tag) (emit/emit-main (second values) grammar mopts)
+                (= (name tag) (str/lower-case (name tag))) (pr-str (name tag))
+                :else (emit/emit-main (symbol (name tag)) grammar mopts))
+          children-output
+          (map (fn [child]
+                 (if (and (vector? child) (keyword? (first child)))
+                   (jsx-react-output child grammar mopts)
+                   (emit/emit-main child grammar mopts)))
+               children)]
+      (str "React.createElement(" tag-output "," params-output
+           (if (empty? children-output) "" (str "," (str/join "," children-output)))
+           ")"))
+    (emit/emit-main form grammar mopts)))
+
+(defn emit-jsx
+  "Selects raw JSX or React.createElement emission from the compiler options."
+  [array grammar mopts]
+  (if (= false (get-in mopts [:emit :lang/jsx]))
+    (jsx-react-output array grammar mopts)
+    (emit-jsx-raw array grammar mopts)))

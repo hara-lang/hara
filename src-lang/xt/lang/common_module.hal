@@ -1,6 +1,6 @@
 (ns xt.lang.common-module
   (:require [lang.core :as l]
-            [lang.core.script :as script]
+            [lang.core.library :as library]
             [lang.common.preprocess-base :as preprocess]
             ))
 
@@ -21,7 +21,7 @@
         active-id (get-in options [:module :id])
         selected (or module-id active-id (ns-current))
         selected (symbol (str selected))]
-    (get (deref script/+modules+) selected)))
+    (second (library/library-find-module (library/runtime-library) selected))))
 
 (defn linked-natives
   "Collects native entries from a module and its registered links."
@@ -36,7 +36,8 @@
        (if (empty? remaining)
          output
          (let [module-id (symbol (str (first remaining)))
-               module (get (deref script/+modules+) module-id)]
+               module (library/library-get-source-module
+                       (library/runtime-library) lang module-id)]
            (if (or (nil? module) (not (nil? (seen module-id))))
              (recur (vec (rest remaining)) seen output)
              (let [links (filter (fn [value]
@@ -52,7 +53,9 @@
   ([lang]
    (current-natives lang (ns-current)))
   ([lang module-id]
-   (or (:native (current-module module-id)) {})))
+   (or (:native (library/library-get-source-module
+                 (library/runtime-library) lang (symbol (str module-id))))
+       {})))
 
 (defn expose-module
   "Returns one module section with symbols and keywords stringified."

@@ -1,0 +1,121 @@
+(ns js.core.dom-test
+  (:require [lang.core :as l])
+  (:use code.test))
+
+(l/script- :js
+  {:runtime :basic
+   :require [[js.core.dom :as dom]]})
+
+(fact:global
+ {:setup [(l/rt:restart)]
+  :teardown [(l/rt:stop)]})
+
+^{:refer js.core.dom/body}
+(fact "returns a document body from the target runtime"
+  (!.js
+   (do:>
+    (var document {:body "document-body"})
+    (return (dom/body))))
+  => "document-body")
+
+^{:refer js.core.dom/id}
+(fact "looks up identifiers on the document and an explicit root"
+  (!.js
+   (do:>
+    (var document {:getElementById (fn [element-id] (return ["document" element-id]))})
+    (var root {:getElementById (fn [element-id] (return ["root" element-id]))})
+    (return [(dom/id "a") (dom/id root "b")])))
+  => [["document" "a"] ["root" "b"]])
+
+^{:refer js.core.dom/text}
+(fact "reads text content through a document lookup"
+  (!.js
+   (do:>
+    (var document {:getElementById (fn [_] (return {:textContent "hello"}))})
+    (return (dom/text "message"))))
+  => "hello")
+
+^{:refer js.core.dom/val}
+(fact "parses JSON text content"
+  (!.js
+   (do:>
+    (var document {:getElementById (fn [_] (return {:textContent "{\"id\":17}"}))})
+    (return (dom/val "payload"))))
+  => {"id" 17})
+
+^{:refer js.core.dom/click}
+(fact "clicks explicit elements and identifier lookups"
+  (!.js
+   (do:>
+    (var clicks [])
+    (var element {:click (fn [] (x:arr-push clicks "element"))})
+    (var document {:getElementById (fn [_] (return {:click (fn [] (x:arr-push clicks "id"))}))})
+    (dom/click element)
+    (dom/click "button")
+    (return clicks)))
+  => ["element" "id"])
+
+^{:refer js.core.dom/sel}
+(fact "selects a single element from document and explicit roots"
+  (!.js
+   (do:>
+    (var document {:querySelector (fn [selector] (return ["document" selector]))})
+    (var root {:querySelector (fn [selector] (return ["root" selector]))})
+    (return [(dom/sel ".a") (dom/sel root ".b")])))
+  => [["document" ".a"] ["root" ".b"]])
+
+^{:refer js.core.dom/q}
+(fact "selects all matching elements"
+  (!.js
+   (do:>
+    (var document {:querySelectorAll (fn [selector] (return [selector "all"]))})
+    (return (dom/q ".item"))))
+  => [".item" "all"])
+
+^{:refer js.core.dom/appendChild}
+(fact "appends to explicit roots"
+  (!.js
+   (do:>
+    (var children [])
+    (var root {:appendChild (fn [child] (x:arr-push children child) (return child))})
+    (dom/appendChild root "child")
+    (return children)))
+  => ["child"])
+
+^{:refer js.core.dom/removeChild}
+(fact "removes a child from an explicit root"
+  (!.js
+   (do:>
+    (var removed nil)
+    (var root {:removeChild (fn [child] (:= removed child) (return child))})
+    (dom/removeChild root "child")
+    (return removed)))
+  => "child")
+
+^{:refer js.core.dom/remove}
+(fact "removes an element"
+  (!.js
+   (do:>
+    (var removed false)
+    (var element {:remove (fn [] (:= removed true))})
+    (dom/remove element)
+    (return removed)))
+  => true)
+
+^{:refer js.core.dom/setAttribute}
+(fact "sets an element attribute"
+  (!.js
+   (do:>
+    (var seen nil)
+    (var element {:setAttribute (fn [key value] (:= seen [key value]))})
+    (dom/setAttribute element "role" "button")
+    (return seen)))
+  => ["role" "button"])
+
+^{:refer js.core.dom/getAttribute}
+(fact "gets an element attribute"
+  (!.js
+   (do:>
+    (var element {:getAttribute (fn [key] (return (+ "value:" key)))})
+    (return (dom/getAttribute element "role"))))
+  => "value:role")

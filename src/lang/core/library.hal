@@ -10,6 +10,8 @@
 
 (def +default-library+ (atom nil))
 
+(def +namespace-libraries+ (atom {}))
+
 (defn library?
   "Returns true when value is a state-owning Library."
   [value]
@@ -138,6 +140,19 @@
     (if (or (nil? current) (has? seen current))
       nil
       (let [module-value (get (library-book-modules library current) module-id)]
+        (if module-value
+          module-value
+          (let [info (or (library-book-info library current)
+                         (registry/registry-book-info current))]
+            (recur (:parent info) (conj seen current))))))))
+
+(defn library-get-local-source-module
+  "Finds a source module owned by this Library through its selected Book parents."
+  [library language module-id]
+  (loop [current language seen #{}]
+    (if (or (nil? current) (has? seen current))
+      nil
+      (let [module-value (get (library-raw-book-modules library current) module-id)]
         (if module-value
           module-value
           (let [info (or (library-book-info library current)
@@ -322,6 +337,47 @@
   "Resets the default Library to its deterministic empty local baseline."
   []
   (library-reset! (default-library)))
+
+(defn namespace-library
+  "Returns the Library selected for one namespace without creating state."
+  [namespace]
+  (get (deref +namespace-libraries+) namespace))
+
+(defn namespace-library-register!
+  "Associates one namespace with its state-owning child Library."
+  [namespace current]
+  (swap! +namespace-libraries+ assoc namespace current)
+  current)
+
+(defn namespace-library-remove!
+  "Removes and returns one namespace's selected child Library."
+  [namespace]
+  (let [previous (namespace-library namespace)]
+    (swap! +namespace-libraries+ dissoc namespace)
+    previous))
+
+(defn namespace-library-snapshot
+  "Captures the namespace-to-Library selection map for reversible lifecycle use."
+  []
+  (deref +namespace-libraries+))
+
+(defn namespace-library-restore!
+  "Restores a namespace-to-Library selection snapshot or the empty baseline."
+  [snapshot]
+  (reset! +namespace-libraries+ (or snapshot {}))
+  (namespace-library-snapshot))
+
+(defn namespace-library-reset!
+  "Clears namespace child-Library selections idempotently."
+  []
+  (namespace-library-restore! nil))
+
+(defmacro with:namespace-library
+  "Evaluates body against one namespace child Library or the default fallback."
+  [[namespace] & body]
+  `(lang.core.library/with:library [(or (lang.core.library/namespace-library ~namespace)
+                                        (lang.core.library/default-library))]
+     ~@body))
 
 (defn runtime-library
   "Returns the dynamically bound Library or the process default Library."

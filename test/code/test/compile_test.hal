@@ -1,5 +1,6 @@
 (ns code.test.compile-test
   (:require [code.test.compile :as compile]
+            [code.test.context :as context]
             [code.test.registry :as registry]))
 
 (defn cleanup
@@ -21,13 +22,21 @@
 
 ^{:refer code.test.compile/fact}
 (Test/check
- [{:name "fact registers checker-aware native Test functions"
+ [{:name "fact registers and immediately evaluates checker-aware native Test functions"
    :test (fn []
            (try
              (let [fact (compile/fact "macro fact" (+ 1 1) => 2)]
-               [(:desc fact) (:status (Test/run-fact fact))])
+               (:status fact))
              (finally (cleanup))))
-   :expected ["macro fact" :passed]}])
+   :expected :passed}
+  {:name "fact only registers while runner eval mode is bound"
+   :test (fn []
+           (try
+             (binding [context/*eval-mode* false]
+               (let [fact (compile/fact "runner fact" (+ 1 1) => 2)]
+                 [(:desc fact) (count (registry/facts))]))
+             (finally (cleanup))))
+   :expected ["runner fact" 1]}])
 
 ^{:refer code.test.compile/fact:template}
 (Test/check

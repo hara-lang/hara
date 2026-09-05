@@ -6,7 +6,8 @@
 ;; selected language book and the current IContext lifecycle.
 ;; ============================================================================
 (ns lang.core.script-annex
-  (:require [lang.core.library :as library]
+  (:require [code.test.context :as context]
+            [lang.core.library :as library]
             [lang.core.runtime :as runtime]
             [lang.core.script :as script]
             [std.lib.component :as component]))
@@ -47,14 +48,18 @@
   [namespace]
   (let [current (annex-existing namespace)]
     (if current
-      current
+      (do
+        (library/namespace-library-register! namespace (:library current))
+        current)
       (let [created (annex-create namespace)]
         (swap! +annexes+
                (fn [annexes]
                  (if (get annexes namespace)
                    annexes
                    (assoc annexes namespace created))))
-        (annex-existing namespace)))))
+        (let [current (annex-existing namespace)]
+          (library/namespace-library-register! namespace (:library current))
+          current)))))
 
 (defn annex-library-in
   "Returns the namespace-owned child Library, inheriting the default Library."
@@ -127,6 +132,7 @@
        (library/library-reset! (:library current)))
      nil
      existing)
+    (library/namespace-library-reset!)
     (reset! +annexes+
             (reduce
              (fn [output namespace]
@@ -152,6 +158,11 @@
                  (assoc output namespace current)))
              {}
              (sort-by str namespaces)))
+    (reduce-kv
+     (fn [_ namespace current]
+       (library/namespace-library-register! namespace (:library current)))
+     nil
+     (deref +annexes+))
     (reduce (fn [_ coordinate-value]
               (let [instance (runtime-in (first coordinate-value)
                                          (second coordinate-value))]
@@ -347,6 +358,7 @@
       (if current
         (library/library-reset! (:library current))))
     (swap! +annexes+ dissoc namespace)
+    (library/namespace-library-remove! namespace)
     (status-in namespace)))
 
 (defn clear
@@ -373,22 +385,61 @@
   [tag form]
   (eval-tag-in (current-namespace-symbol) tag form))
 
-(defn script-ext-form
+(defn script-test-mode?
+  "Returns whether runner-mode test configuration suppresses runtime startup."
+  [config]
+  (if (and (:test-mode config)
+           (not context/*eval-mode*))
+    true
+    false))
+
+(defn script-test-in
+  "Configures one namespace child-Library script and starts it outside runner test mode."
+  [namespace lang module config]
+  (let [config (or config {})
+        current (annex-library-in namespace)]
+    (library/with:library [current]
+      (script/setup lang module config true namespace)
+      (if (or script/*loading-module*
+              (script-test-mode? config))
+        nil
+        (script/start-script lang module config)))))
+
+(defn script-test-form
+  "Builds namespace-annex script setup for the l/script- declaration macro."
+  [namespace lang options]
+  (let [[module config] (script/script-options namespace options)]
+    (list 'lang.core.script-annex/script-test-in
+          (list 'quote namespace)
+          (list 'quote lang)
+          (list 'quote module)
+          (list 'quote config))))
+
+(defmacro script-
+  "Declares source in the caller's namespace child Library with ordinary eager startup."
+  [lang & options]
+  (let [namespace-symbol (symbol (str (:ns &env)))]
+    (script/script-intern-macros! namespace-symbol lang)
+    (script-test-form namespace-symbol lang options)))
+
+(defn script-ext-in
+  "Registers one tagged annex script and starts it unless runner test mode suppresses it."
   [namespace coordinate-value config]
   (let [tag (first coordinate-value)
         lang (second coordinate-value)
         config (or config {})
         runtime-id (or (:runtime config) :default)]
-    (list 'do
-          (list 'lang.core.script-annex/register-tag-in
-                (list 'quote namespace)
-                tag
-                lang
-                runtime-id
-                (list 'quote config))
-          (list 'lang.core.script-annex/start-tag-in
-                (list 'quote namespace)
-                tag))))
+    (register-tag-in namespace tag lang runtime-id config)
+    (if (script-test-mode? config)
+      nil
+      (start-tag-in namespace tag))))
+
+(defn script-ext-form
+  [namespace coordinate-value config]
+  (list 'lang.core.script-annex/script-ext-in
+        (list 'quote namespace)
+        (list 'quote coordinate-value)
+        (list 'quote (or config {}))))
 
 (defn script-eval-form
   [namespace tag body]
@@ -401,10 +452,12 @@
 
 (defmacro script+
   [coordinate-value & options]
-  (script-ext-form
-   (symbol (str (:ns &env)))
-   coordinate-value
-   (if (empty? options) {} (first options))))
+  (let [namespace-symbol (symbol (str (:ns &env)))]
+    (script/script-intern-macros! namespace-symbol (second coordinate-value))
+    (script-ext-form
+     namespace-symbol
+     coordinate-value
+     (if (empty? options) {} (first options)))))
 
 (defmacro !
   [tag body]

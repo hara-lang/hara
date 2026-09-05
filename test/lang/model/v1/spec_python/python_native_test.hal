@@ -1,7 +1,9 @@
 (ns lang.model.v1.spec-python.python-native-test
-  (:require [lang.common.emit :as emit]
+  (:require [lang.common.compiler :as compiler]
+            [lang.common.emit :as emit]
             [lang.common.emit-common :as emit-common]
             [lang.common.preprocess-base :as preprocess]
+            [lang.core.script :as script]
             [lang.model.v1.spec-python :as python]
             [lang.model.v1.spec-python.python-native :as subject]))
 
@@ -157,6 +159,15 @@
                  '(fn val-fn [x] (return x))))
    :expected '(fn.inner val-fn [x] (return x))}])
 
+^{:refer lang.model.v1.spec-python.python-native/python-var}
+(Test/check
+ [{:name "lowers a scalar binding through Python local-scope tracking"
+   :test (fn []
+           [(subject/python-var '(var start (x:now-ms)))
+            (emit/emit (subject/python-var '(var start 1))
+                       python/+selection+)])
+   :expected ['(var.inner start := (x:now-ms)) "start = 1"]}])
+
 ^{:refer lang.model.v1.spec-python.python-native/python-defn}
 (Test/check
  [{:name "lowers inner definitions to hidden definitions"
@@ -193,3 +204,41 @@
  [{:name "emits a reversed Python array copy"
    :test (fn [] (subject/python-x-arr-reverse '(x:arr-reverse arr)))
    :expected '(list (reversed arr))}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-x-cat}
+(Test/check
+ [{:name "retains every Python concatenation operand"
+   :test (fn [] (subject/python-x-cat '(x:cat prefix middle suffix)))
+   :expected '(+ prefix middle suffix)}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-x-str-replace}
+(Test/check
+ [{:name "retains every Python string replacement operand"
+   :test (fn [] (subject/python-x-str-replace
+                 '(x:str-replace source token replacement)))
+   :expected '(. source (replace token replacement))}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-dot}
+(Test/check
+ [{:name "preserves the Python method separator for array mutation"
+   :test (fn []
+           (emit/emit '(x:arr-push out (f e)) python/+selection+))
+   :expected "out.append(f(e))"}
+  {:name "preserves Python method arguments when compiling through the selected Book"
+   :test (fn []
+           (:output
+            (compiler/compile
+             (compiler/compiler)
+             '(. lookup (pop (id key) nil))
+             (:selection (script/selected-book :python))
+             {:lang :python :module {:id 'demo}})))
+   :expected "lookup.pop(id(key), None)"}])
+
+^{:refer lang.model.v1.spec-python.python-native/python-x-lu-del}
+(Test/check
+ [{:name "emits identity-key lookup deletion as a Python dictionary pop call"
+   :test (fn []
+           (emit/emit
+            (subject/python-x-lu-del '(x:lu-del lookup key))
+            python/+selection+))
+   :expected "lookup.pop(id(key), None)"}])

@@ -1,0 +1,270 @@
+(ns lang.model.v1.spec-dart.rewrite-test
+  (:use code.test)
+  (:require [lang.common.preprocess-base :as preprocess]
+            [lang.model.v1.spec-dart.rewrite :as subject]))
+
+^{:refer lang.model.v1.spec-dart.rewrite/+dart-rewriter+}
+(fact "constructs the Dart hoist rewriter"
+  (mapv fn? [(:rewrite-expression subject/+dart-rewriter+)
+             (:rewrite-statement subject/+dart-rewriter+)
+             (:rewrite-stage subject/+dart-rewriter+)])
+  => [true true true])
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-optional-input?}
+(fact "recognizes maybe typed input declarations"
+  [(subject/dart-optional-input? {:type {:kind :maybe}})
+   (subject/dart-optional-input? {:type {:kind :primitive}})]
+  => [true false])
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-function-var-symbol?}
+(fact "recognizes Dart callback variables"
+  [(subject/dart-function-var-symbol? 'dart_callback__1)
+   (subject/dart-function-var-symbol? 'handler)
+   (subject/dart-function-var-symbol? 'normal-value)]
+  => [true true false])
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-cast-function}
+(fact "casts callback operands before Function.apply"
+  (subject/dart-cast-function 'callback)
+  => '(:% (:- "(") callback (:- " as Function)")))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-qualified-symbol}
+(fact "qualifies unqualified symbols from the active source module"
+  (binding [preprocess/*macro-opts* {:module {:id 'demo.core}}]
+    [(subject/dart-qualified-symbol 'value)
+     (subject/dart-qualified-symbol 'other/value)
+     (subject/dart-qualified-symbol (with-meta 'value {:inner true}))])
+  => ['demo.core/value 'other/value 'value])
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-resolve-function-def}
+(fact "does not invent an optional declaration for an unknown function"
+  (subject/dart-resolve-function-def 'missing/function)
+  => nil)
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-pad-optional-args}
+(fact "leaves unanalyzable calls unchanged"
+  (subject/dart-pad-optional-args 'missing/function '[value])
+  => '[value])
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-boolish-form?}
+(fact "preserves Dart boolean operations"
+  [(subject/dart-boolish-form? '(== kind "int"))
+   (subject/dart-boolish-form? '(. source (containsKey "key")))
+   (subject/dart-boolish-form? 'value)]
+  => [true true false])
+
+^{:refer lang.model.v1.spec-dart.rewrite/simple-truthy-source?}
+(fact "identifies values safe to evaluate directly in truthiness checks"
+  [(subject/simple-truthy-source? 'value)
+   (subject/simple-truthy-source? "value")
+   (subject/simple-truthy-source? '(probe value))]
+  => [true true false])
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-wrap-truthy-check}
+(fact "wraps simple Dart truthiness operands"
+  (subject/dart-wrap-truthy-check 'value 'value {})
+  => '(and (x:not-nil? value) (not= false value)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-truthy-form}
+(fact "keeps boolean expressions and wraps value expressions"
+  [(subject/dart-truthy-form '(== kind "int") '(== kind "int") {})
+   (subject/dart-truthy-form 'value 'value {})]
+  => ['(== kind "int")
+      '(and (x:not-nil? value) (not= false value))])
+
+^{:refer lang.model.v1.spec-dart.rewrite/ensure-return}
+(fact "adds returns only around value expressions"
+  [(subject/ensure-return 'value)
+   (subject/ensure-return '(return value))
+   (subject/ensure-return '(do (step) value))]
+  => ['(return value) '(return value) '(do (step) (return value))])
+
+^{:refer lang.model.v1.spec-dart.rewrite/ensure-tail-return}
+(fact "adds a return to only the final statement"
+  (vec (subject/ensure-tail-return '((step) value)))
+  => '((step) (return value)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-normalize-let}
+(fact "normalizes let bindings to Dart vars"
+  (subject/dart-normalize-let '(let [a 1 _ (step)] (+ a 2)))
+  => '(do (var a := 1) (step) (+ a 2)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-fn}
+(fact "rewrites functions with an explicit tail return"
+  (subject/rewrite-fn '(fn [value] (+ value 1)) {})
+  => '(fn [value] (return (+ value 1))))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-for-statement}
+(fact "rewrites loop bounds and body statements"
+  (subject/rewrite-for-statement
+   '(for:index [index values] (return index)) {})
+  => '(for:index [index values] (return index)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-cond-statement}
+(fact "rewrites cond tests in their Dart truthiness context"
+  (subject/rewrite-cond-statement
+   '(cond current (return 1) :else (return 2)) {})
+  => '(cond (and (x:not-nil? current) (not= false current))
+       (return 1) :else (return 2)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-branch-control}
+(fact "rewrites a branch predicate and body"
+  (subject/rewrite-branch-control '(if current (return 1)) {})
+  => '(if (and (x:not-nil? current) (not= false current)) (return 1)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-branch-statement}
+(fact "rewrites all branches in a branch form"
+  (subject/rewrite-branch-statement
+   '(br* (if current (return 1)) (else (return 2))) {})
+  => '(br* (if (and (x:not-nil? current) (not= false current)) (return 1))
+          (else (return 2))))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-or-expression}
+(fact "rewrites value default ors into dart:or"
+  [(subject/rewrite-or-expression '(or value fallback) {})
+   (subject/rewrite-or-expression '(or (== a b) (== c d)) {})]
+  => ['(dart:or value fallback) '(or (== a b) (== c d))])
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-and-step}
+(fact "preserves value semantics for direct and operands"
+  (subject/rewrite-and-step '(and value fallback) 'value 'fallback {})
+  => '(:? (and (x:not-nil? value) (not= false value)) fallback value))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-and-expression}
+(fact "keeps boolean and and rewrites value-preserving and"
+  [(subject/rewrite-and-expression '(and (== a b) (== c d)) {})
+   (subject/rewrite-and-expression '(and value fallback) {})]
+  => ['(and (== a b) (== c d))
+      '(:? (and (x:not-nil? value) (not= false value)) fallback value)])
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-ternary-expression}
+(fact "rewrites value ternaries into Dart truthiness ternaries"
+  [(subject/rewrite-ternary-expression '(:? value yes no) {})
+   (subject/rewrite-ternary-expression '(:? (== a b) yes no) {})]
+  => ['(dart:ternary value yes no) '(:? (== a b) yes no)])
+
+^{:refer lang.model.v1.spec-dart.rewrite/spread-form?}
+(fact "recognizes exact Dart spread forms"
+  [(subject/spread-form? '(:.. values))
+   (subject/spread-form? '(:.. values extra))
+   (subject/spread-form? '(x:unpack values))]
+  => [true false false])
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-invoke-expression}
+(fact "rewrites unpack calls through Function.apply"
+  [(subject/rewrite-invoke-expression '(call value) {})
+   (subject/rewrite-invoke-expression '(call (x:unpack values)) {})]
+  => ['(call value) '(Function.apply call [(:.. values)])])
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-expression-list}
+(fact "keeps quoted expression data unchanged"
+  (subject/rewrite-expression-list '(quote (or value fallback)) {})
+  => '(quote (or value fallback)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-for-async-form}
+(fact "rewrites async forms through promise handlers"
+  (subject/rewrite-for-async-form
+   '(for:async [[result error] (call)]
+      {:success (return result) :error (return error)}) {})
+  => '(x:promise-catch
+      (x:promise-then
+       (x:promise (fn [] (return (call))))
+       (fn [result] (return result)))
+      (fn [error] (return error))))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-conditional-expression-list}
+(fact "rewrites conditional expression operands recursively"
+  (subject/rewrite-conditional-expression-list '(not value) {})
+  => '(not (and (x:not-nil? value) (not= false value))))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-rewrite-conditional-expression}
+(fact "wraps a raw conditional expression with Dart truthiness"
+  (subject/dart-rewrite-conditional-expression 'value {})
+  => '(and (x:not-nil? value) (not= false value)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-global-assign?}
+(fact "recognizes direct !:G global assignments"
+  [(subject/dart-global-assign? '(:= (!:G hello) 1))
+   (subject/dart-global-assign? '(:= hello 1))]
+  => [true false])
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-rewrite-global-assign}
+(fact "rewrites globals into key assignment"
+  (subject/dart-rewrite-global-assign '(:= (!:G hello) 1) {})
+  => '(x:set-key !:G "hello" 1))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-global-read?}
+(fact "recognizes direct !:G reads"
+  [(subject/dart-global-read? '(!:G hello))
+   (subject/dart-global-read? '(call hello))]
+  => [true false])
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-rewrite-global-read}
+(fact "rewrites globals into key lookup"
+  (subject/dart-rewrite-global-read '(!:G hello) {})
+  => '(x:get-key !:G "hello"))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-rewrite-expression}
+(fact "rewrites value ors through the expression walker"
+  (subject/dart-rewrite-expression '(or value fallback) {})
+  => '(dart:or value fallback))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-do-statement}
+(fact "normalizes do* statements before Dart rewriting"
+  (subject/rewrite-do-statement '(do* (var value 1) (return value)) {})
+  => '(do (var value 1) (return value)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-var-statement}
+(fact "rewrites a var initializer expression"
+  (subject/rewrite-var-statement '(var value (or value fallback)) {})
+  => '(var value (dart:or value fallback)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-return-statement}
+(fact "rewrites a return expression"
+  (subject/rewrite-return-statement '(return (or value fallback)) {})
+  => '(return (dart:or value fallback)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-throw-statement}
+(fact "rewrites thrown expressions"
+  (subject/rewrite-throw-statement '(throw (or value fallback)) {})
+  => '(throw (dart:or value fallback)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-if-statement}
+(fact "rewrites explicit if controls"
+  (subject/rewrite-if-statement '(if value (return 1) (return 2)) {})
+  => '(if (and (x:not-nil? value) (not= false value)) (return 1) (return 2)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-when-statement}
+(fact "rewrites explicit when controls"
+  (subject/rewrite-when-statement '(when value (return 1)) {})
+  => '(when (and (x:not-nil? value) (not= false value)) (return 1)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-while-statement}
+(fact "rewrites explicit while controls"
+  (subject/rewrite-while-statement '(while value (return 1)) {})
+  => '(while (and (x:not-nil? value) (not= false value)) (return 1)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/rewrite-defn-statement}
+(fact "adds a tail return to Dart function bodies"
+  (subject/rewrite-defn-statement '(defn sample [value] (+ value 1)) {})
+  => '(defn sample [value] (return (+ value 1))))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-rewrite-statement}
+(fact "selects the Dart statement rewrite"
+  (subject/dart-rewrite-statement '(var value (or value fallback)) {})
+  => '(var value (dart:or value fallback)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-rewrite-statements}
+(fact "rewrites a sequential Dart statement body"
+  (vec (subject/dart-rewrite-statements
+        '((var value 1) (return value)) {}))
+  => '((var value 1) (return value)))
+
+^{:refer lang.model.v1.spec-dart.rewrite/dart-rewrite-stage}
+(fact "ports the historical Dart staging rewrite cases"
+  [(subject/dart-rewrite-stage '(var value (or value fallback)) {:grammar {}})
+   (subject/dart-rewrite-stage '(:= value (:? value yes no)) {:grammar {}})
+   (subject/dart-rewrite-stage '(return (call (x:unpack values))) {:grammar {}})]
+  => ['(var value (dart:or value fallback))
+      '(:= value (dart:ternary value yes no))
+      '(return (Function.apply call [(:.. values)]))])

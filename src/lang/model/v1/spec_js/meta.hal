@@ -1,0 +1,168 @@
+(ns lang.model.v1.spec-js.meta
+  (:config {:role :internal})
+  (:require [lang.common.book-meta :as book-meta]
+            [lang.common.book-module :as module]))
+
+(defn js-module-import-async
+  "Builds the lazy CommonJS-compatible proxy used for asynchronous ESM imports."
+  [name link]
+  (let [as (:as link)]
+    (list 'const as
+          (list 'new
+                'Proxy
+                (list 'import name)
+                {:get
+                 (fn [esm key]
+                   (list 'return
+                         (list '. esm
+                               (list 'then
+                                     (fn [loaded]
+                                       (list 'return
+                                             {"__esMODULE" true
+                                              :default (list '. loaded 'default [key])}))))))}))))
+
+(defn js-module-import
+  "Builds JavaScript imports for ESM, CommonJS, global, and linked modules."
+  [name link mopts]
+  (let [emit (or (:emit mopts) {})
+        async-names (set (get-in emit [:static :import/async]))
+        namespace-value (:ns link)
+        as (:as link)
+        refer (:refer link)
+        suffix (:suffix link)
+        format (or (:lang/format emit) (:format emit))
+        link-import? (= :link (:import emit))
+        name (str name)
+        name
+        (if link-import?
+          (str (if (or (str/starts-with? name ".")
+                       (str/starts-with? name "/")
+                       (str/starts-with? name "@")
+                       (str/includes? name "://"))
+                 ""
+                 "./")
+               name
+               (or suffix ""))
+          name)]
+    (cond (= :none format) nil
+
+          (= :global format)
+          (let [symbol-value (if (vector? as) (last as) as)]
+            (list 'Object.defineProperty
+                  '!:G
+                  (str symbol-value)
+                  {:value (list 'require name)}))
+
+          (= :commonjs format)
+          (let [symbol-value (if (vector? as) (last as) as)]
+            (list 'const symbol-value := (list 'require name)))
+
+          :else
+          (let [as (if link-import? [:* as] as)
+                imports
+                (vec
+                 (concat
+                  (if as
+                    [(if (vector? as)
+                       (list :- (first as) :as (last as))
+                       as)]
+                    [])
+                  (if refer [(set refer)] [])))]
+            (if (has? async-names namespace-value)
+              (js-module-import-async name link)
+              (if (empty? imports)
+                (list :- :import (str "'" name "'"))
+                (list :- :import
+                      (list 'quote imports)
+                      :from (str "'" name "'"))))))))
+
+(defn js-module-export
+  "Builds JavaScript module exports from static declarations or module entries."
+  [module-value mopts]
+  (let [emit (or (:emit mopts) {})
+        format (or (:lang/format emit) (:format emit))
+        export (or (:lang/export emit) (:export emit))
+        static-export (get-in module-value [:static :export])
+        table
+        (if static-export
+          (cons 'tab
+                (map (fn [symbol-value]
+                       [(list :% (name symbol-value)) symbol-value])
+                     static-export))
+          (cons 'tab
+                (module/module-entries module-value #{:defn :def :defclass})))]
+    (cond (or (= :none format) (= :global format)) nil
+          (= :commonjs format) (list := 'module.exports table)
+          (or static-export export)
+          (if (and (vector? static-export)
+                   (= 1 (count static-export)))
+            (list :- :export :default (first static-export))
+            (list :- :export :default table))
+          :else nil)))
+
+(defn js-module-link
+  "Returns the Foundation-compatible relative JavaScript import path."
+  [namespace-value graph]
+  (let [parent-path
+        (fn [path]
+          (let [path (str path)
+                index (str/last-index-of path ".")]
+            (if (= -1 index)
+              path
+              (str/slice path 0 index))))
+        path-parts
+        (fn [path]
+          (vec (filter (fn [part] (not (str/blank? part)))
+                       (str/split path "/"))))
+        relative-path
+        (fn [from target]
+          (let [from-parts (path-parts from)
+                target-parts (path-parts target)]
+            (loop [index 0]
+              (if (and (< index (count from-parts))
+                       (< index (count target-parts))
+                       (= (nth from-parts index) (nth target-parts index)))
+                (recur (inc index))
+                (str/join
+                 "/"
+                 (concat
+                  (map (fn [_] "..") (range index (count from-parts)))
+                  (drop index target-parts)))))))
+        base (str (:base graph))
+        root-namespace (str (or (:root-ns graph) ""))
+        root-relative (parent-path root-namespace)
+        namespace-name (str namespace-value)
+        base-external? (not (str/starts-with? base root-relative))
+        namespace-external? (not (str/starts-with? namespace-name root-relative))
+        base-path
+        (let [value (str/replace base "." "/")
+              index (str/last-index-of value "/")]
+          (if (= -1 index) "" (str/slice value 0 index)))
+        namespace-path (str/replace namespace-name "." "/")
+        target-path
+        (if (or (not namespace-external?) base-external?)
+          namespace-path
+          (str (parent-path root-namespace) "/" namespace-path))
+        interim (relative-path base-path target-path)]
+    (cond (str/starts-with? interim ".") interim
+          (str/starts-with? interim "/") (str "." interim)
+          (empty? interim) (str "../" (last (path-parts base-path)))
+          :else (str "./" interim))))
+
+(defn js-transform-entry
+  "Exports normal JavaScript module declarations without changing scripts."
+  [body context]
+  (let [emit (or (get-in context [:mopts :emit]) {})
+        format (or (:lang/format emit) (:format emit))
+        entry (:entry context)]
+    (cond (= :script (:type emit)) body
+          (or (= :none format) (= :global format) (= :commonjs format)) body
+          (has? #{:defclass :def :defn} (:op-key entry)) (str "export " body)
+          :else body)))
+
+(def +meta+
+  (book-meta/book-meta
+   {:module-import js-module-import
+    :module-export js-module-export
+    :module-link js-module-link
+    :transforms {:entry [js-transform-entry]}}))

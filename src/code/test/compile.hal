@@ -1,6 +1,7 @@
 (ns code.test.compile
   (:config {:role :internal})
   (:require [code.test.base.process :as process]
+            [code.test.context :as context]
             [code.test.registry :as registry]))
 
 (def ^{:public true} => '=>)
@@ -42,14 +43,18 @@
               entries))
         namespace (:ns &env)
         metadata (or (meta &form) {})]
-    `(code.test.registry/register
-      '~namespace
-      {:desc ~description
-       :function (fn [_]
-                   (let [results (atom [])]
-                     (do ~@steps)
-                     (deref results)))
-       :meta ~metadata})))
+    `(let [fact#
+           (code.test.registry/register
+            '~namespace
+            {:desc ~description
+             :function (fn [_]
+                         (let [results (atom [])]
+                           (do ~@steps)
+                           (deref results)))
+             :meta ~metadata})]
+       (if (code.test.context/eval-mode?)
+         (Test/run-fact fact# {})
+         fact#))))
 
 (defmacro ^{:public true} fact:template
   [description & body]

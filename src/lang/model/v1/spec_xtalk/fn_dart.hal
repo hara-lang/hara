@@ -1,0 +1,924 @@
+(ns lang.model.v1.spec-xtalk.fn-dart
+  (:config {:role :internal}))
+
+(defn dart-method0
+  [obj method]
+  (list :% (list :- "(") obj (list :- ").") method (list :- "()")))
+
+(defn dart-call
+  [f args]
+  (list 'Function.apply f (vec args)))
+
+(defn dart-runtime-type-string
+  [obj]
+  (dart-method0 (list '. obj 'runtimeType) 'toString))
+
+(defn dart-string-compare-expr
+  [a b]
+  (list '. (dart-method0 a 'toString)
+        (list 'compareTo (dart-method0 b 'toString))))
+
+(defn dart-comparison-form
+  [a b numeric-op string-op]
+  (let [string-side? (fn [value]
+                       (list '== "String"
+                             (dart-runtime-type-string value)))]
+    (list ':?
+          (list 'or (string-side? a) (string-side? b))
+          (list string-op (dart-string-compare-expr a b) 0)
+          (list numeric-op a b))))
+
+(defn dart-is-map
+  [obj]
+  (list :% (list :- "(") obj (list :- " is Map)")))
+
+(defn dart-map-get
+  [obj key]
+  (list :% (list :- "((") obj
+        (list :- (str " as Map)[\"" key "\"])"))))
+
+(defn dart-xt-exception?
+  [obj]
+  (list 'and
+        (dart-is-map obj)
+        (list '== "xt.exception" (dart-map-get obj "__type__"))))
+
+(defn dart-tf-x-len
+  [form]
+  (list '. (second form) 'length))
+
+(defn dart-tf-x-cat
+  [form]
+  (apply list '+ (drop 1 form)))
+
+(defn dart-tf-x-print
+  [form]
+  (let [args (drop 1 form)
+        value (if (= 1 (count args))
+                (first args)
+                (apply list '+ args))]
+    (list (list 'fn []
+                (list 'print value)
+                (list 'return nil)))))
+
+(defn dart-tf-x-arr-push
+  [form]
+  (list '. (second form) (list 'add (nth form 2))))
+
+(defn dart-tf-x-apply
+  [form]
+  (dart-call (second form) [(nth form 2)]))
+
+(defn dart-tf-x-construct
+  [form]
+  (dart-call (second form) [(nth form 2)]))
+
+(defn dart-tf-x-now-ms
+  [_]
+  (list '. (list 'DateTime.now) 'millisecondsSinceEpoch))
+
+(defn dart-tf-x-random
+  [_]
+  (dart-method0 (list 'math.Random) 'nextDouble))
+
+(defn dart-tf-x-type-native
+  [form]
+  (let [obj (second form)
+        rtype (gensym "rtype")
+        sval (gensym "sval")]
+    (list (list 'fn []
+                (list 'if (list '== obj nil) (list 'return nil))
+                (list 'var rtype (dart-runtime-type-string obj))
+                (list 'var sval (dart-method0 obj 'toString))
+                (list 'if (list '== "String" rtype)
+                      (list 'return "string"))
+                (list 'if (list 'or (list '== "int" rtype)
+                                  (list '== "double" rtype)
+                                  (list '== "num" rtype))
+                      (list 'return "number"))
+                (list 'if (list '== "bool" rtype)
+                      (list 'return "boolean"))
+                (list 'if (list 'or
+                                (list '. rtype (list 'contains "Function"))
+                                (list '. rtype (list 'contains "=>"))
+                                (list '. sval (list 'startsWith "Closure")))
+                      (list 'return "function"))
+                (list 'if (list 'or
+                                (list '== "List" rtype)
+                                (list '. rtype (list 'contains "List")))
+                      (list 'return "array"))
+                (list 'if (list 'or
+                                (list '== "Map" rtype)
+                                (list '. rtype (list 'contains "Map")))
+                      (list 'return "object"))
+                (list 'return (list '. rtype (list 'toLowerCase)))))))
+
+(defn dart-tf-x-del
+  [form]
+  (let [obj (second form)]
+    (if (and (std.foundation/form? obj)
+             (= '. (first obj))
+             (= 3 (count obj))
+             (vector? (nth obj 2))
+             (= 1 (count (nth obj 2))))
+      (list '. (second obj) (list 'remove (first (nth obj 2))))
+      (list '. obj (list 'remove nil)))))
+
+(defn dart-tf-x-eval
+  [_]
+  (list 'throw "eval not supported in Dart"))
+
+(defn dart-tf-x-ex-native?
+  [form]
+  (dart-xt-exception? (second form)))
+
+(defn dart-tf-x-ex-new
+  [form]
+  (let [tail (drop 1 form)]
+    {"__type__" "xt.exception"
+     "message" (first tail)
+     "data" (if (> (count tail) 1) (second tail) nil)}))
+
+(defn dart-tf-x-ex-message
+  [form]
+  (let [value (second form)]
+    (list ':? (dart-xt-exception? value)
+          (dart-map-get value "message")
+          nil)))
+
+(defn dart-tf-x-ex-data
+  [form]
+  (let [value (second form)]
+    (list ':? (dart-xt-exception? value)
+          (dart-map-get value "data")
+          nil)))
+
+(defn dart-tf-x-has-key?
+  [form]
+  (let [obj (second form)
+        key (nth form 2)
+        check (if (> (count form) 3) (nth form 3) nil)]
+    (if (not (nil? check))
+      (list 'and
+            (list '. obj (list 'containsKey key))
+            (list '== check (list '. obj (vector key))))
+      (list '. obj (list 'containsKey key)))))
+
+(defn dart-tf-x-del-key
+  [form]
+  (list '. (second form) (list 'remove (nth form 2))))
+
+(defn dart-tf-x-lt [form]
+  (dart-comparison-form (second form) (nth form 2) '< '<))
+
+(defn dart-tf-x-lte [form]
+  (dart-comparison-form (second form) (nth form 2) '<= '<=))
+
+(defn dart-tf-x-gt [form]
+  (dart-comparison-form (second form) (nth form 2) '> '>))
+
+(defn dart-tf-x-gte [form]
+  (dart-comparison-form (second form) (nth form 2) '>= '>=))
+
+(def +dart-core+
+  {:x-print {:macro dart-tf-x-print :emit :macro :value true}
+   :x-len {:macro dart-tf-x-len :emit :macro :value true}
+   :x-cat {:macro dart-tf-x-cat :emit :macro :value true}
+   :x-apply {:macro dart-tf-x-apply :emit :macro}
+   :x-construct {:macro dart-tf-x-construct :emit :macro}
+   :x-err {:emit :alias :raw 'throw}
+   :x-ex-native? {:macro dart-tf-x-ex-native? :emit :macro}
+   :x-ex-new {:macro dart-tf-x-ex-new :emit :macro}
+   :x-ex-message {:macro dart-tf-x-ex-message :emit :macro}
+   :x-ex-data {:macro dart-tf-x-ex-data :emit :macro}
+   :x-now-ms {:macro dart-tf-x-now-ms :emit :macro}
+   :x-random {:macro dart-tf-x-random :emit :macro}
+   :x-type-native {:macro dart-tf-x-type-native :emit :macro}
+   :x-del {:macro dart-tf-x-del :emit :macro}
+   :x-eval {:macro dart-tf-x-eval :emit :macro}
+   :x-has-key? {:macro dart-tf-x-has-key? :emit :macro}
+   :x-del-key {:macro dart-tf-x-del-key :emit :macro}
+   :x-lt {:macro dart-tf-x-lt :emit :macro}
+   :x-lte {:macro dart-tf-x-lte :emit :macro}
+   :x-gt {:macro dart-tf-x-gt :emit :macro}
+   :x-gte {:macro dart-tf-x-gte :emit :macro}
+   :x-unpack {:emit :alias :raw '...}})
+
+(defn dart-tf-x-m-abs [form] (dart-method0 (second form) 'abs))
+(defn dart-tf-x-m-ceil [form] (dart-method0 (second form) 'ceil))
+(defn dart-tf-x-m-floor [form] (dart-method0 (second form) 'floor))
+(defn dart-tf-x-m-sin [form] (list 'math.sin (second form)))
+(defn dart-tf-x-m-cos [form] (list 'math.cos (second form)))
+(defn dart-tf-x-m-tan [form] (list 'math.tan (second form)))
+(defn dart-tf-x-m-asin [form] (list 'math.asin (second form)))
+(defn dart-tf-x-m-acos [form] (list 'math.acos (second form)))
+(defn dart-tf-x-m-atan [form] (list 'math.atan (second form)))
+(defn dart-tf-x-m-sqrt [form] (list 'math.sqrt (second form)))
+(defn dart-tf-x-m-exp [form] (list 'math.exp (second form)))
+(defn dart-tf-x-m-loge [form] (list 'math.log (second form)))
+(defn dart-tf-x-m-log10 [form]
+  (list '/ (list 'math.log (second form)) 'math.ln10))
+
+(defn dart-tf-x-m-max
+  [form]
+  (reduce (fn [acc arg] (list ':? (list '> acc arg) acc arg))
+          (drop 1 form)))
+
+(defn dart-tf-x-m-min
+  [form]
+  (reduce (fn [acc arg] (list ':? (list '< acc arg) acc arg))
+          (drop 1 form)))
+
+(defn dart-tf-x-m-mod [form]
+  (list :% (second form) (list :- " % ") (nth form 2)))
+
+(defn dart-tf-x-m-pow [form]
+  (list 'math.pow (second form) (nth form 2)))
+
+(defn dart-tf-x-m-quot [form]
+  (list :% (second form) (list :- " ~/ ") (nth form 2)))
+
+(defn dart-tf-x-m-cosh [form]
+  (let [x (second form)]
+    (list '/ (list '+ (list 'math.exp x)
+                  (list 'math.exp (list '- x)))
+          2)))
+
+(defn dart-tf-x-m-sinh [form]
+  (let [x (second form)]
+    (list '/ (list '- (list 'math.exp x)
+                  (list 'math.exp (list '- x)))
+          2)))
+
+(defn dart-tf-x-m-tanh [form]
+  (let [x (second form)]
+    (list '/ (list '- (list 'math.exp (list '* 2 x)) 1)
+          (list '+ (list 'math.exp (list '* 2 x)) 1))))
+
+(def +dart-math+
+  {:x-m-abs {:macro dart-tf-x-m-abs :emit :macro}
+   :x-m-ceil {:macro dart-tf-x-m-ceil :emit :macro}
+   :x-m-floor {:macro dart-tf-x-m-floor :emit :macro}
+   :x-m-sin {:macro dart-tf-x-m-sin :emit :macro}
+   :x-m-cos {:macro dart-tf-x-m-cos :emit :macro}
+   :x-m-tan {:macro dart-tf-x-m-tan :emit :macro}
+   :x-m-asin {:macro dart-tf-x-m-asin :emit :macro}
+   :x-m-acos {:macro dart-tf-x-m-acos :emit :macro}
+   :x-m-atan {:macro dart-tf-x-m-atan :emit :macro}
+   :x-m-sqrt {:macro dart-tf-x-m-sqrt :emit :macro}
+   :x-m-exp {:macro dart-tf-x-m-exp :emit :macro}
+   :x-m-loge {:macro dart-tf-x-m-loge :emit :macro}
+   :x-m-log10 {:macro dart-tf-x-m-log10 :emit :macro}
+   :x-m-max {:macro dart-tf-x-m-max :emit :macro}
+   :x-m-min {:macro dart-tf-x-m-min :emit :macro}
+   :x-m-mod {:macro dart-tf-x-m-mod :emit :macro}
+   :x-m-pow {:macro dart-tf-x-m-pow :emit :macro}
+   :x-m-quot {:macro dart-tf-x-m-quot :emit :macro}
+   :x-m-cosh {:macro dart-tf-x-m-cosh :emit :macro}
+   :x-m-sinh {:macro dart-tf-x-m-sinh :emit :macro}
+   :x-m-tanh {:macro dart-tf-x-m-tanh :emit :macro}})
+
+(defn dart-tf-x-to-string [form]
+  (dart-method0 (second form) 'toString))
+
+(defn dart-tf-x-to-number [form]
+  (list 'num.parse (second form)))
+
+(defn dart-tf-x-is-string? [form]
+  (list '== "String" (dart-runtime-type-string (second form))))
+
+(defn dart-tf-x-is-number? [form]
+  (let [rtype (dart-runtime-type-string (second form))]
+    (list 'or (list '== "int" rtype)
+          (list '== "double" rtype)
+          (list '== "num" rtype))))
+
+(defn dart-tf-x-is-integer? [form]
+  (list '== "int" (dart-runtime-type-string (second form))))
+
+(defn dart-tf-x-is-boolean? [form]
+  (list '== "bool" (dart-runtime-type-string (second form))))
+
+(defn dart-tf-x-is-function? [form]
+  (let [x (second form)
+        rtype (dart-runtime-type-string x)
+        sval (dart-method0 x 'toString)]
+    (list 'or (list '. rtype (list 'contains "Function"))
+          (list '. rtype (list 'contains "=>"))
+          (list '. sval (list 'startsWith "Closure")))))
+
+(defn dart-tf-x-is-object? [form]
+  (let [rtype (dart-runtime-type-string (second form))]
+    (list 'or (list '== "Map" rtype)
+          (list '. rtype (list 'startsWith "_Map"))
+          (list '. rtype (list 'startsWith "LinkedMap")))))
+
+(defn dart-tf-x-is-array? [form]
+  (let [rtype (dart-runtime-type-string (second form))]
+    (list 'or (list '. rtype (list 'startsWith "List"))
+          (list '. rtype (list 'startsWith "_GrowableList")))))
+
+(def +dart-type+
+  {:x-to-string {:macro dart-tf-x-to-string :emit :macro}
+   :x-to-number {:macro dart-tf-x-to-number :emit :macro}
+   :x-is-string? {:macro dart-tf-x-is-string? :emit :macro}
+   :x-is-number? {:macro dart-tf-x-is-number? :emit :macro}
+   :x-is-integer? {:macro dart-tf-x-is-integer? :emit :macro}
+   :x-is-boolean? {:macro dart-tf-x-is-boolean? :emit :macro}
+   :x-is-function? {:macro dart-tf-x-is-function? :emit :macro}
+   :x-is-object? {:macro dart-tf-x-is-object? :emit :macro}
+   :x-is-array? {:macro dart-tf-x-is-array? :emit :macro}})
+
+(defn dart-tf-x-str-char [form]
+  (list '. (second form)
+        (list 'codeUnitAt (list '- (nth form 2) (list 'x:offset)))))
+
+(defn dart-tf-x-str-split [form]
+  (list '. (second form) (list 'split (nth form 2))))
+
+(defn dart-tf-x-str-join [form]
+  (list '. (nth form 2) (list 'join (second form))))
+
+(defn dart-tf-x-str-index-of [form]
+  (let [start (if (> (count form) 3) (nth form 3) 0)]
+    (list '+ (list '. (second form) (list 'indexOf (nth form 2) start))
+          (list 'x:offset))))
+
+(defn dart-tf-x-str-last-index-of [form]
+  (list '. (second form) (list 'lastIndexOf (nth form 2))))
+
+(defn dart-tf-x-str-substring [form]
+  (let [start (list '- (nth form 2) (list 'x:offset))]
+    (if (> (count form) 3)
+      (list '. (second form) (list 'substring start (nth form 3)))
+      (list '. (second form) (list 'substring start)))))
+
+(defn dart-tf-x-str-to-upper [form] (dart-method0 (second form) 'toUpperCase))
+(defn dart-tf-x-str-to-lower [form] (dart-method0 (second form) 'toLowerCase))
+(defn dart-tf-x-str-to-fixed [form]
+  (list '. (second form) (list 'toStringAsFixed (nth form 2))))
+(defn dart-tf-x-str-replace [form]
+  (list '. (second form) (list 'replaceAll (nth form 2) (nth form 3))))
+(defn dart-tf-x-str-trim [form] (dart-method0 (second form) 'trim))
+(defn dart-tf-x-str-trim-left [form] (list '. (second form) (list 'trimLeft)))
+(defn dart-tf-x-str-trim-right [form] (list '. (second form) (list 'trimRight)))
+(defn dart-tf-x-str-starts-with? [form]
+  (list '. (second form) (list 'startsWith (nth form 2))))
+(defn dart-tf-x-str-ends-with? [form]
+  (list '. (second form) (list 'endsWith (nth form 2))))
+(defn dart-tf-x-str-includes? [form]
+  (list '. (second form) (list 'contains (nth form 2))))
+
+(def +dart-str+
+  {:x-str-char {:macro dart-tf-x-str-char :emit :macro}
+   :x-str-split {:macro dart-tf-x-str-split :emit :macro}
+   :x-str-join {:macro dart-tf-x-str-join :emit :macro}
+   :x-str-index-of {:macro dart-tf-x-str-index-of :emit :macro}
+   :x-str-last-index-of {:macro dart-tf-x-str-last-index-of :emit :macro}
+   :x-str-substring {:macro dart-tf-x-str-substring :emit :macro}
+   :x-str-to-upper {:macro dart-tf-x-str-to-upper :emit :macro}
+   :x-str-to-lower {:macro dart-tf-x-str-to-lower :emit :macro}
+   :x-str-to-fixed {:macro dart-tf-x-str-to-fixed :emit :macro}
+   :x-str-replace {:macro dart-tf-x-str-replace :emit :macro}
+   :x-str-trim {:macro dart-tf-x-str-trim :emit :macro}
+   :x-str-trim-left {:macro dart-tf-x-str-trim-left :emit :macro}
+   :x-str-trim-right {:macro dart-tf-x-str-trim-right :emit :macro}})
+
+(defn dart-tf-x-lu-create [_] {})
+
+(defn dart-tf-x-lu-get [form]
+  (list '. (second form) (vector (nth form 2))))
+
+(defn dart-tf-x-lu-set [form]
+  (list ':= (list '. (second form) (vector (nth form 2))) (nth form 3)))
+
+(defn dart-tf-x-lu-del [form]
+  (list '. (second form) (list 'remove (nth form 2))))
+
+(def +dart-lu+
+  {:x-lu-create {:macro dart-tf-x-lu-create :emit :macro}
+   :x-lu-get {:macro dart-tf-x-lu-get :emit :macro}
+   :x-lu-set {:macro dart-tf-x-lu-set :emit :macro}
+   :x-lu-del {:macro dart-tf-x-lu-del :emit :macro}})
+
+(defn dart-json-compact-expr
+  [value]
+  (list :%
+        (list :- "(() {\n"
+                 "  final omitNilKeys = <String>{\"db/remove\", \"select_method\", \"select_control\", \"return_method\", \"return_query\", \"return_count\", \"return_id\", \"return_bulk\", \"return_omit\", \"data_only\", \"model_id\", \"view_id\"};\n"
+                 "  dynamic compact(dynamic value) {\n"
+                 "    if (value is Function) { return null; }\n"
+                 "    if (value is Map) {\n"
+                 "      final out = <dynamic, dynamic>{};\n"
+                 "      value.forEach((key, entry) {\n"
+                 "        if (!(entry is Function)) {\n"
+                 "          final next = compact(entry);\n"
+                 "          if (next != null || !(key is String && omitNilKeys.contains(key))) { out[key] = next; }\n"
+                 "        }\n"
+                 "      });\n"
+                 "      return out;\n"
+                 "    }\n"
+                 "    if (value is List) {\n"
+                 "      return List<dynamic>.from(value.where((entry) => !(entry is Function)).map((entry) => compact(entry)));\n"
+                 "    }\n"
+                 "    return value;\n"
+                 "  }\n"
+                 "  return compact(")
+        value
+        (list :- ");\n})()")))
+
+(defn dart-tf-x-obj-keys
+  [form]
+  (list :% (list :- "List<dynamic>.from((") (second form)
+        (list :- ").keys)")))
+
+(defn dart-tf-x-obj-vals
+  [form]
+  (list :% (list :- "List<dynamic>.from((") (second form)
+        (list :- ").values)")))
+
+(defn dart-tf-x-obj-pairs
+  [form]
+  (list :% (list :- "List<List<dynamic>>.from((") (second form)
+        (list :- ").entries.map((entry) => [entry.key, entry.value]))")))
+
+(def +dart-obj+
+  {:x-obj-keys {:macro dart-tf-x-obj-keys :emit :macro}
+   :x-obj-vals {:macro dart-tf-x-obj-vals :emit :macro}
+   :x-obj-pairs {:macro dart-tf-x-obj-pairs :emit :macro}})
+
+(def +dart-json+
+  {:x-json-encode {:emit :alias :raw 'jsonEncode}
+   :x-json-decode {:emit :alias :raw 'jsonDecode}})
+
+(defn dart-tf-x-arr-pop [form]
+  (dart-method0 (second form) 'removeLast))
+
+(defn dart-tf-x-arr-slice
+  [form]
+  (let [start (list '- (nth form 2) (list 'x:offset))]
+    (if (> (count form) 3)
+      (list '. (second form) (list 'sublist start (nth form 3)))
+      (list '. (second form) (list 'sublist start)))))
+
+(defn dart-tf-x-arr-push-first [form]
+  (list '. (second form) (list 'insert 0 (nth form 2))))
+
+(defn dart-tf-x-arr-pop-first [form]
+  (list '. (second form) (list 'removeAt 0)))
+
+(defn dart-tf-x-arr-insert [form]
+  (list '. (second form) (list 'insert (nth form 2) (nth form 3))))
+
+(defn dart-tf-x-arr-remove [form]
+  (list '. (second form) (list 'removeAt (nth form 2))))
+
+(defn dart-tf-x-arr-sort
+  [form]
+  (let [arr (second form)
+        key-fn (nth form 2)
+        comp-fn (nth form 3)]
+    (list '. arr
+          (list 'sort
+                (list 'fn (vector 'a 'b)
+                      (list 'return
+                            (list ':?
+                                  (list comp-fn (list key-fn 'a)
+                                        (list key-fn 'b))
+                                  -1
+                                  1)))))))
+
+(defn dart-tf-x-str-comp
+  [form]
+  (list '< (dart-string-compare-expr (second form) (nth form 2)) 0))
+
+(def +dart-arr+
+  {:x-arr-slice {:macro dart-tf-x-arr-slice :emit :macro :type :template}
+   :x-arr-push {:macro dart-tf-x-arr-push :emit :macro :type :template}
+   :x-arr-push-first {:macro dart-tf-x-arr-push-first :emit :macro :type :template}
+   :x-arr-pop {:macro dart-tf-x-arr-pop :emit :macro :type :template}
+   :x-arr-pop-first {:macro dart-tf-x-arr-pop-first :emit :macro :type :template}
+   :x-arr-insert {:macro dart-tf-x-arr-insert :emit :macro :type :template}
+   :x-arr-remove {:macro dart-tf-x-arr-remove :emit :macro :type :template}
+   :x-str-comp {:macro dart-tf-x-str-comp :emit :macro}})
+
+(defn dart-tf-x-iter-eq
+  [form]
+  (let [a (second form)
+        b (nth form 2)
+        eq-fn (nth form 3)]
+    (list
+     (list 'fn []
+           (list 'while (list '. a (list 'moveNext))
+                 (list 'if (list 'not (list '. b (list 'moveNext)))
+                       (list 'return false))
+                 (list 'if (list 'not
+                                (list eq-fn (list '. a 'current)
+                                      (list '. b 'current)))
+                       (list 'return false)))
+           (list 'return (list 'not (list '. b (list 'moveNext))))))))
+
+(defn dart-tf-x-iter-from [form]
+  (list '. (second form) 'iterator))
+
+(defn dart-tf-x-iter-from-arr [form]
+  (list '. (second form) 'iterator))
+
+(defn dart-tf-x-iter-from-obj
+  [form]
+  (let [entry-fn (list 'fn:> (vector 'entry)
+                       (vector (list '. 'entry 'key)
+                               (list '. 'entry 'value)))]
+    (list '. (list '. (list '. (second form) 'entries)
+                  (list 'map entry-fn))
+          'iterator)))
+
+(defn dart-tf-x-iter-has?
+  [form]
+  (let [iter (second form)
+        rtype (dart-runtime-type-string iter)]
+    (list 'or (list 'x:iter-native? iter)
+          (list '. rtype (list 'contains "Iterable"))
+          (list '. rtype (list 'contains "List"))
+          (list '. rtype (list 'contains "Set")))))
+
+(defn dart-tf-x-iter-native?
+  [form]
+  (let [iter (second form)
+        rtype (dart-runtime-type-string iter)]
+    (list 'and (list 'not= nil iter)
+          (list '. rtype (list 'contains "Iterator")))))
+
+(defn dart-tf-x-iter-next [form]
+  (list '. (second form) 'current))
+
+(defn dart-tf-x-iter-null [_]
+  (list '. (vector) 'iterator))
+
+(def +dart-iter+
+  {:x-iter-eq {:macro dart-tf-x-iter-eq :emit :macro}
+   :x-iter-from {:macro dart-tf-x-iter-from :emit :macro}
+   :x-iter-from-arr {:macro dart-tf-x-iter-from-arr :emit :macro}
+   :x-iter-from-obj {:macro dart-tf-x-iter-from-obj :emit :macro}
+   :x-iter-has? {:macro dart-tf-x-iter-has? :emit :macro}
+   :x-iter-native? {:macro dart-tf-x-iter-native? :emit :macro}
+   :x-iter-next {:macro dart-tf-x-iter-next :emit :macro}
+   :x-iter-null {:macro dart-tf-x-iter-null :emit :macro}})
+
+(defn dart-tf-x-prototype-create [form]
+  (second form))
+
+(defn dart-tf-x-prototype-get [form]
+  (list 'x:get-key (second form) "_xt_proto" nil))
+
+(defn dart-tf-x-prototype-set
+  [form]
+  (let [obj (second form)
+        prototype (nth form 2)]
+    (list (list 'fn []
+                (list 'x:set-key obj "_xt_proto" prototype)
+                (list 'return obj)))))
+
+(defn dart-tf-x-prototype-method
+  [form]
+  (let [obj (second form)
+        key (nth form 2)
+        direct (gensym "direct")
+        proto (gensym "proto")]
+    (list
+     (list 'fn []
+           (list 'var direct (list 'x:get-key obj key nil))
+           (list 'if (list 'not= nil direct) (list 'return direct))
+           (list 'var proto (list 'proto:get obj))
+           (list 'if (list '== nil proto) (list 'return nil))
+           (list 'return (list 'x:get-key proto key nil))))))
+
+(defn dart-tf-x-prototype-tostring [_]
+  "toString")
+
+(def +dart-proto+
+  {:prototype-create {:macro dart-tf-x-prototype-create :emit :macro}
+   :prototype-get {:macro dart-tf-x-prototype-get :emit :macro}
+   :prototype-set {:macro dart-tf-x-prototype-set :emit :macro}
+   :prototype-method {:macro dart-tf-x-prototype-method :emit :macro}
+   :prototype-tostring {:macro dart-tf-x-prototype-tostring :emit :macro}})
+
+(defn dart-tf-x-return-encode
+  [form]
+  (let [out (second form)
+        id (nth form 2)
+        key (nth form 3)
+        outtype (gensym "outtype")
+        outstr (gensym "outstr")
+        compact (gensym "compact")]
+    (list 'do
+          (list 'if (list '== out nil)
+                (list 'return
+                      (list 'json.encode
+                            {"id" id "key" key "type" "data"
+                             "return" "nil" "value" nil})))
+          (list 'var outtype (dart-runtime-type-string out))
+          (list 'var outstr (dart-method0 out 'toString))
+          (list 'var compact (dart-json-compact-expr out))
+          (list 'if (list '== "String" outtype)
+                (list 'return
+                      (list 'json.encode
+                            {"id" id "key" key "type" "data"
+                             "return" "string" "value" out})))
+          (list 'if (list 'or (list '== "int" outtype)
+                          (list '== "double" outtype)
+                          (list '== "num" outtype))
+                (list 'return
+                      (list 'json.encode
+                            {"id" id "key" key "type" "data"
+                             "return" "number" "value" out})))
+          (list 'if (list '== "bool" outtype)
+                (list 'return
+                      (list 'json.encode
+                            {"id" id "key" key "type" "data"
+                             "return" "boolean" "value" out})))
+          (list 'if (list 'or (list '== "List" outtype)
+                          (list '. outtype (list 'contains "List")))
+                (list 'return
+                      (list 'json.encode
+                            {"id" id "key" key "type" "data"
+                             "return" "array" "value" compact})))
+          (list 'if (list 'or (list '== "Map" outtype)
+                          (list '. outtype (list 'contains "Map")))
+                (list 'return
+                      (list 'json.encode
+                            {"id" id "key" key "type" "data"
+                             "return" "object" "value" compact})))
+          (list 'if (list 'or
+                          (list '. outtype (list 'contains "Function"))
+                          (list '. outtype (list 'contains "=>"))
+                          (list '. outstr (list 'startsWith "Closure")))
+                (list 'return
+                      (list 'json.encode
+                            {"id" id "key" key "type" "raw"
+                             "return" "function" "value" outstr})))
+          (list 'return
+                (list 'json.encode
+                      {"id" id "key" key "type" "raw"
+                       "return" (list '. outtype (list 'toLowerCase))
+                       "value" outstr})))))
+
+(defn dart-tf-x-return-wrap
+  [form]
+  (let [f (second form)
+        encode-fn (nth form 2)]
+    (list 'try
+          (list 'var 'out (list f))
+          (list 'try
+                (list 'return (dart-call encode-fn (vector 'out)))
+                (list 'catch '_
+                      (list 'return (dart-call encode-fn (vector 'out nil nil)))))
+          (list 'catch 'error
+                (list 'return
+                      (list 'json.encode
+                            {:type "error"
+                             :value {:message (list '. 'error
+                                                    (list 'toString))}}))))))
+
+(defn dart-tf-x-return-eval
+  [_]
+  (list 'throw "eval not supported in Dart"))
+
+(def +dart-return+
+  {:x-return-encode {:macro dart-tf-x-return-encode :emit :macro}
+   :x-return-wrap {:macro dart-tf-x-return-wrap :emit :macro}
+   :x-return-eval {:macro dart-tf-x-return-eval :emit :macro}})
+
+(defn dart-tf-x-with-delay
+  [form]
+  (let [ms (second form)
+        thunk (nth form 2)
+        call (dart-call thunk (vector))]
+    (list '. (list 'Future.delayed
+                  (list :% (list :- "Duration(milliseconds: ")
+                        ms
+                        (list :- ")")))
+          (list 'then
+                (list 'fn (vector '_)
+                      (list 'return
+                            (list 'Future.sync
+                                  (list 'fn (vector)
+                                        (list 'return call)))))))))
+
+(defn dart-tf-x-async-run [form]
+  (list 'Future.sync (second form)))
+
+(defn dart-tf-x-promise [form]
+  (list 'Future.sync (second form)))
+
+(defn dart-tf-x-promise-new
+  [form]
+  (let [thunk (second form)
+        call (dart-call thunk
+                        (vector (list :- "completer.complete")
+                                (list :- "completer.completeError")))]
+    (list 'Future.sync
+          (list 'fn (vector)
+                (list 'var 'completer (list :- "Completer<dynamic>()"))
+                call
+                (list 'return (list '. 'completer 'future))))))
+
+(defn dart-tf-x-promise-all
+  [form]
+  (list :% (list :- "Future.wait(List<Future<dynamic>>.from((")
+        (second form)
+        (list :- ").map((entry) => Future.sync(() => entry))))")))
+
+(defn dart-tf-x-promise-then
+  [form]
+  (let [promise (second form)
+        call (dart-call (nth form 2) (vector 'value))]
+    (list :% (list :- "((Future.sync(() => ")
+          promise
+          (list :- ")) as Future<dynamic>).then((value) async { return await ")
+          call
+          (list :- "; })"))))
+
+(defn dart-tf-x-promise-catch
+  [form]
+  (let [promise (second form)
+        call (dart-call (nth form 2) (vector 'error))]
+    (list :% (list :- "(() async { try { return await ((Future.sync(() => ")
+          promise
+          (list :- ")) as Future<dynamic>); } catch (error) { return await Future.sync(() => ")
+          call
+          (list :- "); } })()"))))
+
+(defn dart-tf-x-promise-finally
+  [form]
+  (let [promise (second form)
+        call (dart-call (nth form 2) (vector))]
+    (list :% (list :- "((Future.sync(() => ")
+          promise
+          (list :- ")) as Future<dynamic>).whenComplete(() async { await ")
+          call
+          (list :- "; })"))))
+
+(defn dart-tf-x-promise-native?
+  [form]
+  (let [value (second form)
+        rtype (dart-runtime-type-string value)]
+    (list 'and (list 'not= nil value)
+          (list 'or (list '== "Future" rtype)
+                (list '. rtype (list 'startsWith "Future<"))))))
+
+(def +dart-promise+
+  {:x-async-run {:macro dart-tf-x-async-run :emit :macro}
+   :x-promise {:macro dart-tf-x-promise :emit :macro}
+   :x-promise-new {:macro dart-tf-x-promise-new :emit :macro}
+   :x-promise-all {:macro dart-tf-x-promise-all :emit :macro}
+   :x-promise-then {:macro dart-tf-x-promise-then :emit :macro}
+   :x-promise-catch {:macro dart-tf-x-promise-catch :emit :macro}
+   :x-promise-finally {:macro dart-tf-x-promise-finally :emit :macro}
+   :x-promise-native? {:macro dart-tf-x-promise-native? :emit :macro}})
+
+(def +dart-thread+
+  {:x-with-delay {:macro dart-tf-x-with-delay :emit :macro}})
+
+(defn dart-tf-x-socket-connect
+  [form]
+  (let [host (second form)
+        port (nth form 2)
+        callback (nth form 4)
+        call-ok (dart-call callback (vector nil 'conn))
+        call-err (dart-call callback (vector 'error nil))]
+    (list '. (list 'Socket.connect host port)
+          (list 'then (list 'fn (vector 'conn)
+                            (list 'return call-ok)))
+          (list 'catchError (list 'fn (vector 'error)
+                                  (list 'return call-err))))))
+
+(defn dart-tf-x-socket-send
+  [form]
+  (list '. (second form) (list 'write (nth form 2))))
+
+(defn dart-tf-x-socket-close
+  [form]
+  (let [conn (second form)]
+    (list '. (list '. conn (list 'flush))
+          (list 'then
+                (list 'fn (vector '_)
+                      (list '. conn (list 'destroy))
+                      (list 'return nil))))))
+
+(def +dart-socket+
+  {:x-socket-connect {:macro dart-tf-x-socket-connect :emit :macro
+                      :op-spec {:allow-blocks true}}
+   :x-socket-send {:macro dart-tf-x-socket-send :emit :macro}
+   :x-socket-close {:macro dart-tf-x-socket-close :emit :macro}})
+
+(defn dart-tf-x-pwd [_]
+  (list :- "(Platform.environment[\"PWD\"] ?? Directory.current.path)"))
+
+(defn dart-tf-x-file-resolve
+  [form]
+  (let [root (second form)
+        path (nth form 2)]
+    (list
+     (list 'fn (vector)
+           (list 'var 'base root)
+           (list 'return
+                 (list ':?
+                       (list 'or (list '== nil 'base)
+                             (list '. path (list 'startsWith "/")))
+                       path
+                       (list '+ 'base "/" path)))))))
+
+(defn dart-tf-x-file-slurp
+  [form]
+  (let [filename (second form)
+        callback (nth form 2)
+        call-ok (dart-call callback (vector nil 'out))
+        call-err (dart-call callback (vector 'error nil))]
+    (list '. (list '. (list 'File filename) (list 'readAsString))
+          (list 'then (list 'fn (vector 'out) (list 'return call-ok)))
+          (list 'catchError (list 'fn (vector 'error)
+                                  (list 'return call-err))))))
+
+(defn dart-tf-x-file-spit
+  [form]
+  (let [filename (second form)
+        value (nth form 2)
+        callback (nth form 3)
+        call-ok (dart-call callback (vector nil filename))
+        call-err (dart-call callback (vector 'error nil))]
+    (list '. (list '. (list 'Directory
+                                  (list '. (list '. (list 'File filename)
+                                                'parent)
+                                        'path))
+                        (list 'create :recursive true))
+          (list 'then
+                (list 'fn (vector '_)
+                      (list 'return
+                            (list '. (list '. (list 'File filename)
+                                          (list 'writeAsString value))
+                                  (list 'then
+                                        (list 'fn (vector '_)
+                                              (list 'return call-ok)))
+                                  (list 'catchError
+                                        (list 'fn (vector 'error)
+                                              (list 'return call-err)))))))
+          (list 'catchError (list 'fn (vector 'error)
+                                  (list 'return call-err))))))
+
+(def +dart-file+
+  {:x-file-resolve {:macro dart-tf-x-file-resolve :emit :macro}})
+
+(defn dart-tf-x-shell
+  [form]
+  (let [source (second form)
+        root (nth form 2)
+        callback (nth form 3)
+        command (list ':?
+                      (list 'or (list '== nil root) (list '== "" root))
+                      source
+                      (list '+ "cd " root " && " source))
+        failure (dart-call callback
+                           (vector {:code (list '. 'result 'exitCode)
+                                    :err (list '. 'result 'stderr)
+                                    :out (list '. 'result 'stdout)}
+                                   nil))
+        success (dart-call callback (vector nil (list '. 'result 'stdout)))
+        error (dart-call callback (vector 'error nil))]
+    (list 'do
+          (list 'var 'shell-command command)
+          (list 'return
+                (list '. (list 'Process.run "sh"
+                              (list :- "<String>[\"-lc\",shell-command]"))
+                      (list 'then
+                            (list 'fn (vector 'result)
+                                  (list 'if (list 'not= 0
+                                                 (list '. 'result 'exitCode))
+                                        (list 'return failure)
+                                        (list 'return success))))
+                      (list 'catchError
+                            (list 'fn (vector 'error)
+                                  (list 'return error))))))))
+
+(def +dart-shell+
+  {:x-pwd {:macro dart-tf-x-pwd :emit :macro}
+   :x-shell {:macro dart-tf-x-shell :emit :macro
+             :op-spec {:allow-blocks true}}})
+
+(def +dart+
+  (merge +dart-core+
+         +dart-math+
+         +dart-type+
+         +dart-str+
+         +dart-lu+
+         +dart-obj+
+         +dart-json+
+         +dart-arr+
+         +dart-iter+
+         +dart-proto+
+         +dart-return+
+         +dart-socket+
+         +dart-file+
+         +dart-promise+
+         +dart-thread+
+         +dart-shell+))

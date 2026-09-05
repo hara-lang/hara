@@ -279,6 +279,7 @@
   ([module options]
    (vec (or (get-in module [:emit :code :transforms :entry])
             (get-in options [:emit :code :transforms :entry])
+            (get-in options [:book :meta :transforms :entry])
             []))))
 
 (defn resolve-entry-transform
@@ -321,7 +322,10 @@
 (defn compile-entry-safe
   [options modules entry]
   (let [qualified (entry-qualified-symbol entry)
-        module (get modules (:module entry))]
+        raw-module (or (get modules (:module entry)) {})
+        module (if (:id raw-module)
+                 raw-module
+                 (assoc raw-module :id (:module entry)))]
     (try
       (let [result (*entry-compiler* options modules module entry)
             output (apply-entry-transforms (:output result) options modules module entry result)
@@ -457,7 +461,7 @@
             lifecycle (if book
                         (module-lifecycle-output book modules module-order options)
                         {:setup [] :export []})
-            compiled (compile-entries options modules module-order)
+            compiled (compile-entries (assoc options :book book) modules module-order)
             missing (missing-entry-diagnostics (:entries compiled))
             entry-result (order-entries (:entries compiled) module-order)
             ordered (:entries entry-result)

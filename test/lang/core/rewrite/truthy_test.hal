@@ -1,0 +1,47 @@
+(ns lang.core.rewrite.truthy-test
+  (:use code.test)
+  (:require [lang.core.rewrite.truthy :as subject]))
+
+^{:refer lang.core.rewrite.truthy/dot-boolish-call?}
+(fact "detects dotted calls declared to return booleans"
+  [(subject/dot-boolish-call? '(. obj (containsKey "a")) #{'containsKey})
+   (subject/dot-boolish-call? '(. obj (isEmpty)) #{'isEmpty})
+   (subject/dot-boolish-call? '(containsKey "a") #{'containsKey})]
+  => [true true false])
+
+^{:refer lang.core.rewrite.truthy/boolish-form?}
+(fact "detects boolish forms with configurable recursive rules"
+  [(subject/boolish-form? '(x:eq a b) {:boolish-ops #{'x:eq}})
+   (subject/boolish-form? '(. obj (containsKey "a"))
+                         {:dot-boolish-calls #{'containsKey}})
+   (subject/boolish-form? '(and (x:eq a b) (not (x:nil? c)))
+                         {:boolish-ops #{'x:eq 'x:nil?}
+                          :recursive-not? true :recursive-and-or? true})
+   (subject/boolish-form? '(or a b) {:boolish-ops #{'x:eq}})]
+  => [true true true false])
+
+^{:refer lang.core.rewrite.truthy/truthy-check-form}
+(fact "builds a Dart-compatible truthiness check"
+  (subject/truthy-check-form 'value)
+  => '(and (x:not-nil? value) (not= false value)))
+
+^{:refer lang.core.rewrite.truthy/wrap-truthy-check}
+(fact "wraps a form while preserving source metadata"
+  [(subject/wrap-truthy-check 'source 'value)
+   (subject/wrap-truthy-check 'source 'value (fn [item] (list 'truthy? item)))
+   (meta (subject/wrap-truthy-check (with-meta 'source {:from :test}) 'value))]
+  => ['(and (x:not-nil? value) (not= false value))
+      '(truthy? value)
+      {:from :test}])
+
+^{:refer lang.core.rewrite.truthy/truthy-form}
+(fact "leaves boolish values alone and wraps value expressions"
+  [(subject/truthy-form 'ready 'ready #(= 'ready %))
+   (subject/truthy-form 'value 'value #(= 'ready %)
+                      (fn [_ item] (subject/wrap-truthy-check item item)))]
+  => ['ready '(and (x:not-nil? value) (not= false value))])
+
+^{:refer lang.core.rewrite.truthy/truthy-or-form}
+(fact "constructs a value-preserving truthy fallback"
+  (subject/truthy-or-form 'source 'value 'fallback)
+  => '(:? (and (x:not-nil? value) (not= false value)) value fallback))

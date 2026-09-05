@@ -1,0 +1,117 @@
+(ns lang.model.v1.spec-js.qml
+  (:config {:role :internal})
+  (:require [lang.common.emit-common :as common]))
+
+(defn qml-props?
+  "Returns whether a value is a QML property map or one packed property table."
+  [item]
+  (or (map? item)
+      (and (set? item)
+           (= 1 (count item))
+           (vector? (first item)))))
+
+(defn qml-container?
+  "Returns whether a vector is a namespaced QML container form."
+  [item]
+  (and (vector? item)
+       (keyword? (first item))
+       (= "qml" (namespace (first item)))))
+
+(defn classify-props
+  "Classifies packed or mapped QML properties in their source order."
+  [props classify-fn]
+  (let [pairs
+        (cond (map? props) props
+              (set? props) (partition 2 (first props))
+              :else
+              (throw (ex :argument {:props props}
+                         :ex/message "QML properties must be a map or packed table")))]
+    (mapv (fn [pair]
+            [(first pair) (classify-fn (second pair))])
+          pairs)))
+
+(defn classify-container
+  "Classifies one QML vector into its title, properties, and child nodes."
+  [[tag props & children] classify-fn]
+  (let [title
+        (if (= "qml" (namespace tag))
+          (name tag)
+          (throw (ex :argument {:tag tag}
+                     :ex/message "Not a valid QML tag")))
+        source-props props
+        props? (qml-props? source-props)
+        props (if props? props {})
+        children
+        (if props?
+          children
+          (if (nil? source-props)
+            children
+            (vec (concat [source-props] children))))]
+    {:type :qml/container
+     :title title
+     :props (classify-props props classify-fn)
+     :children (mapv classify-fn children)}))
+
+(defn classify
+  "Recursively classifies Foundation QML surface data."
+  [value]
+  (if (qml-container? value)
+    (classify-container value classify)
+    {:type :qml/value :value value}))
+
+(defn emit-value
+  "Emits one QML value, retaining Foundation property and block forms."
+  [{:keys [value]} grammar mopts]
+  (if (form? value)
+    (cond (= :% (first value))
+          (str " {"
+               (common/with-indent
+                [2]
+                (str (common/newline-indent)
+                     (common/*emit-fn* (cons 'do (rest value)) grammar mopts)))
+               (common/newline-indent)
+               "}")
+
+          (= 'var (first value))
+          (common/*emit-fn* (cons 'property (rest value))
+                            (assoc-in grammar [:default :common :assign] ":")
+                            mopts)
+
+          (= 'fn (first value))
+          (common/*emit-fn* (cons 'fn.inner (rest value)) grammar mopts)
+
+          :else (common/*emit-fn* value grammar mopts))
+    (common/*emit-fn* value grammar mopts)))
+
+(defn emit-container
+  "Emits a classified QML container with nested indentation."
+  [{:keys [title props children]} grammar mopts]
+  (str title " {"
+       (common/with-indent
+        [2]
+        (str
+         (common/newline-indent)
+         (str/join
+          (common/newline-indent)
+          (concat
+           (map (fn [pair]
+                  (str (name (first pair)) ": "
+                       (emit-node (second pair) grammar mopts)))
+                props)
+           (map (fn [node] (emit-node node grammar mopts)) children)))))
+       (common/newline-indent)
+       "}"))
+
+(defn emit-node
+  "Emits either a classified QML container or scalar value node."
+  [{:keys [type] :as node} grammar mopts]
+  (cond (= :qml/container type) (emit-container node grammar mopts)
+        (= :qml/value type) (emit-value node grammar mopts)
+        :else
+        (throw (ex :argument {:node node}
+                   :ex/message "Unknown QML node type"))))
+
+(defn emit-qml
+  "Classifies and emits a Foundation QML form."
+  [form grammar mopts]
+  (emit-node (classify form) grammar mopts))

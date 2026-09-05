@@ -1,0 +1,180 @@
+(ns code.deploy.package
+  (:config {:role :internal})
+  (:require [code.deploy.catalog :as catalog]
+            [code.project :as project]
+            [std.package.build :as package]))
+
+(defn ^{:public true} check
+  "Checks the data-only project declaration without asking Native to inspect source."
+  [path]
+  (let [project (project/read-project path)]
+    {:identity (str (:project/id project))
+     :version (:project/version project)}))
+
+(defn source-record
+  "Reads one Hara source file into the caller-owned module plan."
+  [root project relative-path]
+  (let [path (File/join root relative-path)
+        source (String/decode-utf8 (deref (File/read path)))
+        namespace (project/namespace-from-source source relative-path)]
+    {:path relative-path
+     :namespace namespace
+     :source source
+     :bytes (String/encode-utf8 source)}))
+
+(defn source-records
+  "Returns the deterministic source records selected by the Hara project graph."
+  [root project]
+  (vec
+   (map
+    (fn [relative-path]
+      (source-record root project relative-path))
+    (catalog/project-source-files root project))))
+
+(defn artifact-files
+  "Reads non-source artifact roots without assigning them language semantics."
+  [root project]
+  (vec
+   (mapcat
+    (fn [relative-root]
+      (let [path (File/join root relative-root)]
+        (if (deref (File/exists? path))
+          (map
+           (fn [absolute-path]
+             {:path (project/project-relative-path project absolute-path)
+              :bytes (deref (File/read absolute-path))})
+           (deref (File/walk path)))
+          [])))
+    (or (:project/artifact-paths project) []))))
+
+(defn selected-source-records
+  "Selects owned records while leaving the complete context available to the compiler."
+  [root project records package-name profile]
+  (if (nil? package-name)
+    records
+    (let [catalog (if (nil? profile)
+                    (catalog/read-catalog root)
+                    (catalog/catalog-map
+                     (catalog/read-edn (File/join root profile))))
+          definitions (catalog/package-definitions catalog)
+          name (str package-name)
+          definition (first (filter (fn [value] (= name (:package/name value))) definitions))]
+      (if (nil? definition)
+        (throw (ex :package/unknown-package
+                   {:package/name name}
+                   :ex/message "package selection does not name a configured package"))
+        (let [analyses (vec (map (fn [record] {:namespace (:namespace record)}) records))
+              selected (set (catalog/selected-namespaces definition analyses))]
+          (vec (filter (fn [record] (has? selected (:namespace record))) records)))))))
+
+(defn module-values
+  "Converts Hara-owned source records into the generic Native module contract."
+  [records]
+  (vec
+   (map
+    (fn [record]
+      {:module/namespace (str (:namespace record))
+       :module/source (:source record)})
+    records)))
+
+(defn artifact-spec
+  "Prepares the complete Hara-owned package plan consumed by std.native.Package."
+  ([path output] (artifact-spec path output nil nil))
+  ([path output package-name profile]
+   (let [project (project/read-project path)
+         root (project/project-root project)
+         selected-name (or package-name (get-in project [:project/package :name]))
+         selected-profile (or profile (get-in project [:project/package :profile]))
+         records (source-records root project)
+         selected (selected-source-records root project records selected-name selected-profile)
+         project-file (project/project-file root)
+         project-entry {:path "project.edn"
+                        :bytes (deref (File/read project-file))}
+         profile-entry (when selected-profile
+                         {:path (str selected-profile)
+                          :bytes (deref (File/read (File/join root selected-profile)))})
+         recipe-entry (when (:project/recipe project)
+                        {:path (:project/recipe project)
+                         :bytes (deref (File/read
+                                        (File/join root (:project/recipe project))))})
+         lock-entry (let [path (File/join root "project.lock.edn")]
+                      (when (deref (File/exists? path))
+                        {:path "project.lock.edn"
+                         :bytes (deref (File/read path))}))
+         files (vec
+                (concat
+                 [project-entry]
+                 (if profile-entry [profile-entry] [])
+                 (if recipe-entry [recipe-entry] [])
+                 (map (fn [record]
+                        {:path (:path record) :bytes (:bytes record)}) selected)
+                 (artifact-files root project)
+                 (if lock-entry [lock-entry] [])))
+         bytecode (when (not (empty? selected))
+                    {:path "bytecode/package.hbx"
+                     :format "0.0.0-alpha"
+                     :bytes
+                     (Package/precompile
+                      {:context (module-values records)
+                       :modules (module-values selected)})})
+         identity (catalog/coordinate (or selected-name (:project/id project)))
+         output (or output
+                    (File/join root
+                               (str "target/" (name (symbol identity)) ".harp")))]
+     {:identity identity
+      :version (str (:project/version project))
+      :name (when selected-name (str selected-name))
+      :output output
+      :files files
+      :resources
+      (reduce (fn [result record]
+                (assoc result
+                       (str (:namespace record))
+                       (:path record)))
+              {}
+              selected)
+      :bytecode bytecode
+      :extensions (or (:project/extensions project) {})})))
+
+(defn ^{:public true} build
+  ([project]
+   (package/build (artifact-spec project nil)))
+  ([project output]
+   (package/build (artifact-spec project output)))
+  ([project output package-name]
+   (package/build (artifact-spec project output package-name)))
+  ([project output package-name profile]
+   (package/build (artifact-spec project output package-name profile))))
+
+(defn ^{:public true} build-specs
+  "Builds a deterministic HARP containing the versioned specification corpus."
+  [project output]
+  (build project output))
+
+(defn ^{:public true} build-distribution
+  "Builds the Hara-owned archive before handing it to the native distributor."
+  []
+  (IPromise/then
+   (package/project-form)
+   (fn [project]
+     (let [config (package/distribution-config project)
+           archive (build "." "target/hara-distribution/hara.harp")]
+       (package/distribute {:archive archive
+                            :launcher (:launcher config)
+                            :entry (:entry config)
+                            :host (:host config)
+                            :output (:output config)
+                            :replace? true})))))
+
+(defn ^{:public true} seal-project
+  "Builds the declared primary HARP and seals every declared HARP into one executable."
+  []
+  (IPromise/then
+   (package/project-form)
+   (fn [project]
+     (let [config (package/executable-config project)
+           specs-archive (build-specs "spec" "target/hara-sealed/hara-specs.harp")
+           config (assoc config :archives (conj (:archives config) {:harp specs-archive}))
+           primary-archive (build (:project (:primary config))
+                                  "target/hara-sealed/hara-primary.harp")]
+       (package/seal (package/seal-spec config primary-archive))))))
