@@ -1,0 +1,79 @@
+(ns code.doc.command
+  (:config {:role :internal})
+  (:require [code.doc :as doc]))
+
+(defn action
+  "Normalises the native documentation command action."
+  [value]
+  (cond
+    (nil? value) :help
+    (= value "check") :check
+    (= value "publish") :publish
+    (= value "missing") :missing
+    (= value "template-init") :template-init
+    (= value "template-deploy") :template-deploy
+    :else
+    (throw (ex :code.doc/invalid-command
+               {:ex/message "hara doc action must be check, publish, missing, template-init, or template-deploy"
+                :action value}))))
+
+(defn required-page-path
+  [operation argv]
+  (let [path (first argv)
+        more (rest argv)]
+    (if (and (string? path) (empty? more))
+      path
+      (throw (ex :code.doc/page-path-required
+                 {:ex/message "hara doc check and publish require exactly one .hal page path"
+                  :operation operation
+                  :argv argv})))))
+
+(defn check-page
+  "Returns static page facts and deterministic diagnostics without invoking
+   the CommonMark Component."
+  [path]
+  (let [page (doc/read-page path)
+        issues (doc/check-page page)]
+    (assoc (select-keys page [:path :title :namespace :output/path :content])
+           :issues issues
+           :valid? (empty? issues))))
+
+(defn publish-page
+  "Renders one static page through the configured CommonMark Component and
+   atomically replaces its deterministic HTML output path."
+  [path]
+  (let [page (doc/read-page path)
+        rendered (doc/render-page page)
+        output (:output/path rendered)]
+    (deref (File/write output
+                        (String/encode-utf8 (:html rendered))
+                        {:mode :replace :parents? true}))
+    (select-keys rendered [:path :title :namespace :output/path])) )
+
+(defn operation-result
+  [operation argv]
+  (cond
+    (= operation :check) (check-page (required-page-path operation argv))
+    (= operation :publish) (publish-page (required-page-path operation argv))
+    (= operation :missing) {:status :native-page-root-required
+                             :message "Configure native .hal documentation pages before running hara doc missing"}
+    (= operation :template-init) {:status :template-ready
+                                   :template "(code.doc/page {:title \"Title\" :content [\"# Title\"]})"}
+    (= operation :template-deploy) {:status :no-static-assets
+                                     :message "The native base theme is emitted inline; no JVM theme assets are deployed"}
+    :else {:usage "hara doc <check|publish|missing|template-init|template-deploy> [PAGE.hal]"}))
+
+(defn ^{:public true} response
+  "Runs the native documentation CLI route."
+  [request]
+  (try
+    (let [argv (or (:argv (:arguments request)) [])
+          operation (action (first argv))
+          result (operation-result operation (vec (rest argv)))]
+      {:stdout (str (Edn/write result) "\n")
+       :stderr ""
+       :exit 0})
+    (catch error
+      {:stdout ""
+       :stderr (str error "\n")
+       :exit 2})))

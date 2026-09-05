@@ -1,0 +1,48 @@
+(ns code.doc.check-test
+  (:require [code.doc.check :as check]))
+
+^{:refer code.doc.check/check-api-element}
+(Test/check
+ [{:name "reports reflection-backed API directives as outside the static page contract"
+   :test (fn [] (check/check-api-element {:type :api :namespace "code.doc"}))
+   :expected [{:type :unsupported-api :namespace "code.doc"}]}])
+
+^{:refer code.doc.check/check-reference-element}
+(Test/check
+ [{:name "detects only the stable missing-reference placeholder"
+   :test (fn [] [(check/check-reference-element {:type :reference :refer "missing/value" :code "MISSING REFERENCE missing/value (source)"})
+                 (check/check-reference-element {:type :reference :refer "code.doc/page" :code "(def page {})"})])
+   :expected [[{:type :missing-reference :refer "missing/value"}]
+              []]}])
+
+^{:refer code.doc.check/check-element}
+(Test/check
+ [{:name "reports unresolved collection data while leaving static paragraphs clean"
+   :test (fn [] [(check/check-element {:type :related :error "code.doc data: no related entries"})
+                 (check/check-element {:type :links :error "code.doc data: no links entries"})
+                 (check/check-element {:type :paragraph :text "safe"})])
+   :expected [[{:type :unknown-data-group :error "code.doc data: no related entries"}]
+              [{:type :unknown-data-group :error "code.doc data: no links entries"}]
+              []]}])
+
+^{:refer code.doc.check/check-elements}
+(Test/check
+ [{:name "preserves prepared directive order across accumulated diagnostics"
+   :test (fn [] (check/check-elements [{:type :api :namespace "code.doc"}
+                                       {:type :reference :refer "missing/value" :code "MISSING REFERENCE missing/value (source)"}
+                                       {:type :links :error "code.doc data: no links entries"}]))
+   :expected [{:type :unsupported-api :namespace "code.doc"}
+              {:type :missing-reference :refer "missing/value"}
+              {:type :unknown-data-group :error "code.doc data: no links entries"}]}])
+
+^{:refer code.doc.check/check-page}
+(Test/check
+ [{:name "prepares literal content before returning page-qualified diagnostics"
+   :test (fn [] (check/check-page {:path "guide.hal"
+                                   :references {}
+                                   :content [{:type :reference :refer "missing/value"}
+                                             {:type :related :group :core}
+                                             {:type :api :namespace "code.doc"}]}))
+   :expected [{:type :missing-reference :refer "missing/value" :page "guide.hal"}
+              {:type :unknown-data-group :error "code.doc data: no related entries" :page "guide.hal"}
+              {:type :unsupported-api :namespace "code.doc" :page "guide.hal"}]}])

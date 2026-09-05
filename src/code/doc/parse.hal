@@ -1,0 +1,48 @@
+(ns code.doc.parse
+  (:config {:role :internal})
+  (:require [code.framework :as framework]))
+
+(defn source-forms
+  "Reads complete native Hara source as data without evaluating page forms."
+  [source]
+  (if (string? source)
+    (Edn/read (str "[" source "]"))
+    (throw (ex :code.doc/source-required
+               {:ex/message "Static documentation source must be text"
+                :source source}))))
+
+(defn page-form
+  "Selects exactly one literal `code.doc/page` form from parsed Hara source."
+  [forms]
+  (let [matches
+        (vec
+         (filter
+          (fn [form]
+            (and (list? form)
+                 (= 'code.doc/page (first form))
+                 (= 2 (count form))
+                 (map? (nth form 1))))
+          forms))]
+    (cond
+      (= 1 (count matches)) (nth (first matches) 1)
+      (empty? matches)
+      (throw (ex :code.doc/page-form-required
+                 {:ex/message "A native documentation page requires one literal (code.doc/page {...}) form"}))
+      :else
+      (throw (ex :code.doc/ambiguous-page-form
+                 {:ex/message "A native documentation page may contain only one code.doc/page form"
+                  :count (count matches)})))))
+
+(defn parse-source
+  "Parses a data-only native page and retains both reader facts and exact
+   std.block source detail. The detail is provenance, never executable input."
+  [source]
+  (let [forms (source-forms source)
+        analysis (framework/enrich-reader-analysis
+                  (framework/analyse-source source)
+                  source)]
+    {:source source
+     :namespace (:namespace analysis)
+     :analysis (framework/semantic-facts analysis)
+     :detail (:detail analysis)
+     :data (page-form forms)}))

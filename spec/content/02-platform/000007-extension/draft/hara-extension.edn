@@ -4,7 +4,7 @@
  :document/status :draft
  :document/title "Hara extension declaration contract"
  :document/summary
- "Normative project.edn declarations for WASM and HTA providers, targets, assets, capabilities and remote artifact delivery."
+ "Normative project.edn declarations for WebAssembly Components, WIT worlds, Hara value mappings, capabilities and remote artifact delivery."
  :spec/conforms-to {:spec/id :hara/tap-protocol-metaspec
                     :spec/version "0.0.0-alpha"}
 
@@ -16,20 +16,20 @@
   {:role/id :hara.extension.role/host
    :role/summary "Selects a compatible target and enforces declared capabilities."}
   {:role/id :hara.extension.role/provider
-   :role/summary "Implements a declared core.v1 or hta.v1 callable namespace."}]
+   :role/summary "Implements a declared component.v1 callable namespace."}]
 
  :platform/entities
  [{:entity/id :hara.extension/project-declaration
    :entity/location [:project/extensions :namespace]
    :entity/summary "Authored extension declaration within project.edn."
-   :entity/fields [:root :provider :abi :module :targets :assets :exports
-                   :capabilities :host-calls :handles]}
+   :entity/fields [:root :provider :abi :module :world :wit :imports :assets
+                   :exports :capabilities :host-calls :handles]}
   {:entity/id :hara.extension/package-declaration
    :entity/location [:package.edn :extensions :namespace]
    :entity/generated true
    :entity/summary "Archive-relative normalized extension declaration."
-   :entity/fields [:root :provider :abi :module :targets :assets :exports
-                   :capabilities :host-calls :handles :files]}
+   :entity/fields [:root :provider :abi :module :world :wit :imports :assets
+                   :exports :capabilities :host-calls :handles :files]}
   {:entity/id :hara.extension/remote-artifact
    :entity/location [:project/remote-artifacts :install-path]
    :entity/summary "Digest-pinned HTTPS input mirrored or resolved before packaging."
@@ -39,13 +39,33 @@
    :entity/fields [:module :runtime]}
   {:entity/id :hara.extension/export
    :entity/summary "Generated Hara Var signature for a provider operation."
-   :entity/fields [:args :returns :async]}]
+   :entity/fields [:args :returns :async]}
+  {:entity/id :hara.extension/wit-world
+   :entity/summary "Integrity-pinned WIT package and selected world that determine an extension callable surface."
+   :entity/fields [:world :wit]}
+  {:entity/id :hara.extension/import
+   :entity/summary "An exact Component import vector admitted only through approved Hara capabilities."
+   :entity/fields [:imports :capabilities]}]
 
  :extension/providers
- {:wasm {:abis [:core.v1]
-         :summary "Import-free scalar WebAssembly exports invoked in-process."}
-  :hta {:abis [:hta.v1]
-        :summary "Stateful promise-returning provider driven through the Hara Transport Adaptor."}}
+ {:wasm {:abis [:component.v1]
+         :summary "A standard WebAssembly Component with a resolved WIT world. Core and HTA are Hara value-mapping profiles, not artifact providers or alternate ABIs."}}
+
+ :extension/wit
+ {:component/abi :component.v1
+  :wasi/profile "wasi@0.2.0"
+  :manifest/required-fields [:world :wit :imports]
+  :world/type :lower-case-wit-identifier
+  :wit/required-fields [:package :source :sha256]
+  :wit/package-format "namespace:name@major.minor.patch"
+  :wit/source-format :safe-relative-wit-file
+  :wit/sha256-format :lower-case-hex
+  :imports/type :vector-of-qualified-wit-interface
+  :imports/semantics "The selected Component's import set must exactly equal this vector. A wasi:filesystem/* or wasi:io/* import requires the :file capability."
+  :exports/semantics "Every declared Hara export maps to a synchronous direct WIT world function or interface::function with matching arity, result, and supported wire type."
+  :hara-values/package "hara:values@0.1.0"
+  :hara-values/summary
+  "hara:values@0.1.0 owns exact WIT representations for Hara-specific values and persistent collection categories. Standard WIT primitives, strings, bytes, records, variants, lists, options, results and resources use their Component canonical ABI representation. Hara mappings preserve value category, equality, hashing, iteration-order guarantees and map-entry identity; they must not substitute JSON, opaque bytes or a different collection kind."}
 
  :platform/operations
  [{:operation/id :hara.extension.operation/normalize
@@ -63,7 +83,7 @@
    :operation/role :hara.extension.role/host
    :operation/input :hara.extension/target
    :operation/output :hara.extension/context
-   :operation/failures [:capability-denied :abi-mismatch :startup-failed]}
+   :operation/failures [:capability-denied :abi-mismatch :wit-mismatch :startup-failed]}
   {:operation/id :hara.extension.operation/invoke
    :operation/role :hara.extension.role/provider
    :operation/input :hara.extension/request
@@ -83,7 +103,19 @@
    :requirement/text "An extension exports an ordinary Hara namespace selected through require without exposing provider construction or transport operations at the call site."}
   {:requirement/id :hara.extension/no-authority-on-load
    :requirement/level :must
-   :requirement/text "Resolving or loading an extension declaration grants no authority; the host independently approves every requested capability and host call."}
+   :requirement/text "Resolving or loading an extension declaration grants no authority; the host independently approves every requested WIT import, capability and host call."}
+  {:requirement/id :hara.extension/component-only
+   :requirement/level :must
+   :requirement/text "Authored WASM extensions declare :provider :wasm and :abi :component.v1. Legacy :core.v1, :memory.v1 and :hta.v1 declarations are invalid public extension ABIs."}
+  {:requirement/id :hara.extension/wit-integrity
+   :requirement/level :must
+   :requirement/text "The package records the selected WIT package, world, source digest and exact Component import vector. The host rejects a component whose WIT package, world, imports, exports, arity, result, or supported wire types differ from that declaration."}
+  {:requirement/id :hara.extension/value-round-trip
+   :requirement/level :must
+   :requirement/text "Hara core and HTA profiles lower and lift the declared WIT values losslessly. Hara-specific persistent values use hara:values@0.1.0 and preserve their public category, equality, hashing, iteration order and map-entry semantics across a component round trip."}
+  {:requirement/id :hara.extension/wasi-filesystem-projection
+   :requirement/level :must
+   :requirement/text "A wasi:filesystem or wasi:io import is linked only after capability approval to a directory/resource rooted at the active Hara FileProvider logical filesystem. It exposes neither provider identity nor credentials, cannot escape that root, and rejects provider operations whose semantics cannot be represented faithfully."}
   {:requirement/id :hara.extension/target-neutral-source
    :requirement/level :must
    :requirement/text "Hara source does not branch on the host target; the host selects a declared compatible target while preserving values, errors, promises and export signatures."}
@@ -93,9 +125,9 @@
   {:requirement/id :hara.extension/offline-cache
    :requirement/level :must
    :requirement/text "When an external artifact policy is explicitly allowed, reconciliation stores the verified bytes by digest and runtime loading uses only the local content-addressed object."}
-  {:requirement/id :hara.extension/import-free-hta
+  {:requirement/id :hara.extension/native-first
    :requirement/level :must
-   :requirement/text "HTA modules remain import-free and communicate through the required exported mailbox lifecycle defined by the HTA transport specification."}]
+   :requirement/text "The first conforming host is Hara-native. Browser and process hosts are unsupported until they pass the same WIT world and capability conformance corpus; source does not select an alternate transport for them."}]
 
  :platform/conformance
  [{:conformance/id :hara.extension/declarations

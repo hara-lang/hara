@@ -1,0 +1,71 @@
+(ns code.doc.command-test
+  (:require [code.doc.command :as command]))
+
+^{:refer code.doc.command/action}
+(Test/check
+ [{:name "normalises every supported native documentation CLI action"
+   :test (fn [] [(command/action nil)
+                 (command/action "check")
+                 (command/action "publish")
+                 (command/action "missing")
+                 (command/action "template-init")
+                 (command/action "template-deploy")])
+   :expected [:help :check :publish :missing :template-init :template-deploy]}
+  {:name "rejects unsupported native documentation actions"
+   :test (fn [] (try (command/action "serve") false (catch error true)))
+   :expected true}])
+
+^{:refer code.doc.command/required-page-path}
+(Test/check
+ [{:name "requires exactly one native page path for check and publish"
+   :test (fn [] [(command/required-page-path :check ["guide.hal"])
+                 (try (command/required-page-path :publish ["one.hal" "two.hal"])
+                      false
+                      (catch error true))])
+   :expected ["guide.hal" true]}])
+
+^{:refer code.doc.command/check-page}
+(Test/check
+ [{:name "rejects unsupported suffixes before static page analysis"
+   :test (fn [] (try (command/check-page "guide.md") false (catch error true)))
+   :expected true}
+  {:name "reads and checks a literal native page without evaluating its forms"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "code-doc-command-"}))
+                      path (File/join root "guide.hal")]
+                  (try
+                    (deref (File/write path
+                                        (String/encode-utf8 "(ns docs.guide)\n(code.doc/page {:title \"Guide\" :references {} :content [{:type :reference :refer \"missing/value\"}]})\n")
+                                        {:mode :replace :parents? true}))
+                    (let [result (command/check-page path)]
+                      {:valid? (:valid? result)
+                       :issues (mapv (fn [issue] (dissoc issue :page)) (:issues result))})
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected {:valid? false
+              :issues [{:type :missing-reference :refer "missing/value"}]}}])
+
+^{:refer code.doc.command/publish-page}
+(Test/check
+ [{:name "rejects unsupported suffixes before resolving the CommonMark Component"
+   :test (fn [] (try (command/publish-page "guide.clj") false (catch error true)))
+   :expected true}])
+
+^{:refer code.doc.command/operation-result}
+(Test/check
+ [{:name "exposes static native template and asset operations without JVM services"
+   :test (fn [] [(command/operation-result :template-init [])
+                 (command/operation-result :template-deploy [])
+                 (command/operation-result :missing [])])
+   :expected [{:status :template-ready
+               :template "(code.doc/page {:title \"Title\" :content [\"# Title\"]})"}
+              {:status :no-static-assets
+               :message "The native base theme is emitted inline; no JVM theme assets are deployed"}
+              {:status :native-page-root-required
+               :message "Configure native .hal documentation pages before running hara doc missing"}]}])
+
+^{:refer code.doc.command/response}
+(Test/check
+ [{:name "formats invalid doc requests as native command failures"
+   :test (fn [] (select-keys (command/response {:arguments {:argv ["serve"]}}) [:stdout :exit]))
+   :expected {:stdout "" :exit 2}}])

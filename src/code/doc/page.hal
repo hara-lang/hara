@@ -1,0 +1,119 @@
+(ns code.doc.page
+  (:config {:role :internal})
+  (:require [code.doc.commonmark :as commonmark]
+            [code.doc.parse :as parse]
+            [code.doc.prepare :as prepare]
+            [code.doc.render.static :as static]))
+
+(defn page
+  "Marks one literal map as a static native Hara documentation page.
+   Page files are read as data by `read-page`; this function is never invoked
+   while publishing them."
+  [data]
+  data)
+
+(defn page-path?
+  [path]
+  (and (string? path)
+       (str/ends-with? path ".hal")))
+
+(defn assert-page-path
+  [path]
+  (if (page-path? path)
+    path
+    (throw (ex :code.doc/unsupported-page
+               {:ex/message "code.doc accepts native .hal page sources only"
+                :path path}))))
+
+(defn html-escape
+  [value]
+  (reduce
+   (fn [output pair]
+     (str/replace output (nth pair 0) (nth pair 1)))
+   (str value)
+   [["&" "&amp;"]
+    ["<" "&lt;"]
+    [">" "&gt;"]
+    ["\"" "&quot;"]
+    ["'" "&#39;"]]))
+
+(defn page-output-path
+  [path]
+  (let [path (str path)]
+    (if (str/ends-with? path ".hal")
+      (str (str/slice path 0 (- (str/length path) 4)) ".html")
+      (str path ".html"))))
+
+(defn page-document
+  [title body]
+  (str "<!doctype html>\n"
+       "<html><head><meta charset=\"utf-8\"><title>"
+       (html-escape title)
+       "</title></head><body>"
+       body
+       "</body></html>\n"))
+
+(defn normalize-page
+  [page]
+  (let [path (:path page)
+        source (:source page)
+        title (or (:title page) path)]
+    (if (not (string? path))
+      (throw (ex :code.doc/path-required
+                 {:ex/message "code.doc page requires a string :path"
+                  :page page}))
+      (if (not (string? source))
+        (throw (ex :code.doc/source-required
+                   {:ex/message "code.doc page requires a string :source"
+                    :path path}))
+        (merge page
+               {:path path
+                :source source
+                :title (str title)
+                :output/path (or (:output/path page) (page-output-path path))})))))
+
+(defn page-form
+  "Selects exactly one literal `(code.doc/page {...})` form from native Hara
+   source. Evaluating a documentation page is intentionally unsupported."
+  [forms]
+  (parse/page-form forms))
+
+(defn ^{:public true} read-page
+  "Reads and statically analyses one `.hal` documentation page without
+   evaluating its forms."
+  [path]
+  (let [path (assert-page-path path)
+        source (String/decode-utf8 (deref (File/read path)))
+        parsed (parse/parse-source source)
+        data (:data parsed)]
+    (assoc (normalize-page (merge data {:path path :source source}))
+           :namespace (:namespace parsed)
+           :analysis (:analysis parsed)
+           :detail (:detail parsed))))
+
+(defn render-entry
+  "Renders a static documentation entry through the directive renderer.
+   Markdown remains delegated to the supplied standard Component function."
+  [entry render-markdown]
+  (static/render-element entry render-markdown))
+
+(defn ^{:public true} render-static-page
+  "Renders a data-only native Hara page through a caller-selected CommonMark
+   Component function."
+  [page render-markdown]
+  (let [page (normalize-page page)
+        prepared (prepare/prepare page)
+        content (prepare/prepared-elements prepared page)
+        body (static/render-elements content render-markdown)]
+    (assoc page
+           :prepared prepared
+           :body body
+           :html (page-document (:title page) body))))
+
+(defn ^{:public true} render-page
+  "Renders a normalized native Hara documentation page's data-only content.
+   Markdown fragments are delegated to the configured CommonMark Component."
+  ([page]
+   (render-page page commonmark/render))
+  ([page render-markdown]
+   (render-static-page page render-markdown)))

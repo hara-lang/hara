@@ -1,0 +1,65 @@
+(ns code.doc.link.tag-test
+  (:require [code.doc.link.tag :as tag]))
+
+^{:refer code.doc.link.tag/inc-candidate}
+(Test/check
+ [{:name "increments numeric suffixes while preserving a candidate without one"
+   :test (fn [] [(tag/inc-candidate "hello")
+                 (tag/inc-candidate "hello-10")
+                 (tag/inc-candidate "hello-a")])
+   :expected ["hello-0" "hello-11" "hello-a-0"]}])
+
+^{:refer code.doc.link.tag/tag-string}
+(Test/check
+ [{:name "canonicalizes camel humps, slash, dot, and punctuation"
+   :test (fn [] (tag/tag-string "hello2World/this.Rocks!"))
+   :expected "hello2-world--this-rocks"}])
+
+^{:refer code.doc.link.tag/create-candidate}
+(Test/check
+ [{:name "derives candidates from namespace, reference, title, and image data"
+   :test (fn [] [(tag/create-candidate {:origin :ns :ns "code.doc"})
+                 (tag/create-candidate {:origin :reference :mode :source :refer "code.doc/page"})
+                 (tag/create-candidate {:title "Guide Intro"})
+                 (tag/create-candidate {:type :image :src "diagram.svg"})
+                 (tag/create-candidate {:type :paragraph})])
+   :expected ["ns-code-doc" "source-code-doc--page" "guide-intro" "img-diagram-svg" nil]}])
+
+^{:refer code.doc.link.tag/create-tag}
+(Test/check
+ [{:name "uses a local collision set without retaining state after the pass"
+   :test (fn []
+           (let [tags (atom #{"hello" "hello-0" "hello-1" "hello-2"})]
+             [(tag/create-tag {:title "hello"} tags)
+              (deref tags)]))
+   :expected [{:title "hello" :tag "hello-3"}
+              #{"hello" "hello-0" "hello-1" "hello-2" "hello-3"}]}])
+
+^{:refer code.doc.link.tag/auto-tag-config}
+(Test/check
+ [{:name "uses article configuration before project configuration and defaults"
+   :test (fn [] [(tag/auto-tag-config {:articles {"a" {:link {:auto-tag #{:image}}}}} "a")
+                 (tag/auto-tag-config {:articles {"a" {:link {:auto-tag false}}}
+                                       :meta {:link {:auto-tag #{:reference}}}} "a")
+                 (tag/auto-tag-config {:articles {"a" {}}
+                                       :meta {:link {:auto-tag #{:equation}}}} "a")
+                 (tag/auto-tag-config {:articles {"a" {}}} "a")])
+   :expected [#{:image} #{} #{:equation} #{:ns :reference :image :equation}]}])
+
+^{:refer code.doc.link.tag/link-tags}
+(Test/check
+ [{:name "tags required and enabled directives, preserving hidden and existing tags"
+   :test (fn []
+           (get-in
+            (tag/link-tags
+             {:articles {"doc" {:tags #{"intro"}
+                                 :elements [{:type :chapter :title "Intro"}
+                                            {:type :image :src "system.svg"}
+                                            {:type :equation :title "Hidden" :hidden true}
+                                            {:type :section :title "Manual" :tag "manual"}]}}}
+             "doc")
+            [:articles "doc" :elements]))
+   :expected [{:type :chapter :title "Intro" :tag "intro-0"}
+              {:type :image :src "system.svg" :tag "img-system-svg"}
+              {:type :equation :title "Hidden" :hidden true}
+              {:type :section :title "Manual" :tag "manual"}]}])

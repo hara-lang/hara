@@ -1,0 +1,37 @@
+(ns code.doc.parse-test
+  (:require [code.doc.parse :as parse]))
+
+^{:refer code.doc.parse/source-forms}
+(Test/check
+ [{:name "reads literal Hara page forms without evaluating source"
+   :test (fn [] [(parse/source-forms "(ns docs.guide)\n(code.doc/page {:title \"Guide\" :content [\"# Guide\"]})")
+                 (try (parse/source-forms {:source "bad"}) :missing-error (catch error (:ex/code (ex-data error))))])
+   :expected [['(ns docs.guide)
+               '(code.doc/page {:title "Guide" :content ["# Guide"]})]
+              :code.doc/source-required]}])
+
+^{:refer code.doc.parse/page-form}
+(Test/check
+ [{:name "requires exactly one literal native page form"
+   :test (fn [] [(parse/page-form ['(ns docs.guide)
+                                   '(code.doc/page {:title "Guide" :content []})])
+                 (try (parse/page-form ['(code.doc/page {})
+                                        '(code.doc/page {})]) :missing-error (catch error (:ex/code (ex-data error))))])
+   :expected [{:title "Guide" :content []}
+              :code.doc/ambiguous-page-form]}])
+
+^{:refer code.doc.parse/parse-source}
+(Test/check
+ [{:name "retains reader facts and std.block source detail with literal page data"
+   :test (fn [] (let [source "(ns docs.guide) ; retained comment\n(code.doc/page {:title \"Guide\" :content [\"# Guide\"]})\n"
+                     parsed (parse/parse-source source)]
+                 [(:namespace parsed)
+                  (:data parsed)
+                  (get-in parsed [:detail :rendered])
+                  (get-in parsed [:detail :diagnostics])
+                  (select-keys (:analysis parsed) [:namespace :definitions])]))
+   :expected ['docs.guide
+              {:title "Guide" :content ["# Guide"]}
+              "(ns docs.guide) ; retained comment\n(code.doc/page {:title \"Guide\" :content [\"# Guide\"]})\n"
+              []
+              {:namespace 'docs.guide :definitions []}]}])

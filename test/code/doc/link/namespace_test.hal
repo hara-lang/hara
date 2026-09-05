@@ -1,0 +1,40 @@
+(ns code.doc.link.namespace-test
+  (:require [code.doc.link.namespace :as namespace]))
+
+^{:refer code.doc.link.namespace/source-namespace}
+(Test/check
+ [{:name "uses namespace provenance produced by static page parsing"
+   :test (fn [] (namespace/source-namespace {:namespace 'docs.guide}))
+   :expected 'docs.guide}])
+
+^{:refer code.doc.link.namespace/namespace-form}
+(Test/check
+ [{:name "selects the literal ns declaration without evaluating page forms"
+   :test (fn [] (namespace/namespace-form {:source "(ns docs.guide)\n(code.doc/page {:content []})"}))
+   :expected '(ns docs.guide)}])
+
+^{:refer code.doc.link.namespace/namespace-code}
+(Test/check
+ [{:name "serializes a literal namespace declaration and rejects absent provenance"
+   :test (fn [] [(namespace/namespace-code {:path "guide.hal" :source "(ns docs.guide)\n(code.doc/page {:content []})"})
+                 (try (namespace/namespace-code {:path "guide.hal" :source "(code.doc/page {:content []})"}) :missing-error (catch error (:ex/code (ex-data error))))])
+   :expected ["(ns docs.guide)" :code.doc/namespace-form-required]}])
+
+^{:refer code.doc.link.namespace/link-namespace-element}
+(Test/check
+ [{:name "fills native namespace directives while retaining ordinary elements"
+   :test (fn [] [(namespace/link-namespace-element {:namespace 'docs.guide :source "(ns docs.guide)"} {:type :ns})
+                 (namespace/link-namespace-element {:namespace 'docs.guide :source "(ns docs.guide)"} {:type :paragraph :text "keep"})])
+   :expected [{:type :ns :ns 'docs.guide :indentation 0 :code "(ns docs.guide)"}
+              {:type :paragraph :text "keep"}]}])
+
+^{:refer code.doc.link.namespace/link-namespaces}
+(Test/check
+ [{:name "links only the selected article against its own static source"
+   :test (fn [] (get-in
+                 (namespace/link-namespaces {:articles {"guide.hal" {:meta {:namespace 'docs.guide :source "(ns docs.guide)"}
+                                                                  :elements [{:type :ns}]}
+                                                        "other.hal" {:elements [{:type :ns}]}}}
+                                            "guide.hal")
+                 [:articles "guide.hal" :elements]))
+   :expected [{:type :ns :ns 'docs.guide :indentation 0 :code "(ns docs.guide)"}]}])

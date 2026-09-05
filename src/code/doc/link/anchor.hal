@@ -1,0 +1,27 @@
+(ns code.doc.link.anchor
+  (:config {:role :internal}))
+
+(defn link-anchors-lu
+  "Builds an article-local lookup by static tag and optional typed number."
+  [interim name]
+  (let [anchors (vec (map (fn [entry] (select-keys entry [:type :tag :number]))
+                          (filter (fn [entry] (:tag entry))
+                                  (get-in interim [:articles name :elements]))))
+        lookup (reduce (fn [output anchor]
+                         (let [type (:type anchor)
+                               tag (:tag anchor)
+                               number (:number anchor)
+                               output (if (nil? number)
+                                        output
+                                        (assoc-in output [:by-number type number] anchor))]
+                           (assoc-in output [:by-tag tag] anchor)))
+                       {}
+                       anchors)]
+    (assoc-in interim [:anchors-lu name] lookup)))
+
+(defn link-anchors
+  "Publishes one article's tag lookup, keeping empty articles explicit."
+  [interim name]
+  (assoc-in interim
+            [:anchors name]
+            (or (:by-tag (get-in interim [:anchors-lu name])) {})))

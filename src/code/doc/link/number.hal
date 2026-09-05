@@ -1,0 +1,132 @@
+(ns code.doc.link.number
+  (:config {:role :internal}))
+
+(def new-counter
+  {:chapter 0
+   :section 0
+   :subsection 0
+   :subsubsection 0
+   :code 0
+   :image 0
+   :equation 0
+   :citation 0})
+
+(def +increment-labels+ "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+(defn increment
+  "Returns the next static chapter or appendix label.
+
+   Numeric chapter counters start appendices at A. String counters use the
+   explicit portable label alphabet; labels beyond Z are rejected rather than
+   depending on a target-specific character-code operation."
+  [count]
+  (if (number? count)
+    "A"
+    (let [value (str count)
+          position (str/index-of +increment-labels+ value)]
+      (if (and (>= position 0)
+               (< (inc position) (str/length +increment-labels+)))
+        (str (str/char-at +increment-labels+ (inc position)))
+        (throw (ex :code.doc/appendix-overflow
+                   {:ex/message "Appendix labels are limited to 0 through Z"
+                    :value count}))))))
+
+(defn numberable?
+  "Returns whether one static directive receives an automatic number."
+  [type origin entry auto-number]
+  (if (and (or (= type :code) (= type :image) (= type :equation) (= type :block))
+           (or (get auto-number type)
+               (get auto-number origin)
+               (:numbered entry))
+           (or (:tag entry) (:title entry))
+           (not (or (:hidden entry)
+                    (false? (:numbered entry)))))
+    true
+    false))
+
+(defn link-numbers-loop
+  "Assigns static document numbers in source order with no evaluation step."
+  ([elements auto-number]
+   (link-numbers-loop elements auto-number new-counter []))
+  ([elements auto-number counter output]
+   (loop [remaining (vec elements)
+          counter counter
+          output output]
+     (if (empty? remaining)
+       output
+       (let [entry (first remaining)
+             more (vec (rest remaining))
+             type (:type entry)
+             origin (:origin entry)
+             result
+             (case type
+               :citation
+               [(str (inc (:citation counter)))
+                (assoc counter :citation (inc (:citation counter)))]
+
+               :chapter
+               [(str (inc (:chapter counter)))
+                (assoc counter
+                       :chapter (if (number? (:chapter counter))
+                                  (inc (:chapter counter))
+                                  0)
+                       :section 0 :subsection 0 :subsubsection 0 :code 0)]
+
+               :section
+               [(str (:chapter counter) "." (inc (:section counter)))
+                (assoc counter :section (inc (:section counter)) :subsection 0 :subsubsection 0)]
+
+               :subsection
+               [(str (:chapter counter) "." (:section counter) "." (inc (:subsection counter)))
+                (assoc counter :subsection (inc (:subsection counter)) :subsubsection 0)]
+
+               :subsubsection
+               [(str (:chapter counter) "." (:section counter) "." (:subsection counter) "." (inc (:subsubsection counter)))
+                (assoc counter :subsubsection (inc (:subsubsection counter)))]
+
+               :appendix
+               [(increment (:chapter counter))
+                (assoc counter
+                       :chapter (increment (:chapter counter))
+                       :section 0 :subsection 0 :subsubsection 0 :code 0)]
+
+               (if (numberable? type origin entry auto-number)
+                 (case type
+                   :code
+                   [(str (:chapter counter) "." (inc (:code counter)))
+                    (assoc counter :code (inc (:code counter)))]
+                   :block
+                   [(str (:chapter counter) "." (inc (:code counter)))
+                    (assoc counter :code (inc (:code counter)))]
+                   :image
+                   [(str (inc (:image counter)))
+                    (assoc counter :image (inc (:image counter)))]
+                   :equation
+                   [(str (inc (:equation counter)))
+                    (assoc counter :equation (inc (:equation counter)))])
+                 [nil counter]))
+             number (nth result 0)
+             counter (nth result 1)
+             entry (if number (assoc entry :number number) entry)]
+         (recur more counter (conj output entry)))))))
+
+(defn auto-number-config
+  "Resolves article override, project fallback, and the native default set."
+  [interim name]
+  (let [article-config (get-in interim [:articles name :meta :link :auto-number])
+        project-config (get-in interim [:meta :link :auto-number])
+        configured (if (nil? article-config)
+                     (if (nil? project-config) true project-config)
+                     article-config)]
+    (cond
+      (set? configured) configured
+      (false? configured) #{}
+      (true? configured) #{:image :equation :code :block}
+      :else #{})))
+
+(defn link-numbers
+  "Returns an interim static document with the selected article numbered."
+  [interim name]
+  (update-in interim [:articles name :elements]
+             (fn [elements]
+               (link-numbers-loop elements (auto-number-config interim name)))))

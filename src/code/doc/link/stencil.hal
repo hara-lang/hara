@@ -1,0 +1,73 @@
+(ns code.doc.link.stencil
+  (:config {:role :internal}))
+
+(defn page-label
+  "Returns a page identifier without the native source suffix."
+  [page]
+  (let [page (str page)]
+    (if (str/ends-with? page ".hal")
+      (str/slice page 0 (- (str/length page) 4))
+      page)))
+
+(defn page-output
+  "Returns the deterministic HTML output name for a linked native page."
+  [page]
+  (str (page-label page) ".html"))
+
+(defn replace-anchor
+  "Replaces the four static stencil forms associated with one numbered anchor."
+  [text current page tag anchor]
+  (let [number (:number anchor)]
+    (if (nil? number)
+      text
+      (let [page (str page)
+            label (page-label page)
+            tag (str tag)
+            number (str number)
+            local? (= current page)
+            cross (str "{{" page "/" tag "}}")
+            short-cross (str "{{" label "/" tag "}}")
+            local-form (str "{{" tag "}}")
+            citation (str "[[" page "/" tag "]]" )
+            short-citation (str "[[" label "/" tag "]]" )
+            local-citation (str "[[" tag "]]" )
+            text (str/replace text cross number)
+            text (str/replace text short-cross number)
+            text (str/replace text citation (str "[" number "](" (page-output page) "#" tag ")"))
+            text (str/replace text short-citation (str "[" number "](" (page-output page) "#" tag ")"))]
+        (if local?
+          (-> text
+              (str/replace local-form number)
+              (str/replace local-citation (str "[" number "](#" tag ")")))
+          text)))))
+
+(defn transform-stencil
+  "Resolves local and cross-page numbered anchor stencils from literal links."
+  [text name anchors]
+  (reduce-kv
+   (fn [output page tags]
+     (reduce-kv
+      (fn [output tag anchor]
+        (replace-anchor output name page tag anchor))
+      output
+      tags))
+   (str text)
+   (or anchors {})))
+
+(defn link-stencil
+  "Resolves paragraph and explicitly stencilled code text after anchors exist."
+  [interim name]
+  (let [anchors (:anchors interim)]
+    (update-in interim [:articles name :elements]
+               (fn [elements]
+                 (mapv
+                  (fn [element]
+                    (cond
+                      (= :paragraph (:type element))
+                      (update element :text transform-stencil name anchors)
+
+                      (:stencil element)
+                      (update element :code transform-stencil name anchors)
+
+                      :else element))
+                  elements)))))

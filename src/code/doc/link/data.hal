@@ -1,0 +1,62 @@
+(ns code.doc.link.data
+  (:config {:role :internal}))
+
+(defn selection-set
+  "Normalizes one optional group selector to a set, retaining nil as no filter."
+  [value]
+  (cond
+    (nil? value) nil
+    (set? value) value
+    :else #{value}))
+
+(defn entry-key
+  "Selects the stable data-entry identifier used by :only and :exclude."
+  [entry]
+  (or (:name entry) (:label entry)))
+
+(defn select-items
+  "Selects literal data entries by group, only, and exclude selectors."
+  [entries element]
+  (let [groups (selection-set (:group element))
+        only (set (or (:only element) []))
+        exclude (set (or (:exclude element) []))]
+    (vec
+     (filter
+      (fn [entry]
+        (let [key (entry-key entry)]
+          (and (or (nil? groups) (get groups (:group entry)))
+               (or (empty? only) (get only key))
+               (not (get exclude key)))))
+      (or entries [])))))
+
+(defn attach-items
+  "Attaches selected literal data entries or a deterministic empty-selection error."
+  [element entries]
+  (let [items (select-items entries element)]
+    (if (empty? items)
+      (assoc element
+             :error (str "code.doc data: no " (name (:type element)) " entries"))
+      (assoc element :items items))))
+
+(defn link-element
+  "Links an unresolved static related or links directive from literal page data."
+  [data element]
+  (let [type (:type element)]
+    (if (or (:items element) (:error element))
+      element
+      (case type
+        :related (attach-items element (:libraries data))
+        :links (attach-items element (:links data))
+        element))))
+
+(defn link-data
+  "Applies literal page :data to unresolved related and links directives.
+   This pass owns no cache or filesystem handle; every page is prepared from
+   the data embedded in its static source map."
+  [interim name]
+  (let [data (or (get-in interim [:articles name :meta :data])
+                 (:data interim)
+                 {})]
+    (update-in interim [:articles name :elements]
+               (fn [elements]
+                 (mapv (fn [element] (link-element data element)) elements)))))

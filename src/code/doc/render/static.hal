@@ -1,0 +1,214 @@
+(ns code.doc.render.static
+  (:config {:role :internal})
+  (:require [code.doc.render.util :as util]))
+
+(def +dynamic-directives+
+  #{:shader :widget/js :js})
+
+(defn html-escape
+  "Escapes static document text for element and attribute contexts."
+  [value]
+  (reduce
+   (fn [output pair]
+     (str/replace output (nth pair 0) (nth pair 1)))
+   (str value)
+   [["&" "&amp;"]
+    ["<" "&lt;"]
+    [">" "&gt;"]
+    ["\"" "&quot;"]
+    ["'" "&#39;"]]))
+
+(defn heading
+  "Renders one numbered static structural heading."
+  [level entry italic?]
+  (let [number (:number entry)
+        title (:title entry)
+        tag (:tag entry)
+        label (if (nil? number)
+                (html-escape title)
+                (str (html-escape number) " &nbsp;&nbsp; " (html-escape title)))
+        attr (if tag (str " id=\"" (html-escape tag) "\"") "")]
+    (str "<h" level attr ">"
+         (if italic? (str "<i>" label "</i>") label)
+         "</h" level ">")))
+
+(defn code-element
+  "Renders a static code directive with optional number and caption."
+  [entry]
+  (let [number (:number entry)
+        title (:title entry)
+        tag (:tag entry)
+        caption (:caption entry)
+        language (or (:lang entry) "clojure")
+        code (str/trim (util/adjust-indent (util/join-string (:code entry)) (or (:indentation entry) 0)))]
+    (str "<div class=\"code\">"
+         (if tag (str "<a id=\"" (html-escape tag) "\"></a>") "")
+         (if number
+           (str "<h4><i>e." (html-escape number)
+                (if title (str "  &nbsp;-&nbsp; " (html-escape title)) "")
+                "</i></h4>")
+           "")
+         (if caption (str "<p class=\"code-caption\">" (html-escape caption) "</p>") "")
+         "<pre><code class=\"" (html-escape language) "\">"
+         (util/basic-html-escape code)
+         "</code></pre></div>")))
+
+(defn render-element
+  "Renders one data-only documentation directive. Markdown is supplied solely
+   by the caller's standard Component function; dynamic browser directives are
+   deliberately rejected."
+  [entry render-markdown]
+  (cond
+    (string? entry) (render-markdown entry)
+    (not (map? entry))
+    (throw (ex :code.doc/invalid-entry
+               {:ex/message "Documentation content must be text or a static directive map"
+                :entry entry}))
+    (get +dynamic-directives+ (:type entry))
+    (throw (ex :code.doc/unsupported-directive
+               {:ex/message "Dynamic documentation directives are not available in the native static renderer"
+                :type (:type entry)}))
+    :else
+    (case (:type entry)
+      :markdown (render-markdown (:text entry))
+      :html (or (:src entry) (:html entry) "")
+      :block (code-element (assoc entry :type :code :origin :block))
+      :ns (code-element (assoc entry :type :code :origin :ns))
+      :test (code-element (assoc entry :type :code :origin :test))
+      :reference (code-element (assoc entry :type :code :origin :reference))
+      :chapter (heading 2 entry false)
+      :appendix (heading 2 entry false)
+      :section (heading 3 entry false)
+      :subsection (heading 3 entry true)
+      :subsubsection (heading 4 entry true)
+      :paragraph (render-markdown (:text entry))
+      :hero
+      (str "<section class=\"hero\">"
+           (if (seq (:badges entry))
+             (str "<div class=\"hero-badges\">"
+                  (str/join "" (map (fn [badge] (str "<span class=\"badge badge-hero\">" (html-escape badge) "</span>")) (:badges entry)))
+                  "</div>")
+             "")
+           "<div class=\"hero-copy\"><h1>" (html-escape (:title entry)) "</h1>"
+           (if (:subtitle entry) (str "<p class=\"hero-subtitle\">" (html-escape (:subtitle entry)) "</p>") "")
+           (if (:lead entry) (str "<div class=\"hero-lead\">" (render-markdown (:lead entry)) "</div>") "")
+           "</div>"
+           (if (seq (:actions entry))
+             (str "<div class=\"hero-actions\">"
+                  (str/join "" (map (fn [action]
+                                      (str "<a class=\"hero-action"
+                                           (if (:variant action) (str " hero-action-" (name (:variant action))) "")
+                                           "\" href=\"" (html-escape (:href action)) "\">"
+                                           (html-escape (:label action)) "</a>"))
+                                    (:actions entry)))
+                  "</div>")
+             "")
+           "</section>")
+      :callout
+      (str "<aside class=\"callout"
+           (if (:tone entry) (str " callout-" (name (:tone entry))) "")
+           "\">"
+           (if (:title entry) (str "<h4>" (html-escape (:title entry)) "</h4>") "")
+           (if (:content entry) (str "<div>" (render-markdown (:content entry)) "</div>") "")
+           "</aside>")
+      :card-grid
+      (str "<section class=\"card-grid-shell\">"
+           (if (:title entry) (str "<div class=\"card-grid-heading\"><h3>" (html-escape (:title entry)) "</h3></div>") "")
+           (if (:lead entry) (str "<div class=\"card-grid-lead\">" (render-markdown (:lead entry)) "</div>") "")
+           "<div class=\"card-grid\">"
+           (str/join "" (map (fn [item]
+                                (str "<article class=\"card\">"
+                                     (if (:meta item) (str "<span class=\"card-meta\">" (html-escape (:meta item)) "</span>") "")
+                                     "<h4>" (html-escape (:title item)) "</h4>"
+                                     "<div class=\"card-text\">" (render-markdown (or (:text item) "")) "</div>"
+                                     (if (:href item) (str "<a href=\"" (html-escape (:href item)) "\">Learn more</a>") "")
+                                     "</article>"))
+                              (:items entry)))
+           "</div></section>")
+      :related
+      (if (:error entry)
+        (str "<pre class=\"error\">" (html-escape (:error entry)) "</pre>")
+        (str "<section class=\"related-shell\">"
+             (if (:title entry) (str "<div class=\"related-heading\"><h3>" (html-escape (:title entry)) "</h3></div>") "")
+             "<div class=\"related-table\">"
+             (str/join "" (map (fn [item]
+                                  (str "<div class=\"related-row\"><div class=\"related-name\">"
+                                       (if (:href item) (str "<a href=\"" (html-escape (:href item)) "\">" (html-escape (:name item)) "</a>") (html-escape (:name item)))
+                                       (if (:group item) (str "<span class=\"related-family\">" (html-escape (name (:group item))) "</span>") "")
+                                       "</div><div class=\"related-description\">" (render-markdown (or (:description item) "")) "</div>"
+                                       (if (:comparison item) (str "<div class=\"related-comparison\">" (render-markdown (:comparison item)) "</div>") "")
+                                       "</div>"))
+                                (:items entry)))
+             "</div></section>"))
+      :links
+      (if (:error entry)
+        (str "<pre class=\"error\">" (html-escape (:error entry)) "</pre>")
+        (str "<div class=\"links-list\">"
+             (str/join "" (map (fn [item] (str "<a href=\"" (html-escape (:href item)) "\">" (html-escape (:label item)) "</a>")) (:items entry)))
+             "</div>"))
+      :quote
+      (str "<blockquote class=\"doc-quote\"><p>" (html-escape (:text entry)) "</p>"
+           (if (or (:author entry) (:source entry))
+             (str "<footer>" (html-escape (or (:author entry) ""))
+                  (if (and (:author entry) (:source entry)) " · " "")
+                  (html-escape (or (:source entry) "")) "</footer>")
+             "")
+           "</blockquote>")
+      :badge
+      (str "<span class=\"badge"
+           (if (:tone entry) (str " badge-" (name (:tone entry))) "")
+           "\">" (html-escape (:label entry)) "</span>")
+      :demo
+      (str "<section class=\"demo-block\">"
+           (if (:title entry) (str "<h4>" (html-escape (:title entry)) "</h4>") "")
+           (if (:content entry) (str "<div class=\"demo-copy\">" (render-markdown (:content entry)) "</div>") "")
+           (if (:code entry)
+             (str "<pre><code class=\"" (html-escape (or (:lang entry) "clojure")) "\">"
+                  (util/basic-html-escape (str/trim (:code entry))) "</code></pre>")
+             "")
+           "</section>")
+      :image
+      (str "<div class=\"figure\">"
+           (if (:tag entry) (str "<a id=\"" (html-escape (:tag entry)) "\"></a>") "")
+           (if (:number entry)
+             (str "<h4><i>fig." (html-escape (:number entry))
+                  (if (:title entry) (str "  &nbsp;-&nbsp; " (html-escape (:title entry))) "")
+                  "</i></h4>")
+             "")
+           "<div class=\"img\"><img src=\"" (html-escape (:src entry)) "\""
+           (if (:alt entry) (str " alt=\"" (html-escape (:alt entry)) "\"") "")
+           "></div><p></p></div>")
+      :code (code-element entry)
+      (throw (ex :code.doc/unsupported-directive
+                 {:ex/message "Unsupported documentation directive"
+                  :type (:type entry)})))))
+
+(defn render-elements
+  "Renders a static directive sequence in source order."
+  [entries render-markdown]
+  (str/join "\n" (map (fn [entry] (render-element entry render-markdown)) entries)))
+
+(defn render-chapter
+  "Renders a navigation chapter entry from its already-linked static children."
+  [entry]
+  (let [sections (filter (fn [element] (or (= :section (:type element))
+                                             (= :subsection (:type element))))
+                         (:elements entry))]
+    (str "<li><a class=\"chapter\" data-scroll=\"\" href=\"#" (html-escape (:tag entry)) "\"><h4>"
+         (html-escape (:number entry)) " &nbsp; " (html-escape (:title entry)) "</h4></a>"
+         (str/join "" (map (fn [section]
+                              (str "<a class=\"section\" data-scroll=\"\" href=\"#" (html-escape (:tag section)) "\"><h5><i>"
+                                   (html-escape (:number section)) " &nbsp; " (html-escape (:title section)) "</i></h5></a>"))
+                            sections))
+         "</li>")))
+
+(defn nav-element
+  "Renders one static navigation heading."
+  [entry]
+  (case (:type entry)
+    :chapter (str "<h4><a href=\"#" (html-escape (:tag entry)) "\">" (html-escape (:number entry)) " &nbsp; " (html-escape (:title entry)) "</a></h4>")
+    :section (str "<h5>&nbsp;&nbsp;<i><a href=\"#" (html-escape (:tag entry)) "\">" (html-escape (:number entry)) " &nbsp; " (html-escape (:title entry)) "</a></i></h5>")
+    :subsection (str "<h5>&nbsp;&nbsp;&nbsp;&nbsp;<i><a href=\"#" (html-escape (:tag entry)) "\">" (html-escape (:number entry)) " &nbsp; " (html-escape (:title entry)) "</a></i></h5>")
+    (throw (ex :code.doc/unsupported-navigation
+               {:ex/message "Unsupported static navigation directive"
+                :type (:type entry)}))))

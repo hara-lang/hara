@@ -1,0 +1,93 @@
+(ns code.doc.render.static-test
+  (:require [code.doc.render.static :as static]))
+
+^{:refer code.doc.render.static/html-escape}
+(Test/check
+ [{:name "escapes native static text for HTML element and attribute contexts"
+   :test (fn [] (static/html-escape "<&>\"'"))
+   :expected "&lt;&amp;&gt;&quot;&#39;"}])
+
+^{:refer code.doc.render.static/heading}
+(Test/check
+ [{:name "renders numbered headings with stable anchor and italic structure"
+   :test (fn [] [(static/heading 2 {:number "1" :title "Intro" :tag "intro"} false)
+                 (static/heading 3 {:number "1.1" :title "Detail"} true)])
+   :expected ["<h2 id=\"intro\">1 &nbsp;&nbsp; Intro</h2>"
+              "<h3><i>1.1 &nbsp;&nbsp; Detail</i></h3>"]}])
+
+^{:refer code.doc.render.static/code-element}
+(Test/check
+ [{:name "renders code fragments with deterministic escaping, indentation, and metadata"
+   :test (fn [] (static/code-element {:tag "example"
+                                      :number "1.1"
+                                      :title "Example"
+                                      :caption "A < B"
+                                      :lang "hara"
+                                      :indentation 2
+                                      :code ["  (< x)\n" "  y"]}))
+   :expected "<div class=\"code\"><a id=\"example\"></a><h4><i>e.1.1  &nbsp;-&nbsp; Example</i></h4><p class=\"code-caption\">A &lt; B</p><pre><code class=\"hara\">(&lt; x)\ny</code></pre></div>"}])
+
+^{:refer code.doc.render.static/render-element}
+(Test/check
+ [{:name "delegates text and paragraph directives only to the supplied Component renderer"
+   :test (fn [] [(static/render-element "# Guide" (fn [text] (str "<m>" text "</m>")))
+                 (static/render-element {:type :paragraph :text "Body"} (fn [text] (str "<m>" text "</m>")))
+                 (static/render-element {:type :html :src "<aside>safe static source</aside>"} identity)
+                 (static/render-element {:type :block :code "x"} identity)])
+   :expected ["<m># Guide</m>"
+              "<m>Body</m>"
+              "<aside>safe static source</aside>"
+              "<div class=\"code\"><pre><code class=\"clojure\">x</code></pre></div>"]}
+  {:name "renders static presentational directives without a browser execution path"
+   :test (fn [] [(static/render-element {:type :hero :title "H" :lead "Lead" :badges ["New"] :actions [{:href "/go" :label "Go" :variant :primary}]} (fn [text] (str "<m>" text "</m>")))
+                 (static/render-element {:type :callout :tone :note :title "Note" :content "Body"} (fn [text] (str "<m>" text "</m>")))
+                 (static/render-element {:type :badge :tone :beta :label "Beta"} identity)
+                 (static/render-element {:type :quote :text "Words" :author "A" :source "Book"} identity)
+                 (static/render-element {:type :image :tag "fig" :number "1" :title "Plot" :src "plot.svg" :alt "Plot"} identity)
+                 (static/render-element {:type :demo :title "Demo" :content "Body" :code " (<x>) " :lang "hara"} (fn [text] (str "<m>" text "</m>")))])
+   :expected ["<section class=\"hero\"><div class=\"hero-badges\"><span class=\"badge badge-hero\">New</span></div><div class=\"hero-copy\"><h1>H</h1><div class=\"hero-lead\"><m>Lead</m></div></div><div class=\"hero-actions\"><a class=\"hero-action hero-action-primary\" href=\"/go\">Go</a></div></section>"
+              "<aside class=\"callout callout-note\"><h4>Note</h4><div><m>Body</m></div></aside>"
+              "<span class=\"badge badge-beta\">Beta</span>"
+              "<blockquote class=\"doc-quote\"><p>Words</p><footer>A · Book</footer></blockquote>"
+              "<div class=\"figure\"><a id=\"fig\"></a><h4><i>fig.1  &nbsp;-&nbsp; Plot</i></h4><div class=\"img\"><img src=\"plot.svg\" alt=\"Plot\"></div><p></p></div>"
+              "<section class=\"demo-block\"><h4>Demo</h4><div class=\"demo-copy\"><m>Body</m></div><pre><code class=\"hara\">(&lt;x&gt;)</code></pre></section>"]}
+  {:name "renders static collection directives and rejects dynamic or unknown types"
+   :test (fn [] [(static/render-element {:type :links :items [{:href "/a" :label "A"}]} identity)
+                 (static/render-element {:type :card-grid :items [{:title "Card" :text "Body" :href "/card"}]} (fn [text] (str "<m>" text "</m>")))
+                 (static/render-element {:type :related :items [{:name "Thing" :description "Desc" :comparison "Compare" :group :core}]} (fn [text] (str "<m>" text "</m>")))
+                 (try (static/render-element {:type :shader} identity) :missing-error (catch error (:ex/code (ex-data error))))
+                 (try (static/render-element {:type :api} identity) :missing-error (catch error (:ex/code (ex-data error))))])
+   :expected ["<div class=\"links-list\"><a href=\"/a\">A</a></div>"
+              "<section class=\"card-grid-shell\"><div class=\"card-grid\"><article class=\"card\"><h4>Card</h4><div class=\"card-text\"><m>Body</m></div><a href=\"/card\">Learn more</a></article></div></section>"
+              "<section class=\"related-shell\"><div class=\"related-table\"><div class=\"related-row\"><div class=\"related-name\">Thing<span class=\"related-family\">core</span></div><div class=\"related-description\"><m>Desc</m></div><div class=\"related-comparison\"><m>Compare</m></div></div></div></section>"
+              :code.doc/unsupported-directive
+              :code.doc/unsupported-directive]}])
+
+^{:refer code.doc.render.static/render-elements}
+(Test/check
+ [{:name "renders a directive sequence in its original static order"
+   :test (fn [] (static/render-elements [{:type :html :src "<a></a>"}
+                                         {:type :markdown :text "# B"}]
+                                        (fn [text] (str "<m>" text "</m>"))))
+   :expected "<a></a>\n<m># B</m>"}])
+
+^{:refer code.doc.render.static/render-chapter}
+(Test/check
+ [{:name "renders linked chapter navigation from static section metadata"
+   :test (fn [] (static/render-chapter {:tag "chapter" :number "1" :title "Guide"
+                                         :elements [{:type :paragraph}
+                                                    {:type :section :tag "intro" :number "1.1" :title "Intro"}
+                                                    {:type :subsection :tag "deep" :number "1.1.1" :title "Deep"}]}))
+   :expected "<li><a class=\"chapter\" data-scroll=\"\" href=\"#chapter\"><h4>1 &nbsp; Guide</h4></a><a class=\"section\" data-scroll=\"\" href=\"#intro\"><h5><i>1.1 &nbsp; Intro</i></h5></a><a class=\"section\" data-scroll=\"\" href=\"#deep\"><h5><i>1.1.1 &nbsp; Deep</i></h5></a></li>"}])
+
+^{:refer code.doc.render.static/nav-element}
+(Test/check
+ [{:name "renders supported static navigation levels and rejects unknown levels"
+   :test (fn [] [(static/nav-element {:type :chapter :tag "c" :number "1" :title "Chapter"})
+                 (static/nav-element {:type :section :tag "s" :number "1.1" :title "Section"})
+                 (static/nav-element {:type :subsection :tag "ss" :number "1.1.1" :title "Subsection"})
+                 (try (static/nav-element {:type :image}) :missing-error (catch error (:ex/code (ex-data error))))])
+   :expected ["<h4><a href=\"#c\">1 &nbsp; Chapter</a></h4>"
+              "<h5>&nbsp;&nbsp;<i><a href=\"#s\">1.1 &nbsp; Section</a></i></h5>"
+              "<h5>&nbsp;&nbsp;&nbsp;&nbsp;<i><a href=\"#ss\">1.1.1 &nbsp; Subsection</a></i></h5>"
+              :code.doc/unsupported-navigation]}])

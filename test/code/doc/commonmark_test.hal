@@ -1,0 +1,35 @@
+(ns code.doc.commonmark-test
+  (:require [code.doc.commonmark :as commonmark]
+            [std.config.ext.json :as json]))
+
+^{:refer code.doc.commonmark/render}
+(Test/check
+ [{:name "renders CommonMark through the declared pure Component"
+   :test (fn [] (commonmark/render "# Guide"))
+   :expected "<h1>Guide</h1>\n"}
+  {:name "rejects non-text input"
+   :test (fn []
+           (try
+             (commonmark/render {:source "# Guide"})
+             :missing-error
+             (catch error (:ex/code (ex-data error)))))
+   :expected :code.doc/markdown-required}])
+
+^{:refer code.doc.commonmark/render}
+(Test/check
+ [{:name "matches all official CommonMark 0.31.2 rendering examples"
+   :test (fn []
+           (let [source (String/decode-utf8
+                         (deref (File/read "extensions/docs-markdown/test/commonmark-0.31.2.json")))
+                 examples (json/read-json source)
+                 failures (reduce (fn [output example]
+                                    (if (= (:html example)
+                                           (commonmark/render (:markdown example)))
+                                      output
+                                      (conj output (select-keys example [:example :section]))))
+                                  []
+                                  examples)]
+             {:examples (count examples)
+              :failures failures}))
+   :expected {:examples 652
+              :failures []}}])

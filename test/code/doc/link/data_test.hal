@@ -1,0 +1,68 @@
+(ns code.doc.link.data-test
+  (:require [code.doc.link.data :as data]))
+
+^{:refer code.doc.link.data/selection-set}
+(Test/check
+ [{:name "normalizes absent, single, and grouped selectors without state"
+   :test (fn [] [(data/selection-set nil)
+                 (data/selection-set :core)
+                 (data/selection-set #{:core :docs})])
+   :expected [nil #{:core} #{:core :docs}]}])
+
+^{:refer code.doc.link.data/entry-key}
+(Test/check
+ [{:name "uses name before label as the data selection identifier"
+   :test (fn [] [(data/entry-key {:name "named" :label "labelled"})
+                 (data/entry-key {:label "labelled"})])
+   :expected ["named" "labelled"]}])
+
+^{:refer code.doc.link.data/select-items}
+(Test/check
+ [{:name "filters literal data entries by group only and exclude"
+   :test (fn [] [(data/select-items [{:name "a" :group :core}
+                                      {:name "b" :group :docs}
+                                      {:label "c" :group :core}]
+                                     {:group :core})
+                 (data/select-items [{:name "a"} {:name "b"}]
+                                     {:only ["a"] :exclude ["b"]})])
+   :expected [[{:name "a" :group :core}
+               {:label "c" :group :core}]
+              [{:name "a"}]]}])
+
+^{:refer code.doc.link.data/attach-items}
+(Test/check
+ [{:name "attaches selected data or reports a deterministic empty selection"
+   :test (fn [] [(data/attach-items {:type :related :group :core}
+                                    [{:name "Hara" :group :core}])
+                 (data/attach-items {:type :links :group :missing}
+                                    [{:name "Hara" :group :core}])])
+   :expected [{:type :related :group :core :items [{:name "Hara" :group :core}]}
+              {:type :links :group :missing :error "code.doc data: no links entries"}]}])
+
+^{:refer code.doc.link.data/link-element}
+(Test/check
+ [{:name "links unresolved static directives and preserves explicit data"
+   :test (fn [] [(data/link-element {:libraries [{:name "Hara" :group :core}]
+                                     :links [{:label "Docs" :group :docs}]}
+                                    {:type :related :group :core})
+                 (data/link-element {:links [{:label "Docs" :group :docs}]}
+                                    {:type :links :items [{:label "Manual"}]})])
+   :expected [{:type :related :group :core :items [{:name "Hara" :group :core}]}
+              {:type :links :items [{:label "Manual"}]}]}])
+
+^{:refer code.doc.link.data/link-data}
+(Test/check
+ [{:name "links only the selected article from its literal data map"
+   :test (fn [] (get-in
+                 (data/link-data {:articles {"guide.hal" {:meta {:data {:libraries [{:name "Hara" :group :core}]
+                                                                          :links [{:label "Docs" :group :docs}]}}
+                                                           :elements [{:type :related :group :core}
+                                                                      {:type :links :group :docs}
+                                                                      {:type :paragraph :text "Keep"}]}
+                                             "other.hal" {:elements [{:type :related}]}}
+                             :data {:libraries [{:name "Ignored"}]}}
+                                "guide.hal")
+                 [:articles "guide.hal" :elements]))
+   :expected [{:type :related :group :core :items [{:name "Hara" :group :core}]}
+              {:type :links :group :docs :items [{:label "Docs" :group :docs}]}
+              {:type :paragraph :text "Keep"}]}])

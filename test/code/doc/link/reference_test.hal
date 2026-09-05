@@ -1,0 +1,60 @@
+(ns code.doc.link.reference-test
+  (:require [code.doc.link.reference :as reference]))
+
+^{:refer code.doc.link.reference/reference-record}
+(Test/check
+ [{:name "finds literal reference records under matching symbol or string lookup keys"
+   :test (fn [] [(reference/reference-record {:references {'code.core/foo {:source {:code "symbol"}}}} 'code.core/foo)
+                 (reference/reference-record {:references {"code.core/foo" {:source {:code "string"}}}} 'code.core/foo)])
+   :expected [{:source {:code "symbol"}}
+              {:source {:code "string"}}]}])
+
+^{:refer code.doc.link.reference/reference-mode}
+(Test/check
+ [{:name "uses source unless a static reference selects a mode"
+   :test (fn [] [(reference/reference-mode {:type :reference})
+                 (reference/reference-mode {:type :reference :mode :test})])
+   :expected [:source :test]}])
+
+^{:refer code.doc.link.reference/reference-code}
+(Test/check
+ [{:name "selects literal source and test snippets with a stable missing diagnostic"
+   :test (fn [] [(reference/reference-code {:references {"code.core/foo" {:source {:code "(def foo 1)"}
+                                                                     :test {:code "(Test/check [])"}}}}
+                                            {:refer "code.core/foo"})
+                 (reference/reference-code {:references {"code.core/foo" {:test {:code "(Test/check [])"}}}}
+                                            {:refer "code.core/foo" :mode :test})
+                 (reference/reference-code {:references {}}
+                                            {:refer "missing/value" :mode :source})])
+   :expected ["(def foo 1)"
+              "(Test/check [])"
+              "MISSING REFERENCE missing/value (source)"]}])
+
+^{:refer code.doc.link.reference/reference-title}
+(Test/check
+ [{:name "creates a descriptive static title from reference identity and mode"
+   :test (fn [] [(reference/reference-title {:refer "code.core/foo"})
+                 (reference/reference-title {:refer "code.core/foo" :mode :test})])
+   :expected ["source of <i>code.core/foo</i>"
+              "test of <i>code.core/foo</i>"]}])
+
+^{:refer code.doc.link.reference/link-reference-element}
+(Test/check
+ [{:name "fills a reference directive with static code mode title and indentation"
+   :test (fn [] [(reference/link-reference-element {:references {"code.core/foo" {:source {:code "(def foo 1)"}}}}
+                                                    {:type :reference :refer "code.core/foo"})
+                 (reference/link-reference-element {:references {"code.core/foo" {:test {:code "(Test/check [])"}}}}
+                                                    {:type :reference :refer "code.core/foo" :mode :test})])
+   :expected [{:type :reference :refer "code.core/foo" :origin :reference :mode :source :indentation 0 :code "(def foo 1)" :title "source of <i>code.core/foo</i>"}
+              {:type :reference :refer "code.core/foo" :origin :reference :mode :test :indentation 2 :code "(Test/check [])" :title "test of <i>code.core/foo</i>"}]}])
+
+^{:refer code.doc.link.reference/link-references}
+(Test/check
+ [{:name "links only the selected article from its page-local reference table"
+   :test (fn [] (get-in
+                 (reference/link-references {:articles {"guide.hal" {:meta {:references {"code.core/foo" {:source {:code "(def foo 1)"}}}}
+                                                                  :elements [{:type :reference :refer "code.core/foo"}]}
+                                                        "other.hal" {:elements [{:type :reference :refer "skip/value"}]}}}
+                                            "guide.hal")
+                 [:articles "guide.hal" :elements]))
+   :expected [{:type :reference :refer "code.core/foo" :origin :reference :mode :source :indentation 0 :code "(def foo 1)" :title "source of <i>code.core/foo</i>"}]}])

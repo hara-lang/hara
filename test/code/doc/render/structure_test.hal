@@ -1,0 +1,78 @@
+(ns code.doc.render.structure-test
+  (:require [code.doc.render.structure :as structure]))
+
+^{:refer code.doc.render.structure/inclusive}
+(Test/check
+ [{:name "accepts descendants and rejects parent insertion beneath a child"
+   :test (fn [] [(structure/inclusive :article :chapter)
+                 (structure/inclusive :chapter :section)
+                 (structure/inclusive :section :chapter)])
+   :expected [true true false]}])
+
+^{:refer code.doc.render.structure/separate}
+(Test/check
+ [{:name "starts a new group only at a later predicate match"
+   :test (fn [] [(structure/separate even? [1 2 3 4 5])
+                 (structure/separate keyword? [])])
+   :expected [[[1] [2 3] [4 5]] []]}])
+
+^{:refer code.doc.render.structure/tag-match?}
+(Test/check
+ [{:name "matches individual and grouped structural directive tags"
+   :test (fn [] [(structure/tag-match? :section {:type :section})
+                 (structure/tag-match? #{:chapter :appendix} {:type :appendix})
+                 (structure/tag-match? :chapter {:type :section})])
+   :expected [true true false]}])
+
+^{:refer code.doc.render.structure/containify}
+(Test/check
+ [{:name "groups a flat chapter and section stream without evaluating directives"
+   :test (fn []
+           (structure/containify
+            [{:type :chapter :title "C1"}
+             {:type :paragraph :text "p1"}
+             {:type :section :title "S1"}
+             {:type :paragraph :text "p2"}]))
+   :expected [{:type :article}
+              [{:type :chapter :title "C1"}
+               [{:type :paragraph :text "p1"}]
+               [{:type :section :title "S1"}
+                [{:type :paragraph :text "p2"}]]]]}])
+
+^{:refer code.doc.render.structure/flatten-elements}
+(Test/check
+ [{:name "flattens only nested vector grouping boundaries"
+   :test (fn [] (structure/flatten-elements [[:a [:b]] {:type :chapter}]))
+   :expected [:a :b {:type :chapter}]}])
+
+^{:refer code.doc.render.structure/mapify-unit}
+(Test/check
+ [{:name "keeps directive maps and maps nested groups"
+   :test (fn [] [(structure/mapify-unit {:type :chapter})
+                 (structure/mapify-unit [{:type :chapter} {:type :paragraph}])])
+   :expected [{:type :chapter}
+              {:type :chapter :elements [{:type :paragraph}]}]}])
+
+^{:refer code.doc.render.structure/mapify}
+(Test/check
+ [{:name "attaches flattened nested content to a structural container"
+   :test (fn []
+           (structure/mapify
+            [{:type :chapter :title "C1"}
+             [{:type :paragraph :text "p1"}]]))
+   :expected {:type :chapter
+              :title "C1"
+              :elements [{:type :paragraph :text "p1"}]}}])
+
+^{:refer code.doc.render.structure/structure}
+(Test/check
+ [{:name "returns an empty article or a fully nested static article"
+   :test (fn []
+           [(structure/structure [])
+            (structure/structure [{:type :chapter :title "C1"}
+                                  {:type :paragraph :text "p1"}])])
+   :expected [{:type :article :elements []}
+              {:type :article
+               :elements [{:type :chapter
+                           :title "C1"
+                           :elements [{:type :paragraph :text "p1"}]}]}]}])

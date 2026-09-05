@@ -1,0 +1,113 @@
+(ns code.doc.render.structure
+  (:config {:role :internal}))
+
+(def +containers+
+  #{:article :chapter :appendix :section :subsection :subsubsection :generic})
+
+(def +container-ranks+
+  {:article 0
+   :generic 1
+   :chapter 1
+   :appendix 1
+   :section 2
+   :subsection 3
+   :subsubsection 4})
+
+(defn ^{:public true} inclusive
+  "Returns whether a candidate may appear within a container level."
+  [container candidate]
+  (let [container-rank (get +container-ranks+ container)
+        candidate-rank (get +container-ranks+ candidate)]
+    (if (or (nil? candidate-rank)
+            (nil? container-rank)
+            (<= container-rank candidate-rank))
+      true
+      false)))
+
+(defn ^{:public true} separate
+  "Splits entries whenever predicate starts a later non-empty group."
+  [predicate entries]
+  (loop [remaining (vec entries)
+         output []
+         current []]
+    (if (empty? remaining)
+      (if (empty? current)
+        output
+        (conj output current))
+      (let [entry (first remaining)
+            more (vec (rest remaining))]
+        (if (and (not (empty? current))
+                 (predicate entry))
+          (recur more (conj output current) [entry])
+          (recur more output (conj current entry)))))))
+
+(defn ^{:public true} tag-match?
+  "Matches a structural tag or a set of structural tags against one entry."
+  [tag entry]
+  (if (set? tag)
+    (not (nil? (get tag (:type entry))))
+    (= tag (:type entry))))
+
+(defn ^{:public true} containify
+  "Groups a flat directive stream into the native article hierarchy."
+  ([entries]
+   (vec
+    (cons {:type :article}
+          (vec
+           (filter
+            identity
+            (containify entries
+                        [#{:appendix :chapter :generic}
+                         :section
+                         :subsection
+                         :subsubsection]))))))
+  ([entries tags]
+   (let [tag (first tags)
+         remaining-tags (vec (rest tags))
+         groups (separate (fn [entry] (tag-match? tag entry)) entries)]
+     (if (empty? remaining-tags)
+       groups
+       (mapv
+        (fn [group]
+          (let [head (first group)
+                body (vec (rest group))]
+            (if (empty? body)
+              [head]
+              (vec (cons head (containify body remaining-tags))))))
+        groups)))))
+
+(defn ^{:public true} flatten-elements
+  "Flattens nested vector groups while retaining directive map identities."
+  [entries]
+  (reduce
+   (fn [output entry]
+     (if (vector? entry)
+       (into output (flatten-elements entry))
+       (conj output entry)))
+   []
+   entries))
+
+(declare mapify)
+
+(defn ^{:public true} mapify-unit
+  "Converts one nested directive group to its structural map."
+  [entry]
+  (if (map? entry)
+    entry
+    (mapify entry)))
+
+(defn ^{:public true} mapify
+  "Attaches nested directive groups as an :elements vector on containers."
+  [entries]
+  (let [head (first entries)
+        tail (vec (rest entries))]
+    (if (get +containers+ (:type head))
+      (assoc head :elements (vec (flatten-elements (map mapify-unit tail))))
+      (vec (map mapify-unit entries)))))
+
+(defn ^{:public true} structure
+  "Builds the article structure for a flat static directive sequence."
+  [entries]
+  (if (empty? entries)
+    {:type :article :elements []}
+    (mapify (containify entries))))

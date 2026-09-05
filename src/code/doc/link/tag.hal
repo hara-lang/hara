@@ -1,0 +1,92 @@
+(ns code.doc.link.tag
+  (:config {:role :internal}))
+
+(def tag-required?
+  #{:chapter :section :subsection :subsubsection :appendix :citation})
+
+(def tag-optional?
+  #{:ns :reference :image :equation})
+
+(defn inc-candidate
+  "Returns the next deterministic suffix for a colliding static tag."
+  [candidate]
+  (let [candidate (str candidate)
+        separator (str/last-index-of candidate "-")
+        suffix (if (>= separator 0)
+                 (str/slice candidate (inc separator))
+                 nil)
+        value (if suffix (parse-long suffix) nil)]
+    (if (nil? value)
+      (str candidate "-0")
+      (str (str/slice candidate 0 (inc separator)) (inc value)))))
+
+(defn tag-string
+  "Canonicalizes visible static text to a portable anchor identifier."
+  [value]
+  (let [value (str/spear-case (str value))
+        value (re-replace (regexp "\\.") value "-")
+        value (re-replace (regexp "/") value "--")]
+    (re-replace (regexp "[^\\d\\w^-]") value "")))
+
+(defn create-candidate
+  "Derives a tag candidate from one data-only documentation directive."
+  [element]
+  (let [origin (:origin element)
+        title (:title element)
+        type (:type element)]
+    (cond
+      origin
+      (case origin
+        :ns (tag-string (str "ns-" (:ns element)))
+        :reference (tag-string (str (name (:mode element)) "-" (:refer element)))
+        nil)
+
+      title (tag-string title)
+      (= :image type) (tag-string (str "img-" (:src element)))
+      :else nil)))
+
+(defn create-tag
+  "Associates a unique candidate tag and records it in this pass's local set."
+  ([element tags]
+   (create-tag element tags (create-candidate element)))
+  ([element tags candidate]
+   (cond
+     (nil? candidate) element
+     (get (deref tags) candidate) (create-tag element tags (inc-candidate candidate))
+     :else
+     (do
+       (swap! tags conj candidate)
+       (assoc element :tag candidate)))))
+
+(defn auto-tag-config
+  "Resolves article override, project fallback, and the static optional set."
+  [interim name]
+  (let [article-config (get-in interim [:articles name :link :auto-tag])
+        project-config (get-in interim [:meta :link :auto-tag])
+        configured (if (nil? article-config)
+                     (if (nil? project-config) true project-config)
+                     article-config)]
+    (cond
+      (set? configured) configured
+      (false? configured) #{}
+      (true? configured) tag-optional?
+      :else #{})))
+
+(defn link-tags
+  "Assigns deterministic tags to required and configured static directives."
+  [interim name]
+  (let [tags (atom (or (get-in interim [:articles name :tags]) #{}))
+        auto-tag (auto-tag-config interim name)
+        elements (get-in interim [:articles name :elements])
+        linked
+        (mapv
+         (fn [element]
+           (if (and (or (get tag-required? (:type element))
+                        (get auto-tag (:type element))
+                        (get auto-tag (:origin element)))
+                    (nil? (:tag element))
+                    (not (:hidden element)))
+             (create-tag element tags)
+             element))
+         elements)]
+    (assoc-in interim [:articles name :elements] linked)))

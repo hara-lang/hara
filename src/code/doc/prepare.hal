@@ -1,0 +1,68 @@
+(ns code.doc.prepare
+  (:config {:role :internal})
+  (:require [code.doc.link.anchor :as anchor]
+            [code.doc.link.data :as data]
+            [code.doc.link.namespace :as namespace]
+            [code.doc.link.number :as number]
+            [code.doc.link.reference :as reference]
+            [code.doc.link.stencil :as stencil]
+            [code.doc.link.tag :as tag]
+            [code.doc.render.structure :as structure]))
+
+(defn article-name
+  "Uses a normalized native page path as the deterministic article key."
+  [page]
+  (let [path (:path page)]
+    (if (string? path)
+      path
+      (throw (ex :code.doc/path-required
+                 {:ex/message "Static document preparation requires a string :path"
+                  :page page})))))
+
+(defn static-element
+  "Normalizes literal text to a paragraph directive and preserves directive maps."
+  [entry]
+  (cond
+    (string? entry) {:type :paragraph :text entry}
+    (map? entry) entry
+    :else
+    (throw (ex :code.doc/invalid-entry
+               {:ex/message "Static document preparation accepts text or directive maps"
+                :entry entry}))))
+
+(defn initial-interim
+  "Creates the isolated document state consumed by the pure linking passes."
+  [page]
+  (let [name (article-name page)
+        content (:content page)]
+    (if (vector? content)
+      {:meta page
+       :articles {name {:meta page
+                         :elements (mapv static-element content)}}}
+      (throw (ex :code.doc/content-required
+                 {:ex/message "Static document preparation requires vector :content"
+                  :path name})))))
+
+(defn prepare
+  "Builds a deterministic, side-effect-free static documentation model.
+   Numbers, tags, anchors, and structural nesting are derived afresh for every
+   call; no registry or mutable state is retained between pages."
+  [page]
+  (let [name (article-name page)
+        interim (initial-interim page)
+        linked (-> interim
+                   (namespace/link-namespaces name)
+                   (reference/link-references name)
+                   (data/link-data name)
+                   (number/link-numbers name)
+                   (tag/link-tags name)
+                   (anchor/link-anchors-lu name)
+                   (anchor/link-anchors name)
+                   (stencil/link-stencil name))
+        elements (get-in linked [:articles name :elements])]
+    (assoc-in linked [:articles name :structure] (structure/structure elements))))
+
+(defn prepared-elements
+  "Selects the linked directive sequence for a page prepared in this pass."
+  [prepared page]
+  (get-in prepared [:articles (article-name page) :elements]))

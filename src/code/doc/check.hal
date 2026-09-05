@@ -1,0 +1,46 @@
+(ns code.doc.check
+  (:config {:role :internal})
+  (:require [code.doc.prepare :as prepare]))
+
+(defn check-api-element
+  "Reports API directives as unsupported in the native data-only page model."
+  [element]
+  [{:type :unsupported-api :namespace (:namespace element)}])
+
+(defn check-reference-element
+  "Reports the deterministic placeholder emitted for a missing static reference."
+  [element]
+  (let [code (:code element)]
+    (if (and (string? code)
+             (str/starts-with? code "MISSING REFERENCE"))
+      [{:type :missing-reference :refer (:refer element)}]
+      [])))
+
+(defn check-element
+  "Returns static diagnostics for one prepared page directive."
+  [element]
+  (case (:type element)
+    :api (check-api-element element)
+    :reference (check-reference-element element)
+    :related (if (:error element)
+               [{:type :unknown-data-group :error (:error element)}]
+               [])
+    :links (if (:error element)
+             [{:type :unknown-data-group :error (:error element)}]
+             [])
+    []))
+
+(defn check-elements
+  "Flattens static diagnostics in stable page directive order."
+  [elements]
+  (vec (mapcat check-element elements)))
+
+(defn ^{:public true} check-page
+  "Prepares one data-only page and returns its deterministic diagnostics.
+   Native pages never evaluate directives or execute page facts."
+  [page]
+  (let [prepared (prepare/prepare page)
+        name (prepare/article-name page)
+        elements (prepare/prepared-elements prepared page)]
+    (mapv (fn [issue] (assoc issue :page name))
+          (check-elements elements))))

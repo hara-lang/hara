@@ -1,0 +1,49 @@
+(ns code.doc.link.namespace
+  (:config {:role :internal}))
+
+(defn source-namespace
+  "Returns the statically parsed namespace recorded on one native page."
+  [page]
+  (:namespace page))
+
+(defn namespace-form
+  "Finds the literal ns form in page source without evaluating it."
+  [page]
+  (let [source (:source page)]
+    (if (string? source)
+      (let [forms (Edn/read (str "[" source "]"))]
+        (first
+         (filter
+          (fn [form]
+            (and (list? form)
+                 (= 'ns (first form))))
+          forms)))
+      nil)))
+
+(defn namespace-code
+  "Serializes the literal native ns declaration for a static code directive."
+  [page]
+  (let [form (namespace-form page)]
+    (if form
+      (Edn/write form)
+      (throw (ex :code.doc/namespace-form-required
+                 {:ex/message "A native documentation page with :ns requires an ns declaration"
+                  :path (:path page)})))))
+
+(defn link-namespace-element
+  "Fills a static :ns directive from the page's own declaration provenance."
+  [page element]
+  (if (= :ns (:type element))
+    (assoc element
+           :ns (source-namespace page)
+           :indentation 0
+           :code (or (:code element) (namespace-code page)))
+    element))
+
+(defn link-namespaces
+  "Links all :ns directives in one static article without a namespace registry."
+  [interim name]
+  (let [page (get-in interim [:articles name :meta])]
+    (update-in interim [:articles name :elements]
+               (fn [elements]
+                 (mapv (fn [element] (link-namespace-element page element)) elements)))))

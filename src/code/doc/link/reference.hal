@@ -1,0 +1,51 @@
+(ns code.doc.link.reference
+  (:config {:role :internal}))
+
+(defn reference-record
+  "Finds one literal reference record by its source-level identifier."
+  [page refer]
+  (let [references (or (:references page) {})]
+    (or (get references refer)
+        (get references (str refer)))))
+
+(defn reference-mode
+  "Selects source as the deterministic default reference mode."
+  [element]
+  (or (:mode element) :source))
+
+(defn reference-code
+  "Returns literal reference code or a stable diagnostic when it is absent."
+  [page element]
+  (let [refer (:refer element)
+        mode (reference-mode element)
+        record (reference-record page refer)
+        code (get-in record [mode :code])]
+    (if (string? code)
+      code
+      (str "MISSING REFERENCE " (str refer) " (" (name mode) ")"))))
+
+(defn reference-title
+  "Creates the default static heading text for a linked reference."
+  [element]
+  (str (name (reference-mode element)) " of <i>" (:refer element) "</i>"))
+
+(defn link-reference-element
+  "Fills a static reference directive from page-local literal reference data."
+  [page element]
+  (if (= :reference (:type element))
+    (let [mode (reference-mode element)]
+      (assoc element
+             :origin :reference
+             :mode mode
+             :indentation (if (= mode :test) 2 0)
+             :code (or (:code element) (reference-code page element))
+             :title (or (:title element) (reference-title element))))
+    element))
+
+(defn link-references
+  "Links all static references for one article without a source registry."
+  [interim name]
+  (let [page (get-in interim [:articles name :meta])]
+    (update-in interim [:articles name :elements]
+               (fn [elements]
+                 (mapv (fn [element] (link-reference-element page element)) elements)))))

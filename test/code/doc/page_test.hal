@@ -1,0 +1,112 @@
+(ns code.doc.page-test
+  (:require [code.doc.page :as page]))
+
+^{:refer code.doc.page/page}
+(Test/check
+ [{:name "retains a literal static page map without evaluating it"
+   :test (fn [] (page/page {:title "Guide" :content ["# Guide"]}))
+   :expected {:title "Guide" :content ["# Guide"]}}])
+
+^{:refer code.doc.page/page-path?}
+(Test/check
+ [{:name "accepts native Hara pages and excludes legacy Clojure and Markdown sources"
+   :test (fn [] [(page/page-path? "docs/guide.hal")
+                 (page/page-path? "docs/guide.clj")
+                 (page/page-path? "docs/guide.md")])
+   :expected [true false false]}])
+
+^{:refer code.doc.page/assert-page-path}
+(Test/check
+ [{:name "rejects unsupported documentation page suffixes before filesystem access"
+   :test (fn [] [(page/assert-page-path "docs/guide.hal")
+                 (try (page/assert-page-path "docs/guide.md") false (catch error true))])
+   :expected ["docs/guide.hal" true]}])
+
+^{:refer code.doc.page/html-escape}
+(Test/check
+ [{:name "escapes static document framing without escaping rendered CommonMark output"
+   :test (fn [] (page/html-escape "<a href='x'>&\""))
+   :expected "&lt;a href=&#39;x&#39;&gt;&amp;&quot;"}])
+
+^{:refer code.doc.page/page-output-path}
+(Test/check
+ [{:name "maps Hara source pages to deterministic HTML paths"
+   :test (fn [] [(page/page-output-path "guide.hal") (page/page-output-path "guide")])
+   :expected ["guide.html" "guide.html"]}])
+
+^{:refer code.doc.page/page-document}
+(Test/check
+ [{:name "frames a trusted CommonMark HTML body with an escaped title"
+   :test (fn [] (page/page-document "A < B" "<h1>guide</h1>"))
+   :expected "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>A &lt; B</title></head><body><h1>guide</h1></body></html>\n"}])
+
+^{:refer code.doc.page/normalize-page}
+(Test/check
+ [{:name "normalizes a static Hara page while retaining source provenance"
+   :test (fn [] (page/normalize-page {:path "guide.hal" :source "# Guide"}))
+   :expected {:path "guide.hal"
+              :source "# Guide"
+              :title "guide.hal"
+              :output/path "guide.html"}}])
+
+^{:refer code.doc.page/page-form}
+(Test/check
+ [{:name "selects exactly one literal native documentation form"
+   :test (fn [] [(page/page-form ['(ns docs.guide)
+                                  '(code.doc/page {:title "Guide" :content ["# Guide"]})])
+                 (try (page/page-form ['(ns docs.guide)]) false (catch error true))])
+   :expected [{:title "Guide" :content ["# Guide"]} true]}])
+
+^{:refer code.doc.page/read-page}
+(Test/check
+ [{:name "reads a .hal page through static framework analysis without executing it"
+   :test (fn [] (let [root (deref (File/temp-directory "." {:prefix "code-doc-page-"}))
+                      path (File/join root "guide.hal")]
+                  (try
+                    (deref (File/write path
+                                        (String/encode-utf8 "(ns docs.guide)\n(code.doc/page {:title \"Guide\" :content [\"# Guide\"]})\n")
+                                        {:mode :replace :parents? true}))
+                    (let [result (page/read-page path)]
+                      [(:title result) (:namespace result) (:content result)])
+                    (finally
+                      (deref (File/delete path {:missing-ok? true}))
+                      (deref (File/delete root {:missing-ok? true}))))))
+   :expected ["Guide" 'docs.guide ["# Guide"]]}])
+
+^{:refer code.doc.page/render-entry}
+(Test/check
+ [{:name "adapts static headings and code while delegating Markdown to the renderer"
+   :test (fn [] [(page/render-entry {:type :chapter :title "A < B" :tag "intro"} identity)
+                 (page/render-entry {:type :code :code "(< x)"} identity)
+                 (try (page/render-entry {:type :shader} identity) false (catch error true))])
+   :expected ["<h2 id=\"intro\">A &lt; B</h2>"
+              "<div class=\"code\"><pre><code class=\"clojure\">(&lt; x)</code></pre></div>"
+              true]}])
+
+^{:refer code.doc.page/render-static-page}
+(Test/check
+ [{:name "renders a static native page with deterministic directive order"
+   :test (fn [] (select-keys
+                 (page/render-static-page {:path "guide.hal"
+                                           :source "fixture"
+                                           :title "Guide"
+                                           :content [{:type :chapter :title "Start"}
+                                                     "# Guide"]}
+                                          (fn [source] (str "<markdown>" source "</markdown>")))
+                 [:output/path :body]))
+   :expected {:output/path "guide.html"
+              :body "<h2 id=\"start\">1 &nbsp;&nbsp; Start</h2>\n<markdown># Guide</markdown>"}}])
+
+^{:refer code.doc.page/render-page}
+(Test/check
+ [{:name "renders only literal page content at the injected Component boundary"
+   :test (fn [] (select-keys
+                 (page/render-page {:path "guide.hal"
+                                    :title "Guide"
+                                    :source "(code.doc/page {:content [\"# Guide\"]})"
+                                    :content ["# Guide"]}
+                                   (fn [_] "<h1>Guide</h1>"))
+                 [:output/path :body :html]))
+   :expected {:output/path "guide.html"
+              :body "<h1>Guide</h1>"
+              :html "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Guide</title></head><body><h1>Guide</h1></body></html>\n"}}])

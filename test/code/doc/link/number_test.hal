@@ -1,0 +1,95 @@
+(ns code.doc.link.number-test
+  (:require [code.doc.link.number :as number]))
+
+^{:refer code.doc.link.number/new-counter}
+(Test/check
+ [{:name "starts each static document numbering pass from an isolated baseline"
+   :test (fn [] number/new-counter)
+   :expected {:chapter 0
+              :section 0
+              :subsection 0
+              :subsubsection 0
+              :code 0
+              :image 0
+              :equation 0
+              :citation 0}}])
+
+^{:refer code.doc.link.number/increment}
+(Test/check
+ [{:name "increments portable numeric and appendix labels and rejects overflow"
+   :test (fn [] [(number/increment 1)
+                 (number/increment "A")
+                 (number/increment "1")
+                 (try
+                   (number/increment "Z")
+                   :missing-error
+                   (catch error (:ex/code (ex-data error))))])
+   :expected ["A" "B" "2" :code.doc/appendix-overflow]}])
+
+^{:refer code.doc.link.number/numberable?}
+(Test/check
+ [{:name "requires an enabled static directive with visible title or tag"
+   :test (fn [] [(number/numberable? :code nil {:type :code :title "Example"} #{:code})
+                 (number/numberable? :block :demo {:type :block :tag "demo"} #{:demo})
+                 (number/numberable? :image nil {:type :image :title "Plot" :numbered true} #{})
+                 (number/numberable? :code nil {:type :code :title "Hidden" :hidden true} #{:code})
+                 (number/numberable? :code nil {:type :code :title "Off" :numbered false} #{:code})
+                 (number/numberable? :code nil {:type :code} #{:code})])
+   :expected [true true true false false false]}])
+
+^{:refer code.doc.link.number/link-numbers-loop}
+(Test/check
+ [{:name "numbers hierarchy, shared code sequence, citations, and appendices in source order"
+   :test (fn []
+           (number/link-numbers-loop
+            [{:type :chapter}
+             {:type :section}
+             {:type :subsection}
+             {:type :subsubsection}
+             {:type :code :tag "intro"}
+             {:type :image :title "System"}
+             {:type :equation :numbered true :title "E"}
+             {:type :block :origin :demo :title "Demo"}
+             {:type :citation}
+             {:type :appendix}
+             {:type :section}
+             {:type :code :title "Appendix code"}]
+            #{:code :image :equation :demo}))
+   :expected [{:type :chapter :number "1"}
+              {:type :section :number "1.1"}
+              {:type :subsection :number "1.1.1"}
+              {:type :subsubsection :number "1.1.1.1"}
+              {:type :code :tag "intro" :number "1.1"}
+              {:type :image :title "System" :number "1"}
+              {:type :equation :numbered true :title "E" :number "1"}
+              {:type :block :origin :demo :title "Demo" :number "1.2"}
+              {:type :citation :number "1"}
+              {:type :appendix :number "A"}
+              {:type :section :number "A.1"}
+              {:type :code :title "Appendix code" :number "A.1"}]}])
+
+^{:refer code.doc.link.number/auto-number-config}
+(Test/check
+ [{:name "uses article configuration before project configuration and defaults"
+   :test (fn [] [(number/auto-number-config {:articles {"a" {:meta {:link {:auto-number #{:code}}}}}} "a")
+                 (number/auto-number-config {:articles {"a" {:meta {:link {:auto-number false}}}}
+                                              :meta {:link {:auto-number #{:image}}}} "a")
+                 (number/auto-number-config {:articles {"a" {}}
+                                              :meta {:link {:auto-number #{:equation}}}} "a")
+                 (number/auto-number-config {:articles {"a" {}}} "a")])
+   :expected [#{:code} #{} #{:equation} #{:image :equation :code :block}]}])
+
+^{:refer code.doc.link.number/link-numbers}
+(Test/check
+ [{:name "updates only the selected static article and respects a disabled project policy"
+   :test (fn []
+           (number/link-numbers
+            {:meta {:link {:auto-number false}}
+             :articles {"guide" {:elements [{:type :chapter}
+                                             {:type :code :title "Example"}]}
+                        "other" {:elements [{:type :chapter}]}}}
+            "guide"))
+   :expected {:meta {:link {:auto-number false}}
+              :articles {"guide" {:elements [{:type :chapter :number "1"}
+                                              {:type :code :title "Example"}]}
+                         "other" {:elements [{:type :chapter}]}}}}])

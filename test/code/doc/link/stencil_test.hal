@@ -1,0 +1,47 @@
+(ns code.doc.link.stencil-test
+  (:require [code.doc.link.stencil :as stencil]))
+
+^{:refer code.doc.link.stencil/page-label}
+(Test/check
+ [{:name "removes only the native page suffix from a page identifier"
+   :test (fn [] [(stencil/page-label "guide.hal")
+                 (stencil/page-label "nested/guide")])
+   :expected ["guide" "nested/guide"]}])
+
+^{:refer code.doc.link.stencil/page-output}
+(Test/check
+ [{:name "maps native page identifiers to deterministic HTML link targets"
+   :test (fn [] [(stencil/page-output "guide.hal")
+                 (stencil/page-output "nested/guide")])
+   :expected ["guide.html" "nested/guide.html"]}])
+
+^{:refer code.doc.link.stencil/replace-anchor}
+(Test/check
+ [{:name "replaces local and cross-page number and citation stencil forms"
+   :test (fn [] (let [local (stencil/replace-anchor "See {{intro}} [[intro]] {{other/topic}} [[other/topic]]"
+                                                     "guide.hal" "guide.hal" "intro" {:number "1"})]
+                 (stencil/replace-anchor local "guide.hal" "other.hal" "topic" {:number "2"})))
+   :expected "See 1 [1](#intro) 2 [2](other.html#topic)"}])
+
+^{:refer code.doc.link.stencil/transform-stencil}
+(Test/check
+ [{:name "resolves prepared local and cross-page anchors without a templating runtime"
+   :test (fn [] (stencil/transform-stencil "{{intro}} {{other/topic}} [[intro]] [[other/topic]]"
+                                            "guide.hal"
+                                            {"guide.hal" {"intro" {:number "1"}}
+                                             "other.hal" {"topic" {:number "2"}}}))
+   :expected "1 2 [1](#intro) [2](other.html#topic)"}])
+
+^{:refer code.doc.link.stencil/link-stencil}
+(Test/check
+ [{:name "updates paragraphs and opted-in code while retaining other directives"
+   :test (fn [] (get-in
+                 (stencil/link-stencil {:anchors {"guide.hal" {"intro" {:number "1"}}}
+                                         :articles {"guide.hal" {:elements [{:type :paragraph :text "See {{intro}}"}
+                                                                            {:type :code :stencil true :code "See [[intro]]"}
+                                                                            {:type :image :src "keep.svg"}]}}}
+                                       "guide.hal")
+                 [:articles "guide.hal" :elements]))
+   :expected [{:type :paragraph :text "See 1"}
+              {:type :code :stencil true :code "See [1](#intro)"}
+              {:type :image :src "keep.svg"}]}])

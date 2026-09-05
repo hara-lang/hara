@@ -1,0 +1,87 @@
+(ns code.doc.prepare-test
+  (:require [code.doc.prepare :as prepare]))
+
+^{:refer code.doc.prepare/article-name}
+(Test/check
+ [{:name "uses the normalized page path as one deterministic article key"
+   :test (fn [] [(prepare/article-name {:path "guide.hal"})
+                 (try (prepare/article-name {}) :missing-error (catch error (:ex/code (ex-data error))))])
+   :expected ["guide.hal" :code.doc/path-required]}])
+
+^{:refer code.doc.prepare/static-element}
+(Test/check
+ [{:name "normalizes text into directives and rejects executable or unknown content"
+   :test (fn [] [(prepare/static-element "# Guide")
+                 (prepare/static-element {:type :chapter :title "Guide"})
+                 (try (prepare/static-element 42) :missing-error (catch error (:ex/code (ex-data error))))])
+   :expected [{:type :paragraph :text "# Guide"}
+              {:type :chapter :title "Guide"}
+              :code.doc/invalid-entry]}])
+
+^{:refer code.doc.prepare/initial-interim}
+(Test/check
+ [{:name "creates isolated article metadata and normalized directive state"
+   :test (fn [] (prepare/initial-interim {:path "guide.hal" :title "Guide" :content ["# Guide"]}))
+   :expected {:meta {:path "guide.hal" :title "Guide" :content ["# Guide"]}
+              :articles {"guide.hal" {:meta {:path "guide.hal" :title "Guide" :content ["# Guide"]}
+                                       :elements [{:type :paragraph :text "# Guide"}]}}}}])
+
+^{:refer code.doc.prepare/prepare}
+(Test/check
+ [{:name "prepares numbers, tags, anchors, and static structure without retaining state"
+   :test (fn [] (let [page {:path "guide.hal"
+                             :title "Guide"
+                             :content [{:type :chapter :title "Guide"}
+                                       {:type :section :title "Start"}
+                                       {:type :image :src "diagram.svg"}
+                                       "# Overview"]}
+                     prepared (prepare/prepare page)]
+                 [(:anchors prepared)
+                  (get-in prepared [:articles "guide.hal" :elements])
+                  (get-in prepared [:articles "guide.hal" :structure])]))
+   :expected [{"guide.hal" {"guide" {:type :chapter :tag "guide" :number "1"}
+                              "start" {:type :section :tag "start" :number "1.1"}
+                              "img-diagram-svg" {:type :image :tag "img-diagram-svg"}}}
+              [{:type :chapter :title "Guide" :number "1" :tag "guide"}
+               {:type :section :title "Start" :number "1.1" :tag "start"}
+               {:type :image :src "diagram.svg" :tag "img-diagram-svg"}
+               {:type :paragraph :text "# Overview"}]
+              {:type :article
+               :elements [{:type :chapter :title "Guide" :number "1" :tag "guide"
+                           :elements [{:type :section :title "Start" :number "1.1" :tag "start"
+                                       :elements [{:type :image :src "diagram.svg" :tag "img-diagram-svg"}
+                                                  {:type :paragraph :text "# Overview"}]}]}]}]}
+  {:name "uses page-local literal data before rendering related and links directives"
+   :test (fn [] (get-in
+                 (prepare/prepare {:path "guide.hal"
+                                   :data {:libraries [{:name "Hara" :group :core}]
+                                          :links [{:label "Docs" :group :docs}]}
+                                   :content [{:type :related :group :core}
+                                             {:type :links :group :docs}]})
+                 [:articles "guide.hal" :elements]))
+   :expected [{:type :related :group :core :items [{:name "Hara" :group :core}]}
+              {:type :links :group :docs :items [{:label "Docs" :group :docs}]}]}
+  {:name "resolves local citation stencils after fresh numbering and tagging"
+   :test (fn [] (get-in
+                 (prepare/prepare {:path "guide.hal"
+                                   :content [{:type :chapter :title "Guide"}
+                                             "Read [[guide]]"]})
+                 [:articles "guide.hal" :elements]))
+   :expected [{:type :chapter :title "Guide" :number "1" :tag "guide"}
+              {:type :paragraph :text "Read [1](#guide)"}]}
+  {:name "fills a namespace directive from page-local static provenance"
+   :test (fn [] (get-in
+                 (prepare/prepare {:path "guide.hal"
+                                   :namespace 'docs.guide
+                                   :source "(ns docs.guide)\n(code.doc/page {:content [{:type :ns}]})"
+                                   :content [{:type :ns}]})
+                 [:articles "guide.hal" :elements]))
+   :expected [{:type :ns :ns 'docs.guide :indentation 0 :code "(ns docs.guide)"}]}])
+
+^{:refer code.doc.prepare/prepared-elements}
+(Test/check
+ [{:name "selects the linked rendering sequence by the current page path"
+   :test (fn [] (let [page {:path "guide.hal" :content [{:type :chapter :title "Guide"}]}
+                     prepared (prepare/prepare page)]
+                 (prepare/prepared-elements prepared page)))
+   :expected [{:type :chapter :title "Guide" :number "1" :tag "guide"}]}])
