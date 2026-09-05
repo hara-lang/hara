@@ -273,8 +273,10 @@ reviewed package publication workflow.
 
 The repository mirrors Hara Native's branch gates:
 
-- `Hara main preflight` runs the complete source suite and builds/verifies every
-  package from `config/packages.edn` on every `main` push and pull request.
+- `Hara main preflight` runs the complete source suite in parallel Foundation
+  Base-style lanes and builds/verifies every package from `config/packages.edn`
+  on every `main` push and pull request. Each lane still starts a fresh Hara
+  runtime for each selected test file.
 - `Hara release preflight` is the required check for a `main` → `release` pull
   request. It verifies branch lineage, the exact released Hara Native version,
   the recipe and specification manifests, and the complete package graph.

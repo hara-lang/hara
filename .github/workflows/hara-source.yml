@@ -7,10 +7,10 @@ permissions:
   contents: read
 
 jobs:
-  source:
-    name: Hara source suite
+  native:
+    name: Install exact Hara Native release
     runs-on: ubuntu-22.04
-    timeout-minutes: 60
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,8 +22,73 @@ jobs:
           test -n "$native_version"
           cargo install --locked --version "$native_version" --bin hara-native hara-native
           test "$(hara-native --version)" = "hara-native ${native_version}"
-      - name: Run the complete Hara source suite
-        run: hara-native test --project .
+      - name: Save the native host for parallel source lanes
+        run: cp "$(command -v hara-native)" hara-native
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hara-native
+          path: hara-native
+
+  source:
+    name: Hara source suite (${{ matrix.name }})
+    needs: native
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: root
+            root: test
+          - name: hara
+            root: test/hara
+          - name: std
+            root: test/std
+          - name: lang
+            root: test/lang
+          - name: code
+            root: test/code
+          - name: tool
+            root: test/tool
+          - name: work
+            root: test/work
+          - name: db
+            root: test/db
+          - name: play
+            root: test/play
+          - name: xt
+            root: test-lang/xt
+          - name: js
+            root: test-lang/js
+          - name: lua
+            root: test-lang/lua
+          - name: postgres
+            root: test-lang/postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: hara-native
+          path: native
+      - name: Run the Hara source shard
+        shell: bash
+        env:
+          TEST_ROOT: ${{ matrix.root }}
+        run: |
+          set -euo pipefail
+          chmod +x native/hara-native
+          if [[ "$TEST_ROOT" = test ]]; then
+            mapfile -t files < <(find test -mindepth 1 -maxdepth 1 -type f -name '*.hal' | sort)
+          else
+            mapfile -t files < <(find "$TEST_ROOT" -type f -name '*.hal' | sort)
+          fi
+          test "${#files[@]}" -gt 0
+          args=()
+          for file in "${files[@]}"; do
+            args+=(--file "$file")
+          done
+          echo "Running ${#files[@]} Hara test files from ${TEST_ROOT}"
+          ./native/hara-native test --project . "${args[@]}"
 
   packages:
     name: Hara package graph
@@ -34,23 +99,19 @@ jobs:
       HARA_DIST_HOME: ${{ github.workspace }}/.hara-dist-home
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install the declared Hara Native release
-        shell: bash
-        run: |
-          set -euo pipefail
-          native_version="$(sed -nE 's/^[[:space:]]*:project\/native \{:version "([^"]+)"\}.*/\1/p' project.edn)"
-          test -n "$native_version"
-          cargo install --locked --version "$native_version" --bin hara-native hara-native
-          test "$(hara-native --version)" = "hara-native ${native_version}"
+      - uses: actions/download-artifact@v4
+        with:
+          name: hara-native
+          path: native
       - name: Stage the declared host path for the Hara distribution test
         shell: bash
         run: |
           set -euo pipefail
+          chmod +x native/hara-native
           mkdir -p ../hara-native/core/rust/target/release
-          cp "$(command -v hara-native)" ../hara-native/core/rust/target/release/hara-native
+          cp native/hara-native ../hara-native/core/rust/target/release/hara-native
       - name: Build and exercise the Hara distribution boundary
-        run: hara-native test --project . --file test/std/package/distribution_build_acceptance_test.hal
+        run: ./native/hara-native test --project . --file test/std/package/distribution_build_acceptance_test.hal
       - name: Plan and build every catalogue package
         shell: bash
         run: |
@@ -65,6 +126,6 @@ jobs:
           archive_count="$(find target/deploy -type f -path '*/target/package.harp' | wc -l | tr -d ' ')"
           test "$archive_count" -gt 0
           while IFS= read -r archive; do
-            hara-native bundle verify "$archive"
+            ./native/hara-native bundle verify "$archive"
           done < <(find target/deploy -type f -path '*/target/package.harp' | sort)
           printf 'verified %s semantic HARP archives\n' "$archive_count"
