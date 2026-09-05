@@ -1125,6 +1125,9 @@
 
 (declare foundation-lang-plan)
 
+(def +foundation-lang-authority-revision+
+  "fe54cc866473a888bfbd4ce2d3de6d8011f09f72")
+
 (def +foundation-lang-authority-prefixes+
   ["src/tahto/base/"
    "src/tahto/common/"
@@ -1135,7 +1138,52 @@
    "test/tahto/core/"
    "test/tahto/runtime/basic/"])
 
-(defn foundation-lang-authority-relative-path
+(defn foundation-lang-authority-paths
+  "Returns the pinned Foundation source and fact-test paths selected by the
+   compiler migration scopes from a read-only Git tree."
+  [runner revision]
+  (vec
+   (sort-by
+    identity
+    (filter
+     (fn [path]
+       (and (str/ends-with? (str path) ".clj")
+            (some (fn [prefix] (str/starts-with? path prefix))
+                  +foundation-lang-authority-prefixes+)))
+     (migrate-git/list-tree runner revision)))))
+
+(defn foundation-lang-authority-units
+  "Builds source/test units from the pinned Foundation Git tree for
+   tool.migrate. The authority tree is read-only input."
+  [runner revision]
+  (vec
+   (map
+    (fn [path]
+      {:source/path path
+       :source (migrate-git/read-blob runner revision path)
+       :authority/source true
+       :groups/skip? true
+       :copy true})
+    (foundation-lang-authority-paths runner revision))))
+
+(defn ^{:public true} foundation-lang-authority-inventory
+  [runner revision]
+  (foundation-lang-inventory
+   (foundation-lang-authority-units runner revision)))
+
+(defn ^{:public true} foundation-lang-authority-plan
+  [runner revision]
+  (foundation-lang-plan
+   (foundation-lang-authority-inventory runner revision)))
+
+(defn ^{:public true} foundation-lang-authority-apply
+  "Applies the complete Foundation lang compiler plan while keeping the
+   authority checkout read-only."
+  [root runner revision]
+  (foundation-lang-apply-plan root
+                               (foundation-lang-authority-plan runner revision)))
+
+(defn foundation-lang-staged-relative-path
   [root path]
   (let [root-path (str/replace (str (File/resolve root "")) "\\" "/")
         path (str/replace (str path) "\\" "/")
@@ -1144,12 +1192,13 @@
       (str/slice path (count prefix) (count path))
       (throw
        (ex :io {:root root-path :path path}
-           :ex/message "authority path is outside the supplied root")))))
+           :ex/message "staged authority path is outside the supplied root")))))
 
-(defn foundation-lang-authority-paths
-  "Returns the pinned Foundation source and fact-test paths selected by the
-   compiler migration scopes."
-  [authority-root]
+(defn foundation-lang-staged-paths
+  "Returns selected Foundation paths from a read-only staged checkout inside
+   the project sandbox. The stage is created from the pinned Git revision by
+   the migration runner before this function is called."
+  [root]
   (vec
    (sort-by
     str
@@ -1158,47 +1207,47 @@
        (and (str/ends-with? (str path) ".clj")
             (some (fn [prefix]
                     (str/starts-with?
-                     (foundation-lang-authority-relative-path
-                      authority-root path)
+                     (foundation-lang-staged-relative-path root path)
                      prefix))
                   +foundation-lang-authority-prefixes+)))
      (mapcat
       (fn [prefix]
-        (deref (File/walk (File/resolve authority-root prefix))))
+        (deref (File/walk (File/resolve root prefix))))
       +foundation-lang-authority-prefixes+)))))
 
-(defn foundation-lang-authority-units
-  "Builds source/test units from the pinned Foundation checkout for
-   tool.migrate. The authority tree is read-only input."
-  [authority-root]
-  (vec
-   (map
-    (fn [path]
-      (let [relative (foundation-lang-authority-relative-path
-                      authority-root path)]
-        {:source/path relative
-         :source (read-migration-source authority-root relative)
-         :source/root authority-root
-         :groups/skip? true
-         :copy true}))
-    (foundation-lang-authority-paths authority-root))))
+(defn foundation-lang-staged-units
+  [root]
+  (let [paths (foundation-lang-staged-paths root)]
+    (vec
+     (deref
+      (Promise/all
+       (map
+        (fn [path]
+          (let [relative (foundation-lang-staged-relative-path root path)]
+            (IPromise/then
+             (File/read (File/resolve root relative))
+             (fn [bytes]
+               {:source/path relative
+                :source (str/decode-utf8 bytes)
+                :source/root root
+                :groups/skip? true
+                :copy true}))))
+        paths))))))
 
-(defn ^{:public true} foundation-lang-authority-inventory
-  [authority-root]
+(defn ^{:public true} foundation-lang-staged-inventory
+  [root]
   (foundation-lang-inventory
-   (foundation-lang-authority-units authority-root)))
+   (foundation-lang-staged-units root)))
 
-(defn ^{:public true} foundation-lang-authority-plan
-  [authority-root]
+(defn ^{:public true} foundation-lang-staged-plan
+  [root]
   (foundation-lang-plan
-   (foundation-lang-authority-inventory authority-root)))
+   (foundation-lang-staged-inventory root)))
 
-(defn ^{:public true} foundation-lang-authority-apply
-  "Applies the complete Foundation lang compiler plan while keeping the
-   authority checkout read-only."
-  [root authority-root]
+(defn ^{:public true} foundation-lang-staged-apply
+  [root stage-root]
   (foundation-lang-apply-plan root
-                               (foundation-lang-authority-plan authority-root)))
+                               (foundation-lang-staged-plan stage-root)))
 
 (defn rewrite-lang-model-v1-source
   [source]
@@ -2373,17 +2422,20 @@
   (let [source-path (or (:source/path unit) (:path unit))
         target-path (or (:target/path unit) (:path unit))
         source-root (or (:source/root unit) root)]
-    (if (or (not (path-under-root? source-root source-path))
+    (if (or (and (not (:authority/source unit))
+                 (not (path-under-root? source-root source-path)))
             (not (path-under-root? root target-path)))
     (throw (ex :io {:root root
                      :source/root source-root
                      :source/path source-path
                      :target/path target-path} :ex/message "Migration path escapes project root")))
-    (let [path (File/resolve source-root source-path)
-          current (str/decode-utf8 (deref (File/read path)))]
-    (if (not= current (:before unit))
-      (throw (ex :io {:path path} :ex/message "Migration source changed after planning")))
-      unit)))
+    (if (:authority/source unit)
+      unit
+      (let [path (File/resolve source-root source-path)
+            current (str/decode-utf8 (deref (File/read path)))]
+        (if (not= current (:before unit))
+          (throw (ex :io {:path path} :ex/message "Migration source changed after planning")))
+        unit))))
 
 (defn apply-unit
   [root unit]
