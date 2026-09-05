@@ -269,6 +269,27 @@ external declarations, archive path, and archive digest. It is intentionally
 not a registry lockfile: signed tap and OCI metadata are added only by the
 reviewed package publication workflow.
 
+## CI and release lanes
+
+The repository mirrors Hara Native's branch gates:
+
+- `Hara main preflight` runs the complete source suite and builds/verifies every
+  package from `config/packages.edn` on every `main` push and pull request.
+- `Hara release preflight` is the required check for a `main` → `release` pull
+  request. It verifies branch lineage, the exact released Hara Native version,
+  the recipe and specification manifests, and the complete package graph.
+- `Hara release promotion` is manually dispatched on `release`. It requires a
+  signed tag matching `:project/version` and dispatches the existing signed
+  publication-request workflow. The protected `hara-packages` repository still
+  performs the actual GHCR publication.
+
+The local equivalent of the package gate is:
+
+```text
+target/hara/bin/hara deploy plan --root .
+target/hara/bin/hara deploy build --root .
+```
+
 ## Local dependency checkouts
 
 Native project resolution supports the Leiningen-style development convention

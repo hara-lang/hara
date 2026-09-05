@@ -1,0 +1,70 @@
+name: Hara source preflight
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: Hara source suite
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the declared Hara Native release
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_version="$(sed -nE 's/^[[:space:]]*:project\/native \{:version "([^"]+)"\}.*/\1/p' project.edn)"
+          test -n "$native_version"
+          cargo install --locked --version "$native_version" --bin hara-native hara-native
+          test "$(hara-native --version)" = "hara-native ${native_version}"
+      - name: Run the complete Hara source suite
+        run: hara-native test --project .
+
+  packages:
+    name: Hara package graph
+    needs: source
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    env:
+      HARA_DIST_HOME: ${{ runner.temp }}/hara-dist-home
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install the declared Hara Native release
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_version="$(sed -nE 's/^[[:space:]]*:project\/native \{:version "([^"]+)"\}.*/\1/p' project.edn)"
+          test -n "$native_version"
+          cargo install --locked --version "$native_version" --bin hara-native hara-native
+          test "$(hara-native --version)" = "hara-native ${native_version}"
+      - name: Stage the declared host path for the Hara distribution test
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ../hara-native/core/rust/target/release
+          cp "$(command -v hara-native)" ../hara-native/core/rust/target/release/hara-native
+      - name: Build and exercise the Hara distribution boundary
+        run: hara-native test --project . --file test/std/package/distribution_build_acceptance_test.hal
+      - name: Plan and build every catalogue package
+        shell: bash
+        run: |
+          set -euo pipefail
+          target/hara/bin/hara deploy plan --root "$GITHUB_WORKSPACE"
+          target/hara/bin/hara deploy build --root "$GITHUB_WORKSPACE"
+      - name: Verify every generated HARP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s target/deploy/index.edn
+          archive_count="$(find target/deploy -type f -path '*/target/package.harp' | wc -l | tr -d ' ')"
+          test "$archive_count" -gt 0
+          while IFS= read -r archive; do
+            hara-native bundle verify "$archive"
+          done < <(find target/deploy -type f -path '*/target/package.harp' | sort)
+          printf 'verified %s semantic HARP archives\n' "$archive_count"

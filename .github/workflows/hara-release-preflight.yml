@@ -1,0 +1,100 @@
+name: Hara release preflight
+
+on:
+  pull_request:
+    branches: [release]
+
+permissions:
+  contents: read
+
+jobs:
+  release-origin:
+    name: release origin and lineage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require release pull requests to promote a descendant of main
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ github.event.pull_request.head.repo.full_name }}" = "$GITHUB_REPOSITORY"
+          test "${{ github.event.pull_request.head.ref }}" = main
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          git fetch --no-tags origin "$base" "$head"
+          if git merge-base --is-ancestor "$base" "$head"; then
+            exit 0
+          fi
+          parents="$(git show -s --format=%P "$base")"
+          read -r -a parents <<<"$parents"
+          test "${#parents[@]}" = 2
+          git merge-base --is-ancestor "${parents[1]}" "$head"
+
+  validate:
+    needs: release-origin
+    uses: ./.github/workflows/hara-source.yml
+
+  release-contract:
+    name: release contract
+    needs: release-origin
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the Hara source release contract
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^[[:space:]]*:project\/version "([^"]+)".*/\1/p' project.edn)"
+          native_version="$(sed -nE 's/^[[:space:]]*:project\/native \{:version "([^"]+)"\}.*/\1/p' project.edn)"
+          recipe_path="$(sed -nE 's/^[[:space:]]*:project\/recipe "([^"]+)".*/\1/p' project.edn)"
+          test -n "$version"
+          test -n "$native_version"
+          test -n "$recipe_path"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          [[ "$native_version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          test -f "$recipe_path"
+          test -f config/packages.edn
+          test -f spec/content/spec-manifest.json
+          test -f spec/content/registry-index.json
+          native_release="$(gh release view "v${native_version}" --repo hara-lang/hara-native --json isDraft,isPrerelease,tagName)"
+          jq -e --arg tag "v${native_version}" '.isDraft == false and .isPrerelease == false and .tagName == $tag' <<<"$native_release" >/dev/null
+          jq -e '
+            .version == 1
+            and ([.files[].path] | length) >= 250
+            and any(.files[]; .path == "00-unsorted/artifact/metaspec/artifact-metaspec.edn")
+            and any(.files[]; .path == "01-lang/001-language/draft/hal-langspec.edn")
+            and any(.files[]; .path == "02-platform/000006-package/draft/hara-package.edn")
+            and all(.files[];
+              (.path | startswith("00-unsorted/contrib/") | not)
+              and (.path | startswith("00-unsorted/package/") | not)
+              and (.path | startswith("00-unsorted/platform-language/") | not)
+              and (.path | startswith("99-archive/") | not))
+          ' spec/content/spec-manifest.json >/dev/null
+          jq -e '
+            .schemaVersion == 3
+            and .source.kind == "hara-specs-harp"
+            and .source.coordinate == "hara/foundation.specs"
+            and .summary.specifications == 57
+            and all(.specs[]; .classification == "hara")
+            and all(.specs[];
+              .source.artifactPath == .sourcePath
+              and .documentation.artifactPath == .documentationPath)
+          ' spec/content/registry-index.json >/dev/null
+
+  release-ready:
+    name: release ready
+    if: always()
+    needs: [release-origin, validate, release-contract]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Require every Hara release gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test '${{ needs.release-origin.result }}' = success
+          test '${{ needs.validate.result }}' = success
+          test '${{ needs.release-contract.result }}' = success
