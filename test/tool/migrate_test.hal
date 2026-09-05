@@ -3,6 +3,9 @@
   (:require [std.foundation.string :as str]
             [tool.migrate :as migrate]))
 
+(def +foundation-authority-root+
+  "../../../reference/foundation-base")
+
 (def catalog
   {:document/id :demo/transform
    :document/type :code-migration-spec
@@ -112,3 +115,53 @@
      (has? (set (map :target/refer (:records inventory)))
            'lang.core.impl-deps-imports/module-code-deps)])
   => [true true true true true true true true true true true true true])
+
+^{:refer tool.migrate/foundation-lang-authority-paths}
+(fact "the authority walker covers every selected Foundation source and fact-test path"
+  (let [paths (migrate/foundation-lang-authority-paths
+               +foundation-authority-root+)
+        names (set (map str paths))]
+    [(count paths)
+     (has? names
+           (str (File/resolve +foundation-authority-root+
+                              "src/tahto/core/pointer.clj")))
+     (has? names
+           (str (File/resolve +foundation-authority-root+
+                              "test/tahto/runtime/basic/type_websocket_test.clj")))])
+  => [261 true true])
+
+^{:refer tool.migrate/foundation-lang-authority-units}
+(fact "authority units retain provenance and are copy-only"
+  (let [units (migrate/foundation-lang-authority-units
+               +foundation-authority-root+)
+        unit (first (filter #(= "src/tahto/core/pointer.clj"
+                                (:source/path %))
+                            units))]
+    [(count units)
+     (:source/root unit)
+     (:copy unit)
+     (str/includes? (:source unit) "(ns tahto.core.pointer")])
+  => [261 (File/resolve +foundation-authority-root+ "") true true])
+
+^{:refer tool.migrate/foundation-lang-authority-inventory}
+(fact "authority inventory routes source and test namespaces to lang targets"
+  (let [inventory (migrate/foundation-lang-authority-inventory
+                   +foundation-authority-root+)
+        pointer (first (filter #(= "src/tahto/core/pointer.clj"
+                                   (:source/path %))
+                               inventory))
+        websocket-test (first (filter #(= "test/tahto/runtime/basic/type_websocket_test.clj"
+                                          (:source/path %))
+                                      inventory))]
+    [(count inventory)
+     (:target/path pointer)
+     (:target/namespace pointer)
+     (:kind websocket-test)
+     (:target/path websocket-test)
+     (:target/namespace websocket-test)])
+  => [261
+      "src/lang/core/pointer.hal"
+      'lang.core.pointer
+      :test
+      "test/lang/runtime/basic/type_websocket_test.hal"
+      'lang.runtime.basic.type-websocket-test])

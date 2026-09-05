@@ -950,18 +950,52 @@
     :stage :runtime
     :source/prefix "src/tahto/runtime/basic/"
     :target/prefix "src/lang/runtime/basic/"
+   :test/source-prefix "test/tahto/runtime/basic/"
+   :test/target-prefix "test/lang/runtime/basic/"}])
+
+(def +foundation-lang-compiler-test-scopes+
+  [{:id :lang.base-test
+    :stage :base
+    :kind :test
+    :source/prefix "test/tahto/base/"
+    :target/prefix "test/lang/base/"
+    :test/source-prefix "test/tahto/base/"
+    :test/target-prefix "test/lang/base/"}
+   {:id :lang.base.book-test
+    :stage :base
+    :kind :test
+    :source/prefix "test/tahto/common/"
+    :target/prefix "test/lang/base/"
+    :test/source-prefix "test/tahto/common/"
+    :test/target-prefix "test/lang/base/"}
+   {:id :lang.core-test
+    :stage :core
+    :kind :test
+    :source/prefix "test/tahto/core/"
+    :target/prefix "test/lang/core/"
+    :test/source-prefix "test/tahto/core/"
+    :test/target-prefix "test/lang/core/"}
+   {:id :lang.runtime.basic-test
+    :stage :runtime
+    :kind :test
+    :source/prefix "test/tahto/runtime/basic/"
+    :target/prefix "test/lang/runtime/basic/"
     :test/source-prefix "test/tahto/runtime/basic/"
     :test/target-prefix "test/lang/runtime/basic/"}])
 
 (defn foundation-lang-compiler-scope
   [path]
   (first
-   (filter
-    (fn [scope]
-      (and (str/starts-with? path (:source/prefix scope))
-           (or (not= :lang.model/v1 (:id scope))
-               (not (nil? (lang-model-v1-unit-for path))))))
-    +foundation-lang-compiler-scopes+)))
+   (sort-by
+    (fn [scope] (- (count (:source/prefix scope))))
+    >
+    (filter
+     (fn [scope]
+       (and (str/starts-with? path (:source/prefix scope))
+            (or (not= :lang.model/v1 (:id scope))
+                (not (nil? (lang-model-v1-unit-for path))))))
+     (concat +foundation-lang-compiler-test-scopes+
+             +foundation-lang-compiler-scopes+)))))
 
 (defn route-foundation-lang-compiler-path
   [source-path]
@@ -1068,7 +1102,10 @@
                 :target/path target-path
                 :source/namespace source-namespace
                 :target/namespace target-namespace
-                :test (foundation-lang-compiler-test-paths source-path)
+                :test
+                (if (= :source (or (:kind unit) (:kind scope) :source))
+                  (foundation-lang-compiler-test-paths source-path)
+                  nil)
                 :migration :foundation/lang-compiler
                 :stage (:stage scope)
                 :kind (or (:kind unit) (:kind scope) :source)
@@ -1077,7 +1114,7 @@
                           []
                           (foundation-lang-plus-groups (or (:source unit) "")))
                 :move (not= source-path target-path)
-                :copy false
+                :copy (or (:copy unit) false)
                 :create (not= source-path target-path)
                 :write false}))
       nil)))
@@ -1085,6 +1122,83 @@
 (defn foundation-lang-inventory
   [units]
   (vec (keep foundation-lang-compiler-unit units)))
+
+(declare foundation-lang-plan)
+
+(def +foundation-lang-authority-prefixes+
+  ["src/tahto/base/"
+   "src/tahto/common/"
+   "src/tahto/core/"
+   "src/tahto/runtime/basic/"
+   "test/tahto/base/"
+   "test/tahto/common/"
+   "test/tahto/core/"
+   "test/tahto/runtime/basic/"])
+
+(defn foundation-lang-authority-relative-path
+  [root path]
+  (let [root-path (str/replace (str (File/resolve root "")) "\\" "/")
+        path (str/replace (str path) "\\" "/")
+        prefix (str root-path "/")]
+    (if (str/starts-with? path prefix)
+      (str/slice path (count prefix) (count path))
+      (throw
+       (ex :io {:root root-path :path path}
+           :ex/message "authority path is outside the supplied root")))))
+
+(defn foundation-lang-authority-paths
+  "Returns the pinned Foundation source and fact-test paths selected by the
+   compiler migration scopes."
+  [authority-root]
+  (vec
+   (sort-by
+    str
+    (filter
+     (fn [path]
+       (and (str/ends-with? (str path) ".clj")
+            (some (fn [prefix]
+                    (str/starts-with?
+                     (foundation-lang-authority-relative-path
+                      authority-root path)
+                     prefix))
+                  +foundation-lang-authority-prefixes+)))
+     (mapcat
+      (fn [prefix]
+        (deref (File/walk (File/resolve authority-root prefix))))
+      +foundation-lang-authority-prefixes+)))))
+
+(defn foundation-lang-authority-units
+  "Builds source/test units from the pinned Foundation checkout for
+   tool.migrate. The authority tree is read-only input."
+  [authority-root]
+  (vec
+   (map
+    (fn [path]
+      (let [relative (foundation-lang-authority-relative-path
+                      authority-root path)]
+        {:source/path relative
+         :source (read-migration-source authority-root relative)
+         :source/root authority-root
+         :groups/skip? true
+         :copy true}))
+    (foundation-lang-authority-paths authority-root))))
+
+(defn ^{:public true} foundation-lang-authority-inventory
+  [authority-root]
+  (foundation-lang-inventory
+   (foundation-lang-authority-units authority-root)))
+
+(defn ^{:public true} foundation-lang-authority-plan
+  [authority-root]
+  (foundation-lang-plan
+   (foundation-lang-authority-inventory authority-root)))
+
+(defn ^{:public true} foundation-lang-authority-apply
+  "Applies the complete Foundation lang compiler plan while keeping the
+   authority checkout read-only."
+  [root authority-root]
+  (foundation-lang-apply-plan root
+                               (foundation-lang-authority-plan authority-root)))
 
 (defn rewrite-lang-model-v1-source
   [source]
@@ -2257,13 +2371,15 @@
 (defn validate-unit
   [root unit]
   (let [source-path (or (:source/path unit) (:path unit))
-        target-path (or (:target/path unit) (:path unit))]
-    (if (or (not (path-under-root? root source-path))
+        target-path (or (:target/path unit) (:path unit))
+        source-root (or (:source/root unit) root)]
+    (if (or (not (path-under-root? source-root source-path))
             (not (path-under-root? root target-path)))
     (throw (ex :io {:root root
+                     :source/root source-root
                      :source/path source-path
                      :target/path target-path} :ex/message "Migration path escapes project root")))
-    (let [path (File/resolve root source-path)
+    (let [path (File/resolve source-root source-path)
           current (str/decode-utf8 (deref (File/read path)))]
     (if (not= current (:before unit))
       (throw (ex :io {:path path} :ex/message "Migration source changed after planning")))
@@ -2273,7 +2389,8 @@
   [root unit]
   (let [source-relative (or (:source/path unit) (:path unit))
         target-relative (or (:target/path unit) (:path unit))
-        source-path (File/resolve root source-relative)
+        source-root (or (:source/root unit) root)
+        source-path (File/resolve source-root source-relative)
         target-path (File/resolve root target-relative)
         target-parent (File/parent target-path)]
     (if target-parent
