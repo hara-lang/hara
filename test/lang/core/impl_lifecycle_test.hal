@@ -1,0 +1,194 @@
+(ns lang.core.impl-lifecycle-test
+  (:use code.test)
+  (:require [lang.core.impl :as impl]
+            [lang.core.impl-lifecycle :as lifecycle]
+            [lang.core.script :as script]))
+
+(def +snapshot+ (atom nil))
+(def +book+ (atom nil))
+
+(defn js-context
+  [module-value]
+  (impl/emit-options {:book (deref +book+)
+                      :lang :js
+                      :module module-value
+                      :layout :module}))
+
+(fact:global
+ {:setup [(reset! +snapshot+ (script/script-snapshot))
+          (script/script-reset!)
+          (script/setup :js 'demo.lifecycle
+                        '{:require [[xt.lang.common-color :as color]]}
+                        true
+                        'lang.core.impl-lifecycle-test)
+          (reset! +book+ (script/selected-book :js))]
+  :teardown [(script/script-restore! (deref +snapshot+))]})
+
+^{:refer lang.core.impl-lifecycle/emit-module-prep}
+(fact "prepares a materialized source module without compiling its declarations"
+  (let [[context sections]
+        (lifecycle/emit-module-prep 'demo.lifecycle
+                                    {:book (deref +book+) :lang :js})]
+    [(:id (:module context))
+     (:layout context)
+     (:direct sections)
+     (:internal (:module context))
+     (:code sections)])
+  => ['demo.lifecycle :module #{'xt.lang.common-color}
+      {'demo.lifecycle '- 'xt.lang.common-color 'color}
+      []])
+
+^{:refer lang.core.impl-lifecycle/emit-module-setup-concat}
+(fact "keeps all non-empty setup sections in lifecycle order"
+  (lifecycle/emit-module-setup-concat
+   {:setup-body "setup" :native-arr ["native"] :link-arr ["link"]
+    :header-arr ["header"] :code-arr ["code"] :export-body "export"})
+  => ["setup" "native" "link" "header" "code" "export"])
+
+^{:refer lang.core.impl-lifecycle/emit-module-setup-join}
+(fact "joins setup sections with exact blank-line boundaries"
+  (lifecycle/emit-module-setup-join
+   {:setup-body "setup" :native-arr ["native"] :link-arr ["link"]
+    :header-arr ["header"] :code-arr ["code"] :export-body "export"})
+  => "setup\n\nnative\n\nlink\n\nheader\n\ncode\n\nexport")
+
+^{:refer lang.core.impl-lifecycle/emit-module-setup-native-arr}
+(fact "emits target native imports and respects an override"
+  (let [context (js-context {:id 'demo.lifecycle :native {}})
+        prep [context {:native {"react" {:as 'React}}}]]
+    [(lifecycle/emit-module-setup-native-arr {:emit {}} prep)
+     (lifecycle/emit-module-setup-native-arr
+      {:emit {:override {"react" "https://cdn.example/react"}}}
+      prep)])
+  => [["import React from 'react'"]
+      ["import React from 'https://cdn.example/react'"]])
+
+^{:refer lang.core.impl-lifecycle/emit-lifecycle-form}
+(fact "stages lifecycle import forms before emitting their target spelling"
+  (let [book-value (deref +book+)
+        context (js-context {:id 'demo.lifecycle})
+        form (list ':- :import
+                   (list 'quote [(list :- :* :as 'dep)])
+                   :from "'demo-dep'")]
+    (lifecycle/emit-lifecycle-form form (:selection book-value) context))
+  => "import * as dep from 'demo-dep'")
+
+^{:refer lang.core.impl-lifecycle/relative-link-path}
+(fact "derives same-directory and parent-directory graph links"
+  [(lifecycle/relative-link-path "libs/demo" "libs/demo" "/")
+   (lifecycle/relative-link-path "libs/demo/main" "libs/demo" "/")
+   (lifecycle/relative-link-path "libs/demo" "libs/other" "/")]
+  => ["." ".." "../other"])
+
+^{:refer lang.core.impl-lifecycle/emit-module-setup-link-import}
+(fact "builds directory and graph import descriptors only for internal links"
+  [(lifecycle/emit-module-setup-link-import
+    :directory 'demo.main 'demo.dep {}
+    {:internal {'demo.dep 'dep}}
+    {:root-prefix "@" :path-separator "/"}
+    'demo.root)
+   (lifecycle/emit-module-setup-link-import
+    :graph 'demo.main 'demo.dep
+    {'demo.main {:rel "libs/demo" :label "main" :suffix ".mjs"}
+     'demo.dep {:rel "libs/demo" :label "dep" :suffix ".mjs"}}
+    {:internal {'demo.dep 'dep}}
+    {:path-separator "/"}
+    'demo.root)
+   (lifecycle/emit-module-setup-link-import
+    :directory 'demo.main 'demo.missing {}
+    {:internal {}}
+    {:root-prefix "@" :path-separator "/"}
+    'demo.root)]
+  => [{:ns "@/libs/demo/dep" :suffix "" :as 'dep}
+      {:ns "./dep" :suffix ".mjs" :as 'dep}
+      nil])
+
+^{:refer lang.core.impl-lifecycle/emit-module-setup-link-arr}
+(fact "emits selected JavaScript link imports in deterministic namespace order"
+  (let [module-value {:id 'demo.lifecycle
+                      :internal {'demo.dep 'dep}
+                      :link {'dep 'demo.dep}}
+        context (js-context module-value)
+        prep [context {:direct #{'demo.dep}}]
+        source (lifecycle/emit-module-setup-link-arr
+                {:emit {:code {:link {:root-prefix "@"
+                                      :path-separator "/"}}}}
+                prep)]
+    [(count source)
+     (str/includes? (first source) "import * as dep")
+     (str/includes? (first source) "@/libs/demo/dep")])
+  => [1 true true])
+
+^{:refer lang.core.impl-lifecycle/emit-module-setup-link-arr}
+(fact "suppresses module-link imports for flat expression compilation"
+  (let [module-value {:id 'demo.lifecycle
+                      :internal {'demo.dep 'dep}
+                      :link {'dep 'demo.dep}}
+        context (assoc (js-context module-value) :layout :flat)
+        prep [context {:direct #{'demo.dep}}]]
+    (lifecycle/emit-module-setup-link-arr
+     {:emit {:code {:link {:root-prefix "@"
+                           :path-separator "/"}}}}
+     prep))
+  => [])
+
+^{:refer lang.core.impl-lifecycle/emit-module-setup-export-body}
+(fact "emits the JavaScript static module export through Book metadata"
+  (let [module-value {:id 'demo.lifecycle :static {:export ['value]}}
+        context (js-context module-value)]
+    (lifecycle/emit-module-setup-export-body {} [context {}]))
+  => "export default value")
+
+^{:refer lang.core.impl-lifecycle/emit-module-setup-raw}
+(fact "keeps raw module lifecycle sections distinct before joining"
+  (let [raw (lifecycle/emit-module-setup-raw
+             'demo.lifecycle
+             {:book (deref +book+)
+              :lang :js
+              :emit {:code {:link {:root-prefix "@" :path-separator "/"}}}})]
+    [(set (keys raw))
+     (:setup-body raw)
+     (:native-arr raw)
+     (count (:link-arr raw))
+     (:header-arr raw)
+     (:code-arr raw)
+     (:export-body raw)])
+  => [#{:setup-body :native-arr :link-arr :header-arr :code-arr :export-body}
+      nil [] 1 [] [] nil])
+
+^{:refer lang.core.impl-lifecycle/emit-module-setup}
+(fact "emits the registered module as a linked JavaScript setup script"
+  (let [source (lifecycle/emit-module-setup
+                'demo.lifecycle
+                {:book (deref +book+)
+                 :lang :js
+                 :emit {:code {:link {:root-prefix "@" :path-separator "/"}}}})]
+    [(str/includes? source "import * as color")
+     (str/includes? source "@/libs/xt/lang/common-color")])
+  => [true true])
+
+^{:refer lang.core.impl-lifecycle/emit-module-teardown-concat}
+(fact "keeps reverse code native and module teardown blocks in order"
+  (lifecycle/emit-module-teardown-concat
+   {:code-arr ["code"] :native-arr ["native"] :teardown-body "teardown"})
+  => ["code" "native" "teardown"])
+
+^{:refer lang.core.impl-lifecycle/emit-module-teardown-join}
+(fact "joins teardown blocks with exact blank-line boundaries"
+  (lifecycle/emit-module-teardown-join
+   {:code-arr ["code"] :native-arr ["native"] :teardown-body "teardown"})
+  => "code\n\nnative\n\nteardown")
+
+^{:refer lang.core.impl-lifecycle/emit-module-teardown-raw}
+(fact "produces an empty teardown plan when the selected language owns no teardown hooks"
+  (lifecycle/emit-module-teardown-raw
+   'demo.lifecycle
+   {:book (deref +book+) :lang :js})
+  => {:code-arr [] :native-arr [] :teardown-body nil})
+
+^{:refer lang.core.impl-lifecycle/emit-module-teardown}
+(fact "joins an empty teardown plan into the empty script"
+  (lifecycle/emit-module-teardown
+   'demo.lifecycle
+   {:book (deref +book+) :lang :js})
+  => "")

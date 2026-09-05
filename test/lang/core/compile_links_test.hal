@@ -1,0 +1,57 @@
+(ns lang.core.compile-links-test
+  (:use code.test)
+  (:require [lang.core.compile-links :as subject]))
+
+^{:refer lang.core.compile-links/link-filter-match? :added "4.0"}
+(fact "matches Foundation namespace filter shapes"
+  [(subject/link-filter-match? "indigo" 'indigo.server)
+   (subject/link-filter-match? 'indigo 'indigo.server)
+   (subject/link-filter-match? (regexp "server$") 'indigo.server)
+   (subject/link-filter-match? #{'indigo.server} 'indigo.server)
+   (subject/link-filter-match?
+    (list "indigo" (regexp "server$"))
+    'indigo.server)
+   (subject/link-filter-match?
+    [(regexp "missing$") "indigo"]
+    'indigo.server)
+   (subject/link-filter-match? "code" 'indigo.server)]
+  => [true true true true true true false])
+
+^{:refer lang.core.compile-links/link-replace :added "4.0"}
+(fact "applies literal and regular-expression substitutions"
+  [(subject/link-replace "my-module" "-" "_")
+   (subject/link-replace "server-test" (regexp "-.*$") "")]
+  => ["my_module" "server"])
+
+^{:refer lang.core.compile-links/get-link-lookup :added "4.0"}
+(fact "gets an exact or filtered lookup value"
+  [(subject/get-link-lookup 'indigo {'indigo "hello"})
+   (subject/get-link-lookup 'indigo {"code" "hello"})
+   (subject/get-link-lookup 'indigo {'code "hello"})
+   (subject/get-link-lookup 'indigo {(regexp "code$") "hello"})
+   (subject/get-link-lookup 'indigo.server {"indigo" "hello"})]
+  => ["hello" nil nil nil "hello"])
+
+^{:refer lang.core.compile-links/get-link-match :added "4.1"}
+(fact "gets the matching lookup key and value"
+  [(subject/get-link-match 'indigo {'indigo "hello"})
+   (let [[pattern value]
+         (subject/get-link-match 'indigo.server {(regexp "server$") "hello"})]
+     [(re-pattern pattern) value])
+   (subject/get-link-match 'indigo {'code "hello"})]
+  => ['[indigo "hello"]
+      ["server$" "hello"]
+      nil])
+
+^{:refer lang.core.compile-links/link-attributes :added "4.0"}
+(fact "derives Foundation-compatible link attributes"
+  [(subject/link-attributes 'code 'indigo.server {:path-suffix ".js"})
+   (subject/link-attributes
+    'util
+    'indigo.server
+    {:root-libs "tools"
+     :path-suffix ".js"})]
+  => [{:is-lib? true :rel "libs/indigo" :suffix ".js"
+       :label "server" :path "libs/indigo/server.js"}
+      {:is-lib? true :rel "tools/indigo" :suffix ".js"
+       :label "server" :path "tools/indigo/server.js"}])

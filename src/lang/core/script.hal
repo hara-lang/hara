@@ -2,8 +2,8 @@
 ;; lang.core.script — native source registration and target evaluation.
 ;; ============================================================================
 (ns lang.core.script
-  (:require [lang.common.book :as book]
-            [lang.common.compiler :as compiler]
+  (:require [lang.base.book :as book]
+            [lang.base.compiler :as compiler]
             [lang.core.eval :as evaluation]
             [lang.core.library :as library]
             [lang.core.registry :as registry]
@@ -25,6 +25,12 @@
 (def ^{:dynamic true} *module-evaluator*
   (fn [instance source options]
     (evaluation/eval-await instance source options)))
+
+(def ^{:dynamic true} *script-emitter*
+  (fn [form options]
+    (let [_ (require 'lang.core.impl)
+          emit-script (deref (resolve 'lang.core.impl/emit-script))]
+      (emit-script form options))))
 
 (def +module-metadata-keys+
   [:static :application :schema :source :require-impl :implements :import
@@ -652,7 +658,13 @@
      (if (and (nil? current-module) (nil? inherited))
        (binding [*loading-module* true]
          (library/with:library [default-library]
-           (eval (list 'require (list 'quote source))))))
+           ;; A namespace may already be loaded while its prior Library
+           ;; registration was reset.  Foundation reloads that source so the
+           ;; current Library receives its module declaration again.
+           (eval (list 'require
+                       (if (= :loaded (:namespace/state (ns-info source)))
+                         (vector source :reload true)
+                         (vector source)))))))
      (let [[source-language source-module]
            (or (if current-module [current-language current-module])
                (library/library-find-module-by-source default-library source)
@@ -716,6 +728,9 @@
          configured (configure-module lang module
                                       (assoc config :module/primary primary)
                                       source)]
+     ;; Foundation registers all declared source namespaces during setup, but
+     ;; leaves target-code emission to the pointer/evaluation boundary.
+     (script-load-requires! lang config)
      ;; Foundation materialises the selected Book during script setup.  Keep
      ;; that boundary eager so the first target expression does not pay the
      ;; registry/provider load cost.
@@ -793,7 +808,7 @@
         module (:module config)
         instance (runtime/rt-start
                   (runtime/rt-create lang (or runtime-id :default) config))
-        instance (if (and (= runtime-id :basic) module)
+        instance (if (and (= runtime-id :basic) module (:eager config))
                    (try
                      (initialize-script! instance lang module config)
                      (catch error
@@ -885,11 +900,23 @@
                       result)))))
 
 (defn compile-form
-  "Compiles a single target expression against registered module source."
+  "Emits a target expression together with its exact selected code closure."
   [lang module form]
-  (let [module-value (or (get (:modules (selected-book lang)) module)
+  (let [initial-book (selected-book lang)
+        initial-module (or (get (:modules initial-book) module)
+                           (module-config lang module {}))
+        _ (script-load-requires! lang initial-module)
+        book-value (selected-book lang)
+        module-value (or (get (:modules book-value) module)
                          (module-config lang module {}))
-        compile (fn [] (:output (compile-one lang form module-value nil)))]
+        compile
+        (fn []
+          (*script-emitter*
+           form
+           {:book book-value
+            :lang lang
+            :module module-value
+            :layout :flat}))]
     (try
       (compile)
       (catch error

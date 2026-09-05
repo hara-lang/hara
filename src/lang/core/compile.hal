@@ -2,8 +2,9 @@
 ;; lang.core.compile — deterministic module graph compilation.
 ;; ============================================================================
 (ns lang.core.compile
-  (:require [lang.common.compiler :as compiler]
+  (:require [lang.base.compiler :as compiler]
             [lang.core.library :as library]
+            [lang.core.impl-lifecycle :as lifecycle]
             [lang.core.registry :as registry]
             [lang.core.script :as script]))
 
@@ -53,33 +54,28 @@
    :emit (or (:emit options) {})})
 
 (defn module-lifecycle-output
-  "Emits target setup, native imports, and exports around a module graph body."
+  "Delegates module setup, imports, links, and exports to the Foundation lifecycle owner.
+
+   Entry bodies remain the responsibility of `compile-entries`; suppressing the
+   lifecycle code and header sections here prevents the module graph compiler
+   from emitting them twice."
   [book modules module-order options]
-  (reduce
-   (fn [output module-id]
-     (let [module (get modules module-id)
-           context (module-compile-context book modules module options)
-           setup-hook (get-in book [:meta :setup-module])
-           import-hook (get-in book [:meta :module-import])
-           export-hook (get-in book [:meta :module-export])
-           emit-form (fn [form]
-                       (if form
-                         (compiler/emit-direct form (:selection book) context)))
-           setup (if setup-hook (emit-form (setup-hook module)))
-           imports (keep (fn [name]
-                           (if import-hook
-                             (emit-form
-                              (import-hook name
-                                           (get (module-native-imports module) name)
-                                           context))))
-                         (sort-by str (keys (module-native-imports module))))
-           export (if export-hook (emit-form (export-hook module context)))]
-       {:setup (vec (concat (:setup output)
-                            (filter not-empty (concat [setup] imports))))
-        :export (vec (concat (:export output)
-                             (filter not-empty [export])))}))
-   {:setup [] :export []}
-   module-order))
+  (let [book-value (assoc book :modules modules)
+        lifecycle-options
+        (-> options
+            (assoc :book book-value)
+            (assoc-in [:emit :header :suppress] true)
+            (assoc-in [:emit :code :suppress] true))]
+    (reduce
+     (fn [output module-id]
+       (let [raw (lifecycle/emit-module-setup-raw module-id lifecycle-options)
+             setup (lifecycle/emit-module-setup-concat
+                    (assoc raw :header-arr [] :code-arr [] :export-body nil))]
+         {:setup (into (:setup output) setup)
+          :export (into (:export output)
+                        (filter not-empty [(:export-body raw)]))}))
+     {:setup [] :export []}
+     module-order)))
 
 (defn module-dependency-ids
   [module]

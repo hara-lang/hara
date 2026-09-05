@@ -1,0 +1,210 @@
+;; ============================================================================
+;; lang.core.impl-deps — target script dependency selection.
+;; ============================================================================
+(ns lang.core.impl-deps
+  (:config {:role :internal})
+  (:require [lang.base.book :as book]
+            [lang.base.book-module :as module]
+            [lang.base.compiler :as compiler]
+            [lang.core.impl-deps-imports :as imports]))
+
+(defn module-import-form
+  "Returns the target-specific native module import form."
+  [book-value name module-value options]
+  (let [hook (get-in book-value [:meta :module-import])]
+    (if hook (hook name module-value options))))
+
+(defn module-export-form
+  "Returns the target-specific module export form."
+  [book-value module-value options]
+  (let [hook (get-in book-value [:meta :module-export])]
+    (if hook (hook module-value options))))
+
+(defn module-link-form
+  "Returns the target-specific project-link form."
+  [book-value namespace-value options]
+  (let [hook (get-in book-value [:meta :module-link])]
+    (if hook (hook namespace-value options))))
+
+(defn has-module-form
+  "Returns the target form that checks whether one module exists."
+  [book-value module-value]
+  (let [hook (get-in book-value [:meta :has-module])]
+    (if hook (hook module-value))))
+
+(defn setup-module-form
+  "Returns the target form that initializes one module."
+  [book-value module-value]
+  (let [hook (get-in book-value [:meta :setup-module])]
+    (if hook (hook module-value))))
+
+(defn teardown-module-form
+  "Returns the target form that tears down one module."
+  [book-value module-value]
+  (let [hook (get-in book-value [:meta :teardown-module])]
+    (if hook (hook module-value))))
+
+(defn has-ptr-form
+  "Returns the target form that checks whether one code pointer exists."
+  [book-value pointer]
+  (let [hook (get-in book-value [:meta :has-ptr])]
+    (if hook (hook pointer))))
+
+(defn setup-ptr-form
+  "Returns the target form that initializes one code pointer."
+  [book-value pointer]
+  (let [hook (get-in book-value [:meta :setup-ptr])]
+    (if hook (hook pointer))))
+
+(defn teardown-ptr-form
+  "Returns the target form that tears down one code pointer."
+  [book-value pointer]
+  (let [hook (get-in book-value [:meta :teardown-ptr])]
+    (if hook (hook pointer))))
+
+(defn collect-script-natives
+  "Combines native imports contributed by selected code modules."
+  [modules initial]
+  (reduce
+   (fn [output module-value]
+     (reduce-kv
+      (fn [current key value]
+        (let [previous (get current key)]
+          (cond (nil? previous) (assoc current key value)
+                (= previous value) current
+                true
+                (throw
+                 (ex :conflict {:module (:id module-value)
+                                :key key :current previous :new value}
+                     :ex/message "Native imports disagree on the same name")))))
+      output
+      (or (:native module-value) {})))
+   (or initial {})
+   modules))
+
+(defn entry-symbol
+  "Returns the fully qualified code coordinate for one Book entry."
+  [entry]
+  (symbol (str (:module entry)) (name (:id entry))))
+
+(defn entry-dependencies
+  "Returns the exact, restaged code dependencies for one entry."
+  [book-value entry]
+  (book/get-code-deps book-value (entry-symbol entry)))
+
+(defn entry-sort-key
+  "Keeps dependency emission deterministic within one script request."
+  [entry]
+  [(or (:priority entry) 0)
+   (or (:line entry) 0)
+   (or (:time entry) 0)
+   (str (entry-symbol entry))])
+
+(defn order-script-entries
+  "Orders selected code entries after their selected code dependencies."
+  [book-value entries]
+  (let [entry-map
+        (reduce (fn [output entry]
+                  (assoc output (entry-symbol entry) entry))
+                {}
+                entries)]
+    (loop [remaining (set (keys entry-map)) ordered []]
+      (if (empty? remaining)
+        ordered
+        (let [ready
+              (vec
+               (sort-by entry-sort-key
+                        (keep
+                         (fn [symbol-value]
+                           (let [entry (get entry-map symbol-value)
+                                 dependencies (entry-dependencies book-value entry)]
+                             (if (every? (fn [dependency]
+                                           (not (has? remaining dependency)))
+                                         dependencies)
+                               entry)))
+                         remaining)))]
+          (if (empty? ready)
+            (into ordered
+                  (sort-by entry-sort-key
+                           (map (fn [symbol-value]
+                                  (get entry-map symbol-value))
+                                remaining)))
+            (recur (reduce dissoc remaining (map entry-symbol ready))
+                   (into ordered ready))))))))
+
+(defn collect-script-entries
+  "Collects a transitive, deterministic closure of code entries for symbols."
+  [book-value symbol-ids]
+  (loop [pending (vec (sort-by str (or symbol-ids [])))
+         seen #{}
+         entries {}]
+    (if (empty? pending)
+      (let [ordered (order-script-entries book-value (vals entries))
+            module-ids (vec (distinct (map :module ordered)))
+            module-lu
+            (reduce (fn [output index]
+                      (let [module-id (nth module-ids index)]
+                        (assoc output module-id
+                               {:index index
+                                :module (book/get-module book-value module-id)})))
+                    {}
+                    (range 0 (count module-ids)))]
+        [ordered module-lu])
+      (let [symbol-value (first pending)
+            remaining (vec (rest pending))]
+        (if (has? seen symbol-value)
+          (recur remaining seen entries)
+          (let [entry (book/get-code-entry book-value symbol-value)
+                dependencies (entry-dependencies book-value entry)]
+            (recur (into remaining (sort-by str dependencies))
+                   (conj seen symbol-value)
+                   (assoc entries symbol-value entry))))))))
+
+(defn collect-script
+  "Collects the transformed form, code closure, and native imports for a script."
+  [book-value form options]
+  (let [selected (:selection book-value)
+        current-module (:module options)
+        context {:book book-value
+                 :modules (:modules book-value)
+                 :module current-module
+                 :lang (:lang options)
+                 :layout (or (:layout options) :flat)
+                 :emit (or (:emit options) {})}
+        result (compiler/compile (or (:compiler options) (compiler/compiler))
+                                 form selected context)
+        [entries _] (collect-script-entries book-value
+                                            (get-in result [:dependencies :code]))]
+    [(get-in result [:stages :staging])
+     entries
+     (imports/script-imports book-value entries)]))
+
+(defn collect-script-summary
+  "Summarizes collected script dependencies without discarding their order."
+  [[form entries natives]]
+  [form (map entry-symbol entries) natives])
+
+(defn collect-module
+  "Collects lifecycle sections and dependency metadata for one complete module."
+  [book-value module-value]
+  (let [module-value (module/module-derived-view book-value module-value)
+        code (vec (sort-by entry-sort-key (vals (:code module-value))))
+        import-info (imports/module-imports book-value (:id module-value)
+                                             module-value)]
+    {:setup (setup-module-form book-value module-value)
+     :teardown (teardown-module-form book-value module-value)
+     :code code
+     :native (merge (or (:native module-value) {})
+                    (module/module-deps-native book-value module-value)
+                    (:native import-info))
+     :direct (:direct import-info)}))
+
+(defn native-name-with-override
+  "Applies an emit-level string or symbol native import override."
+  [name emit]
+  (let [overrides
+        (reduce-kv (fn [output key value]
+                     (assoc output (if (symbol? key) (str key) key) value))
+                   {}
+                   (or (:override emit) {}))]
+    (or (get overrides (if (symbol? name) (str name) name)) name)))

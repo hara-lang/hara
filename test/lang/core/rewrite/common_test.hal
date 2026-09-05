@@ -1,0 +1,34 @@
+(ns lang.core.rewrite.common-test
+  (:use code.test)
+  (:require [lang.core.rewrite.common :as subject]))
+
+^{:refer lang.core.rewrite.common/with-form-meta :added "4.1"}
+(fact "copies metadata from source to supported metadata-bearing output"
+  (subject/with-form-meta (with-meta [1 2 3] {:hello true}) [4 5 6])
+  => [4 5 6]
+
+  (meta (subject/with-form-meta (with-meta [1 2 3] {:hello true}) [4 5 6]))
+  => {:hello true})
+
+^{:refer lang.core.rewrite.common/with-form-meta :added "4.1"
+  :id test-with-form-meta-non-iobj}
+(fact "returns scalar output unchanged"
+  (subject/with-form-meta (with-meta [] {:hello true}) "world")
+  => "world"
+
+  (subject/with-form-meta (with-meta [] {:hello true}) 42)
+  => 42
+
+  (subject/with-form-meta (with-meta [] {:hello true}) :keyword)
+  => :keyword)
+
+^{:refer lang.core.rewrite.common/stable-symbol :added "4.1"}
+(fact "derives a deterministic symbol from the source form and its location"
+  (let [source (with-meta 'entry {:file "fixture.hal" :line 7 :column 3})
+        same   (with-meta 'entry {:file "fixture.hal" :line 7 :column 3})
+        moved  (with-meta 'entry {:file "fixture.hal" :line 8 :column 3})]
+    [(= (subject/stable-symbol "tmp-" source)
+        (subject/stable-symbol "tmp-" same))
+     (not= (subject/stable-symbol "tmp-" source)
+           (subject/stable-symbol "tmp-" moved))])
+  => [true true])

@@ -1,0 +1,98 @@
+(ns lang.model.v1.spec-dart-test
+  (:use code.test)
+  (:require [lang.base.book :as book]
+            [lang.base.emit :as emit]
+            [lang.base.grammar-api :as grammar-api]
+            [lang.base.registry :as registry]
+            [lang.model.v1.spec-dart :as subject]))
+
+^{:refer lang.model.v1.spec-dart/install-source}
+(fact "installs a source once and leaves duplicate installation unchanged"
+  (let [catalog (registry/registry)
+        once (subject/install-source catalog subject/+template+)
+        twice (subject/install-source once subject/+template+)]
+    [(not (nil? (registry/find once
+                               (grammar-api/source-coordinate subject/+template+))))
+     (count (registry/list once))
+     (count (registry/list twice))])
+  => [true 1 1])
+
+^{:refer lang.model.v1.spec-dart/install}
+(fact "installs XTalk prerequisites and every Dart grammar source"
+  (let [catalog (subject/install (registry/registry))]
+    [(registry/versions catalog :xtalk)
+     (registry/versions catalog :dt)
+     (not (nil? (registry/find catalog
+                               (grammar-api/source-coordinate subject/+grammar+))))])
+  => [[1] [1] true])
+
+^{:refer lang.model.v1.spec-dart/catalog}
+(fact "creates a catalog with the Dart grammar selection inputs"
+  (let [catalog (subject/catalog)]
+    [(count (registry/list catalog))
+     (registry/versions catalog :dt)
+     (not (nil? (registry/find catalog
+                               (grammar-api/source-coordinate subject/+profile+))))])
+  => [6 [1] true])
+
+^{:refer lang.model.v1.spec-dart/select}
+(fact "selects the pinned Dart grammar without compiling a form"
+  (let [selection (subject/select)]
+    [(:grammar/id (:coordinate selection))
+     (:grammar/version (:coordinate selection))
+     (= (:coordinate selection) subject/+coordinate+)])
+  => [:dt 1 true])
+
+^{:refer lang.model.v1.spec-dart/+meta+}
+(fact "renders Dart imports with suffix and normalized alias"
+  ((:module-import subject/+meta+)
+   "package:xtalk_ui/page"
+   {:as 'event-listener :suffix ".dart"}
+   {})
+  => '(:- "import 'package:xtalk_ui/page.dart' as event_listener;"))
+
+^{:refer lang.model.v1.spec-dart/+selection+}
+(fact "keeps target rewrite staging in the selected grammar"
+  (count (get-in subject/+selection+ [:rewrite :staging]))
+  => 1)
+
+^{:refer lang.model.v1.spec-dart/+book+}
+(fact "builds a Dart book from its selection without compiling user code"
+  [(:lang subject/+book+)
+   (:parent subject/+book+)
+   (:version subject/+book+)
+   (book/book? subject/+book+)]
+  => [:dart :xtalk 1 true])
+
+^{:refer lang.model.v1.spec-dart/+init+}
+(fact "exposes the uncompiled Dart book as the initialization value"
+  (= subject/+init+ subject/+book+)
+  => true)
+
+^{:refer lang.model.v1.spec-dart/+grammar+}
+(fact "emits Dart only when a caller requests emission"
+  [(emit/emit '(var greeting "hello") subject/+selection+)
+   (emit/emit '(x:len [1 2 3]) subject/+selection+)
+   (emit/emit '{:name "hello" :count 2} subject/+selection+)]
+  => ["var greeting = \"hello\""
+      "<dynamic>[1,2,3].length"
+      "<dynamic, dynamic>{\"count\":2,\"name\":\"hello\"}"])
+
+^{:refer lang.model.v1.spec-dart/+grammar+}
+(fact "preserves historical Dart XTalk helper and numeric emission"
+  [(emit/emit '(x:print "hello") subject/+selection+)
+   (emit/emit '(x:arr-push items 1) subject/+selection+)
+   (emit/emit '(pow 2 5) subject/+selection+)]
+  => ["(() {\n  print(\"hello\");\n  return null;\n})()"
+      "items.add(1)"
+      "math.pow(2,5)"])
+
+^{:refer lang.model.v1.spec-dart/+grammar+}
+(fact "emits Dart function and loop statements through the staged compiler"
+  [(emit/emit '(defn hello [name] (return (x:cat "hi " name)))
+              subject/+selection+)
+   (emit/emit '(for [(var index := 0) (< index 3) (:++ index)]
+                 (print index))
+              subject/+selection+)]
+  => ["hello(name) {\n  return \"hi \" + name;\n}"
+      "for(var index = 0; index < 3; ++index){\n  print(index);\n}"])

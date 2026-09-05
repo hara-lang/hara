@@ -1,0 +1,158 @@
+(ns lang.base.preprocess-staging
+  (:require [lang.base.preprocess-assign :as assign]
+            [lang.base.preprocess-base :as base]
+            [lang.base.preprocess-resolve :as resolve]
+            [lang.base.preprocess-value :as value]
+            [lang.base.provenance :as provenance]
+            [lang.base.util :as util]))
+
+(defn to-staging-form
+  "different staging forms"
+  {:added "4.0"}
+  [form grammar modules options deps-fragment walk-fn]
+  (let [symbol (first form)
+        reserved (get-in grammar [:reserved (first form)])
+        options (provenance/with-provenance
+                 options
+                 {:lang/form form
+                  :lang/symbol symbol})
+        template-assignment (assign/process-template-assignment form grammar modules options)]
+    (cond (= symbol '!:template)
+          (walk-fn (eval (second form)))
+
+          ('#{!:lang !:eval !:deref !:decorate} symbol)
+          (atom form)
+
+          (= :template (:type reserved))
+          (let [options (provenance/with-provenance
+                         options
+                         {:lang/phase :staging/reserved-template
+                          :lang/subsystem :lang/reserved-template
+                          :lang/lang (:lang options)
+                          :lang/module (util/module-id (:module options))})]
+            (try
+              (binding [base/*macro-opts* options]
+                (walk-fn ((:macro reserved) form)))
+              (catch error
+                (util/throw-with-context
+                 "tahto.core staging template expansion failed"
+                 (:lang/provenance options)
+                 error))))
+
+          (= :hard-link (:emit reserved))
+          (walk-fn (apply list (:raw reserved) (rest form)))
+
+          (and (= :def-assign (:emit reserved))
+               (or (= :inline (last form))
+                   (and (:inline (meta (last form)))
+                        (not (:assign/inline (meta (last form)))))))
+          (walk-fn (assign/process-inline-assignment form modules options))
+
+          template-assignment
+          (walk-fn template-assignment)
+
+          :else
+          (if-let [value-form (value/process-value-form form grammar modules options)]
+            (walk-fn value-form)
+
+            (if reserved
+              (assign/protect-reserved-head form)
+
+              (let [fragment-entry (resolve/get-fragment (first form)
+                                                         modules
+                                                         options)]
+                (if (:template fragment-entry)
+                  (let [options (provenance/with-provenance
+                                 options
+                                 {:lang/phase :staging/fragment-template
+                                  :lang/subsystem :lang/fragment-template
+                                  :lang/lang (:lang options)
+                                  :lang/module (util/module-id (:module options))
+                                  :lang/entry (util/entry-summary fragment-entry)})]
+                    (do (if deps-fragment
+                          (swap! deps-fragment conj (util/sym-full fragment-entry)))
+                        (walk-fn
+                         (try
+                           (binding [base/*macro-form* form
+                                     base/*macro-opts* options]
+                             (apply (:template fragment-entry) (rest form)))
+                           (catch error
+                             (util/throw-with-context
+                              "tahto.core staging macro expansion failed"
+                              (:lang/provenance options)
+                              error))))))
+                  form)))))))
+
+(defn to-staging
+  "converts the stage"
+  {:added "4.0"}
+  [input grammar modules options]
+  (let [options (provenance/with-provenance
+                 options
+                 {:lang/phase :staging
+                  :lang/subsystem :lang/to-staging
+                  :lang/lang (:lang options)
+                  :lang/module (util/module-id (:module options))
+                  :lang/entry (if (:entry options)
+                                (util/entry-summary (:entry options)) nil)})]
+    (binding [base/*macro-skip-deps* false
+              base/*macro-grammar* grammar
+              base/*macro-opts* options]
+      (let [deps (atom #{})
+            deps-fragment (atom #{})
+            deps-native (atom {})
+            _ (if-let [includes (get-in options [:module :includes])]
+                (doseq [include-id includes]
+                  (if-let [module (get modules include-id)]
+                    (doseq [entry (vals (:code module))]
+                      (swap! deps conj (util/sym-full entry))))))
+            form (std.foundation/prewalk
+                  (letfn [(walk-fn [form]
+                    (cond (std.foundation/form? form)
+                          (to-staging-form form grammar modules options deps-fragment walk-fn)
+
+                          (symbol? form)
+                          (or (if-let [standalone (value/value-standalone form grammar)]
+                                (walk-fn standalone))
+                              (if (namespace form)
+                                (resolve/process-namespaced-symbol form modules options deps deps-fragment walk-fn)
+                                (resolve/process-standard-symbol form options deps-native)))
+
+                          :else form))]
+                    walk-fn)
+                  input)
+            form (std.foundation/postwalk
+                  (fn [form]
+                    (if (atom? form)
+                      (deref form)
+                      form))
+                  form)]
+        [form (deref deps) (deref deps-fragment) (deref deps-native)]))))
+
+(defn to-resolve
+  "resolves only the code symbols (no macroexpansion)"
+  {:added "4.0"}
+  [input grammar modules options]
+  (binding [base/*macro-skip-deps* true
+            base/*macro-grammar* grammar
+            base/*macro-opts* options]
+    (let [form (std.foundation/prewalk
+                (letfn [(walk-fn [form]
+                  (cond (and (std.foundation/form? form)
+                             (= (first form) '!:template))
+                        (walk-fn (eval (second form)))
+
+                        (and (std.foundation/form? form)
+                             (get-in grammar [:reserved (first form)]))
+                        (assign/protect-reserved-head form)
+
+                        (symbol? form)
+                        (or (value/value-standalone form grammar)
+                            (if (namespace form)
+                              (resolve/process-namespaced-symbol form modules options nil nil identity)
+                              (resolve/process-standard-symbol form options nil)))
+
+                        :else form))]
+                  walk-fn)
+                input)]
+      form)))

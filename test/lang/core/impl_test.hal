@@ -1,0 +1,84 @@
+(ns lang.core.impl-test
+  (:use code.test)
+  (:require [lang.base.book :as book]
+            [lang.core.impl :as impl]
+            [lang.core.script :as script]))
+
+(def +snapshot+ (atom nil))
+(def +book+ (atom nil))
+
+(fact:global
+ {:setup [(reset! +snapshot+ (script/script-snapshot))
+          (script/script-reset!)
+          (script/setup :js 'demo.color
+                        '{:require [[xt.lang.common-color :as color]]}
+                        true
+                        'lang.core.impl-test)
+          (reset! +book+ (script/selected-book :js))]
+  :teardown [(script/script-restore! (deref +snapshot+))]})
+
+^{:refer lang.core.impl/emit-options}
+(fact "builds one immutable compiler context for the selected JavaScript Book"
+  (let [book-value (deref +book+)
+        context (impl/emit-options
+                 {:book book-value
+                  :lang :js
+                  :module (get-in book-value [:modules 'demo.color])
+                  :layout :flat
+                  :emit {:code {:label true}}})]
+    [(:lang context)
+     (:layout context)
+     (:id (:module context))
+     (= (:modules book-value) (:modules context))
+     (:emit context)
+     (not (nil? (:compiler context)))])
+  => [:js :flat 'demo.color true {:code {:label true}} true])
+
+^{:refer lang.core.impl/emit-entry}
+(fact "emits the selected color entry through the active JavaScript grammar"
+  (let [book-value (deref +book+)
+        context (impl/emit-options
+                 {:book book-value :lang :js
+                  :module (get-in book-value [:modules 'demo.color])})
+        entry (book/get-code-entry book-value 'xt.lang.common-color/hex->rgb)]
+    (str/includes? (impl/emit-entry entry context) "function hex__gtrgb"))
+  => true)
+
+^{:refer lang.core.impl/emit-script-imports}
+(fact "does not create import source when a selected script has no native imports"
+  (let [book-value (deref +book+)
+        context (impl/emit-options
+                 {:book book-value :lang :js
+                  :module (get-in book-value [:modules 'demo.color])})]
+    (impl/emit-script-imports {} {} context))
+  => [])
+
+^{:refer lang.core.impl/emit-script-deps}
+(fact "emits the dependency closure before its requested color function"
+  (let [book-value (deref +book+)
+        context (impl/emit-options
+                 {:book book-value :lang :js
+                  :module (get-in book-value [:modules 'demo.color])})
+        entry (book/get-code-entry book-value 'xt.lang.common-color/hex->rgb)]
+    (mapv (fn [source]
+            (str/includes? source "function hex__gtrgb"))
+          (impl/emit-script-deps [entry] {} context)))
+  => [true])
+
+^{:refer lang.core.impl/emit-script-join}
+(fact "joins imports definitions and expression with stable blank-line boundaries"
+  (impl/emit-script-join ["IMPORT"] ["DEPENDENCY"] "BODY")
+  => "IMPORT\n\nDEPENDENCY\n\nBODY")
+
+^{:refer lang.core.impl/emit-script}
+(fact "emits the color call with its transitive target code closure"
+  (let [book-value (deref +book+)
+        source (impl/emit-script
+                '(color/hex->rgb "#45f981")
+                {:book book-value
+                 :lang :js
+                 :module (get-in book-value [:modules 'demo.color])})]
+    [(str/includes? source "function hex__gtrgb")
+     (str/includes? source "function hex__gtn")
+     (str/includes? source "hex__gtrgb(\"#45f981\")")])
+  => [true true true])

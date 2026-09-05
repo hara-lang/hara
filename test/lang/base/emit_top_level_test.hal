@@ -1,0 +1,70 @@
+(ns lang.base.emit-top-level-test
+  (:require [lang.base.emit-common :as common]
+            [lang.base.emit-helper :as helper]
+            [lang.base.emit-top-level :as top]))
+
+^{:refer lang.base.emit-top-level/member?}
+(Test/check
+ [{:name "recognizes a member in an archive option collection"
+   :test (fn [] [(top/member? [:def :fn] :fn) (top/member? [:def] :fn)])
+   :expected [true false]}])
+
+^{:refer lang.base.emit-top-level/transform-defclass-inner}
+(Test/check
+ [{:name "transforms class members to inner forms"
+   :test (fn [] (top/transform-defclass-inner '[(fn a []) (var b 1) other]))
+   :expected '[(fn.inner a []) (var.inner b 1) other]}])
+
+^{:refer lang.base.emit-top-level/emit-def}
+(Test/check
+ [{:name "emits a configured definition"
+   :test (fn [] (binding [common/*emit-fn* common/emit-common]
+                   (top/emit-def :def '(def hello (table 1 2 3)) helper/+default+ {})))
+   :expected "def hello = table(1,2,3);"}])
+
+^{:refer lang.base.emit-top-level/emit-declare}
+(Test/check
+ [{:name "emits top-level declarations"
+   :test (fn [] (binding [common/*emit-fn* common/emit-common]
+                   (top/emit-declare :def '(declare a b c) helper/+default+ {})))
+   :expected "def a,b,c"}])
+
+^{:refer lang.base.emit-top-level/emit-form}
+(Test/check
+ [{:name "dispatches a custom top-level emitter"
+   :test (fn [] (top/emit-form :custom '(custom 1 2 3)
+                              {:reserved {'custom {:emit (fn [form grammar mopts] 'CUSTOM)}}}
+                              {}))
+   :expected 'CUSTOM}
+  {:name "wraps emitter failures with the portable catch binding"
+   :test (fn []
+           (try
+             (top/emit-form :missing '(missing)
+                            {:reserved {'missing {}}}
+                            {})
+             :missing-error
+             (catch error
+               (:lang/subsystem (ex-data error)))))
+   :expected :lang.base.emit-top-level/emit-form}])
+
+^{:refer lang.base.emit-top-level/emit-top-level}
+(Test/check
+ [{:name "qualifies top-level definitions only when a full module layout exists"
+   :test (fn [] (binding [common/*emit-fn*
+                          (fn [form grammar mopts]
+                            (if (symbol? form)
+                              (common/emit-symbol form grammar mopts)
+                              (common/emit-common form grammar mopts)))]
+                   [(top/emit-top-level :def '(def value 1) helper/+default+
+                                        {:layout :full :module {:id 'demo.core}})
+                    (try
+                      (top/emit-top-level :def '(def value 1) helper/+default+ {:layout :full})
+                      :not-rejected
+                      (catch _ :rejected))]))
+   :expected ["def demo_core____value = 1;" :rejected]}])
+
+^{:refer lang.base.emit-top-level/+emit-lookup+}
+(Test/check
+ [{:name "exports the archive top-level dispatch table"
+   :test (fn [] (sort-by str (keys top/+emit-lookup+)))
+   :expected [:block :data :invoke :macro :token]}])

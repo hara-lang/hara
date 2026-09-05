@@ -1,0 +1,28 @@
+(ns lang.base.preprocess-input-test
+  (:require [lang.base.preprocess-input :as input]))
+
+^{:refer lang.base.preprocess-input/to-input-form}
+(Test/check
+ [{:name "rewrites archive deref input forms into explicit evaluation forms"
+   :test (fn []
+           [(input/to-input-form '(deref value))
+            (input/to-input-form '((deref !) template-value))
+            (input/to-input-form '((deref decorator) target :option))])
+   :expected ['(!:eval value)
+              '(!:template template-value)
+              '(!:decorate [decorator] target :option)]}])
+
+^{:refer lang.base.preprocess-input/to-input}
+(Test/check
+ [{:name "recursively extracts deref input forms while retaining ordinary data"
+   :test (fn []
+           (input/to-input '(outer [(deref value) {:kept true}])))
+   :expected '(outer [(!:eval value) {:kept true}])}])
+
+^{:refer lang.base.preprocess-input/eval-template-forms}
+(Test/check
+ [{:name "eagerly resolves evaluable persisted template and eval forms"
+   :test (fn []
+           [(input/eval-template-forms '(!:template (+ 1 2)))
+            (input/eval-template-forms '(!:eval (+ 2 3)))])
+   :expected [3 '(!:eval (+ 2 3))]}])

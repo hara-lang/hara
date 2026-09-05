@@ -1,0 +1,80 @@
+;; ============================================================================
+;; lang.core.impl — dependency-complete target script emission.
+;; ============================================================================
+(ns lang.core.impl
+  (:config {:role :internal})
+  (:require [lang.base.book :as book]
+            [lang.base.compiler :as compiler]
+            [lang.core.impl-deps :as deps]
+            [lang.core.impl-entry :as entry]))
+
+(defn emit-options
+  "Builds the immutable compiler context used for one script emission."
+  [options]
+  (let [book-value (:book options)
+        module-value (:module options)]
+    {:book book-value
+     :modules (:modules book-value)
+     :module module-value
+     :lang (:lang options)
+     :layout (or (:layout options) :flat)
+     :emit (or (:emit options) {})
+     :compiler (or (:compiler options) (compiler/compiler))}))
+
+(defn emit-entry
+  "Emits one selected Book entry against the active language selection."
+  [entry context]
+  (let [book-value (:book context)]
+    (entry/emit-entry (:grammar book-value) entry context)))
+
+(defn emit-script-imports
+  "Emits only native imports selected by a script dependency closure."
+  [natives emit context]
+  (let [book-value (:book context)
+        selected (:selection book-value)]
+    (vec
+     (keep
+      (fn [name]
+        (let [module-value (get natives name)
+              import-name (deps/native-name-with-override name emit)
+              form (deps/module-import-form book-value import-name module-value context)]
+          (if form
+            (compiler/emit-direct form selected context))))
+      (sort-by str (keys natives))))))
+
+(defn emit-script-deps
+  "Emits selected code dependencies in the order required by their closure."
+  [entries emit context]
+  (let [options (-> context
+                    (update :emit merge (:code emit))
+                    (dissoc :module))]
+    (vec (keep (fn [entry] (emit-entry entry options)) entries))))
+
+(defn emit-script-join
+  "Joins target imports, selected definitions, and the requested expression."
+  [imports entries body]
+  (str/join "\n\n"
+            (filter not-empty
+                    [(if (not-empty imports) (str/join "\n" imports))
+                     (if (not-empty entries) (str/join "\n\n" entries))
+                     body])))
+
+(defn emit-script
+  "Emits a target expression with exactly its transitive code dependencies."
+  [form options]
+  (let [context (emit-options options)
+        book-value (:book context)
+        result (compiler/compile (:compiler context)
+                                 form
+                                 (:selection book-value)
+                                 context)
+        [entries _] (deps/collect-script-entries
+                     book-value
+                     (get-in result [:dependencies :code]))
+        modules (map (fn [entry]
+                       (book/get-module book-value (:module entry)))
+                     entries)
+        natives (deps/collect-script-natives modules {})
+        imports (emit-script-imports natives (:emit context) context)
+        emitted (emit-script-deps entries (:emit context) context)]
+    (emit-script-join imports emitted (:output result))))

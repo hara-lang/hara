@@ -1,0 +1,222 @@
+(ns lang.base.book-test
+  (:require [lang.base.book :as book]
+            [lang.base.book-entry :as entry]
+            [lang.base.book-module :as module]))
+
+(def fixture-entry
+  (entry/book-entry {:lang :fixture :module 'fixture.core :section :code :id 'run
+                     :deps #{'fixture.util/helper}
+                     :deps-native {'fs #{'read}}}))
+
+(def fixture-module
+  (module/book-module
+   {:lang :fixture :id 'fixture.core
+    :link {'- 'fixture.core 'util 'fixture.util}
+    :code {'run fixture-entry}
+    :fragment {'part (entry/book-entry {:lang :fixture :module 'fixture.core
+                                        :section :fragment :id 'part})}}))
+
+(def fixture-book
+  (book/set-module (book/book {:lang :fixture :grammar {:tag :fixture}})
+                   fixture-module))
+
+^{:refer lang.base.book/Book}
+(Test/check
+ [{:name "Book is native, structural, versioned, and printable"
+   :test (fn [] (let [value (book/book {:lang :fixture :id :core :version 2
+                                         :grammar {:tag :fixture}
+                                         :coordinate :grammar/fixture})]
+                 [(book/book? value) (book/book? {}) (book/book-coordinate value)
+                  (:grammar-coordinate value) (:merged value) (:revision value)
+                  (book/book-string fixture-book)]))
+   :expected [true false [:book :fixture :core 2] :grammar/fixture #{:fixture} 0
+              "#book [:fixture] {fixture.core {:code 1, :fragment 1}}"]}
+  {:name "Book rejects incomplete configurations"
+   :test (fn [] [(try (book/book {:grammar {}}) false (catch _ true))
+                 (try (book/book {:lang :fixture}) false (catch _ true))])
+   :expected [true true]}])
+
+^{:refer lang.base.book/get-base-entry}
+(Test/check
+ [{:name "Book resolves native modules and qualified entries"
+   :test (fn [] [(book/qualified-pair 'fixture.core/run)
+                 (book/qualified-pair 'run)
+                 (:id (book/get-base-entry fixture-book 'fixture.core 'run :code))
+                 (:id (book/get-code-entry fixture-book 'fixture.core/run))
+                 (:id (book/get-fragment-entry fixture-book 'fixture.core/part))
+                 (module/book-module? (book/get-module fixture-book 'fixture.core))
+                 (entry/book-entry? (book/get-entry fixture-book 'fixture.core/run))
+                 (set (book/list-entries fixture-book :module))
+                 (set (book/list-entries fixture-book :fragment))])
+   :expected [['fixture.core 'run] [nil 'run] 'run 'run 'part true true
+              #{'fixture.core} #{'fixture.core/part}]}
+  {:name "Book getters signal missing code and fragment entries"
+   :test (fn [] [(try (book/get-code-entry fixture-book 'fixture.core/missing) false (catch _ true))
+                 (try (book/get-fragment-entry fixture-book 'fixture.core/missing) false (catch _ true))])
+   :expected [true true]}])
+
+^{:refer lang.base.book/get-code-deps}
+(Test/check
+ [{:name "Book supplies portable dependency and language views"
+   :test (fn [] [(book/get-code-deps fixture-book 'fixture.core/run)
+                 (:id (book/get-code-entry-view fixture-book 'fixture.core/run))
+                 (book/get-deps fixture-book 'fixture.core/run)
+                 (book/get-deps fixture-book 'fixture.core)
+                 (book/get-deps-native fixture-book 'fixture.core/run)
+                 (book/get-deps-native fixture-book 'fixture.core)
+                 (book/compatible-lang? fixture-book :fixture)
+                 (book/check-compatible-lang fixture-book :other)
+                 (book/book? (book/assert-compatible-lang fixture-book :fixture))
+                 (book/book? (book/assert-module fixture-book 'fixture.core))])
+   :expected [#{'fixture.util/helper} 'run #{'fixture.util/helper} #{'fixture.util}
+              {'fs #{'read}} {'fs #{'read}} true false true true]}
+  {:name "Book assertions reject incompatible languages and absent modules"
+   :test (fn [] [(try (book/assert-compatible-lang fixture-book :other) false (catch _ true))
+                 (try (book/assert-module fixture-book 'missing) false (catch _ true))])
+   :expected [true true]}])
+
+^{:refer lang.base.book/next-revision}
+(Test/check
+ [{:name "Module mutations are persistent, merged, and revisioned"
+   :test (fn [] (let [added (book/set-module fixture-book
+                                             (module/book-module {:lang :fixture :id 'fixture.next}))
+                 merged (book/put-module
+                         (book/set-module (book/book {:lang :fixture :grammar {}})
+                                          (module/book-module {:lang :fixture :id 'fixture.core
+                                                               :alias {'u 'fixture.util}
+                                                               :code {'run fixture-entry}}))
+                         (module/book-module {:lang :fixture :id 'fixture.core
+                                              :alias {'s 'fixture.string}}))
+                 deleted (book/delete-modules added ['fixture.core 'fixture.next])]
+                 [(:revision (book/next-revision fixture-book))
+                  (book/has-module? fixture-book 'fixture.next)
+                  (book/has-module? added 'fixture.next) (:revision added)
+                  (:alias (book/get-module merged 'fixture.core))
+                  (keys (:code (book/get-module merged 'fixture.core)))
+                  (book/has-module? (book/delete-module fixture-book 'fixture.core) 'fixture.core)
+                  (set (keys (:modules deleted))) (:revision deleted)]))
+   :expected [2 false true 2 {'u 'fixture.util 's 'fixture.string} ['run] false #{} 4]}])
+
+^{:refer lang.base.book/set-entry}
+(Test/check
+ [{:name "Entry mutations retain omitted fields and invalidate only the requested entry"
+   :test (fn [] (let [added (book/set-entry fixture-book
+                                            (entry/book-entry {:lang :fixture :module 'fixture.core
+                                                               :section :code :id 'next}))
+                 updated (book/put-entry fixture-book
+                                         (entry/book-entry {:lang :fixture :module 'fixture.core
+                                                            :section :code :id 'run
+                                                            :form '(def run 2)}))
+                 deleted (book/delete-entry fixture-book 'fixture.core :code 'run)]
+                 [(book/has-entry? added 'fixture.core :code 'next)
+                  (book/has-entry? fixture-book 'fixture.core :code 'next)
+                  (:form (book/get-code-entry updated 'fixture.core/run))
+                  (:deps (book/get-code-entry updated 'fixture.core/run))
+                  (book/has-entry? deleted 'fixture.core :code 'run)
+                  (book/book? (book/assert-entry fixture-book 'fixture.core :code 'run))
+                  (try (book/assert-entry fixture-book 'fixture.core :code 'missing) false (catch _ true))]))
+   :expected [true false '(def run 2) #{'fixture.util/helper} false true true]}])
+
+^{:refer lang.base.book/module-create-filename}
+(Test/check
+ [{:name "Portable module construction helpers normalize values deterministically"
+   :test (fn [] [(book/module-create-filename fixture-book 'fixture.extra)
+                 (book/module-create-check fixture-book 'fixture.new {'u 'fixture.core})
+                 (try (book/module-create-check fixture-book 'fixture.new {'u 'missing}) false (catch _ true))
+                 (book/module-create-requires [['fixture.core :as 'u :include true]])
+                 (book/module-normalize-implements nil)
+                 (book/module-normalize-implements 'IThing)
+                 (book/module-normalize-implements #{'IZ 'IA})
+                 (vec (book/ordered-map-options {:z 1 :a 2}))
+                 (book/import-options ['json :as 'json :bundle [['decoder :version "1"]]])])
+   :expected ["extra.fixture" true true
+              {'fixture.core {:id 'fixture.core :as 'u :include true}}
+              [] ['IThing] ['IA 'IZ] [:a 2 :z 1]
+              {:as 'json :bundle {'decoder {:version "1"}}}]}])
+
+^{:refer lang.base.book/module-export-requires}
+(Test/check
+ [{:name "Portable module metadata round-trips across require and import vectors"
+   :test (fn [] (let [source (module/book-module
+                              {:lang :fixture :id 'fixture.util
+                               :link {'- 'fixture.util 'u 'fixture.core}
+                               :includes #{'fixture.core}
+                               :native {'json {:as 'json
+                                               :bundle {'decoder {:version "1"}}}}})
+                 created (book/module-create fixture-book 'fixture.new
+                                              {:require [['fixture.core :as 'u]]
+                                               :import [['json :as 'json]]
+                                               :implements #{'IThing}})]
+                 [(book/module-export-requires source)
+                  (book/module-export-imports source)
+                  (:link created) (:internal created) (:native created) (:implements created)]))
+   :expected [[['fixture.core :as 'u :include true]]
+              [['json :as 'json :bundle [['decoder :version "1"]]]]
+              {'- 'fixture.new 'u 'fixture.core}
+              {'fixture.new '- 'fixture.core 'u}
+              {'json {:as 'json}}
+              ['IThing]]}])
+
+^{:refer lang.base.book/module-specialize-symbol}
+(Test/check
+ [{:name "Specialization rewrites only owned namespace references and clears caches"
+   :test (fn [] (let [entry-value (entry/book-entry
+                                   {:lang :fixture :module 'fixture.core :section :code :id 'run
+                                    :form '(fixture.core/run) :form-input '(fixture.core/run)
+                                    :deps #{'fixture.core/run} :deps-fragment #{'fixture.core/part}
+                                    :static/code.cache {:cached true}})
+                 result (book/module-specialize-entry 'fixture.core 'fixture.alt entry-value)]
+                 [(book/module-specialize-symbol 'fixture.core 'fixture.alt 'fixture.core/run)
+                  (book/module-specialize-symbol 'fixture.core 'fixture.alt 'other/run)
+                  (book/module-specialize-form 'fixture.core 'fixture.alt
+                                               {:value ['fixture.core/run #{'fixture.core/part}]})
+                  [(:module result) (:form result) (:deps result)
+                   (:deps-fragment result) (:static/code.cache result)]
+                  (book/module-specialize-bindings
+                   (module/book-module {:lang :fixture :id 'fixture.core
+                                        :link {'cache 'fixture.cache}
+                                        :internal {'fixture.cache 'cache}})
+                   {'cache 'fixture.custom 'free 'outside})]))
+   :expected ['fixture.alt/run 'other/run
+              {:value ['fixture.alt/run #{'fixture.alt/part}]}
+              ['fixture.alt '(fixture.alt/run) #{'fixture.alt/run} #{'fixture.alt/part} nil]
+              {'fixture.cache 'fixture.custom 'free 'outside}]}])
+
+^{:refer lang.base.book/module-specialize}
+(Test/check
+ [{:name "module-specialize recreates links and rewrites module-owned code"
+   :test (fn [] (let [source (module/book-module
+                              {:lang :fixture :id 'fixture.source
+                               :link {'- 'fixture.source 'cache 'fixture.cache}
+                               :internal {'fixture.source '- 'fixture.cache 'cache}
+                               :code {'run (entry/book-entry
+                                           {:lang :fixture :module 'fixture.source
+                                            :section :code :id 'run
+                                            :form '(fixture.source/run)})}})
+                 base (-> fixture-book
+                          (book/set-module (module/book-module {:lang :fixture :id 'fixture.cache}))
+                          (book/set-module source))
+                 result (book/module-specialize base 'fixture.source 'fixture.alt)]
+                 [(:id result) (:module (get-in result [:code 'run])) (:link result)]))
+   :expected ['fixture.alt 'fixture.alt {'- 'fixture.alt 'cache 'fixture.cache}]}])
+
+^{:refer lang.base.book/book-merge}
+(Test/check
+ [{:name "Book ancestry merges parent modules and reconstructs snapshots"
+   :test (fn [] (let [child (book/book {:lang :fixture.child :grammar {:tag :fixture}
+                                        :parent :fixture})
+                 merged (book/book-merge child fixture-book)
+                 restored (book/book-from {:fixture {:book fixture-book}
+                                           :fixture.child {:book child}}
+                                          :fixture.child)]
+                 [(:parent merged) (:merged merged) (book/has-module? merged 'fixture.core)
+                  (book/book? restored) (:merged restored)]))
+   :expected [nil #{:fixture.child :fixture} true true #{:fixture.child :fixture}]}])
+
+^{:refer lang.base.book/Book}
+(Test/check
+ [{:name "Book implements the archive IDeps dependency collection contract"
+   :test (fn [] [(IDeps/dep-get fixture-book 'fixture.core/run)
+                 (IDeps/dep-entries fixture-book 'fixture.core/run)
+                 (set (IDeps/dep-keys fixture-book))])
+   :expected [fixture-entry #{'fixture.util/helper} #{'fixture.core/run}]}])

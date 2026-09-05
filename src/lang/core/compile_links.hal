@@ -1,0 +1,124 @@
+(ns lang.core.compile-links
+  (:config {:role :internal}))
+
+(def ^:dynamic *link-defaults*
+  {:root-libs "libs"
+   :root-prefix "."
+   :path-suffix ""
+   :path-separator "/"
+   :path-replace {}
+   :file-replace {}})
+
+(defn link-filter-match?
+  "Matches the Foundation namespace filter shapes used by link configuration."
+  [filter-value identifier]
+  (cond (fn? filter-value)
+        (boolean
+         (try (filter-value identifier)
+              (catch _ false)))
+
+        (or (string? filter-value)
+            (symbol? filter-value))
+        (str/starts-with? (str identifier) (str filter-value))
+
+        (regexp? filter-value)
+        (boolean (re-find filter-value (str identifier)))
+
+        (set? filter-value)
+        (boolean (get filter-value identifier))
+
+        (list? filter-value)
+        (every? (fn [entry]
+                  (link-filter-match? entry identifier))
+                filter-value)
+
+        (vector? filter-value)
+        (boolean
+         (some (fn [entry]
+                 (link-filter-match? entry identifier))
+               filter-value))
+
+        :else
+        (throw
+         (ex :argument {:filter filter-value :identifier identifier}
+             :ex/message "Link filter is not valid"))))
+
+(defn link-replace
+  "Applies literal and regular-expression path substitutions."
+  [value pattern replacement]
+  (if (regexp? pattern)
+    (re-replace pattern value replacement)
+    (str/replace value (str pattern) replacement)))
+
+(defn get-link-lookup
+  "Gets a configured link value by exact or filtered namespace key."
+  [link-ns ns-lookup]
+  (or (get ns-lookup link-ns)
+      (reduce (fn [_ [pattern value]]
+                (if (link-filter-match? pattern link-ns)
+                  (reduced value)))
+              nil
+              ns-lookup)))
+
+(defn get-link-match
+  "Gets the configured namespace key and value by exact or filtered match."
+  [link-ns ns-lookup]
+  (or (if-let [value (get ns-lookup link-ns)]
+        [link-ns value])
+      (reduce (fn [_ [pattern value]]
+                (if (link-filter-match? pattern link-ns)
+                  (reduced [pattern value])))
+              nil
+              ns-lookup)))
+
+(defn link-attributes
+  "Derives the emitted relative link path for one compiled namespace."
+  [root-ns link-ns link-options]
+  (let [{:keys [root-libs
+                root-prefix
+                path-separator
+                path-suffix
+                path-replace
+                ns-suffix
+                ns-label]} (merge *link-defaults* link-options)
+        apply-replace (fn [value]
+                        (reduce (fn [output [pattern replacement]]
+                                  (link-replace output pattern replacement))
+                                value
+                                path-replace))
+        link-ns-str (str link-ns)
+        link-ns-arr (str/split link-ns-str (regexp "\\."))
+        root-ns-str (str root-ns)
+        root-ns-arr (str/split root-ns-str (regexp "\\."))
+        prefix-match (if (map? root-prefix)
+                       (get-link-match link-ns (dissoc root-prefix :default)))
+        [prefix-key ignored-prefix] prefix-match
+        is-lib? (or (nil? root-ns)
+                    (not (str/starts-with? link-ns-str root-ns-str)))
+        rel-segments
+        (if (and prefix-key
+                 (or (string? prefix-key)
+                     (symbol? prefix-key)))
+          (let [prefix-arr (str/split (str prefix-key) (regexp "\\."))]
+            (drop (count prefix-arr) (butlast link-ns-arr)))
+          (if is-lib?
+            (if (map? root-prefix)
+              (butlast link-ns-arr)
+              (cons root-libs (butlast link-ns-arr)))
+            (drop (count root-ns-arr) (butlast link-ns-arr))))
+        link-rel (str/join path-separator (map apply-replace rel-segments))
+        link-suffix
+        (or (get-link-lookup link-ns ns-suffix)
+            (if (map? path-suffix)
+              (or (get-link-lookup link-ns (dissoc path-suffix :default))
+                  (:default path-suffix))
+              path-suffix))
+        link-label (apply-replace (or (get-link-lookup link-ns ns-label)
+                                      (last link-ns-arr)))
+        link-path (apply-replace
+                   (str link-rel path-separator link-label link-suffix))]
+    {:is-lib? is-lib?
+     :rel link-rel
+     :suffix link-suffix
+     :label link-label
+     :path link-path}))

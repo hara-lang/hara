@@ -1,0 +1,117 @@
+(ns lang.core.impl-deps-imports-test
+  (:use code.test)
+  (:require [lang.core.impl-deps-imports :as imports]))
+
+(def +app-entry+
+  {:id 'main
+   :module 'demo.app
+   :section :code
+   :deps #{'demo.dep/run}
+   :deps-native {"app-native" #{'App}}
+   :deps-fragment #{'demo.fragments/shared}})
+
+(def +fixture-book+
+  {:lang :js
+   :grammar {:reserved {}}
+   :modules
+   {'demo.app {:id 'demo.app
+               :lang :js
+               :native {"app-native" {:as 'App}}
+               :code {'main +app-entry+}}
+    'demo.dep {:id 'demo.dep :lang :js :native {} :code {'run {:id 'run :module 'demo.dep
+                                                               :section :code :deps #{}}}}
+    'demo.fragments
+    {:id 'demo.fragments
+     :lang :js
+     :native {"react" {:as 'React}}
+     :fragment
+     {'shared {:id 'shared :module 'demo.fragments :section :fragment
+               :deps-native {"react" #{'React}}
+               :deps-fragment #{'demo.fragments/leaf}}
+      'leaf {:id 'leaf :module 'demo.fragments :section :fragment
+             :deps-native {"leaf-native" #{'Leaf}}
+             :deps-fragment #{}}}
+     :code {}}}})
+
+^{:refer lang.core.impl-deps-imports/materialize-import-entry}
+(fact "materializes code imports while retaining fragment import entries"
+  [(imports/materialize-import-entry +fixture-book+ +app-entry+)
+   (imports/materialize-import-entry +fixture-book+
+                                     (get-in +fixture-book+
+                                             [:modules 'demo.fragments :fragment 'shared]))]
+  => [+app-entry+
+      (get-in +fixture-book+ [:modules 'demo.fragments :fragment 'shared])])
+
+^{:refer lang.core.impl-deps-imports/get-entry-imports}
+(fact "collects native imports for code and already-materialized fragment entries"
+  [(imports/get-entry-imports [+app-entry+])
+   (imports/get-entry-imports
+    +fixture-book+
+    [(get-in +fixture-book+ [:modules 'demo.fragments :fragment 'shared])])]
+  => [{'demo.app/main {"app-native" #{'App}}}
+      {'demo.fragments/shared {"react" #{'React}}}])
+
+^{:refer lang.core.impl-deps-imports/get-namespace-imports}
+(fact "merges native symbol sets by owning module and source name"
+  (imports/get-namespace-imports
+   {'demo.app/a {"app-native" #{'App}}
+    'demo.app/b {"app-native" #{'Component}}
+    'demo.fragments/shared {"react" #{'React}}})
+  => {'demo.app {"app-native" #{'App 'Component}}
+      'demo.fragments {"react" #{'React}}})
+
+^{:refer lang.core.impl-deps-imports/get-fragment-deps}
+(fact "finds the transitive fragment closure without revisiting a supplied baseline"
+  [(imports/get-fragment-deps +fixture-book+ [+app-entry+])
+   (imports/get-fragment-deps +fixture-book+ [+app-entry+]
+                              #{'demo.fragments/shared})]
+  => [#{'demo.fragments/shared 'demo.fragments/leaf}
+      #{'demo.fragments/shared}])
+
+^{:refer lang.core.impl-deps-imports/format-namespace-imports}
+(fact "selects concrete native module declarations from namespace import symbols"
+  (imports/format-namespace-imports
+   +fixture-book+
+   {'demo.fragments {"react" #{'React} "absent" #{'Missing}}})
+  => {"react" {:as 'React}})
+
+^{:refer lang.core.impl-deps-imports/script-import-deps}
+(fact "collects native dependency symbols from script code and transitive fragments"
+  (imports/script-import-deps +fixture-book+ [+app-entry+])
+  => {'demo.app {"app-native" #{'App}}
+      'demo.fragments {"react" #{'React}
+                       "leaf-native" #{'Leaf}}})
+
+^{:refer lang.core.impl-deps-imports/script-imports}
+(fact "formats script native dependencies into the target import declaration map"
+  (imports/script-imports +fixture-book+ [+app-entry+])
+  => {"app-native" {:as 'App}
+      "react" {:as 'React}})
+
+^{:refer lang.core.impl-deps-imports/module-imports}
+(fact "returns a module's native imports and derived direct code modules"
+  (imports/module-imports +fixture-book+ 'demo.app)
+  => {:native {"app-native" {:as 'App}
+               "react" {:as 'React}}
+      :direct #{'demo.dep}})
+
+^{:refer lang.core.impl-deps-imports/module-imports}
+(fact "retains declared module links alongside code-derived module dependencies"
+  (let [book-value (assoc-in +fixture-book+
+                             [:modules 'demo.app :link]
+                             {'linked 'demo.link})]
+    (:direct (imports/module-imports book-value 'demo.app)))
+  => #{'demo.dep 'demo.link})
+
+^{:refer lang.core.impl-deps-imports/module-code-deps}
+(fact "builds a transitive module dependency graph deterministically"
+  [(imports/module-code-deps +fixture-book+ ['demo.app])
+   (imports/module-code-deps +fixture-book+ ['demo.dep]
+                             {:all #{'demo.app}
+                              :graph {'demo.app #{'demo.dep}}})]
+  => [{:all #{'demo.app 'demo.dep}
+       :graph {'demo.app #{'demo.dep}
+               'demo.dep #{}}}
+      {:all #{'demo.app 'demo.dep}
+       :graph {'demo.app #{'demo.dep}
+               'demo.dep #{}}}])

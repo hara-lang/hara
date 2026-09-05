@@ -1,0 +1,77 @@
+(ns lang.model.v1.spec-dart.dart-grammar
+  (:config {:role :internal})
+  (:require [lang.base.v1.grammar-spec :as spec]
+            [lang.base.emit :as emit]
+            [lang.base.grammar :as grammar]
+            [lang.base.grammar-api :as grammar-api]
+            [lang.model.v1.spec-dart.dart-native :as native]
+            [lang.model.v1.spec-dart.rewrite :as rewrite]
+            [lang.model.v1.spec-xtalk.fn-dart :as xtalk-ops]))
+
+(def +language+ :dart)
+(def +tag+ :dt)
+(def +grammar-version+ spec/+version+)
+
+(def +baseline+
+  (merge (grammar/build :exclude [:pointer :block :data-set])
+         (grammar/build-xtalk)))
+
+(def +features+
+  (-> +baseline+
+      (grammar/build:override (dissoc xtalk-ops/+dart+ :x-str-last-index-of))
+      (grammar/build:override native/+dart-native+)
+      (grammar/build:extend
+       (merge native/+dart-native-definitions+
+              xtalk-ops/+dart-extension+))))
+
+(def +template+
+  (-> (emit/default-grammar)
+      (merge-nested
+       {:banned #{:set :regex}
+        :highlight #{'return 'break 'continue}
+        :default {:common {:statement ";"}
+                  :function {:prefix nil :space ""
+                             :raw ""
+                             :args {:sep ", "
+                                    :rest native/dart-emit-input-rest}}
+                  :invoke {:reversed true :hint "" :assign ":"}
+                  :block {:start " {" :end "}"}}
+        :block {:for {:parameter {:sep ";"}}}
+        :function {:defgen {:body {:start " sync* {" :end "}"}}}
+        :define {:def {:raw "var"}
+                 :defglobal {:raw ""}}
+        :token {:symbol {:replace {"-" "_"}
+                         :global native/dart-symbol-global}
+                :string {:custom native/dart-string}
+                :nil {:as "null"}}
+        :data {:vector {:start "<dynamic>[" :end "]" :space ""}
+               :map {:start "<dynamic, dynamic>{" :end "}" :space ""}
+               :map-entry {:key-fn native/dart-map-key}}})))
+
+(def +template-source+
+  (grammar-api/emit-template
+   {:template/id +tag+
+    :template/version +grammar-version+
+    :template/value +template+}))
+
+(def +profile+
+  (grammar-api/profile
+   {:profile/id +tag+
+    :profile/version +grammar-version+
+    :profile/operators +features+}))
+
+(def +grammar+
+  (grammar-api/definition
+   {:grammar/id +tag+
+    :grammar/version +grammar-version+
+    :grammar/release "alpha"
+    :grammar/language +language+
+    :grammar/tag +tag+
+    :grammar/rewrite
+    {:staging
+     {:append ['lang.model.v1.spec-dart.rewrite/dart-rewrite-stage]}}
+    :grammar/engine {:minimum 1 :maximum 1}
+    :grammar/emit-template {:template/id +tag+
+                            :template/version +grammar-version+}
+    :grammar/profiles [{:profile/id +tag+
+                        :profile/version +grammar-version+}]}))

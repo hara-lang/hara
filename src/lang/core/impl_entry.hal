@@ -1,0 +1,67 @@
+;; ============================================================================
+;; lang.core.impl-entry — direct emission for one materialized Book entry.
+;; ============================================================================
+(ns lang.core.impl-entry
+  (:config {:role :internal})
+  (:require [lang.base.compiler :as compiler]
+            [lang.base.emit :as emit]
+            [lang.base.emit-template :as template]
+            [lang.protocol.compiler :as protocol]))
+
+(defn entry-symbol
+  "Returns the fully qualified Book coordinate for one code entry."
+  [entry]
+  (symbol (str (:module entry)) (name (:id entry))))
+
+(defn emit-entry-raw
+  "Materializes a code entry once and emits its already-staged target form."
+  [grammar entry options]
+  (let [book-value (:book options)
+        lang (or (:lang options) (:lang entry))
+        selected (or (:selection book-value) {:grammar grammar})
+        modules (or (:modules options) (:modules book-value))
+        ;; Entry-local links (such as `-/hex->n`) resolve through the owning
+        ;; source module, never the module that requested this script.
+        module-value (get modules (:module entry))
+        reserved (get-in grammar [:reserved (:op entry)])
+        ;; `defn` source keeps its optional docstring and attributes.  The
+        ;; Foundation registration path formats those into the entry before
+        ;; hydration, so direct source registration must do the same here.
+        formatted (protocol/format-entry (compiler/grammar-entry-formatter)
+                                         entry selected options)
+        materialized
+        (if (and reserved modules)
+          (template/materialize-code-entry
+           {:grammar grammar :modules modules :lang lang}
+           formatted
+           (assoc options :lang lang :module module-value))
+          formatted)
+        ;; Native staging preserves protected reserved heads as data.  The
+        ;; compiler removes that marker immediately before target emission.
+        form (compiler/unwrap-protected-form (:form materialized))
+        emitted (emit/emit form grammar (:namespace materialized)
+                           (assoc options
+                                  :lang lang
+                                  :module module-value
+                                  :entry materialized))]
+    emitted))
+
+(defn emit-entry-label
+  "Returns the target-language comment label for one emitted entry."
+  [grammar entry]
+  (let [comment (get-in grammar [:default :comment])]
+    (str (:prefix comment) " " (entry-symbol entry)
+         " [" (:line entry) "] " (:suffix comment))))
+
+(defn emit-entry
+  "Emits one code entry, preserving the Foundation label and suppression hooks."
+  [grammar entry options]
+  (let [emit-options (or (:emit options) {})]
+    (if (:suppress emit-options)
+      nil
+      (let [body (emit-entry-raw grammar entry options)
+            labelled (if (:label emit-options)
+                       (str (emit-entry-label grammar entry) "\n" body)
+                       body)
+            trim (:trim emit-options)]
+        (if trim (trim labelled) labelled)))))

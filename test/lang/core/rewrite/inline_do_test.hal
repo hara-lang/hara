@@ -1,0 +1,36 @@
+(ns lang.core.rewrite.inline-do-test
+  (:use code.test)
+  (:require [lang.core.rewrite.inline-do :as inline]))
+
+^{:refer lang.core.rewrite.inline-do/do-expression? :added "4.0"}
+(fact "recognizes do and do* list forms"
+  [(inline/do-expression? '(do 1 2))
+   (inline/do-expression? '(do* 1 2))
+   (inline/do-expression? '(if 1 2 3))
+   (inline/do-expression? (vector 'do 1 2))
+   (inline/do-expression? 'do)]
+  => [true true false false false])
+
+^{:refer lang.core.rewrite.inline-do/rewrite-inline-do-list :added "4.0"}
+(fact "inlines returns that wrap do and do* expressions"
+  [(inline/rewrite-inline-do-list '(return (do (step 1) 2)))
+   (inline/rewrite-inline-do-list '(return (do* (step 1) 2)))
+   (inline/rewrite-inline-do-list '(do (step 1) 2))
+   (inline/rewrite-inline-do-list '(foo 1 2))
+   (inline/rewrite-inline-do-list '(foo (return (do a b))))]
+  => '[(do* (step 1) (return 2))
+      (do* (step 1) (return 2))
+      (do (step 1) 2)
+      (foo 1 2)
+      (foo (do* a (return b)))])
+
+^{:refer lang.core.rewrite.inline-do/rewrite-inline-do :added "4.1"}
+(fact "rewrites nested forms while preserving quoted forms"
+  [(inline/rewrite-inline-do
+    '[(return (do (step 1) 2))
+      (quote (return (do (step 3) 4)))])
+   (inline/rewrite-inline-do
+    '{:body (return (do (step 1) 2))})]
+  => ['[(do* (step 1) (return 2))
+       (quote (return (do (step 3) 4)))]
+      '{:body (do* (step 1) (return 2))}])

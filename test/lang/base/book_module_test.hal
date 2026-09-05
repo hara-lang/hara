@@ -1,0 +1,150 @@
+(ns lang.base.book-module-test
+  (:require [lang.base.book-module :as module]))
+
+(def fixture-module
+  (module/book-module {:lang :js :id 'demo.core
+                       :link {'util 'demo.util}
+                       :code {'one {:id 'one :op-key :defn
+                                    :deps #{'demo.data/value}
+                                    :deps-native {"react" #{'React}}
+                                    :deps-fragment #{'demo.frag/value}}}}))
+
+^{:refer lang.base.book-module/book-module?}
+(Test/check [{:name "recognizes immutable native Hara BookModule structures"
+              :test (fn [] [(module/book-module? fixture-module) (module/book-module? {})])
+              :expected [true false]}])
+
+^{:refer lang.base.book-module/book-module}
+(Test/check [{:name "constructs archive BookModules with stable collection defaults"
+              :test (fn [] (select-keys (module/book-module {:lang :lua :id 'L.core})
+                                         [:lang :id :link :code :includes :display]))
+              :expected {:lang :lua :id 'L.core :link {} :code {} :includes #{} :display :default}}])
+
+^{:refer lang.base.book-module/module-entry-dependencies}
+(Test/check [{:name "reads modern and legacy code dependency fields"
+              :test (fn [] [(module/module-entry-dependencies {:deps #{'demo/value}})
+                            (module/module-entry-dependencies {:dependencies {:code #{'legacy/value}}})])
+              :expected [#{'demo/value} #{'legacy/value}]}])
+
+^{:refer lang.base.book-module/polyfill-default-alias}
+(Test/check [{:name "derives stable aliases for derived polyfill modules"
+              :test (fn [] [(module/polyfill-default-alias 'common-net)
+                            (module/polyfill-default-alias 'polyfill-net)
+                            (module/polyfill-default-alias 'net)])
+              :expected ['polyfill-net 'polyfill-net 'polyfill-net]}])
+
+^{:refer lang.base.book-module/materialized-code}
+(Test/check [{:name "leaves raw code intact when no grammar is selected"
+              :test (fn [] (module/materialized-code nil fixture-module))
+              :expected {'one {:id 'one :op-key :defn :deps #{'demo.data/value}
+                               :deps-native {"react" #{'React}}
+                               :deps-fragment #{'demo.frag/value}}}}])
+
+^{:refer lang.base.book-module/materialized-code}
+(Test/check
+ [{:name "stages inherited source entries with the selected target language"
+   :test (fn []
+           (let [seen (atom [])
+                 entry {:lang :xtalk :module 'demo.inherited :id 'run
+                        :op :plain :form-input '(outer 1)
+                        :static/code.cache (atom {})}
+                 source (module/book-module
+                         {:lang :xtalk :id 'demo.inherited
+                          :code {'run entry}})
+                 book {:lang :lua
+                       :grammar {:reserved {:plain {:hydrate
+                                                     (fn [form _ context]
+                                                       (swap! seen conj (:lang context))
+                                                       [nil form])}}}
+                       :modules {'demo.inherited source}}]
+             (module/materialized-code book source)
+             (deref seen)))
+   :expected [:lua]}])
+
+^{:refer lang.base.book-module/add-polyfill-link}
+(Test/check [{:name "adds derived internal, alias, and link entries and rejects conflicts"
+              :test (fn [] (let [value (module/add-polyfill-link
+                                    (module/book-module {:lang :js :id 'demo.core})
+                                    'demo.poly)]
+                            [(select-keys value [:link :internal :alias])
+                             (try (module/add-polyfill-link
+                                   (module/book-module {:lang :js :id 'demo.core
+                                                        :link {'polyfill-demo.poly 'other}})
+                                   'demo.poly)
+                                  false
+                                  (catch error true))]))
+              :expected [{:link {'polyfill-demo.poly 'demo.poly}
+                          :internal {'demo.poly 'polyfill-demo.poly}
+                          :alias {'polyfill-demo.poly 'demo.poly}}
+                         true]}])
+
+^{:refer lang.base.book-module/module-derived-view}
+(Test/check [{:name "derives polyfill links in a compilation view without mutating the module"
+              :test (fn [] (let [book {:modules {'demo.poly (module/book-module {:lang :js :id 'demo.poly})}}
+                                  value (module/book-module {:lang :js :id 'demo.core
+                                                             :code {'identity {:polyfill-modules #{'demo.poly}}}})
+                                  view (module/module-derived-view book value)]
+                              [(select-keys view [:link :internal :alias]) (:link value)]))
+              :expected [{:link {'polyfill-demo.poly 'demo.poly}
+                          :internal {'demo.poly 'polyfill-demo.poly}
+                          :alias {'polyfill-demo.poly 'demo.poly}}
+                         {}]}])
+
+^{:refer lang.base.book-module/resolve-module-view}
+(Test/check [{:name "resolves a module id, a module value, and nil independently"
+              :test (fn [] (let [book {:modules {'demo.core fixture-module}}]
+                            [(module/resolve-module-view nil nil)
+                             (:id (module/resolve-module-view book 'demo.core))
+                             (:id (module/resolve-module-view nil fixture-module))]))
+              :expected [nil 'demo.core 'demo.core]}])
+
+^{:refer lang.base.book-module/module-deps-code-base}
+(Test/check [{:name "derives only external module dependencies from code symbols"
+              :test (fn [] (module/module-deps-code-base fixture-module))
+              :expected #{'demo.data}}])
+
+^{:refer lang.base.book-module/module-deps-code}
+(Test/check [{:name "adds derived polyfills and grammar hard-link modules to code dependencies"
+              :test (fn [] (let [value (module/book-module {:lang :js :id 'demo.promise
+                                                             :code {'wrap {:deps #{'demo.data/value}
+                                                                           :polyfill-modules #{'demo.poly}
+                                                                           :xtalk-ops #{:x-promise}}}})
+                                  book {:modules {'demo.promise value 'demo.poly {}}
+                                        :grammar {:reserved {'x:promise {:op :x-promise :emit :hard-link
+                                                                         :raw 'demo.promise/promise}}}}]
+                              [(module/module-deps-code value) (module/module-deps-code book value)]))
+              :expected [#{'demo.data} #{'demo.data 'demo.poly 'demo.promise}]}])
+
+^{:refer lang.base.book-module/module-deps-all}
+(Test/check [{:name "combines derived and explicit module dependencies"
+              :test (fn [] (module/module-deps-all fixture-module))
+              :expected #{'demo.data 'demo.util}}])
+
+^{:refer lang.base.book-module/module-deps-native-base}
+(Test/check [{:name "collects native dependency maps from unmaterialized code"
+              :test (fn [] (module/module-deps-native-base fixture-module))
+              :expected {"react" #{'React}}}])
+
+^{:refer lang.base.book-module/module-deps-native}
+(Test/check [{:name "collects native dependencies from a derived module view"
+              :test (fn [] (module/module-deps-native fixture-module))
+              :expected {"react" #{'React}}}])
+
+^{:refer lang.base.book-module/module-deps-fragment}
+(Test/check [{:name "collects fragment dependencies from base and derived views"
+              :test (fn [] [(module/module-deps-fragment fixture-module)
+                            (module/module-deps-fragment {:modules {'demo.core fixture-module}} fixture-module)])
+              :expected [#{'demo.frag/value} #{'demo.frag/value}]}])
+
+^{:refer lang.base.book-module/module-entries}
+(Test/check [{:name "orders filtered entries and exposes stable section keys"
+              :test (fn [] (let [value (module/book-module
+                                       {:lang :js :id 'demo
+                                        :code {'later {:id 'later :op-key :defn :priority 2}
+                                               'first {:id 'first :op-key :defn :priority 1}
+                                               'hidden {:id 'hidden :op-key :def :priority 0}}})]
+                            [(module/module-entries value #{:defn})
+                             (vec (module/module-entry-keys value :code))]))
+              :expected [[[(list :% " " 'first " ") 'demo/first]
+                          [(list :% " " 'later " ") 'demo/later]]
+                         ['first 'hidden 'later]]}])

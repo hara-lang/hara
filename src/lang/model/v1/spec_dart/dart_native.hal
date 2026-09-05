@@ -1,0 +1,183 @@
+(ns lang.model.v1.spec-dart.dart-native
+  (:config {:role :internal})
+  (:require [lang.base.emit :as emit]
+            [lang.base.emit-common :as common]
+            [lang.base.emit-data :as data]
+            [lang.base.util :as util]
+            [lang.core.rewrite.common :as rewrite]))
+
+(defn dart-map-key
+  [key grammar mopts]
+  (cond
+    (or (keyword? key)
+        (string? key)
+        (symbol? key)
+        (number? key)
+        (boolean? key)
+        (nil? key))
+    (data/default-map-key key grammar mopts)
+
+    :else
+    (emit/emit-main key grammar mopts)))
+
+(defn dart-string
+  ([value]
+   (str/replace (pr-str value) "$" "\\$"))
+  ([value _grammar]
+   (dart-string value)))
+
+(defn dart-symbol-global
+  [key _grammar _mopts]
+  (list :- (str "(__globals__[\""
+                (util/sym-default-str key)
+                "\"] ??= <dynamic, dynamic>{})")))
+
+(defn dart-emit-defglobal
+  [_form _grammar _mopts]
+  "")
+
+(defn dart-emit-input-rest
+  [input grammar mopts]
+  (str "[" (common/*emit-fn* (:symbol input) grammar mopts)
+       " = const []]"))
+
+(defn dart-fn
+  [form]
+  (let [args (drop 1 form)]
+    (if (symbol? (first args))
+      (apply list 'fn.inner (drop 1 args))
+      (apply list 'fn.inner args))))
+
+(defn dart-var
+  [form]
+  (let [decl (second form)
+        args (drop 2 form)]
+    (if (empty? args)
+      (list 'var* decl)
+      (let [bound (last args)]
+        (cond
+          (vector? decl)
+          (let [tmp (rewrite/stable-symbol "value_" form)]
+            (apply list 'do*
+                   (concat
+                    [(list 'var* tmp := bound)]
+                    (map-indexed
+                     (fn [index sym]
+                       (list 'var* sym := (list '. tmp (vector index))))
+                     decl))))
+
+          (set? decl)
+          (apply list 'do*
+                 (map (fn [sym]
+                        (list 'var* sym := (list '. bound
+                                                  (vector
+                                                   (util/sym-default-str sym)))))
+                      (sort-by #'util/sym-default-str decl)))
+
+          :else
+          (list 'var* decl := bound))))))
+
+(defn dart-tf-let-bind
+  [form]
+  (let [bindings (second form)
+        body (drop 2 form)
+        declarations
+        (map (fn [pair]
+               (let [sym (first pair)
+                     value (second pair)]
+                 (if (= '_ sym)
+                   value
+                   (list 'var sym := value))))
+             (partition 2 bindings))]
+    (apply list 'do (concat declarations body))))
+
+(defn dart-for-object
+  [form]
+  (let [binding-form (second form)
+        pair (first binding-form)
+        object (second binding-form)
+        key (first pair)
+        value (second pair)
+        body (drop 2 form)]
+    (cond
+      (= '_ key)
+      (apply list 'for [(list 'var* value) :in (list '. object 'values)] body)
+
+      (= '_ value)
+      (apply list 'for [(list 'var* key) :in (list '. object 'keys)] body)
+
+      :else
+      (let [entry (rewrite/stable-symbol "entry_" form)]
+        (apply list 'for [(list 'var* entry) :in (list '. object 'entries)]
+               (concat [(list 'var* key := (list '. entry 'key))
+                        (list 'var* value := (list '. entry 'value))]
+                       body))))))
+
+(defn dart-for-array
+  [form]
+  (let [binding-form (second form)
+        element (first binding-form)
+        arr (second binding-form)
+        body (drop 2 form)
+        arr-sym (rewrite/stable-symbol "arr_" form)]
+    (if (vector? element)
+      (let [index (first element)
+            value (second element)]
+        (list 'do*
+              (list 'var* arr-sym := arr)
+              (apply list 'for [(list 'var* index := 0)
+                                (list '< index (list '. arr-sym 'length))
+                                (list ':++ index)]
+                     (concat [(list 'var* value := (list '. arr-sym
+                                                        (vector index)))]
+                             body))))
+      (let [index (rewrite/stable-symbol "index_" form)]
+        (list 'do*
+              (list 'var* arr-sym := arr)
+              (apply list 'for [(list 'var* index := 0)
+                                (list '< index (list '. arr-sym 'length))
+                                (list ':++ index)]
+                     (concat [(list 'var* element := (list '. arr-sym
+                                                          (vector index)))]
+                             body)))))))
+
+(defn dart-for-iter
+  [form]
+  (let [binding-form (second form)
+        element (first binding-form)
+        iterator (second binding-form)
+        body (drop 2 form)
+        iter-sym (rewrite/stable-symbol "iter_" form)]
+    (list 'do*
+          (list 'var* iter-sym := iterator)
+          (apply list 'while (list '. iter-sym (list 'moveNext))
+                 (concat [(list 'var* element := (list '. iter-sym 'current))]
+                         body)))))
+
+(defn dart-tf-ternary
+  [form]
+  (list ':? (list 'and
+                  (list 'x:not-nil? (second form))
+                  (list 'not= false (second form)))
+        (nth form 2)
+        (nth form 3)))
+
+(def +dart-native+
+  {:fn {:macro dart-fn :emit :macro}
+   :var {:symbol #{'var*} :raw "var"}
+   :let-bind {:macro dart-tf-let-bind :emit :macro}
+   :pow {:emit :alias :raw 'math.pow :value true}
+   :defn {:symbol #{'defn}}
+   :new {:symbol #{'new} :raw "new" :emit :new}
+   :for-object {:macro dart-for-object :emit :macro}
+   :for-array {:macro dart-for-array :emit :macro}
+   :for-iter {:macro dart-for-iter :emit :macro}
+   :with-global {:value true :raw "__globals__"}
+   :defglobal {:emit dart-emit-defglobal}})
+
+(def +dart-native-definitions+
+  {:dart-or {:op :dart-or :symbol #{'dart:or} :emit :infix :raw "??"}
+   :dart-ternary {:op :dart-ternary :symbol #{'dart:ternary}
+                  :macro dart-tf-ternary :emit :macro}
+   :dart-var {:op :dart-var :symbol #{'var} :macro dart-var :emit :macro}
+   :vargs {:op :vargs :symbol #{'...} :raw "..." :emit :pre}})

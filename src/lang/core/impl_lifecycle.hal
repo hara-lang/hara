@@ -1,0 +1,307 @@
+;; ============================================================================
+;; lang.core.impl-lifecycle — Foundation module setup and teardown emission.
+;; ============================================================================
+(ns lang.core.impl-lifecycle
+  (:config {:role :internal})
+  (:require [lang.base.book :as book]
+            [lang.base.book-module :as module]
+            [lang.base.compiler :as compiler]
+            [lang.core.compile-links :as links]
+            [lang.core.impl :as impl]
+            [lang.core.impl-deps :as deps]
+            [lang.core.library :as library]))
+
+(defn emit-module-prep
+  "Prepares one materialized module and its lifecycle dependency sections."
+  [module-id options]
+  (let [lang (:lang options)]
+    (if (nil? lang)
+      (throw (ex :argument {:module module-id :options options}
+                 :ex/message "Lang required."))
+      (let [book-value (or (:book options)
+                           (library/library-get-book
+                            (library/runtime-library)
+                            lang))
+            base-module (book/get-module book-value module-id)]
+        (if (nil? book-value)
+          (throw (ex :not-found {:lang lang}
+                     :ex/message "Language Book is not registered"))
+          (if (nil? base-module)
+            (throw (ex :not-found {:lang lang :module module-id}
+                       :ex/message "Module is not registered in the selected Book"))
+            (let [base-view (module/module-derived-view book-value base-module)
+                  internal-links
+                  (reduce-kv (fn [output alias target]
+                               (if target
+                                 (assoc output target alias)
+                                 output))
+                             {}
+                             (or (:link base-view) {}))
+                  module-value
+                  (assoc base-view :internal
+                         (merge internal-links (or (:internal base-view) {})))
+                  context (impl/emit-options
+                           (merge {:book book-value :layout :module}
+                                  options
+                                  {:module module-value}))]
+              [context (deps/collect-module book-value module-value)])))))))
+
+(defn emit-module-setup-concat
+  "Returns non-empty setup lifecycle blocks in target evaluation order."
+  [{:keys [setup-body native-arr link-arr header-arr code-arr export-body]}]
+  (vec
+   (filter not-empty
+           (concat [setup-body]
+                   native-arr
+                   link-arr
+                   header-arr
+                   code-arr
+                   [export-body]))))
+
+(defn emit-module-setup-join
+  "Joins setup lifecycle sections with Foundation's stable blank-line boundary."
+  [{:keys [setup-body native-arr link-arr header-arr code-arr export-body]}]
+  (str/join
+   "\n\n"
+   (filter not-empty
+           [setup-body
+            (str/join "\n\n" native-arr)
+            (str/join "\n\n" link-arr)
+            (str/join "\n\n" header-arr)
+            (str/join "\n\n" code-arr)
+            export-body])))
+
+(defn emit-lifecycle-form
+  "Compiles a Book lifecycle form through the same staged target pipeline as code."
+  [form selected context]
+  (if form
+    (:output (compiler/compile (compiler/compiler) form selected context))))
+
+(defn emit-module-setup-native-arr
+  "Emits native imports, including bundled imports, unless they are suppressed."
+  [{:keys [emit] :as options} prep]
+  (let [[context {:keys [native]}] prep
+        book-value (:book context)
+        selected (:selection book-value)
+        emit (or emit (:emit context) {})
+        native-options (update context :emit merge (:native emit) {:import :native})
+        native (if (get-in emit [:native :suppress]) {} (or native {}))
+        bundled
+        (reduce-kv
+         (fn [output _ value]
+           (reduce-kv (fn [current name options]
+                        (assoc current name options))
+                      output
+                      (or (:bundle value) {})))
+         {}
+         native)
+        imports
+        (reduce-kv (fn [output name options]
+                     (assoc output name options))
+                   native
+                   bundled)]
+    (vec
+     (keep
+      (fn [source-name]
+        (let [module-value (get imports source-name)
+              name (deps/native-name-with-override source-name emit)
+              form (deps/module-import-form book-value name module-value native-options)]
+          (if form
+            (emit-lifecycle-form form selected native-options))))
+      (sort-by str (keys imports))))))
+
+(defn relative-link-path
+  "Computes the portable relative directory path used by graph link emission."
+  [from to separator]
+  (let [parts (fn [value]
+                (vec
+                 (filter (fn [part] (not (str/blank? part)))
+                         (str/split (str value) separator))))
+        from-parts (parts from)
+        to-parts (parts to)]
+    (loop [index 0]
+      (if (and (< index (count from-parts))
+               (< index (count to-parts))
+               (= (nth from-parts index) (nth to-parts index)))
+        (recur (inc index))
+        (let [output
+              (str/join separator
+                        (concat
+                         (map (fn [_] "..") (range index (count from-parts)))
+                         (drop index to-parts)))]
+          (if (empty? output) "." output))))))
+
+(defn emit-module-setup-link-import
+  "Builds one runtime import descriptor for an internal module dependency."
+  ([type current-ns link-ns links module-value link-options]
+   (emit-module-setup-link-import type current-ns link-ns links module-value
+                                  link-options current-ns))
+  ([type current-ns link-ns links module-value
+    {:keys [root-prefix path-separator] :or {path-separator "/"} :as link-options}
+    root-ns]
+   (let [link-as (get (:internal module-value) link-ns)]
+     (if (nil? link-as)
+       nil
+       (let [entry (or (get links link-ns)
+                       (links/link-attributes root-ns link-ns link-options))
+             current (or (get links current-ns)
+                         (links/link-attributes root-ns current-ns link-options))
+             rel (:rel entry)
+             label (:label entry)
+             suffix (:suffix entry)]
+         (if (= type :graph)
+           {:ns (str (relative-link-path (:rel current) rel path-separator)
+                     path-separator label)
+            :suffix suffix
+            :as link-as}
+           (let [prefix (if (map? root-prefix)
+                          (or (links/get-link-lookup link-ns
+                                                     (dissoc root-prefix :default))
+                              (:default root-prefix))
+                          root-prefix)]
+             {:ns (str/join path-separator
+                            (filter (fn [value]
+                                      (and value (not= value "")))
+                                    [prefix rel label]))
+              :suffix suffix
+              :as link-as})))))))
+
+(defn emit-module-setup-link-arr
+  "Emits imports for direct internal module dependencies in stable order."
+  [{:keys [emit]} prep]
+  (let [[context {:keys [direct]}] prep
+        book-value (:book context)
+        selected (:selection book-value)
+        emit (or emit (:emit context) {})
+        compile-options (or (:compile emit) {})
+        links-value (or (:links compile-options) {})
+        type (:type compile-options)
+        root-ns (:root-ns compile-options)
+        module-value (:module context)
+        link-options (or (get-in emit [:code :link]) {})]
+    (if (= :flat (:layout context))
+      []
+      (vec
+       (keep
+        (fn [namespace-value]
+          (let [import (emit-module-setup-link-import
+                        type (:id module-value) namespace-value links-value module-value
+                        link-options root-ns)]
+            (if import
+              (let [form (deps/module-import-form
+                          book-value (:ns import) import
+                          (assoc-in context [:emit :import] :link))]
+                (if form
+                  (emit-lifecycle-form form selected
+                                       (assoc-in context [:emit :import] :link)))))))
+        (sort-by str (or direct #{})))))))
+
+(defn emit-module-setup-export-body
+  "Emits the selected module export form when module output requests one."
+  [{:keys [emit]} prep]
+  (let [[context _] prep
+        book-value (:book context)
+        selected (:selection book-value)
+        emit (or emit (:emit context) {})
+        module-value (:module context)]
+    (if (and (= :module (:layout context))
+             (not (get-in emit [:export :suppress]))
+             (not (= false (get-in module-value [:static :export]))))
+      (let [form (deps/module-export-form book-value module-value context)]
+        (if form (emit-lifecycle-form form selected context))))))
+
+(defn emit-module-setup-raw
+  "Builds source-owned setup sections without joining them into target text."
+  [module-id options]
+  (let [prep (emit-module-prep module-id options)
+        [context {:keys [setup header code]}] prep
+        book-value (:book context)
+        selected (:selection book-value)
+        emit (:emit context)
+        setup-body
+        (if (and (not (get-in emit [:setup :suppress])) setup)
+          (emit-lifecycle-form setup selected
+                               (update context :emit merge (:setup emit))))
+        native-arr (emit-module-setup-native-arr options prep)
+        link-arr (emit-module-setup-link-arr options prep)
+        header-arr
+        (if (not (get-in emit [:header :suppress]))
+          (vec (keep (fn [entry]
+                       (impl/emit-entry entry
+                                        (update context :emit merge (:header emit))))
+                     (or header [])))
+          [])
+        code-arr
+        (if (not (get-in emit [:code :suppress]))
+          (vec (keep (fn [entry]
+                       (impl/emit-entry entry
+                                        (update context :emit merge (:code emit))))
+                     (or code [])))
+          [])
+        export-body (emit-module-setup-export-body options prep)]
+    {:setup-body setup-body
+     :native-arr native-arr
+     :link-arr link-arr
+     :header-arr header-arr
+     :code-arr code-arr
+     :export-body export-body}))
+
+(defn emit-module-setup
+  "Emits a complete target-language module setup script."
+  [module-id options]
+  (emit-module-setup-join (emit-module-setup-raw module-id options)))
+
+(defn emit-module-teardown-concat
+  "Returns non-empty teardown lifecycle blocks in reverse ownership order."
+  [{:keys [teardown-body code-arr native-arr]}]
+  (vec (filter not-empty (concat code-arr native-arr [teardown-body]))))
+
+(defn emit-module-teardown-join
+  "Joins teardown lifecycle blocks with stable blank-line boundaries."
+  [{:keys [teardown-body code-arr native-arr]}]
+  (str/join "\n\n"
+            (filter not-empty
+                    [(str/join "\n\n" code-arr)
+                     (str/join "\n\n" native-arr)
+                     teardown-body])))
+
+(defn emit-module-teardown-raw
+  "Builds reverse code/native/module teardown sections without joining them."
+  [module-id options]
+  (let [prep (emit-module-prep module-id options)
+        [context {:keys [teardown native code]}] prep
+        book-value (:book context)
+        selected (:selection book-value)
+        emit (:emit context)
+        code-arr
+        (if (not (get-in emit [:code :suppress]))
+          (vec
+           (keep (fn [entry]
+                   (let [form (deps/teardown-ptr-form book-value entry)]
+                     (if form
+                       (emit-lifecycle-form form selected
+                                            (assoc context :emit (:code emit))))))
+                 (reverse code)))
+          [])
+        native-arr
+        (if (not (get-in emit [:native :suppress]))
+          (vec
+           (keep (fn [[_ module-value]]
+                   (let [form (deps/teardown-module-form book-value module-value)]
+                     (if form
+                       (emit-lifecycle-form form selected
+                                            (assoc context :emit (:native emit))))))
+                 (sort-by (fn [[name _]] (str name)) (or native {}))))
+          [])
+        teardown-body
+        (if (and (not (get-in emit [:teardown :suppress])) teardown)
+          (emit-lifecycle-form teardown selected
+                               (assoc context :emit (:teardown emit))))]
+    {:code-arr code-arr
+     :native-arr native-arr
+     :teardown-body teardown-body}))
+
+(defn emit-module-teardown
+  "Emits a complete target-language module teardown script."
+  [module-id options]
+  (emit-module-teardown-join (emit-module-teardown-raw module-id options)))

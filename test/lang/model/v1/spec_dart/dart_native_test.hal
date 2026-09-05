@@ -1,0 +1,99 @@
+(ns lang.model.v1.spec-dart.dart-native-test
+  (:use code.test)
+  (:require [lang.base.emit :as emit]
+            [lang.base.emit-common :as emit-common]
+            [lang.model.v1.spec-dart.dart-native :as subject]))
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-map-key}
+(fact "emits scalar keys through the standard data path and expressions normally"
+  [(subject/dart-map-key :hello (emit/default-grammar) {})
+   (subject/dart-map-key '(+ a 1) (emit/default-grammar) {})]
+  => ["\"hello\"" "+(a,1)"])
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-string}
+(fact "escapes Dart interpolation markers in emitted literals"
+  (subject/dart-string "$order")
+  => "\"\\$order\"")
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-symbol-global}
+(fact "lazily initializes the injected Dart global map slot"
+  (subject/dart-symbol-global 'feature-flag nil nil)
+  => '(:- "(__globals__[\"feature_flag\"] ??= <dynamic, dynamic>{})"))
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-emit-defglobal}
+(fact "suppresses eager Dart defglobal output"
+  (subject/dart-emit-defglobal nil nil nil)
+  => "")
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-emit-input-rest}
+(fact "emits Dart's optional list-backed rest parameter"
+  (binding [emit-common/*emit-fn* (fn [value _grammar _mopts] (name value))]
+    (subject/dart-emit-input-rest {:symbol 'args} nil nil))
+  => "[args = const []]")
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-fn}
+(fact "normalizes named and anonymous functions to fn.inner"
+  [(subject/dart-fn '(fn named [value] (return value)))
+   (subject/dart-fn '(fn [value] (return value)))]
+  => ['(fn.inner [value] (return value))
+      '(fn.inner [value] (return value))])
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-var}
+(fact "lowers scalar, vector, and set destructuring bindings"
+  [(subject/dart-var '(var value source))
+   (let [form (subject/dart-var '(var [left right] source))]
+     [(first form) (first (nth form 2)) (first (nth form 3))])
+   (subject/dart-var '(var #{id} source))]
+  => ['(var* value := source)
+      ['do* 'var* 'var*]
+      '(do* (var* id := (. source ["id"])))])
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-tf-let-bind}
+(fact "expands let bindings into Dart declarations and body statements"
+  (subject/dart-tf-let-bind '(let [left 1 _ side right 2] (return right)))
+  => '(do (var left := 1) side (var right := 2) (return right)))
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-for-object}
+(fact "lowers Dart object loops for entries keys and values"
+  [(let [form (subject/dart-for-object '(for:object [[key value] table] value))]
+     [(first form) (nth (second form) 1) (nth (second form) 2)
+      (first (nth form 2)) (first (nth form 3))])
+   (subject/dart-for-object '(for:object [[_ value] table] value))
+   (subject/dart-for-object '(for:object [[key _] table] key))]
+  => [['for :in '(. table entries) 'var* 'var*]
+      '(for [(var* value) :in (. table values)] value)
+      '(for [(var* key) :in (. table keys)] key)])
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-for-array}
+(fact "lowers Dart array loops to stable indexed loops"
+  [(let [form (subject/dart-for-array '(for:array [[index value] values] value))]
+     [(first form) (first (nth form 1)) (first (nth form 2))])
+   (let [form (subject/dart-for-array '(for:array [value values] value))]
+     [(first form) (first (nth form 1)) (first (nth form 2))])]
+  => [['do* 'var* 'for]
+      ['do* 'var* 'for]])
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-for-iter}
+(fact "lowers iterator loops through moveNext and current"
+  (let [form (subject/dart-for-iter '(for:iter [value iterator] value))]
+    [(first form) (first (nth form 1)) (first (nth form 2))])
+  => ['do* 'var* 'while])
+
+^{:refer lang.model.v1.spec-dart.dart-native/dart-tf-ternary}
+(fact "retains XTalk truthiness in Dart ternaries"
+  (subject/dart-tf-ternary '(dart:ternary check yes no))
+  => '(:? (and (x:not-nil? check) (not= false check)) yes no))
+
+^{:refer lang.model.v1.spec-dart.dart-native/+dart-native+}
+(fact "provides Dart overrides for core language forms"
+  [(count subject/+dart-native+)
+   (get-in subject/+dart-native+ [:new :emit])
+   (get-in subject/+dart-native+ [:with-global :raw])]
+  => [11 :new "__globals__"])
+
+^{:refer lang.model.v1.spec-dart.dart-native/+dart-native-definitions+}
+(fact "adds Dart-specific logical and variadic operators"
+  [(count subject/+dart-native-definitions+)
+   (get-in subject/+dart-native-definitions+ [:dart-or :raw])
+   (get-in subject/+dart-native-definitions+ [:vargs :emit])]
+  => [4 "??" :pre])

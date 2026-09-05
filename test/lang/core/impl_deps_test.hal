@@ -1,0 +1,181 @@
+(ns lang.core.impl-deps-test
+  (:use code.test)
+  (:require [lang.core.impl-deps :as deps]))
+
+(def +hooks+
+  {:module-import (fn [name module-value options]
+                    [:import name module-value options])
+   :module-export (fn [module-value options]
+                    [:export module-value options])
+   :module-link (fn [namespace-value options]
+                  [:link namespace-value options])
+   :has-module (fn [module-value] [:has-module module-value])
+   :setup-module (fn [module-value] [:setup-module (:id module-value)])
+   :teardown-module (fn [module-value] [:teardown-module (:id module-value)])
+   :has-ptr (fn [pointer] [:has-ptr pointer])
+   :setup-ptr (fn [pointer] [:setup-ptr pointer])
+   :teardown-ptr (fn [pointer] [:teardown-ptr pointer])})
+
+(def +fixture-book+
+  {:lang :js
+   :grammar {}
+   :meta +hooks+
+   :modules
+   {'demo.math {:id 'demo.math :lang :js
+                :native {"math" {:as 'math}}
+                :code
+                {'add {:id 'add :module 'demo.math :section :code
+                       :deps #{'demo.base/identity} :priority 2 :line 2}
+                 'subtract {:id 'subtract :module 'demo.math :section :code
+                            :deps #{'demo.base/identity} :priority 1 :line 1}}}
+    'demo.base {:id 'demo.base :lang :js :native {}
+                :code {'identity {:id 'identity :module 'demo.base :section :code
+                                  :deps #{} :priority 0 :line 1}}}
+    'demo.app {:id 'demo.app :lang :js :native {}
+               :code {'run {:id 'run :module 'demo.app :section :code
+                            :deps #{'demo.math/add} :priority 0 :line 1}}}}})
+
+^{:refer lang.core.impl-deps/module-import-form}
+(fact "delegates native imports to the selected Book hook"
+  (deps/module-import-form +fixture-book+ "math" {:as 'math} {:mode :script})
+  => '[:import "math" {:as math} {:mode :script}])
+
+^{:refer lang.core.impl-deps/module-export-form}
+(fact "delegates module exports to the selected Book hook"
+  (deps/module-export-form +fixture-book+ {:id 'demo.app} {:layout :module})
+  => '[:export {:id demo.app} {:layout :module}])
+
+^{:refer lang.core.impl-deps/module-link-form}
+(fact "delegates project links to the selected Book hook"
+  (deps/module-link-form +fixture-book+ 'demo.math {:root 'demo})
+  => '[:link demo.math {:root demo}])
+
+^{:refer lang.core.impl-deps/has-module-form}
+(fact "delegates module availability checks to the selected Book hook"
+  (deps/has-module-form +fixture-book+ 'demo.math)
+  => '[:has-module demo.math])
+
+^{:refer lang.core.impl-deps/setup-module-form}
+(fact "delegates module setup to the selected Book hook"
+  (deps/setup-module-form +fixture-book+ {:id 'demo.math})
+  => '[:setup-module demo.math])
+
+^{:refer lang.core.impl-deps/teardown-module-form}
+(fact "delegates module teardown to the selected Book hook"
+  (deps/teardown-module-form +fixture-book+ {:id 'demo.math})
+  => '[:teardown-module demo.math])
+
+^{:refer lang.core.impl-deps/has-ptr-form}
+(fact "delegates pointer availability checks to the selected Book hook"
+  (deps/has-ptr-form +fixture-book+ {:module 'demo.math :id 'add})
+  => '[:has-ptr {:module demo.math :id add}])
+
+^{:refer lang.core.impl-deps/setup-ptr-form}
+(fact "delegates pointer setup to the selected Book hook"
+  (deps/setup-ptr-form +fixture-book+ {:module 'demo.math :id 'add})
+  => '[:setup-ptr {:module demo.math :id add}])
+
+^{:refer lang.core.impl-deps/teardown-ptr-form}
+(fact "delegates pointer teardown to the selected Book hook"
+  (deps/teardown-ptr-form +fixture-book+ {:module 'demo.math :id 'add})
+  => '[:teardown-ptr {:module demo.math :id add}])
+
+^{:refer lang.core.impl-deps/collect-script-natives}
+(fact "merges matching imports and rejects incompatible import declarations"
+  [(deps/collect-script-natives [{:id 'demo.a :native {"math" {:as 'math}}}
+                                 {:id 'demo.b :native {"math" {:as 'math}
+                                                       "date" {:as 'date}}}]
+                                {})
+   (try
+     (deps/collect-script-natives [{:id 'demo.a :native {"math" {:as 'math}}}
+                                   {:id 'demo.b :native {"math" {:as 'm}}}]
+                                  {})
+     :no-error
+     (catch error (:ex/code (ex-data error))))]
+  => '[{"math" {:as math} "date" {:as date}} :hara/conflict])
+
+^{:refer lang.core.impl-deps/entry-symbol}
+(fact "qualifies a Book entry with its owning module"
+  (deps/entry-symbol {:module 'demo.math :id 'add})
+  => 'demo.math/add)
+
+^{:refer lang.core.impl-deps/entry-dependencies}
+(fact "uses the Book dependency view for an entry"
+  (deps/entry-dependencies +fixture-book+
+                           (get-in +fixture-book+ [:modules 'demo.math :code 'add]))
+  => #{'demo.base/identity})
+
+^{:refer lang.core.impl-deps/entry-sort-key}
+(fact "keeps same-module entries ordered by priority then source position"
+  [(deps/entry-sort-key {:module 'demo.math :id 'add :priority 2 :line 2 :time 3})
+   (deps/entry-sort-key {:module 'demo.math :id 'subtract :priority 1 :line 1 :time 4})]
+  => [[2 2 3 "demo.math/add"] [1 1 4 "demo.math/subtract"]])
+
+^{:refer lang.core.impl-deps/order-script-entries}
+(fact "places transitive dependencies before a dependent entry"
+  (mapv deps/entry-symbol
+        (deps/order-script-entries
+         +fixture-book+
+         [(get-in +fixture-book+ [:modules 'demo.app :code 'run])
+          (get-in +fixture-book+ [:modules 'demo.math :code 'add])
+          (get-in +fixture-book+ [:modules 'demo.base :code 'identity])]))
+  => ['demo.base/identity 'demo.math/add 'demo.app/run])
+
+^{:refer lang.core.impl-deps/collect-script-entries}
+(fact "collects an exact transitive code closure and preserves module order"
+  (let [[entries module-lu]
+        (deps/collect-script-entries +fixture-book+ ['demo.app/run])]
+    [(mapv deps/entry-symbol entries)
+     (mapv (fn [module-id]
+             [(get-in module-lu [module-id :index])
+              (get-in module-lu [module-id :module :id])])
+           ['demo.base 'demo.math 'demo.app])])
+  => [['demo.base/identity 'demo.math/add 'demo.app/run]
+      [[0 'demo.base] [1 'demo.math] [2 'demo.app]]])
+
+^{:refer lang.core.impl-deps/collect-script-summary}
+(fact "summarizes dependency entries without replacing their full coordinates"
+  (deps/collect-script-summary
+   ['(demo.math/add 1 2)
+    [(get-in +fixture-book+ [:modules 'demo.math :code 'add])]
+    {"math" {:as 'math}}])
+  => '[(demo.math/add 1 2) (demo.math/add) {"math" {:as math}}])
+
+^{:refer lang.core.impl-deps/collect-module}
+(fact "collects lifecycle sections plus only direct module dependencies"
+  (let [collected (deps/collect-module +fixture-book+
+                                       (get-in +fixture-book+ [:modules 'demo.math]))]
+    [(mapv :id (:code collected))
+     (:native collected)
+     (:direct collected)])
+  => '[[subtract add] {"math" {:as math}} #{demo.base}])
+
+^{:refer lang.core.impl-deps/collect-module}
+(fact "includes transitive fragment native declarations through the Foundation import owner"
+  (let [book-value
+        {:lang :js
+         :grammar {:reserved {}}
+         :meta +hooks+
+         :modules
+         {'demo.app {:id 'demo.app :lang :js :native {}
+                     :code {'main {:id 'main :module 'demo.app :section :code
+                                   :deps #{}
+                                   :deps-fragment #{'demo.parts/shared}}}}
+          'demo.parts {:id 'demo.parts :lang :js :native {"react" {:as 'React}}
+                       :fragment {'shared {:id 'shared :module 'demo.parts
+                                           :section :fragment
+                                           :deps-native {"react" #{'React}}
+                                           :deps-fragment #{}}}
+                       :code {}}}
+         }
+        collected (deps/collect-module book-value
+                                       (get-in book-value [:modules 'demo.app]))]
+    [(:native collected) (:direct collected)])
+  => [{"react" {:as 'React}} #{}])
+
+^{:refer lang.core.impl-deps/native-name-with-override}
+(fact "uses string-equivalent override keys while preserving unmatched names"
+  [(deps/native-name-with-override 'math {:override {"math" "fast-math"}})
+   (deps/native-name-with-override "date" {:override {'math "fast-math"}})
+   (deps/native-name-with-override 'date {})]
+  => '["fast-math" "date" date])

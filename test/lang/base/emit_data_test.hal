@@ -1,0 +1,172 @@
+(ns lang.base.emit-data-test
+  (:use code.test)
+  (:require [lang.base.emit-common :as common]
+            [lang.base.emit-data :as data]
+            [lang.base.emit-helper :as helper]
+            [lang.base.grammar :as grammar]))
+
+(def +grammar+
+  (grammar/grammar :test (grammar/to-reserved (grammar/build)) helper/+default+))
+
+^{:refer lang.base.emit-data/default-map-key :added "4.0"}
+(fact "emits a default map key"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    (data/default-map-key 'hello helper/+default+ {}))
+  => "hello")
+
+^{:refer lang.base.emit-data/emit-map-key :added "4.0"}
+(fact "emits configured map keys"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    [(data/emit-map-key 'hello helper/+default+ {})
+     (data/emit-map-key "hello" helper/+default+ {})
+     (data/emit-map-key
+      :hello
+      (-> helper/+default+
+          (assoc :banned #{:set})
+          (assoc-in [:data :map-entry :keyword] :keyword))
+      {})])
+  => ["hello" "\"hello\"" ":hello"])
+
+^{:refer lang.base.emit-data/emit-map-entry :added "3.0"}
+(fact "emits configured map entries"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    [(data/emit-map-entry [:hello "world"] helper/+default+ {})
+     (data/emit-map-entry
+      [:hello "world"]
+      (assoc-in helper/+default+ [:data :map-entry :assign] " = ") {})])
+  => ["\"hello\":\"world\"" "\"hello\" = \"world\""])
+
+^{:refer lang.base.emit-data/emit-singleline-array? :added "4.0"}
+(fact "checks whether emitted arrays remain on one line"
+  [(data/emit-singleline-array? ["1" "2" "3"])
+   (data/emit-singleline-array? ["1" "\n2" "3"])]
+  => [true false])
+
+^{:refer lang.base.emit-data/emit-maybe-multibody :added "4.0"}
+(fact "selects and indents multiline prefixes"
+  [(data/emit-maybe-multibody ["1" "2"] "hello")
+   (data/emit-maybe-multibody ["1" "2"] "\nhello")]
+  => ["2hello" "1  \n  hello"])
+
+^{:refer lang.base.emit-data/emit-coll-layout :added "4.0"}
+(fact "constructs single and multiline collection layouts"
+  [(data/emit-coll-layout :vector 2 ["1" "2" "3"] helper/+default+ {})
+   (data/emit-coll-layout :vector 2 ["1" "\n2" "3"] helper/+default+ {})
+   (data/emit-coll-layout :tuple 2 ["1" "\n2" "3"] helper/+default+ {})]
+  => ["[1,2,3]"
+      "[\n    1,\n    \n  2,\n    3\n  ]"
+      "  (1,\n    \n  2,\n    3)"])
+
+^{:refer lang.base.emit-data/emit-coll :added "3.0"}
+(fact "emits configured collections"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    [(data/emit-coll :vector [1 2 3] helper/+default+ {})
+     (data/emit-coll :set [1 2 3] helper/+default+ {})
+     (data/emit-coll :custom [1 2 3]
+                     (assoc-in helper/+default+ [:data :custom]
+                               {:start "<" :end ">" :space ""}) {})])
+  => ["[1,2,3]" "(1,2,3)" "<1,2,3>"])
+
+^{:refer lang.base.emit-data/emit-data-standard :added "4.0"}
+(fact "emits standard data collections"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    (data/emit-data-standard :vector [1 2 3] helper/+default+ {}))
+  => "[1,2,3]")
+
+^{:refer lang.base.emit-data/custom-emitter}
+(fact "dereferences custom Hara Vars only at the emitter call boundary"
+  [(fn? (data/custom-emitter #'data/emit-coll))
+   (= data/emit-coll (data/custom-emitter data/emit-coll))]
+  => [true true])
+
+^{:refer lang.base.emit-data/emit-data :added "3.0"}
+(fact "dispatches standard data forms"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    [(data/emit-data :map {:a 1 :b 2} helper/+default+ {})
+     (data/emit-data :vector [1 2 3] helper/+default+ {})])
+  => ["{\"a\":1,\"b\":2}" "[1,2,3]"])
+
+^{:refer lang.base.emit-data/emit-quote :added "4.0"}
+(fact "emits quoted structures"
+  (binding [common/*emit-fn* data/test-data-loop]
+    [(data/emit-quote nil nil ''(1 2 3) +grammar+ {})
+     (data/emit-quote
+      nil nil
+      '(quote [(:- :* :as dependency)])
+      {:reserved {:- {:emit :free :sep " "}
+                  :* {:emit :pre :raw "*"}}
+       :data {:free {:sep ","}}}
+      {})])
+  => ["(1,2,3)" "* as dependency"])
+
+^{:refer lang.base.emit-data/emit-table-group :added "4.0"}
+(fact "groups table keys and values"
+  (data/emit-table-group [:a 1 :b 2 :c :d])
+  => [[:a 1] [:b 2] 'c 'd])
+
+^{:refer lang.base.emit-data/emit-table :added "4.0"}
+(fact "emits table structures"
+  (binding [common/*emit-fn* data/test-data-loop]
+    (data/emit-table nil nil '(tab :a 1 :b 2) +grammar+ {}))
+  => "{\"a\":1,\"b\":2}")
+
+^{:refer lang.base.emit-data/test-data-loop :adopt true :added "4.0"}
+(fact "emits Foundation data forms without installing recursion"
+  [(data/test-data-loop '[(+ 1 2)] +grammar+ {})
+   (data/test-data-loop '{:a (+ 1 2)} +grammar+ {})
+   (data/test-data-loop ''((+ A B) C) +grammar+ {})
+   (data/test-data-loop ''[(+ A B) C] +grammar+ {})
+   (data/test-data-loop '(tab :a (+ 1 2) :b 2) +grammar+ {})]
+  => ["[(+ 1 2)]" "{\"a\":(+ 1 2)}" "((+ A B),C)" "((+ A B),C)"
+      "{\"a\":(+ 1 2),\"b\":2}"])
+
+^{:refer lang.base.emit-data/test-data-emit :adopt true :added "4.0"}
+(fact "emits Foundation data forms with recursive dispatch"
+  [(data/test-data-emit '[(+ 1 2)] +grammar+ {})
+   (data/test-data-emit '[(+ 1 2) (+ 3 4) (+ 5 6)] +grammar+ {})
+   (data/test-data-emit '{:a (not (+ 1 2))} +grammar+ {})
+   (data/test-data-emit ''((+ A B) C) +grammar+ {})
+   (data/test-data-emit '(tab :a (+ 1 2) :b 2) +grammar+ {})]
+  => ["[1 + 2]" "[1 + 2,3 + 4,5 + 6]" "{\"a\":!(1 + 2)}"
+      "(A + B,C)" "{\"a\":1 + 2,\"b\":2}"])
+
+(fact "emits Foundation map keys and entries"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    [(data/default-map-key 'hello helper/+default+ {})
+     (data/emit-map-key :hello helper/+default+ {})
+     (data/emit-map-entry [:hello "world"] helper/+default+ {})])
+  => ["hello" "\"hello\"" "\"hello\":\"world\""])
+
+(fact "classifies single and multiline arrays"
+  (data/emit-singleline-array? ["1" "2" "3"]) => true
+  (data/emit-singleline-array? ["1" "\n2" "3"]) => false
+  (data/emit-maybe-multibody ["1" "2"] "hello") => "2hello"
+  (data/emit-maybe-multibody ["1" "2"] "\nhello") => "1  \n  hello")
+
+(fact "lays out and emits collections"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    [(data/emit-coll-layout :vector 2 ["1" "2" "3"] helper/+default+ {})
+     (data/emit-coll :vector [1 2 3] helper/+default+ {})
+     (data/emit-coll :custom [1 2 3]
+                     (assoc-in helper/+default+ [:data :custom]
+                               {:start "<" :end ">" :space ""}) {})])
+  => ["[1,2,3]" "[1,2,3]" "<1,2,3>"])
+
+(fact "emits quoted and table data"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    [(data/emit-quote nil nil ''(1 2 3) helper/+default+ {})
+     (data/emit-table nil nil '(tab :a 1 :b 2) helper/+default+ {})])
+  => ["(1,2,3)" "{\"a\":1,\"b\":2}"])
+
+(fact "groups table entries"
+  (data/emit-table-group [:a 1 :b 2 :c :d])
+  => [[:a 1] [:b 2] 'c 'd])
+
+(fact "orders Foundation spread map entries at the collection edges"
+  (binding [common/*emit-fn* common/emit-common-loop]
+    (data/emit-coll :map {:.. 3 :a 2 :# 1} helper/+default+ {}))
+  => "{\"#\":1,\"a\":2,\"..\":3}")
+
+(fact "the Foundation data test emitter installs recursive dispatch"
+  (data/test-data-emit [1 '(identity 2) 3] helper/+default+ {})
+  => "[1,identity(2),3]")

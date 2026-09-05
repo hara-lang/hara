@@ -1,0 +1,49 @@
+(ns lang.base.book-meta-test
+  (:require [lang.base.book-meta :as meta]))
+
+^{:refer lang.base.book-meta/filter-values}
+(Test/check
+ [{:name "retains only truthy lifecycle bindings for display"
+   :test (fn []
+           (meta/filter-values {:bootstrap :boot :has-ptr nil :setup-ptr false}))
+   :expected {:bootstrap :boot}}])
+
+^{:refer lang.base.book-meta/book-meta-string}
+(Test/check
+ [{:name "renders the configured lifecycle keys"
+   :test (fn []
+           (meta/book-meta-string {:bootstrap :boot :has-ptr nil}))
+   :expected "#book.meta  [:bootstrap]"}])
+
+^{:refer lang.base.book-meta/book-meta?}
+(Test/check
+ [{:name "recognizes only native Hara BookMeta structures"
+   :test (fn []
+           [(meta/book-meta? (meta/book-meta {}))
+            (meta/book-meta? {})])
+   :expected [true false]}])
+
+^{:refer lang.base.book-meta/book-meta}
+(Test/check
+ [{:name "retains configured lifecycle callbacks"
+   :test (fn []
+           (let [value (meta/book-meta {:bootstrap :boot})]
+             [(meta/book-meta? value)
+              (select-keys (meta/book-meta-data value) [:bootstrap :teardown-ptr])]))
+   :expected [true {:bootstrap :boot :teardown-ptr nil}]}])
+
+^{:refer lang.base.book-meta/book-meta}
+(Test/check
+ [{:name "retains compiler entry transforms supplied by a language BookMeta"
+   :test (fn []
+           (:transforms
+            (meta/book-meta {:transforms {:entry ['fixture/append]}})))
+   :expected {:entry ['fixture/append]}}])
+
+^{:refer lang.base.book-meta/book-meta-data}
+(Test/check
+ [{:name "returns BookMeta structures and fails closed for ordinary maps"
+   :test (fn []
+           [(meta/book-meta-data (meta/book-meta {:has-ptr :pointer}))
+            (try (meta/book-meta-data {}) false (catch _ true))])
+   :expected [(meta/book-meta {:has-ptr :pointer}) true]}])

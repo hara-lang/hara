@@ -1,6 +1,7 @@
 (ns tool.migrate.policy.foundation.core-test
   (:use code.test)
-  (:require [tool.migrate.policy.foundation.core :as core]))
+  (:require [tool.migrate.policy.foundation.core :as core]
+            [std.fs :as fs]))
 
 
    ^{:refer tool.migrate.policy.foundation.core/plan}
@@ -107,14 +108,14 @@
         (:target/namespace (first inventory)) (:target/namespace (last inventory))
         (count (filter (fn [unit] (= :pending (:status unit))) inventory))])
      => [39 "src/lang/model/v1/spec_xtalk.hal"
-         "lang.model.v1.spec-xtalk" "lang.model.v1.spec-xtalk.fn-scheme" 8])
+         "lang.model.v1.spec-xtalk" "lang.model.v1.spec-xtalk.fn-scheme" 7])
 
    ^{:refer tool.migrate.policy.foundation.core/rewrite-lang-model-v1-source}
    (fact "model rewrite preserves canonical names and is idempotent"
      (let [source "(ns tahto.model.spec-c (:require [tahto.base.emit :as emit] [clojure.string]))"
            output (core/rewrite-lang-model-v1-source source)]
        [(str/includes? output "lang.model.v1.spec-c")
-        (str/includes? output "lang.common.emit")
+        (str/includes? output "lang.base.emit")
         (str/includes? output "std.foundation.string")
         (= output (core/rewrite-lang-model-v1-source output))])
      => [true true true true])
@@ -164,24 +165,31 @@
       (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_js/html.clj"))
       (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_js/meta.clj"))
       (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_js/qml.clj"))
+      (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_dart.clj"))
       (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_dart/rewrite.clj"))
       (:status (core/lang-model-v1-unit-for "src/tahto/model/spec_dart/typed.clj"))
       (:status (last core/+lang-model-v1-units+))]
-     => [39 :ported :ported :ported :ported :ported :ported :ported :pending])
+     => [39 :ported :ported :ported :ported :ported :ported :ported :ported :pending])
 
    ^{:refer tool.migrate.policy.foundation.core/+foundation-lang-compiler-scopes+}
-   (fact "the compiler closure declares the canonical source, target, and test roots"
+   (fact "the compiler closure routes both Foundation base families and the hard cut to lang.base"
      (mapv (fn [scope]
              [(:id scope) (:stage scope)
               (:source/prefix scope) (:target/prefix scope)
               (:test/source-prefix scope) (:test/target-prefix scope)])
            core/+foundation-lang-compiler-scopes+)
-     => [[:lang.common :common
-          "src/tahto/base/" "src/lang/common/"
-          "test/tahto/base/" "test/lang/common/"]
-         [:lang.common.book :common
-          "src/tahto/common/" "src/lang/common/"
-          "test/tahto/common/" "test/lang/common/"]
+     => [[:lang.base :base
+          "src/tahto/base/" "src/lang/base/"
+          "test/tahto/base/" "test/lang/base/"]
+         [:lang.base.book :base
+          "src/tahto/common/" "src/lang/base/"
+          "test/tahto/common/" "test/lang/base/"]
+         [:lang.base-hard-cut :base
+          "src/lang/common/" "src/lang/base/"
+          "test/lang/common/" "test/lang/base/"]
+         [:lang.base-hard-cut-test :base
+          "test/lang/common/" "test/lang/base/"
+          "test/lang/common/" "test/lang/base/"]
          [:lang.core :core
           "src/tahto/core/" "src/lang/core/"
           "test/tahto/core/" "test/lang/core/"]
@@ -202,7 +210,7 @@
        [:id :stage])
       (core/foundation-lang-compiler-scope
        "src/tahto/model/annex/spec_rust.clj")]
-     => [{:id :lang.common :stage :common}
+     => [{:id :lang.base :stage :base}
          {:id :lang.model/v1 :stage :model}
          nil])
 
@@ -214,8 +222,8 @@
       (core/route-foundation-lang-compiler-path "src/tahto/model/spec_js/meta.clj")
       (core/route-foundation-lang-compiler-path "src/tahto/runtime/basic/type_basic.clj")
       (core/route-foundation-lang-compiler-path "src/tahto/model/annex/spec_rust.clj")]
-     => ["src/lang/common/emit_data.hal"
-         "src/lang/common/book.hal"
+     => ["src/lang/base/emit_data.hal"
+         "src/lang/base/book.hal"
          "src/lang/core/compile.hal"
          "src/lang/model/v1/spec_js/meta.hal"
          "src/lang/runtime/basic/type_basic.hal"
@@ -236,7 +244,7 @@
    ^{:refer tool.migrate.policy.foundation.core/rewrite-foundation-lang-compiler-source}
    (fact "compiler source rewrites follow the selected owning stage"
      [(core/rewrite-foundation-lang-compiler-source
-       :common
+       :base
        "(ns tahto.base.emit-data (:require [tahto.common.book]))")
       (core/rewrite-foundation-lang-compiler-source
        :core
@@ -244,7 +252,7 @@
       (core/rewrite-foundation-lang-compiler-source
        :runtime
        "(ns tahto.runtime.basic.type-basic)")]
-     => ["(ns lang.common.emit-data (:require [lang.common.book]))"
+     => ["(ns lang.base.emit-data (:require [lang.base.book]))"
          "(ns lang.core.compile (:require [lang.core.runtime]))"
          "(ns lang.runtime.basic.type-basic)"])
 
@@ -282,9 +290,9 @@
               :source "(def ignored 1)"}])]
        [(mapv :target/path inventory)
         (mapv :stage inventory)])
-     => [["src/lang/common/emit_data.hal"
+     => [["src/lang/base/emit_data.hal"
           "src/lang/model/v1/spec_js/meta.hal"]
-         [:common :model]])
+         [:base :model]])
 
    ^{:refer tool.migrate.policy.foundation.core/foundation-lang-plan}
    (fact "the compiler closure produces a dry plan with routed edits"
@@ -297,7 +305,7 @@
         (:valid result)
         (get-in result [:records 0 :data :target/path])
         (get-in result [:records 0 :data :stage])])
-     => [nil true "src/lang/common/emit_data.hal" :common])
+     => [nil true "src/lang/base/emit_data.hal" :base])
 
    ^{:refer tool.migrate.policy.foundation.core/migrate-selected-unit}
    (fact "the selected compiler migration retains the routed source and rewrite"
@@ -310,13 +318,105 @@
        [(:path result)
         (:target/namespace result)
         (:stage result)
-        (str/includes? (:after result) "lang.common.emit-data")
+        (str/includes? (:after result) "lang.base.emit-data")
         (:rules result)])
-     => ["src/lang/common/emit_data.hal"
-         'lang.common.emit-data
-         :common
+     => ["src/lang/base/emit_data.hal"
+         'lang.base.emit-data
+         :base
          true
          [:foundation/lang-compiler-route]])
+
+   ^{:refer tool.migrate.policy.foundation.core/migrate-selected-unit}
+   (fact "the planner hard-cuts current lang.common source and tests to lang.base"
+     (let [source (core/migrate-selected-unit
+                   (core/foundation-lang-compiler-unit
+                    {:source/path "src/lang/common/emit_data.hal"
+                     :source/namespace 'lang.common.emit-data
+                     :source "(ns lang.common.emit-data (:require [lang.common.book]))"}))
+           test (core/migrate-selected-unit
+                 (core/foundation-lang-compiler-unit
+                  {:source/path "test/lang/common/emit_data_test.hal"
+                   :source/namespace 'lang.common.emit-data-test
+                   :source "(ns lang.common.emit-data-test (:require [lang.common.emit-data :as emit]))"}))]
+       [[(:path source) (:target/namespace source) (:after source) (:test source)]
+        [(:path test) (:target/namespace test) (:after test) (:kind test)]])
+     => [["src/lang/base/emit_data.hal"
+          'lang.base.emit-data
+          "(ns lang.base.emit-data (:require [lang.base.book]))"
+          {:source/path "test/lang/common/emit_data_test.hal"
+           :target/path "test/lang/base/emit_data_test.hal"}]
+         ["test/lang/base/emit_data_test.hal"
+          'lang.base.emit-data-test
+          "(ns lang.base.emit-data-test (:require [lang.base.emit-data :as emit]))"
+          :test]])
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-base-hard-cut-namespace}
+   (fact "hard-cut namespaces derive from both source and fact-test paths"
+     [(core/foundation-lang-base-hard-cut-namespace "src/lang/common/emit_data.hal")
+      (core/foundation-lang-base-hard-cut-namespace "test/lang/common/emit_data_test.hal")]
+     => ['lang.common.emit-data 'lang.common.emit-data-test])
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-base-hard-cut-relative-path}
+   (fact "hard-cut paths must remain inside their declared migration root"
+     (core/foundation-lang-base-hard-cut-relative-path
+      "/tmp/lang-base-root"
+      "/tmp/lang-base-root/src/lang/common/demo.hal")
+     => "src/lang/common/demo.hal")
+
+   ^{:refer tool.migrate.policy.foundation.core/foundation-lang-base-hard-cut-apply}
+   (fact "the hard cut applies source and fact-test moves atomically and is idempotent"
+     (let [root (deref (File/temp-directory "test-temp" {:prefix "lang-base-hard-cut-"}))
+           source-path (File/join root "src/lang/common/demo.hal")
+           test-path (File/join root "test/lang/common/demo_test.hal")
+           consumer-path (File/join root "src/lang/core/compile.hal")
+           project-path (File/join root "project.edn")
+           target-source (File/join root "src/lang/base/demo.hal")
+           target-test (File/join root "test/lang/base/demo_test.hal")]
+       (try
+        (deref
+         (File/write source-path
+                     (String/encode-utf8
+                      "(ns lang.common.demo (:require [lang.common.book :as book]))")
+                     {:mode :replace :parents? true}))
+        (deref
+         (File/write test-path
+                     (String/encode-utf8
+                      "(ns lang.common.demo-test (:use code.test) (:require [lang.common.demo :as demo]))")
+                     {:mode :replace :parents? true}))
+        (deref
+         (File/write consumer-path
+                     (String/encode-utf8
+                      "(ns lang.core.compile (:require [lang.common.demo :as demo]))")
+                     {:mode :replace :parents? true}))
+        (deref
+         (File/write project-path
+                     (String/encode-utf8
+                      "{:project/source-files [\"src/lang/common/demo.hal\"]}")
+                     {:mode :replace :parents? true}))
+        (let [plan (core/foundation-lang-base-hard-cut-plan root)
+              references (core/foundation-lang-base-reference-plan root)
+              applied (core/foundation-lang-base-hard-cut-apply root)
+              replay (core/foundation-lang-base-hard-cut-plan root)]
+          [(count (:inventory plan))
+           (:valid plan)
+           (count (:inventory references))
+           (count applied)
+           (empty? (:records replay))
+           (deref (File/exists? target-source))
+           (deref (File/exists? target-test))
+           (deref (File/exists? source-path))
+           (deref (File/exists? test-path))
+           (String/decode-utf8 (deref (File/read target-source)))
+           (String/decode-utf8 (deref (File/read target-test)))
+           (String/decode-utf8 (deref (File/read consumer-path)))
+           (String/decode-utf8 (deref (File/read project-path)))])
+        (finally
+         (fs/delete root {:recursive? true}))))
+     => [2 true 2 4 true true true false false
+         "(ns lang.base.demo (:require [lang.base.book :as book]))"
+         "(ns lang.base.demo-test (:use code.test) (:require [lang.base.demo :as demo]))"
+         "(ns lang.core.compile (:require [lang.base.demo :as demo]))"
+         "{:project/source-files [\"src/lang/base/demo.hal\"]}"])
 
    ^{:refer tool.migrate.policy.foundation.core/foundation-lang-validate-plan}
    (fact "an empty compiler plan validates without a write"

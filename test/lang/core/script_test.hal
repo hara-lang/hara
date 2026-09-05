@@ -523,8 +523,34 @@
                                          (library/with:library [child]
                                            (script/configure-module
                                             :js 'demo.test {} 'demo.test)
-                                           (script/load-module :js 'demo.test))))))
+                                            (script/load-module :js 'demo.test))))))
               :expected 'demo.test}])
+
+^{:refer lang.core.script/load-module :id reloads-source-registration}
+(Test/check
+ [{:name "reloads an already-loaded source namespace after its Library registration resets"
+   :test (fn []
+           (let [snapshot (script/script-snapshot)]
+             (try
+               (script/script-reset!)
+               [(script/load-module :js 'xt.lang.spec-base)
+                (script/module-loaded? :xtalk 'xt.lang.spec-base)]
+               (finally (script/script-restore! snapshot)))))
+   :expected ['xt.lang.spec-base true]}])
+
+^{:refer lang.core.script/load-module :id loads-transitive-color-source}
+(Test/check
+ [{:name "loads the transitive color source declaration without compiling target code"
+   :test (fn []
+           (let [snapshot (script/script-snapshot)]
+             (try
+               (script/script-reset!)
+               [(script/load-module :js 'xt.lang.common-color)
+                (script/module-loaded? :xtalk 'xt.lang.common-color)
+                (script/module-loaded? :xtalk 'xt.lang.common-math)
+                (script/module-loaded? :xtalk 'xt.lang.common-string)]
+               (finally (script/script-restore! snapshot)))))
+   :expected ['xt.lang.common-color true true true]}])
 
 ^{:refer lang.core.script/script-options}
 (Test/check [{:name "normalizes script call option shapes"
@@ -776,7 +802,45 @@
                   [(:lang instance)
                    (:runtime instance)
                    (:status (deref (:state instance)))]))
-   :expected [:postgres :default :started]}])
+   :expected [:postgres :default :started]}
+  {:name "defers basic target-module compilation until an expression is evaluated"
+   :test (fn [] (isolated (fn []
+                            (script/configure-module
+                             :js 'demo.lazy
+                             {})
+                            (script/register-library-module!
+                             :js
+                             {:id 'demo.lazy :lang :js
+                              :code {'entry {:id 'entry
+                                             :module 'demo.lazy
+                                             :section :code
+                                             :form-input '(def entry 1)}}
+                              :fragment {}})
+                            (binding [script/*module-compiler*
+                                      (fn [_]
+                                        (throw (ex :state {}
+                                                   :ex/message "eager compilation")))]
+                              (let [instance (script/start-runtime
+                                              :js :basic
+                                              {:module 'demo.lazy})]
+                                [(:lang instance)
+                                 (:runtime instance)
+                                (:status (deref (:state instance)))])))))
+   :expected [:js :basic :started]}
+  {:name "evaluates a compiled color expression through the selected script runtime"
+   :test (fn [] (isolated (fn []
+                            (let [config '{:runtime :basic
+                                           :require [[xt.lang.common-color :as color]]}
+                                  _ (script/setup :js 'demo.color config true)
+                                  instance (script/start-script :js 'demo.color config)
+                                  source (script/compile-form
+                                          :js 'demo.color
+                                          '(color/hex->rgb "#45f981"))]
+                              (try
+                                (runtime/rt-raw-eval instance source)
+                                (finally
+                                  (script/stop)))))))
+   :expected [69 249 129]}])
 
 ^{:refer lang.core.script/start-script}
 (Test/check [{:name "starts, replaces, and records one selected script runtime"

@@ -1,0 +1,64 @@
+(ns lang.base.preprocess-staging-test
+  (:require [lang.base.preprocess-assign :as assign]
+            [lang.base.preprocess-staging :as staging]))
+
+^{:refer lang.base.preprocess-staging/to-staging-form}
+(Test/check
+ [{:name "stages held controls, hard links, and fragment templates"
+   :test (fn []
+           (let [held (staging/to-staging-form '(!:eval (+ 1 2)) {} {} {} nil identity)
+                 hard-link (staging/to-staging-form
+                            '(link input)
+                            {:reserved {'link {:emit :hard-link :raw 'raw}}}
+                            {}
+                            {}
+                            nil
+                            identity)
+                 dependencies (atom #{})
+                 fragment (staging/to-staging-form
+                           '(library/piece input)
+                           {}
+                           {'library {:fragment {'piece {:id 'piece
+                                                        :module 'library
+                                                        :template (fn [value]
+                                                                    (list 'expanded value))}}}}
+                           {:module {:id 'current :link {}}}
+                           dependencies
+                           identity)]
+             [(and (atom? held) (= '(!:eval (+ 1 2)) (deref held)))
+              hard-link
+              fragment
+              (deref dependencies)]))
+   :expected [true
+              '(raw input)
+              '(expanded input)
+              #{'library/piece}]}])
+
+^{:refer lang.base.preprocess-staging/to-staging}
+(Test/check
+ [{:name "stages linked code and native roots while recording dependencies"
+   :test (fn []
+           (staging/to-staging
+            '(outer alias/item console)
+            {}
+            {'library {:code {'item {:id 'item :op :defn}}}}
+            {:module {:id 'current
+                      :link {'alias 'library}
+                      :native-lu {'console :node}}}))
+   :expected ['(outer library/item console)
+              #{'library/item}
+              #{}
+              {:node #{'console}}]}])
+
+^{:refer lang.base.preprocess-staging/to-resolve}
+(Test/check
+ [{:name "resolves code symbols while retaining protected grammar heads"
+   :test (fn []
+           (let [output (staging/to-resolve
+                         '(if alias/item)
+                         {:reserved {'if {:emit :if}}}
+                         {'library {:code {'item {:id 'item :op :defn}}}}
+                         {:module {:id 'current :link {'alias 'library}}})]
+             [(assign/unwrap-protected-head (first output))
+              (second output)]))
+   :expected ['if 'library/item]}])

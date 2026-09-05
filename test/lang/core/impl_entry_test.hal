@@ -1,0 +1,58 @@
+(ns lang.core.impl-entry-test
+  (:use code.test)
+  (:require [lang.base.book :as book]
+            [lang.core.impl-entry :as entry]
+            [lang.core.script :as script]))
+
+(def +snapshot+ (atom nil))
+(def +book+ (atom nil))
+
+(fact:global
+ {:setup [(reset! +snapshot+ (script/script-snapshot))
+          (script/script-reset!)
+          (script/setup :js 'demo.color
+                        '{:require [[xt.lang.common-color :as color]]}
+                        true
+                        'lang.core.impl-entry-test)
+          (reset! +book+ (script/selected-book :js))]
+  :teardown [(script/script-restore! (deref +snapshot+))]})
+
+^{:refer lang.core.impl-entry/entry-symbol}
+(fact "qualifies an entry with its source module"
+  (entry/entry-symbol {:module 'demo.color :id 'main})
+  => 'demo.color/main)
+
+^{:refer lang.core.impl-entry/emit-entry-label}
+(fact "uses the target comment delimiters in an entry label"
+  (entry/emit-entry-label
+   {:default {:comment {:prefix "//" :suffix ""}}}
+   {:module 'demo.color :id 'main :line 7})
+  => "// demo.color/main [7] ")
+
+^{:refer lang.core.impl-entry/emit-entry-raw}
+(fact "emits a materialized color declaration through the selected JavaScript grammar"
+  (let [book-value (deref +book+)
+        color-entry (book/get-code-entry book-value 'xt.lang.common-color/hex->rgb)]
+    (str/includes?
+     (entry/emit-entry-raw (:grammar book-value) color-entry
+                           {:book book-value
+                            :modules (:modules book-value)
+                            :lang :js
+                            :module (get-in book-value [:modules 'demo.color])})
+     "function hex__gtrgb"))
+  => true)
+
+^{:refer lang.core.impl-entry/emit-entry}
+(fact "honours entry suppression before materializing or emitting target code"
+  (entry/emit-entry {} {:module 'demo.color :id 'main} {:emit {:suppress true}})
+  => nil)
+
+^{:refer lang.core.impl-entry/emit-entry}
+(fact "adds the selected target entry label without changing the emitted body"
+  (entry/emit-entry
+   {:reserved {}
+    :default {:comment {:prefix "//" :suffix ""}}
+    :emit (fn [form _] (str form))}
+   {:module 'demo.color :id 'main :line 7 :form 'BODY}
+   {:emit {:label true}})
+  => "// demo.color/main [7] \nBODY")

@@ -1,0 +1,145 @@
+;; ============================================================================
+;; lang.core.impl-deps-imports — Foundation script and module import closure.
+;; ============================================================================
+(ns lang.core.impl-deps-imports
+  (:config {:role :internal})
+  (:require [lang.base.book :as book]
+            [lang.base.book-module :as module]
+            [lang.base.emit-template :as template]
+            [lang.core.impl-entry :as entry]))
+
+(defn materialize-import-entry
+  "Materializes code entries before reading their staged import metadata."
+  [book-value entry-value]
+  (if (and (= :code (:section entry-value))
+           (not (has? entry-value :deps-native)))
+    (template/materialize-code-entry book-value entry-value)
+    entry-value))
+
+(defn get-entry-imports
+  "Collects native imports directly declared by the supplied entries."
+  ([entries]
+   (reduce
+    (fn [output entry-value]
+      (let [native (:deps-native entry-value)]
+        (if (not-empty native)
+          (assoc output (entry/entry-symbol entry-value) native)
+          output)))
+    {}
+    entries))
+  ([book-value entries]
+   (get-entry-imports
+    (map (fn [entry-value]
+           (materialize-import-entry book-value entry-value))
+         entries))))
+
+(defn get-namespace-imports
+  "Groups native import symbols by their owning language module."
+  [imports]
+  (reduce
+   (fn [output [symbol-value native]]
+     (let [module-id (symbol (namespace symbol-value))]
+       (update output module-id
+               (fn [current]
+                 (merge-with into (or current {}) native)))))
+   {}
+   imports))
+
+(defn get-fragment-deps
+  "Returns the complete transitive fragment dependency closure for entries."
+  ([book-value entries]
+   (get-fragment-deps book-value entries #{}))
+  ([book-value entries seen]
+   (let [materialized
+         (map (fn [entry-value]
+                (materialize-import-entry book-value entry-value))
+              entries)
+         fragments
+         (reduce (fn [output entry-value]
+                   (into output (or (:deps-fragment entry-value) #{})))
+                 #{}
+                 materialized)
+         unseen (set (filter (fn [fragment-id]
+                               (not (has? seen fragment-id)))
+                             fragments))]
+     (if (empty? unseen)
+       seen
+       (get-fragment-deps
+        book-value
+        (map (fn [fragment-id]
+               (book/get-fragment-entry book-value fragment-id))
+             unseen)
+        (into seen unseen))))))
+
+(defn format-namespace-imports
+  "Resolves grouped import symbols to concrete module native declarations."
+  [book-value namespace-imports]
+  (reduce
+   (fn [output [module-id imports]]
+     (let [module-value (book/get-module book-value module-id)
+           native (select-keys (or (:native module-value) {}) (keys imports))]
+       (merge output native)))
+   {}
+   namespace-imports))
+
+(defn script-import-deps
+  "Collects grouped native imports contributed by script entries and fragments."
+  [book-value entries]
+  (let [fragments (get-fragment-deps book-value entries)
+        fragment-entries
+        (map (fn [fragment-id]
+               (book/get-fragment-entry book-value fragment-id))
+             fragments)
+        fragment-imports (get-entry-imports book-value fragment-entries)
+        code-imports (get-entry-imports book-value entries)]
+    (get-namespace-imports (concat code-imports fragment-imports))))
+
+(defn script-imports
+  "Returns concrete native import declarations for a script entry collection."
+  [book-value entries]
+  (format-namespace-imports book-value
+                            (script-import-deps book-value entries)))
+
+(defn module-imports
+  "Returns concrete native imports and direct code-module links for one module."
+  ([book-value module-id]
+   (module-imports book-value module-id
+                   (module/module-derived-view
+                    book-value
+                    (book/get-module book-value module-id))))
+  ([book-value module-id module-value]
+   (let [links
+         (set
+          (filter (fn [dependency]
+                    (not= dependency (:id module-value)))
+                  (concat (module/module-deps-code book-value module-value)
+                          (vals (or (:link module-value) {})))))
+         entries (vals (or (:code module-value) {}))]
+     {:native (script-imports book-value entries)
+      :direct links})))
+
+(defn module-code-deps
+  "Builds the complete module dependency graph for selected roots."
+  ([book-value module-ids]
+   (module-code-deps book-value module-ids {:all #{} :graph {}}))
+  ([book-value module-ids dependencies]
+   (let [subgraph
+         (reduce
+          (fn [output module-id]
+            (let [module-value (book/get-module book-value module-id)]
+              (assoc output module-id
+                     (set (module/module-deps-code book-value module-value)))))
+          {}
+          module-ids)
+         next-dependencies
+         (-> dependencies
+             (update :graph merge subgraph)
+             (update :all into module-ids))
+         unseen
+         (set
+          (filter (fn [module-id]
+                    (not (has? (:all next-dependencies) module-id)))
+                  (reduce into #{} (vals (:graph next-dependencies)))))]
+     (if (not-empty unseen)
+       (module-code-deps book-value unseen next-dependencies)
+       next-dependencies))))

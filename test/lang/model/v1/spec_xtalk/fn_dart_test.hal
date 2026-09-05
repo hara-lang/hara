@@ -59,8 +59,8 @@
 ^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-print}
 (fact "creates an immediately invoked print block"
   (let [form (subject/dart-tf-x-print '(x:print value))]
-    [(count form) (first (first form)) (first (nth (first form) 2))])
-  => [1 'fn 'print])
+    [(first form) (nth form 2) (first (second form))])
+  => [:% 'value :-])
 
 ^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-arr-push}
 (fact "lowers array push to List.add"
@@ -219,7 +219,7 @@
   (subject/dart-tf-x-m-atan '(x:m-atan value))
   => '(math.atan value))
 
-^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-sqrt}
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-m-sqrt}
 (fact "lowers square root to dart:math"
   (subject/dart-tf-x-m-sqrt '(x:m-sqrt value))
   => '(math.sqrt value))
@@ -449,6 +449,11 @@
   [(count subject/+dart-lu+) (get-in subject/+dart-lu+ [:x-lu-create :emit])]
   => [4 :macro])
 
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-extension+}
+(fact "declares Dart-only operators absent from the shared XTalk baseline"
+  (get-in subject/+dart-extension+ [:x-str-last-index-of :emit])
+  => :macro)
+
 ^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-json-compact-expr}
 (fact "builds the self-contained JSON compaction expression"
   (let [form (subject/dart-json-compact-expr 'value)]
@@ -618,3 +623,163 @@
   [(count subject/+dart-proto+)
    (get-in subject/+dart-proto+ [:prototype-method :emit])]
   => [5 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-return-encode}
+(fact "classifies and JSON-encodes XTalk return values"
+  (let [form (subject/dart-tf-x-return-encode
+              '(x:return-encode value id key))]
+    [(first form) (first (nth form 1)) (first (last form))])
+  => ['do 'if 'return])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-return-wrap}
+(fact "wraps return encoding and its error path"
+  (let [form (subject/dart-tf-x-return-wrap '(x:return-wrap thunk encode))]
+    [(first form) (first (nth form 1)) (first (nth form 2)) (first (last form))])
+  => ['try 'var 'try 'catch])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-return-eval}
+(fact "keeps eval unsupported in the return boundary"
+  (subject/dart-tf-x-return-eval '(x:return-eval source wrap))
+  => '(throw "eval not supported in Dart"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-return+}
+(fact "registers all return-boundary operators"
+  [(count subject/+dart-return+) (get-in subject/+dart-return+ [:x-return-wrap :emit])]
+  => [3 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-with-delay}
+(fact "delays a Future-synchronized callback"
+  (let [form (subject/dart-tf-x-with-delay '(x:with-delay milliseconds thunk))]
+    [(first form) (first (second form)) (first (nth form 2))])
+  => ['. 'Future.delayed 'then])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-async-run}
+(fact "normalizes async thunks through Future.sync"
+  (subject/dart-tf-x-async-run '(x:async-run thunk))
+  => '(Future.sync thunk))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-promise}
+(fact "normalizes promises through Future.sync"
+  (subject/dart-tf-x-promise '(x:promise thunk))
+  => '(Future.sync thunk))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-promise-new}
+(fact "builds a completer-backed future constructor"
+  (let [form (subject/dart-tf-x-promise-new '(x:promise-new thunk))
+        body (second form)]
+    [(first form) (first body) (first (nth body 2)) (first (last body))])
+  => ['Future.sync 'fn 'var 'return])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-promise-all}
+(fact "builds a Future.wait raw expression"
+  (let [form (subject/dart-tf-x-promise-all '(x:promise-all promises))]
+    [(first form) (nth form 2) (first (second form))])
+  => [:% 'promises :-])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-promise-then}
+(fact "awaits callback results in then"
+  [(first (subject/dart-tf-x-promise-then '(x:promise-then promise thunk)))
+   (nth (subject/dart-tf-x-promise-then '(x:promise-then promise thunk)) 2)]
+  => [:% 'promise])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-promise-catch}
+(fact "awaits callback results in catch"
+  [(first (subject/dart-tf-x-promise-catch '(x:promise-catch promise thunk)))
+   (nth (subject/dart-tf-x-promise-catch '(x:promise-catch promise thunk)) 2)]
+  => [:% 'promise])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-promise-finally}
+(fact "awaits the finalizer callback"
+  [(first (subject/dart-tf-x-promise-finally '(x:promise-finally promise thunk)))
+   (nth (subject/dart-tf-x-promise-finally '(x:promise-finally promise thunk)) 2)]
+  => [:% 'promise])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-promise-native?}
+(fact "recognizes Future runtime type spellings"
+  [(first (subject/dart-tf-x-promise-native? '(x:promise-native? value)))
+   (first (nth (subject/dart-tf-x-promise-native? '(x:promise-native? value)) 2))]
+  => ['and 'or])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-promise+}
+(fact "registers the full Future operation group"
+  [(count subject/+dart-promise+) (get-in subject/+dart-promise+ [:x-promise-all :emit])]
+  => [8 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-thread+}
+(fact "registers delayed execution under the thread group"
+  (get-in subject/+dart-thread+ [:x-with-delay :emit])
+  => :macro)
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-socket-connect}
+(fact "connects sockets and calls back on success or error"
+  (let [form (subject/dart-tf-x-socket-connect
+              '(x:socket-connect host port options callback))]
+    [(first form) (first (second form)) (first (nth form 2)) (first (nth form 3))])
+  => ['. 'Socket.connect 'then 'catchError])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-socket-send}
+(fact "writes socket data"
+  (subject/dart-tf-x-socket-send '(x:socket-send connection bytes))
+  => '(. connection (write bytes)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-socket-close}
+(fact "flushes then destroys a socket"
+  (let [form (subject/dart-tf-x-socket-close '(x:socket-close connection))]
+    [(first form) (first (second form)) (first (nth form 2))])
+  => ['. '. 'then])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-socket+}
+(fact "registers all Dart socket operators with block-safe connect"
+  [(count subject/+dart-socket+)
+   (get-in subject/+dart-socket+ [:x-socket-connect :op-spec :allow-blocks])]
+  => [3 true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-pwd}
+(fact "uses the Platform PWD with a Directory fallback"
+  (subject/dart-tf-x-pwd '(x:pwd))
+  => '(:- "(Platform.environment[\"PWD\"] ?? Directory.current.path)"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-file-resolve}
+(fact "resolves relative paths while preserving absolute paths"
+  (let [body (first (subject/dart-tf-x-file-resolve
+                     '(x:file-resolve root path)))]
+    [(first body) (first (nth body 2)) (first (last body))])
+  => ['fn 'var 'return])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-file-slurp}
+(fact "reads a file and forwards its value or error"
+  (let [form (subject/dart-tf-x-file-slurp '(x:file-slurp filename callback))]
+    [(first form) (first (second form)) (first (nth form 2)) (first (nth form 3))])
+  => ['. '. 'then 'catchError])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-file-spit}
+(fact "creates parent directories before writing a file"
+  (let [form (subject/dart-tf-x-file-spit
+              '(x:file-spit filename value callback))]
+    [(first form) (first (second form)) (first (nth form 2)) (first (nth form 3))])
+  => ['. '. 'then 'catchError])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-file+}
+(fact "exposes only the historical file-resolve operator"
+  [(count subject/+dart-file+) (get-in subject/+dart-file+ [:x-file-resolve :emit])]
+  => [1 :macro])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/dart-tf-x-shell}
+(fact "runs shell commands with root-sensitive command construction"
+  (let [form (subject/dart-tf-x-shell '(x:shell source root callback))]
+    [(first form) (first (nth form 1)) (first (nth form 2)) (first (second (nth form 2)))])
+  => ['do 'var 'return '.])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart-shell+}
+(fact "registers process working-directory and shell operators"
+  [(count subject/+dart-shell+)
+   (get-in subject/+dart-shell+ [:x-shell :op-spec :allow-blocks])]
+  => [2 true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-dart/+dart+}
+(fact "merges every supported Dart XTalk operator group"
+  [(count subject/+dart+)
+   (get-in subject/+dart+ [:x-json-decode :raw])
+   (get-in subject/+dart+ [:x-file-resolve :emit])
+   (get-in subject/+dart+ [:x-shell :emit])]
+  => [113 'jsonDecode :macro :macro])
