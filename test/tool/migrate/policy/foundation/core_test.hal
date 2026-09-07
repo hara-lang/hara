@@ -21,39 +21,45 @@
      => [true true true true])
 
    ^{:refer tool.migrate.policy.foundation.core/normalize-foundation-source}
-   (fact "normalize-foundation-source removes redundant intrinsic aliases"
+   (fact "normalize-foundation-source uses preloaded Foundation names"
      (let [source "(ns demo.core (:require [std.foundation :as h] [std.foundation :as walk])) (defn apply-value [value] (h/apply-with value (walk/prewalk identity)))"
            output (core/normalize-foundation-source source)]
-       [(str/includes? output "std.foundation/apply-with")
-        (str/includes? output "std.foundation/prewalk")
+       [(str/includes? output "apply-with")
+        (str/includes? output "prewalk")
         (not (str/includes? output "[std.foundation :as h]"))
         (not (str/includes? output "[std.foundation :as walk]"))])
      => [true true true true])
 
    ^{:refer tool.migrate.policy.foundation.core/migrate-foundation-common-test-source}
-   (fact "migrate-foundation-common-test-source normalizes intrinsic aliases"
+   (fact "migrate-foundation-common-test-source uses builtin foundation names"
      (let [result (core/migrate-foundation-common-test-source
-                   "(ns demo.core (:require [std.foundation :as h] [std.foundation :as walk])) (fact value (= 1 (h/apply-with 1 (walk/prewalk identity))))"
+                   "(ns demo.core (:require [std.foundation :as h] [std.foundation :as walk] [clojure.string :as str])) (fact value (= 1 (h/apply-with 1 (walk/prewalk identity)))) (str/trim \" value \")"
                    "demo.core-test")
            output (:after result)]
-       [(str/includes? output "std.foundation/apply-with")
-        (str/includes? output "std.foundation/prewalk")
+       [(str/includes? output "(apply-with")
+        (str/includes? output "(prewalk")
         (not (str/includes? output "[std.foundation :as h]"))
         (not (str/includes? output "[std.foundation :as walk]"))
+        (not (str/includes? output "h/apply-with"))
+        (not (str/includes? output "walk/prewalk"))
+        (not (str/includes? output "[clojure.string :as str]"))
+        (str/includes? output "str/trim")
         (not (str/includes? output "(pr-str"))])
-     => [true true true true true])
+     => [true true true true true true true true true])
 
    ^{:refer tool.migrate.policy.foundation.core/migrate-source}
-   (fact "migrate-source applies intrinsic alias normalization after policy edits"
+   (fact "migrate-source applies builtin alias normalization after policy edits"
      (let [result (core/migrate-source
-                   "(ns demo.core (:require [std.foundation :as h] [std.foundation :as walk])) (defn apply-value [value] (h/apply-with value (walk/prewalk identity)))")
+                   "(ns demo.core (:require [std.foundation :as h] [std.foundation :as walk])) (defn apply-value [value] (h/apply-with value (walk/prewalk identity))) (def value {:polis/source :polis/value})")
            output (:after result)]
        [(= true (:changed result))
-        (str/includes? output "std.foundation/apply-with")
-        (str/includes? output "std.foundation/prewalk")
+        (str/includes? output "apply-with")
+        (str/includes? output "prewalk")
         (not (str/includes? output "[std.foundation :as h]"))
-        (not (str/includes? output "[std.foundation :as walk]"))])
-     => [true true true true true])
+        (not (str/includes? output "[std.foundation :as walk]"))
+        (str/includes? output ":lang/source")
+        (str/includes? output ":lang/value")])
+     => [true true true true true true true])
 
    ^{:refer tool.migrate.policy.foundation.core/lang-model-v1-test-source-path}
    (fact "model test sources follow the versioned test tree"
@@ -112,13 +118,14 @@
 
    ^{:refer tool.migrate.policy.foundation.core/rewrite-lang-model-v1-source}
    (fact "model rewrite preserves canonical names and is idempotent"
-     (let [source "(ns tahto.model.spec-c (:require [tahto.base.emit :as emit] [clojure.string]))"
+     (let [source "(ns tahto.model.spec-c (:require [tahto.base.emit :as emit] [clojure.string :as str]))"
            output (core/rewrite-lang-model-v1-source source)]
        [(str/includes? output "lang.model.v1.spec-c")
         (str/includes? output "lang.base.emit")
-        (str/includes? output "std.foundation.string")
+        (not (str/includes? output "[clojure.string :as str]"))
+        (not (str/includes? output "std.foundation.string"))
         (= output (core/rewrite-lang-model-v1-source output))])
-     => [true true true true])
+     => [true true true true true])
 
    ^{:refer tool.migrate.policy.foundation.core/lang-model-v1-diagnostics}
    (fact "model diagnostics classify source constructs without blocking warnings"
@@ -251,10 +258,14 @@
        "(ns tahto.core.compile (:require [tahto.core.runtime]))")
       (core/rewrite-foundation-lang-compiler-source
        :runtime
-       "(ns tahto.runtime.basic.type-basic)")]
+       "(ns tahto.runtime.basic.type-basic)")
+      (core/rewrite-foundation-lang-compiler-source
+       :base
+       "(def value {:polis/phase :polis/source})")]
      => ["(ns lang.base.emit-data (:require [lang.base.book]))"
          "(ns lang.core.compile (:require [lang.core.runtime]))"
-         "(ns lang.runtime.basic.type-basic)"])
+         "(ns lang.runtime.basic.type-basic)"
+         "(def value {:lang/phase :lang/source})"])
 
    ^{:refer tool.migrate.policy.foundation.core/foundation-lang-compiler-unit}
    (fact "compiler units carry routing, stage, paired test, and group provenance"
@@ -427,3 +438,206 @@
    (fact "an empty compiler plan is an idempotent no-op apply boundary"
      (core/foundation-lang-apply-plan "." {:records []})
      => [])
+
+
+^{:refer tool.migrate.policy.foundation.core/rewrite-foundation-lang-compiler-source}
+(fact "structural compiler routing preserves literals and crosses stage boundaries"
+  (core/rewrite-foundation-lang-compiler-source
+   :core "(ns tahto.core.demo (:require [tahto.base.emit]))\n;; tahto.core.demo\n(def text \"tahto.core.demo\")")
+  => "(ns lang.core.demo (:require [lang.base.emit]))\n;; tahto.core.demo\n(def text \"tahto.core.demo\")")
+
+^{:refer tool.migrate.policy.foundation.core/normalize-foundation-test-source}
+(fact "structural test normalization preserves undeclared aliases and predicates"
+  (core/normalize-foundation-test-source
+   "(ns demo)\n(fact (math/value \"h/value walk/value\") => float?)")
+  => "(ns demo)\n(fact (math/value \"h/value walk/value\") => float?)")
+
+^{:refer tool.migrate.policy.foundation.core/foundation-common-fact-count}
+(fact "structural fact inventory excludes comments and literal fake facts"
+  (core/foundation-common-fact-count
+   ";; (fact fake)\n(def note \"(fact fake)\")\n(fact \"real\" 1 => 1)")
+  => 1)
+
+^{:refer tool.migrate.policy.foundation.core/foundation-common-diagnostics}
+(fact "structural diagnostics ignore literal compiler namespace mentions"
+  (mapv :reference
+        (core/foundation-common-diagnostics
+         ";; tahto.core/a\n(def note \"tahto.core/b\")\n(tahto.core/c)"))
+  => ["tahto.core/c"])
+
+^{:refer tool.migrate.policy.foundation.core/migrate-foundation-common-test-source}
+(fact "structural base-test translation preserves assertions and literal references"
+  (select-keys
+   (core/migrate-foundation-common-test-source
+    "(ns tahto.base.emit-test (:require [tahto.core :as l]))\n(fact \"tahto.core/x\" (math/value \"h/value\") => float?)"
+    "lang.base.emit-test")
+   [:after :facts])
+  => {:after "(ns lang.base.emit-test (:require [lang.core :as l]))\n(fact \"tahto.core/x\" (math/value \"h/value\") => float?)"
+      :facts {:source 1 :direct 1 :adapted 0 :covered-current 0 :unmapped 0}})
+
+^{:refer tool.migrate.policy.foundation.core/migrate-selected-unit}
+(fact "structural compiler units retain copy provenance and blocking diagnostics"
+  (let [source "(ns tahto.core.demo)\n#?(:clj tahto.base/a :cljs tahto.base/b)"
+        result (core/migrate-selected-unit
+                {:source/path "src/tahto/core/demo.clj" :source source
+                 :migration :foundation/lang-compiler :stage :core :copy true})]
+    [(:copy result) (:move result) (= source (:before result))
+     (= source (:after result)) (:rules/applied result)
+     (mapv :reason (filter (fn [entry] (= :error (:level entry)))
+                          (:diagnostics result)))])
+  => [true false true true [] [:reader-conditional]])
+
+^{:refer tool.migrate.policy.foundation.core/migration-item}
+(fact "structural migration records distinguish informational evidence from blockers"
+  (let [unit {:source/path "src/tahto/core/demo.clj"
+              :migration :foundation/lang-compiler :stage :core :copy true}
+        safe (core/migration-item (assoc unit :source "(ns tahto.core.demo)") {})
+        blocked (core/migration-item
+                 (assoc unit :source "(ns tahto.core.demo)\n#?(:clj value)") {})]
+    [(:status safe)
+     (mapv :level (get-in safe [:data :diagnostics]))
+     (:status blocked)
+     (mapv :reason (filter (fn [entry] (= :error (:level entry)))
+                          (get-in blocked [:data :diagnostics])))])
+  => [:return [:info] :error [:reader-conditional]])
+
+^{:refer tool.migrate.policy.foundation.core/foundation-lang-direct-plan}
+(fact "structural direct plans use the execution classifier without dropping evidence"
+  (let [unit {:path "src/tahto/core/demo.clj" :source/path "src/tahto/core/demo.clj"
+              :stage :core :copy true}
+        safe (core/foundation-lang-direct-plan
+              :foundation/lang-compiler [(assoc unit :source "(ns tahto.core.demo)")])
+        blocked (core/foundation-lang-direct-plan
+                 :foundation/lang-compiler [(assoc unit :source "#?(:clj value)")])]
+    [(:valid safe) (:write safe) (mapv :status (:records safe))
+     (get-in safe [:records 0 :data :after])
+     (:valid blocked) (mapv :status (:records blocked))])
+  => [true nil [:return] "(ns lang.core.demo)" false [:error]])
+
+^{:refer tool.migrate.policy.foundation.core/foundation-lang-validate-plan}
+(fact "structural write validation retains safe evidence and rejects manual diagnostics"
+  (let [root (deref (File/temp-directory "test-temp" {:prefix "lang-plan-validation-"}))
+        path (File/join root "source.hal")
+        info {:level :info :safety :safe :type :tool.migrate/rewrite}
+        unit {:source/path "source.hal" :target/path "target.hal"
+              :before "before" :after "after" :copy true :changed true
+              :diagnostics [info]}]
+    (try
+      (deref (File/write path (String/encode-utf8 "before") {:mode :replace :parents? true}))
+      (let [safe (core/foundation-lang-validate-plan root {:records [{:data unit}]})
+            blocked (core/foundation-lang-validate-plan
+                     root {:records [{:data (assoc unit :diagnostics
+                                                   [{:safety :manual :level :warning}])}]})]
+        [(:valid? safe) (:write safe) (:diagnostics safe)
+         (:valid? blocked) (:write blocked)
+         (deref (File/exists? (File/join root "target.hal")))])
+      (finally (fs/delete root {:recursive? true}))))
+  => [true false [{:level :info :safety :safe :type :tool.migrate/rewrite}]
+      false false false])
+
+^{:refer tool.migrate.policy.foundation.core/apply}
+(fact "structural apply preserves copied authority and blocks manual work before writing"
+  (let [root (deref (File/temp-directory "test-temp" {:prefix "lang-plan-apply-"}))
+        source-path (File/join root "source.hal")
+        target-path (File/join root "target.hal")
+        unit {:source/path "source.hal" :target/path "target.hal"
+              :before "before" :after "after" :copy true :changed true
+              :diagnostics [{:level :info :safety :safe :type :tool.migrate/rewrite}]}]
+    (try
+      (deref (File/write source-path (String/encode-utf8 "before") {:mode :replace :parents? true}))
+      (let [applied (core/apply root {:records [{:data unit}]})
+            blocked (try
+                      (core/apply root {:records [{:data (assoc unit
+                                               :after "must-not-write"
+                                               :diagnostics [{:safety :manual :level :warning}])}]})
+                      :unexpected
+                      (catch error (:ex/message (ex-data error))))]
+        [(mapv :write applied)
+         (String/decode-utf8 (deref (File/read source-path)))
+         (String/decode-utf8 (deref (File/read target-path)))
+         blocked])
+      (finally (fs/delete root {:recursive? true}))))
+  => [[true] "before" "after" "Migration contains blocking diagnostics"])
+
+
+^{:refer tool.migrate.policy.foundation.core/+foundation-lang-root-scopes+}
+(fact "root scopes retain exact source target and namespace ownership"
+  (mapv (fn [scope] [(:source/path scope) (:target/path scope) (:target/namespace scope)])
+        core/+foundation-lang-root-scopes+)
+  => [["src/tahto/core.clj" "src/lang/core.hal" 'lang.core]
+      ["src/tahto/runtime/basic.clj" "src/lang/runtime/basic.hal" 'lang.runtime.basic]
+      ["test/tahto/core_test.clj" "test/lang/core_test.hal" 'lang.core-test]
+      ["test/tahto/runtime/basic_test.clj" "test/lang/runtime/basic_test.hal" 'lang.runtime.basic-test]])
+
+^{:refer tool.migrate.policy.foundation.core/foundation-lang-compiler-scope}
+(fact "root selection is exact and preserves child directory scopes"
+  (mapv (fn [path] (let [scope (core/foundation-lang-compiler-scope path)] (if scope (select-keys scope [:id :stage :kind]) nil)))
+        ["src/tahto/core.clj" "test/tahto/runtime/basic_test.clj"
+         "src/tahto/core_extra.clj" "src/tahto/core/impl.clj"])
+  => [{:id :lang.core-root :stage :core :kind :source}
+      {:id :lang.runtime.basic-root-test :stage :runtime :kind :test}
+      nil
+      {:id :lang.core :stage :core}])
+
+^{:refer tool.migrate.policy.foundation.core/route-foundation-lang-compiler-path}
+(fact "root routes do not include similarly named sibling files"
+  (mapv core/route-foundation-lang-compiler-path
+        ["src/tahto/core.clj" "src/tahto/runtime/basic.clj"
+         "test/tahto/core_test.clj" "test/tahto/runtime/basic_test.clj"
+         "src/tahto/core_extra.clj" "src/tahto/runtime/basic_extra.clj"])
+  => ["src/lang/core.hal" "src/lang/runtime/basic.hal"
+      "test/lang/core_test.hal" "test/lang/runtime/basic_test.hal" nil nil])
+
+^{:refer tool.migrate.policy.foundation.core/foundation-lang-compiler-test-paths}
+(fact "root source test pairs are explicit and test roots do not acquire test tests"
+  (mapv core/foundation-lang-compiler-test-paths
+        ["src/tahto/core.clj" "src/tahto/runtime/basic.clj"
+         "test/tahto/core_test.clj" "test/tahto/runtime/basic_test.clj"])
+  => [{:source/path "test/tahto/core_test.clj" :target/path "test/lang/core_test.hal"}
+      {:source/path "test/tahto/runtime/basic_test.clj" :target/path "test/lang/runtime/basic_test.hal"}
+      nil nil])
+
+^{:refer tool.migrate.policy.foundation.core/foundation-lang-compiler-unit}
+(fact "root inventory units keep source evidence and route root test namespace suffixes"
+  (mapv
+   (fn [path]
+     (let [unit (core/foundation-lang-compiler-unit
+                 {:source/path path :source "(ns authority)" :copy true :groups/skip? true})]
+       [(:source/path unit) (:target/path unit) (:target/namespace unit)
+        (:stage unit) (:kind unit) (:copy unit) (:source unit)]))
+   ["src/tahto/core.clj" "test/tahto/runtime/basic_test.clj"])
+  => [["src/tahto/core.clj" "src/lang/core.hal" 'lang.core :core :source true "(ns authority)"]
+      ["test/tahto/runtime/basic_test.clj" "test/lang/runtime/basic_test.hal"
+       'lang.runtime.basic-test :runtime :test true "(ns authority)"]])
+
+^{:refer tool.migrate.policy.foundation.core/foundation-lang-authority-paths}
+(fact "root Git selection uses only the pinned read-only tree and exact root names"
+  (let [calls (atom [])
+        runner (fn [argv input]
+                 (swap! calls conj [argv input])
+                 "test/tahto/core_test.clj\nsrc/tahto/core_extra.clj\nsrc/tahto/core.clj\nsrc/tahto/runtime/basic.clj\ntest/tahto/runtime/basic_test.clj\nsrc/tahto/base/provenance.clj\nsrc/tahto/model/spec_js.clj\n")
+        paths (core/foundation-lang-authority-paths runner "pinned")]
+    [paths (deref calls)])
+  => [["src/tahto/base/provenance.clj" "src/tahto/core.clj" "src/tahto/runtime/basic.clj"
+       "test/tahto/core_test.clj" "test/tahto/runtime/basic_test.clj"]
+      [[["ls-tree" "-r" "--name-only" "pinned"] nil]]])
+
+^{:refer tool.migrate.policy.foundation.core/foundation-lang-staged-paths}
+(fact "root staged discovery includes existing exact files without mutating the authority"
+  (let [root (deref (File/temp-directory "test-temp" {:prefix "lang-root-inventory-"}))
+        paths ["src/tahto/core.clj" "test/tahto/runtime/basic_test.clj"
+               "src/tahto/base/provenance.clj" "src/tahto/core_extra.clj"]]
+    (try
+      (doseq [prefix core/+foundation-lang-authority-prefixes+]
+        (fs/create-directory (File/resolve root prefix) {:parents? true}))
+      (doseq [path paths]
+        (deref (File/write (File/resolve root path) (String/encode-utf8 "(ns authority)")
+                           {:mode :replace :parents? true})))
+      (let [first-pass (core/foundation-lang-staged-paths root)
+            second-pass (core/foundation-lang-staged-paths root)]
+        [(mapv (fn [path] (core/foundation-lang-staged-relative-path root path)) first-pass)
+         (= first-pass second-pass)
+         (mapv (fn [path] (String/decode-utf8 (deref (File/read (File/resolve root path))))) paths)])
+      (finally (fs/delete root {:recursive? true}))))
+  => [["src/tahto/base/provenance.clj" "src/tahto/core.clj" "test/tahto/runtime/basic_test.clj"]
+      true ["(ns authority)" "(ns authority)" "(ns authority)" "(ns authority)"]])

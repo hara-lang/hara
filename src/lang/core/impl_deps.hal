@@ -101,46 +101,27 @@
    (str (entry-symbol entry))])
 
 (defn order-script-entries
-  "Orders selected code entries after their selected code dependencies."
+  "Orders modules by dependencies, then entries by Foundation priority, line, and time."
   [book-value entries]
-  (let [entry-map
-        (reduce (fn [output entry]
-                  (assoc output (entry-symbol entry) entry))
-                {}
-                entries)]
-    (loop [remaining (set (keys entry-map)) ordered []]
-      (if (empty? remaining)
-        ordered
-        (let [ready
-              (vec
-               (sort-by entry-sort-key
-                        (keep
-                         (fn [symbol-value]
-                           (let [entry (get entry-map symbol-value)
-                                 dependencies (entry-dependencies book-value entry)]
-                             (if (every? (fn [dependency]
-                                           (not (has? remaining dependency)))
-                                         dependencies)
-                               entry)))
-                         remaining)))]
-          (if (empty? ready)
-            (into ordered
-                  (sort-by entry-sort-key
-                           (map (fn [symbol-value]
-                                  (get entry-map symbol-value))
-                                remaining)))
-            (recur (reduce dissoc remaining (map entry-symbol ready))
-                   (into ordered ready))))))))
+  (let [context (if (book/book? book-value) book-value (book/book book-value))
+        module-ids (deps-ordered context (set (map :module entries)))
+        indexes (zipmap module-ids (range 0 (count module-ids)))]
+    (vec (sort-by (juxt (fn [entry] (get indexes (:module entry)))
+                        :priority :line :time)
+                  entries))))
 
 (defn collect-script-entries
-  "Collects a transitive, deterministic closure of code entries for symbols."
+  "Collects a code closure and its full dependency-ordered module lookup."
   [book-value symbol-ids]
-  (loop [pending (vec (sort-by str (or symbol-ids [])))
+  (loop [pending (vec (sort-by str (if (symbol? symbol-ids)
+                                    [symbol-ids]
+                                    (or symbol-ids []))))
          seen #{}
          entries {}]
     (if (empty? pending)
       (let [ordered (order-script-entries book-value (vals entries))
-            module-ids (vec (distinct (map :module ordered)))
+            context (if (book/book? book-value) book-value (book/book book-value))
+            module-ids (deps-ordered context (set (map :module ordered)))
             module-lu
             (reduce (fn [output index]
                       (let [module-id (nth module-ids index)]

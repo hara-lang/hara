@@ -1,52 +1,68 @@
 (ns lang.base.book-entry-test
-  (:require [lang.base.book-entry :as entry]))
+  (:require [lang.base.book-entry :refer :all] [lang.base.book-entry :as entry])
+  (:use code.test))
+
+^{:refer lang.base.book-entry/book-entry? :added "4.0"}
+(fact "checks if object is a book entry"
+  (book-entry? (book-entry {})) => true)
+
+^{:refer lang.base.book-entry/book-entry, :added "4.0"}
+(fact
+  "creates a book entry"
+  (book-entry?
+    (book-entry
+      {:form-input '(defn identity-fn [x] x),
+       :section :code,
+       :module 'L.core,
+       :lang :lua,
+       :id 'identity-fn,
+       :declared false,
+       :form '(defn identity-fn [x] x),
+       :namespace 'L.core,
+       :deps #{}}))
+  =>
+  true
+  (book-entry?
+    (book-entry
+      {:form-input '(defn identity [x] x),
+       :section :fragment,
+       :standalone '(fn [x] (return x)),
+       :template (fn [x] x),
+       :module 'L.core,
+       :lang :lua,
+       :id 'identity,
+       :declared false,
+       :form '(defn identity [x] x),
+       :namespace 'L.core,
+       :deps #{}}))
+  =>
+  true)
 
 (def fixture-config
   {:lang :fixture :module 'fixture.core :section :code :id 'run})
 
-^{:refer lang.base.book-entry/filter-values}
-(Test/check
- [{:name "retains only truthy entry values for display"
-   :test (fn []
-           (entry/filter-values {:form '(identity x) :declared false :deps #{}}))
-   :expected {:form '(identity x) :deps #{}}}])
+^{:refer lang.base.book-entry/filter-values, :id book-entry-native-1} (fact "retains only truthy entry values for display" ((fn [] (entry/filter-values {:form (quote (identity x)), :declared false, :deps #{}}))) => {:form (quote (identity x)), :deps #{}})
 
-^{:refer lang.base.book-entry/book-entry-string}
-(Test/check
- [{:name "renders symbolic and brief entry forms"
-   :test (fn []
-           [(entry/book-entry-string (assoc fixture-config :display :symbol))
-            (entry/book-entry-string (assoc fixture-config :display :brief))])
-   :expected ["E:fixture.core/run" "#book.entry [:fixture :code fixture.core/run]"]}])
+^{:refer lang.base.book-entry/book-entry-string, :id book-entry-native-2} (fact "renders symbolic and brief entry forms" ((fn [] [(entry/book-entry-string (assoc fixture-config :display :symbol)) (entry/book-entry-string (assoc fixture-config :display :brief))])) => ["E:fixture.core/run" "#book.entry [:fixture :code fixture.core/run]"])
 
-^{:refer lang.base.book-entry/book-entry?}
-(Test/check
- [{:name "recognizes only native Hara BookEntry structures"
-   :test (fn []
-           [(entry/book-entry? (entry/book-entry fixture-config))
-            (entry/book-entry? fixture-config)])
-   :expected [true false]}])
+^{:refer lang.base.book-entry/book-entry?, :id book-entry-native-3} (fact "recognizes only native Hara BookEntry structures" ((fn [] [(entry/book-entry? (entry/book-entry fixture-config)) (entry/book-entry? fixture-config)])) => [true false])
 
-^{:refer lang.base.book-entry/book-entry}
-(Test/check
- [{:name "creates an immutable typed entry with an explicit display default"
-   :test (fn []
-           (let [value (entry/book-entry (assoc fixture-config :deps #{'fixture.helper}))]
-             [(entry/book-entry? value)
-              (select-keys (entry/book-entry-data value) [:lang :module :section :id :deps :display])]))
-   :expected [true {:lang :fixture :module 'fixture.core :section :code :id 'run
-                    :deps #{'fixture.helper} :display :default}]}])
+^{:refer lang.base.book-entry/book-entry, :id book-entry-native-4} (fact "creates an immutable typed entry with an explicit display default" ((fn [] (let [value (entry/book-entry (assoc fixture-config :deps #{(quote fixture.helper)}))] [(entry/book-entry? value) (select-keys (entry/book-entry-data value) [:lang :module :section :id :deps :display])]))) => [true {:lang :fixture, :module (quote fixture.core), :section :code, :id (quote run), :deps #{(quote fixture.helper)}, :display :default}])
 
-^{:refer lang.base.book-entry/book-entry-data}
-(Test/check
- [{:name "projects entry data and rejects a non-entry value"
-   :test (fn []
-           [(entry/book-entry-data (entry/book-entry fixture-config))
-            (try (entry/book-entry-data fixture-config) false (catch _ true))])
-   :expected [(entry/book-entry fixture-config) true]}])
+^{:refer lang.base.book-entry/book-entry-data, :id book-entry-native-5} (fact "projects entry data and rejects a non-entry value" ((fn [] [(entry/book-entry-data (entry/book-entry fixture-config)) (try (entry/book-entry-data fixture-config) false (catch _ true))])) => [(entry/book-entry fixture-config) true])
 
-^{:refer lang.base.book-entry/entry-coordinate}
-(Test/check
- [{:name "derives the complete ordered entry coordinate"
-   :test (fn [] (entry/entry-coordinate (entry/book-entry fixture-config)))
-   :expected [:fixture 'fixture.core :code 'run]}])
+^{:refer lang.base.book-entry/entry-coordinate, :id book-entry-native-6} (fact "derives the complete ordered entry coordinate" ((fn [] (entry/entry-coordinate (entry/book-entry fixture-config)))) => [:fixture (quote fixture.core) :code (quote run)])
+
+^{:refer lang.base.book-entry/book-entry, :id book-entry-native-7} (fact "constructor preserves operation and custom metadata" ((fn [] (let [v (entry/book-entry {:id (quote hello), :op (quote defmacro), :static/return :any, :custom/value 7})] [(:op v) (:static/return v) (:custom/value v)]))) => [(quote defmacro) :any 7])
+
+^{:refer lang.base.book-entry/book-entry, :id book-entry-native-8} (fact "association retains extension fields" ((fn [] (let [v (assoc (entry/book-entry {:id (quote hello)}) :op (quote defmacro) :custom/value 7)] [(:id v) (:op v) (:custom/value v) (entry/book-entry? v)]))) => [(quote hello) (quote defmacro) 7 true])
+
+^{:refer lang.base.book-entry/book-entry, :id book-entry-native-9} (fact "preserves source metadata and constructor round trips" ((fn [] (let [input (with-meta {:id (quote hello), :custom/value 7} {:source/line 42}) value (entry/book-entry input) restored (entry/book-entry (entry/book-entry-data value))] [(select-keys value [:id :custom/value]) (:source/line (meta value)) (= value restored) (= (meta value) (meta restored)) (entry/book-entry? (dissoc (assoc value :extra 9) :extra))]))) => [{:id (quote hello), :custom/value 7} 42 true true true])
+
+^{:refer lang.base.book-entry/book-entry, :id book-entry-native-10} (fact "retains executable templates and native legacy values" ((fn [] (let [value (entry/book-entry {:template (fn [x] (list (quote quote) x)), :static/return :any})] [((:template value) (quote x)) (:static/return value) (entry/book-entry? (entry/map->BookEntry {:id (quote legacy)}))]))) => [(quote (quote x)) :any true])
+
+^{:refer lang.base.book-entry/BookEntry :id book-entry-legacy-structure}
+(fact "retains the legacy native struct constructor and its field defaults"
+  (let [value (entry/map->BookEntry {:id 'legacy :lang :lua})]
+    [(entry/book-entry? value) (:id value) (:lang value) (:display value)])
+  => [true 'legacy :lua nil])

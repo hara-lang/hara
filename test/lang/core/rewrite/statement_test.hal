@@ -1,82 +1,191 @@
 (ns lang.core.rewrite.statement-test
   (:use code.test)
-  (:require [lang.core.rewrite.statement :as subject]))
+  (:require [lang.core.rewrite.statement :as stmt]))
 
-^{:refer lang.core.rewrite.statement/rewrite-for-statement}
-(fact "rewrites a for binding and its statement body"
-  (subject/rewrite-for-statement
-   '(for [item items] (print item))
-   #(list 'bind %)
-   #(map (fn [form] (list 'stmt form)) %))
-  => '(for (bind [item items]) (stmt (print item))))
+^{:refer lang.core.rewrite.statement/rewrite-for-statement :added "4.1"}
+(fact "rewrites a for statement binding and body"
+  (stmt/rewrite-for-statement
+   '(for [i (range 10)]
+      (print i)
+      (print i))
+   (fn [form] (list 'bind form))
+   (fn [body] (map (fn [form] (list 'stmt form)) body)))
+  => '(for (bind [i (range 10)])
+       (stmt (print i))
+       (stmt (print i))))
 
-^{:refer lang.core.rewrite.statement/rewrite-cond-statement}
-(fact "rewrites conditional statement skeletons"
-  (subject/rewrite-cond-statement
-   '(cond ready (return 1) :else (return 2))
-   #(list 'truthy %) #(list 'stmt %))
-  => '(cond (truthy ready) (stmt (return 1)) :else (stmt (return 2))))
+^{:refer lang.core.rewrite.statement/rewrite-cond-statement :added "4.1"}
+(fact "rewrites conditional statement skeletons with injected callbacks"
+  (stmt/rewrite-cond-statement
+   '(cond ready
+      (return 1)
+      :else
+      (return 2))
+   (fn [form] (list 'truthy form))
+   (fn [form] (list 'stmt form)))
+  => '(cond (truthy ready)
+       (stmt (return 1))
+       :else
+       (stmt (return 2))))
 
-^{:refer lang.core.rewrite.statement/rewrite-branch-control}
-(fact "rewrites branch controls including else bodies"
-  [(subject/rewrite-branch-control
-    '(if (< x 0) (return -1)) #(list 'truthy %) #(map (fn [form] (list 'stmt form)) %))
-   (subject/rewrite-branch-control
-    '(else (return 0)) #(list 'truthy %) #(map (fn [form] (list 'stmt form)) %))]
-  => ['(if (truthy (< x 0)) (stmt (return -1)))
-      '(else (stmt (return 0)))])
+^{:refer lang.core.rewrite.statement/rewrite-branch-control :added "4.1"}
+(fact "rewrites branch control tests and bodies"
+  (stmt/rewrite-branch-control
+   '(if (< x 0) (return -1))
+   (fn [form] (list 'truthy form))
+   (fn [body] (map (fn [form] (list 'stmt form)) body)))
+  => '(if (truthy (< x 0)) (stmt (return -1)))
 
-^{:refer lang.core.rewrite.statement/rewrite-branch-statement}
-(fact "rewrites each branch in a branch form"
-  (subject/rewrite-branch-statement
-   '(branches (if ready (return 1)) (else (return 2)))
+  (stmt/rewrite-branch-control
+   '(else (return 0) (return 1))
+   (fn [form] (list 'truthy form))
+   (fn [body] (map (fn [form] (list 'stmt form)) body)))
+  => '(else (stmt (return 0)) (stmt (return 1))))
+
+^{:refer lang.core.rewrite.statement/rewrite-branch-statement :added "4.1"}
+(fact "rewrites each branch in a branch statement"
+  (stmt/rewrite-branch-statement
+   '(branches (if (< x 0) (return -1)) (else (return 0)))
    (fn [branch]
-     (subject/rewrite-branch-control
-      branch #(list 'truthy %) #(map (fn [form] (list 'stmt form)) %))))
-  => '(br* (if (truthy ready) (stmt (return 1))) (else (stmt (return 2)))))
+     (stmt/rewrite-branch-control
+      branch
+      (fn [form] (list 'truthy form))
+      (fn [body] (map (fn [form] (list 'stmt form)) body)))))
+  => '(br* (if (truthy (< x 0)) (stmt (return -1)))
+       (else (stmt (return 0)))))
 
-^{:refer lang.core.rewrite.statement/rewrite-do-statement}
-(fact "rewrites and splices a do body"
-  [(subject/rewrite-do-statement
-    '(do (a) (b)) #(map (fn [form] (list 'stmt form)) %))
-   (subject/rewrite-do-statement
-    '(do (a) (b)) (fn [body] [(list 'do* (list 'stmt (first body))
-                                    (list 'stmt (second body)))]))]
-  => ['(do (stmt (a)) (stmt (b))) '(do (stmt (a)) (stmt (b)))])
+^{:refer lang.core.rewrite.statement/rewrite-do-statement :added "4.1"}
+(fact "rewrites a do statement body and splices nested do* forms"
+  (stmt/rewrite-do-statement
+   '(do (step-a) (step-b))
+   (fn [body] (map (fn [form] (list 'stmt form)) body)))
+  => '(do (stmt (step-a)) (stmt (step-b)))
 
-^{:refer lang.core.rewrite.statement/rewrite-var-statement}
-(fact "rewrites only the bound value of a var statement"
-  [(subject/rewrite-var-statement '(var value) #(list 'expr %))
-   (subject/rewrite-var-statement '(var value 1 (+ 1 2)) #(list 'expr %))]
-  => ['(var value) '(var value 1 (expr (+ 1 2)))])
+  (stmt/rewrite-do-statement
+   '(do (step-a) (step-b))
+   (fn [body] (map (fn [form] (list 'stmt form)) body))
+   (fn [body] (cons '(setup) body)))
+  => '(do (stmt (setup)) (stmt (step-a)) (stmt (step-b)))
 
-^{:refer lang.core.rewrite.statement/rewrite-return-statement}
-(fact "rewrites every return value"
-  (subject/rewrite-return-statement '(return (+ 1 2) (* 3 4)) #(list 'expr %))
+  (stmt/rewrite-do-statement
+   '(do (a) (b))
+   (fn [body]
+     [(list 'do* (list 'stmt (first body)) (list 'stmt (second body)))]))
+  => '(do (stmt (a)) (stmt (b))))
+
+^{:refer lang.core.rewrite.statement/rewrite-var-statement :added "4.1"}
+(fact "rewrites the bound expression in a var statement"
+  (stmt/rewrite-var-statement '(var x) (fn [form] (list 'expr form)))
+  => '(var x)
+
+  (stmt/rewrite-var-statement '(var x 1 2 (+ 1 2)) (fn [form] (list 'expr form)))
+  => '(var x 1 2 (expr (+ 1 2))))
+
+^{:refer lang.core.rewrite.statement/rewrite-return-statement :added "4.1"}
+(fact "rewrites each expression in a return statement"
+  (stmt/rewrite-return-statement
+   '(return (+ 1 2) (* 3 4))
+   (fn [form] (list 'expr form)))
   => '(return (expr (+ 1 2)) (expr (* 3 4))))
 
-^{:refer lang.core.rewrite.statement/rewrite-if-statement}
-(fact "rewrites if tests and branches"
-  (subject/rewrite-if-statement
-   '(if ready (return 1) (return 2)) #(list 'truthy %) #(list 'stmt %))
-  => '(if (truthy ready) (stmt (return 1)) (stmt (return 2))))
+^{:refer lang.core.rewrite.statement/rewrite-if-statement :added "4.1"}
+(fact "rewrites an if statement test and branches"
+  (stmt/rewrite-if-statement
+   '(if (< x 0) (return -1))
+   (fn [form] (list 'truthy form))
+   (fn [form] (list 'stmt form)))
+  => '(if (truthy (< x 0)) (stmt (return -1)))
 
-^{:refer lang.core.rewrite.statement/rewrite-when-statement}
-(fact "rewrites a when test and body"
-  (subject/rewrite-when-statement
-   '(when ready (print 1)) #(list 'truthy %) #(map (fn [form] (list 'stmt form)) %))
-  => '(when (truthy ready) (stmt (print 1))))
+  (stmt/rewrite-if-statement
+   '(if (< x 0) (return -1) (return 1))
+   (fn [form] (list 'truthy form))
+   (fn [form] (list 'stmt form)))
+  => '(if (truthy (< x 0)) (stmt (return -1)) (stmt (return 1))))
 
-^{:refer lang.core.rewrite.statement/rewrite-while-statement}
-(fact "rewrites a while test and body"
-  (subject/rewrite-while-statement
-   '(while ready (step)) #(list 'truthy %) #(map (fn [form] (list 'stmt form)) %))
-  => '(while (truthy ready) (stmt (step))))
+^{:refer lang.core.rewrite.statement/rewrite-when-statement :added "4.1"}
+(fact "rewrites a when statement test and body"
+  (stmt/rewrite-when-statement
+   '(when (< x 0) (print x) (return x))
+   (fn [form] (list 'truthy form))
+   (fn [body] (map (fn [form] (list 'stmt form)) body)))
+  => '(when (truthy (< x 0)) (stmt (print x)) (stmt (return x))))
 
-^{:refer lang.core.rewrite.statement/rewrite-defn-statement}
-(fact "rewrites and finalizes a function statement body"
-  (subject/rewrite-defn-statement
-   '(defn sample [value] (a) (b))
-   #(map (fn [form] (list 'stmt form)) %)
-   #(concat (butlast %) [(list 'return (last %))]))
-  => '(defn sample [value] (do (stmt (a)) (return (stmt (b))))))
+^{:refer lang.core.rewrite.statement/rewrite-while-statement :added "4.1"}
+(fact "rewrites a while statement test and body"
+  (stmt/rewrite-while-statement
+   '(while (< x 10) (print x) (inc x))
+   (fn [form] (list 'truthy form))
+   (fn [body] (map (fn [form] (list 'stmt form)) body)))
+  => '(while (truthy (< x 10)) (stmt (print x)) (stmt (inc x))))
+
+^{:refer lang.core.rewrite.statement/rewrite-defn-statement :added "4.1"}
+(fact "rewrites function statement bodies with optional finalization"
+  (stmt/rewrite-defn-statement
+   '(defn sample [x]
+      (step-a)
+      (step-b))
+   (fn [body]
+     (map (fn [form] (list 'stmt form)) body))
+   (fn [body]
+     (concat (butlast body)
+             [(list 'return (last body))])))
+  => '(defn sample [x]
+       (do
+         (stmt (step-a))
+         (return (stmt (step-b))))))
+
+
+^{:refer lang.core.rewrite.statement/with-form-meta :id statement-alias-metadata}
+(fact "copies metadata through the statement alias while preserving scalar values"
+  (let [source (with-meta '(source) {:line 5})
+        result (stmt/with-form-meta source '(result))]
+    [result (meta result) (stmt/with-form-meta source nil) (stmt/with-form-meta source 42)])
+  => ['(result) {:line 5} nil 42])
+
+^{:refer lang.core.rewrite.statement/rewrite-if-statement :id statement-else-boundaries}
+(fact "retains Foundation false and nil else omission with exact callback routing and metadata"
+  (mapv (fn [otherwise]
+          (let [calls (atom [])
+                result (stmt/rewrite-if-statement
+                         (with-meta (list 'if 'ready '(return 1) otherwise) {:line 8})
+                         (fn [value] (swap! calls conj [:condition value]) (list 'test value))
+                         (fn [value] (swap! calls conj [:branch value]) (list 'stmt value)))]
+            [result (deref calls) (meta result)]))
+        [nil false true '(return 0)])
+  => [['(if (test ready) (stmt (return 1)))
+       [[:condition 'ready] [:branch '(return 1)]] {:line 8}]
+      ['(if (test ready) (stmt (return 1)))
+       [[:condition 'ready] [:branch '(return 1)]] {:line 8}]
+      ['(if (test ready) (stmt (return 1)) (stmt true))
+       [[:condition 'ready] [:branch '(return 1)] [:branch true]] {:line 8}]
+      ['(if (test ready) (stmt (return 1)) (stmt (return 0)))
+       [[:condition 'ready] [:branch '(return 1)] [:branch '(return 0)]] {:line 8}]])
+
+^{:refer lang.core.rewrite.statement/rewrite-var-statement :id statement-var-boundaries}
+(fact "leaves declarations untouched and rewrites only the final value including nil and false"
+  (mapv (fn [input]
+          (let [calls (atom [])
+                result (stmt/rewrite-var-statement
+                         (with-meta input {:line 9})
+                         (fn [value] (swap! calls conj value) (list 'expr value)))]
+            [result (deref calls) (meta result)]))
+        ['(var x) '(var x nil) '(var x false) '(var x :type :leading final)])
+  => [['(var x) [] {:line 9}]
+      ['(var x (expr nil)) [nil] {:line 9}]
+      ['(var x (expr false)) [false] {:line 9}]
+      ['(var x :type :leading (expr final)) '[final] {:line 9}]])
+
+^{:refer lang.core.rewrite.statement/rewrite-do-statement :id statement-prepare-order}
+(fact "prepares do bodies before rewriting and preserves metadata after splicing"
+  (let [calls (atom [])
+        result (stmt/rewrite-do-statement
+                 (with-meta '(do (a) (b)) {:line 10})
+                 (fn [body]
+                   (swap! calls conj [:rewrite (vec body)])
+                   [(apply list 'do* body)])
+                 (fn [body]
+                   (swap! calls conj [:prepare (vec body)])
+                   (cons '(setup) body)))]
+    [result (deref calls) (meta result)])
+  => ['(do (setup) (a) (b))
+      [[:prepare '[(a) (b)]] [:rewrite '[(setup) (a) (b)]]] {:line 10}])

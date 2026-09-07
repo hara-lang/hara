@@ -1,5 +1,160 @@
 (ns lang.base.emit-helper-test
-  (:require [lang.base.emit-helper :as helper]))
+  (:require [lang.base.emit-common :as common]
+            [lang.base.emit-helper :as helper :refer :all]
+            [lang.base.grammar :as grammar])
+  (:use code.test))
+
+(def +reserved+
+  (-> (grammar/build)
+      (grammar/to-reserved)))
+
+(def +grammar+
+  (grammar/grammar :test +reserved+ helper/+default+))
+
+^{:refer lang.base.emit-helper/default-emit-fn :added "4.0"}
+(fact "the default emit function"
+  (default-emit-fn 'abc {} {}) => "abc")
+
+^{:refer lang.base.emit-helper/pr-single :added "3.0"}
+(fact "prints a single quoted string"
+
+  (pr-single "hello")
+  => "'hello'"
+
+  (pr-single "he'\"llo")
+  => "'he\\'\"llo'"
+
+  (pr-single "''")
+  => "'\\'\\''")
+
+^{:refer lang.base.emit-helper/get-option :added "3.0"}
+(fact "gets either the path option or the default one"
+
+  (get-option helper/+default+ [:block :for] :sep)
+  => ","
+
+  (get-option helper/+default+ [:data :map] :start)
+  => "{")
+
+^{:refer lang.base.emit-helper/get-options :added "3.0"}
+(fact "gets the path option merged with defaults"
+
+  (get-options helper/+default+ [:data :map])
+  => {:statement ";",
+      :sep ",",
+      :space "",
+      :static ".",
+      :start "{",
+      :line-spacing 1,
+      :assign "=",
+      :namespace-full "____",
+      :apply ".",
+      :access ".",
+      :end "}",
+      :namespace ".",
+      :range ":"})
+
+^{:refer lang.base.emit-helper/form-key-base :added "4.0"}
+(fact "gets the key for a form"
+
+  (form-key-base :a)
+  => [:keyword :token true]
+
+  (form-key-base ())
+  => :expression)
+
+^{:refer lang.base.emit-helper/basic-typed-args :added "4.0"}
+(fact "typed args without grammar checks"
+
+  (mapv (juxt meta identity)
+        (basic-typed-args '(:int i, :const :int j)))
+  => '[[{:- [:int]} i]
+       [{:- [:const :int]} j]])
+
+^{:refer lang.base.emit-helper/emit-typed-allowed-args, :added "4.0"}
+(fact
+  "allowed declared args other than symbols"
+  (emit-typed-allowed-args
+    [[{:modifiers [:int]}] {:modifiers [:int]}]
+    {:allow {:assign #{:symbol}}})
+  =>
+  (throws))
+
+^{:refer lang.base.emit-helper/emit-typed-args :added "3.0"}
+(fact "create types args from declarationns"
+
+  (emit-typed-args '(:int i := 9, :const :int j := 10)
+                   +grammar+)
+  => '[{:modifiers [:int],
+        :symbol i,
+        :assign true,
+        :force true,
+        :value 9}
+       {:modifiers [:const :int],
+        :symbol j,
+        :assign true,
+        :force true,
+        :value 10}]
+
+  (emit-typed-args '((:int a) 9)
+                   +grammar+)
+  => '[{:modifiers [], :symbol a, :type (:int), :value 9}]
+
+  (emit-typed-args '(:mutable (:int a) 9)
+                    +grammar+)
+  => '[{:modifiers [:mutable], :symbol a, :type (:int), :value 9}]
+
+  (emit-typed-args '(a b)
+                   +grammar+)
+  => '[{:modifiers [], :symbol a}
+       {:modifiers [], :symbol b}]
+
+  (emit-typed-args '(a b)
+                   +grammar+
+                   {:shorthand true})
+  => '[{:modifiers [], :symbol a, :value b}]
+
+  (emit-typed-args '(out [])
+                   +grammar+
+                   {:shorthand true})
+  => '[{:modifiers [], :symbol out, :value []}])
+
+^{:refer lang.base.emit-helper/emit-symbol-full :added "4.0"}
+(fact "emits a full symbol"
+
+  (emit-symbol-full 'hello 'ns +grammar+)
+  => "ns____hello")
+
+^{:refer lang.base.emit-helper/emit-type-record :added "4.0"}
+(fact "formats to standard"
+
+  (emit-type-record {:modifiers [:int]
+                     :symbol "a"})
+  => {:symbol "a", :type "int"})
+
+
+^{:refer lang.base.emit-helper/rest-arg-form?, :added "4.1"}
+(fact
+  "recognizes only the canonical final rest argument shape"
+  (rest-arg-form? '(:.. args))
+  =>
+  true
+  (rest-arg-form? '(:.. "args"))
+  =>
+  false
+  (rest-arg-form? '(:.. args extra))
+  =>
+  false
+  (rest-arg-form? (vector :.. 'args))
+  =>
+  false)
+
+^{:refer lang.base.emit-helper/rest-arg-symbol :added "4.1"}
+(fact "returns the symbol from a canonical rest argument"
+  (rest-arg-symbol '(:.. args)) => 'args
+  (rest-arg-symbol '(:.. "args")) => nil)
+
+
 
 ^{:refer lang.base.emit-helper/+default+}
 (Test/check
@@ -140,3 +295,97 @@
  [{:name "formats typed argument records with default target spelling"
    :test (fn [] (helper/emit-type-record {:symbol 'item-name :modifiers [:int]}))
    :expected {:symbol "item_name" :type "int"}}])
+
+
+^{:refer lang.base.emit-helper/key-member? :id retained-membership-contract}
+(fact "compares values including nil and false without truthiness shortcuts"
+  [(helper/key-member? [nil false :x] nil)
+   (helper/key-member? [nil false :x] false)
+   (helper/key-member? [] nil)
+   (helper/key-member? [:a :b] :missing)]
+  => [true true false false])
+
+^{:refer lang.base.emit-helper/index-of-value :id retained-index-contract}
+(fact "returns the first matching index and minus one at empty or missing boundaries"
+  [(helper/index-of-value [:a :b :a] :a)
+   (helper/index-of-value [nil false] false)
+   (helper/index-of-value [] :a)
+   (helper/index-of-value [:a] :missing)]
+  => [0 1 -1 -1])
+
+^{:refer lang.base.emit-helper/drop-last-one :id retained-drop-last-contract}
+(fact "preserves sequence order and handles empty and singleton inputs"
+  [(helper/drop-last-one []) (helper/drop-last-one [:a])
+   (helper/drop-last-one [:a :b :c])]
+  => ['() '() '(:a :b)])
+
+^{:refer lang.base.emit-helper/emit-typed-args-loop :id retained-loop-contract}
+(fact "continues supplied declaration state and rejects nonfinal rest arguments"
+  (helper/emit-typed-args-loop helper/+default+ false
+    [{:symbol 'prior :modifiers []}] {:modifiers [:int]} '(value := 7))
+  => [{:symbol 'prior :modifiers []}
+      {:symbol 'value :modifiers [:int] :assign true :force true :value 7}]
+
+  (try
+    (helper/emit-typed-args-loop helper/+default+ false [] {:modifiers []} '((:.. rest) later))
+    :not-thrown
+    (catch error (ex-message error)))
+  => "Rest argument must be the final declared argument")
+
+^{:refer lang.base.emit-helper/replace-symbol-parts :id retained-symbol-parts-contract}
+(fact "retains the native helper's ordered replacement behavior"
+  [(helper/replace-symbol-parts "a-b?" [[\- "_"] [\? "p"]])
+   (helper/replace-symbol-parts "a" [["a" "b"] ["b" "c"]])
+   (helper/replace-symbol-parts "unchanged" [])]
+  => ["a_bp" "c" "unchanged"])
+
+^{:refer lang.base.emit-helper/+sym-replace+ :id symbol-replacement-inventory}
+(fact "preserves every authority character replacement"
+  helper/+sym-replace+
+  => {\- "_" \* "__" \? "p" \! "f" \= "_eq" \< "_lt" \> "_gt"})
+
+^{:refer lang.base.emit-helper/+default+ :id default-grammar-contract}
+(fact "preserves collection delimiters and callable module spelling"
+  [(select-keys helper/+default+ [:type :banned :allow])
+   (:data helper/+default+)
+   ((deref (get-in helper/+default+ [:default :module :key-fn])) 'item-name)]
+  => [{:type :std/algol :banned #{:set :keyword} :allow {:assign #{:symbol}}}
+      {:map {:start "{" :end "}" :space ""}
+       :map-entry {:start "" :end "" :assign ":" :space "" :keyword :string}
+       :vector {:start "[" :end "]" :space ""}
+       :tuple {:start "(" :end ")" :space "" :tighten true}
+       :free {:start "" :end "" :space ""}}
+      "item_name"])
+
+^{:refer lang.base.emit-helper/emit-symbol-full :id simultaneous-symbol-substitution}
+(fact "applies character substitutions simultaneously rather than cascading their output"
+  (helper/emit-symbol-full 'ab nil
+    (assoc-in helper/+default+ [:token :symbol :replace] {\a "b" \b "c"}))
+  => "bc")
+
+^{:refer lang.base.emit-helper/rest-arg-form? :id sequence-representation-parity}
+(fact "accepts source Cons and Seq forms while rejecting vector data"
+  [(helper/form-key-base (cons :.. (list 'args)))
+   (helper/rest-arg-form? (cons :.. (list 'args)))
+   (helper/rest-arg-form? (seq (vector :.. 'args)))
+   (helper/rest-arg-form? (vector :.. 'args))]
+  => [:expression true true false])
+
+^{:refer lang.base.emit-helper/default-emit-fn :id finite-double-spelling}
+(fact "matches Foundation finite-double spelling, signed zero and round trips"
+  (mapv (fn [text] (helper/default-emit-fn (Num/parse-double text) {} {}))
+    ["0.0" "-0.0" "0.5" "-0.5" "1.7976931348623157E308" "2.2250738585072014E-308" "4.9E-324" "9.9E-324" "1.5E-323" "2.0E-323" "2.5E-323" "3.0E-323" "3.5E-323" "4.0E-323" "4.4E-323" "4.9E-323" "5.4E-323" "5.9E-323" "6.4E-323" "6.9E-323" "7.4E-323" "7.9E-323" "8.4E-323" "8.9E-323" "9.4E-323" "9.9E-323" "9.999999999999999E-5" "1.0E-4" "1.0000000000000002E-4" "9.999999999999998E-4" "0.001" "0.0010000000000000002" "0.009999999999999998" "0.01" "0.010000000000000002" "0.9999999999999999" "1.0" "1.0000000000000002" "999999.9999999999" "1000000.0" "1000000.0000000001" "9999999.999999998" "1.0E7" "1.0000000000000002E7" "9.999999999999999E7" "1.0E8" "1.0000000000000001E8" "9.999999999999997E22" "1.0E23" "1.0000000000000001E23"])
+  => ["0.0" "-0.0" "0.5" "-0.5" "1.7976931348623157E308" "2.2250738585072014E-308" "4.9E-324" "9.9E-324" "1.5E-323" "2.0E-323" "2.5E-323" "3.0E-323" "3.5E-323" "4.0E-323" "4.4E-323" "4.9E-323" "5.4E-323" "5.9E-323" "6.4E-323" "6.9E-323" "7.4E-323" "7.9E-323" "8.4E-323" "8.9E-323" "9.4E-323" "9.9E-323" "9.999999999999999E-5" "1.0E-4" "1.0000000000000002E-4" "9.999999999999998E-4" "0.001" "0.0010000000000000002" "0.009999999999999998" "0.01" "0.010000000000000002" "0.9999999999999999" "1.0" "1.0000000000000002" "999999.9999999999" "1000000.0" "1000000.0000000001" "9999999.999999998" "1.0E7" "1.0000000000000002E7" "9.999999999999999E7" "1.0E8" "1.0000000000000001E8" "9.999999999999997E22" "1.0E23" "1.0000000000000001E23"]
+
+  (mapv (fn [text]
+          (let [value (Num/parse-double text)
+                printed (helper/default-emit-fn value {} {})
+                restored (read-string printed)]
+            [(double? restored) (= value restored)
+             (= printed (helper/default-emit-fn restored {} {}))]))
+    ["0.0" "-0.0" "0.5" "-0.5" "1.7976931348623157E308" "2.2250738585072014E-308" "4.9E-324" "9.9E-324" "1.5E-323" "2.0E-323" "2.5E-323" "3.0E-323" "3.5E-323" "4.0E-323" "4.4E-323" "4.9E-323" "5.4E-323" "5.9E-323" "6.4E-323" "6.9E-323" "7.4E-323" "7.9E-323" "8.4E-323" "8.9E-323" "9.4E-323" "9.9E-323" "9.999999999999999E-5" "1.0E-4" "1.0000000000000002E-4" "9.999999999999998E-4" "0.001" "0.0010000000000000002" "0.009999999999999998" "0.01" "0.010000000000000002" "0.9999999999999999" "1.0" "1.0000000000000002" "999999.9999999999" "1000000.0" "1000000.0000000001" "9999999.999999998" "1.0E7" "1.0000000000000002E7" "9.999999999999999E7" "1.0E8" "1.0000000000000001E8" "9.999999999999997E22" "1.0E23" "1.0000000000000001E23"])
+  => (vec (repeat 50 [true true true]))
+
+  (mapv (fn [value] (helper/default-emit-fn value {} {}))
+        [nil false 12 "text" '(a b)])
+  => ["nil" "false" "12" "\"text\"" "(a b)"])

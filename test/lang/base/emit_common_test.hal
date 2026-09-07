@@ -1,124 +1,1301 @@
 (ns lang.base.emit-common-test
-  (:require [lang.base.emit-common :as common]
-            [lang.base.emit-helper :as helper]))
+  (:require [lang.base.emit-common :as common :refer :all]
+    [lang.base.emit-helper :as helper]
+    [std.lib.format.prose :as prose])
+  (:use code.test))
 
-(def operator-grammar
-  (assoc helper/+default+
-         :reserved
-         {'+ {:op :add :emit :infix :raw "+"}
-          '- {:op :sub :emit :infix- :raw "-"}
-          'not {:op :not :emit :pre :raw "!"}
-          := {:op :assign :emit :assign :raw "="}
-          '. {:op :index :emit :index}}))
+^{:refer lang.base.emit-common/with:explode :added "4.0"}
+(fact "form to control `explode` option"
+  (with:explode *explode*) => true)
 
-^{:refer lang.base.emit-common/with:explode}
-(Test/check
- [{:name "emission dynamic formatting controls retain their archive behavior"
-   :test (fn [] [(common/with:explode common/*explode*)
-                 (common/with-trace common/*trace*)
-                 (common/with-compressed common/*compressed*)
-                 (common/with-indent [10] common/*indent*)
-                 (common/newline-indent)
-                 (common/with-indent [2] (common/newline-indent))])
-   :expected [true true true 10 "\n" "\n  "]}])
+^{:refer lang.base.emit-common/with-trace :added "4.0"}
+(fact "form to control `trace` option"
+  (with-trace *trace*) => true)
 
-^{:refer lang.base.emit-common/emit-reserved-value}
-(Test/check
- [{:name "primitive, free, and token emissions preserve the Foundation layout"
-   :test (fn [] [(common/emit-reserved-value 'hello {} {})
-                 (common/emit-reserved-value 'hello {:reserved {'hello {:value true :raw "world"}}} {})
-                 (common/emit-free-raw "." [1 2 3] helper/+default+ {})
-                 (common/emit-free-raw " " [:* :as 'dependency]
-                                       {:reserved {:* {:emit :pre :raw "*"}}} {})
-                 (common/emit-free " " '(:- 1 2 3) helper/+default+ {})
-                 (common/emit-comment nil '(:# "comment" A) helper/+default+ {})
-                 (common/emit-array [1 2 3] {} {})
-                 (common/emit-wrappable? '(!= 1 x) {:reserved {'!= {:emit :infix}}})
-                 (common/emit-squash nil '(:% 1 2 "x") helper/+default+ {})
-                 (common/wrapped-str "hello" [:data :map] helper/+default+)])
-   :expected [nil "world" "1.2.3" "* as dependency" "1 2 3" "// comment A" '("1" "2" "3") true "12\"x\"" "{hello}"]}])
+^{:refer lang.base.emit-common/with-compressed :added "3.0"}
+(fact "formats without newlines and indents"
+  (with-compressed *compressed*) => true)
 
-^{:refer lang.base.emit-common/emit-token}
-(Test/check
- [{:name "emits Hara double values as target numeric literals"
-   :test (fn [] (common/emit-token :number 0.06 helper/+default+ {}))
-   :expected "0.06"}])
+^{:refer lang.base.emit-common/with-indent :added "3.0"}
+(fact "adds indentation levels"
 
-^{:refer lang.base.emit-common/emit-common-loop}
-(Test/check
- [{:name "emits Hara double literal forms through the common dispatcher"
-   :test (fn [] (common/emit-common-loop (list 'double 0.06)
-                                         helper/+default+
-                                         {}))
-   :expected "0.06"}])
+  (with-indent [10]
+    *indent*)
+  => 10)
 
-^{:refer lang.base.emit-common/emit-pre}
-(Test/check
- [{:name "operator emission retains prefix postfix infix and conditional forms"
-   :test (fn [] [(common/emit-pre "!" '[x] helper/+default+ {})
-                 (common/emit-post "--" '[x] helper/+default+ {})
-                 (common/emit-prefix "return" '[x] helper/+default+ {})
-                 (common/emit-postfix "as" '[x] helper/+default+ {})
-                 (common/emit-infix "|" '[x y z] helper/+default+ {})
-                 (common/emit-infix-default "/" '[x] 1 helper/+default+ {})
-                 (common/emit-infix-pre "-" '[x] helper/+default+ {})
-                 (common/emit-infix-if-single '(:? true x y) helper/+default+ {})
-                 (common/emit-infix-if '(:? true x :else y) helper/+default+ {})
-                 (common/emit-between ":" [1 2] helper/+default+ {})
-                 (common/emit-bi "==" '[x y] helper/+default+ {})
-                 (common/emit-assign "=" '[x 1] helper/+default+ {})])
-   :expected ["!x" "x--" "return x" "x as" "x | y | z" "1 / x" "-x" "true ? x : y" "true ? x : y" "1:2" "x == y" "x = 1"]}])
+^{:refer lang.base.emit-common/newline-indent :added "3.0"}
+(fact "returns a newline with indent"
 
-^{:refer lang.base.emit-common/emit-return-do}
-(Test/check
- [{:name "return, global, symbol, and token forms follow the archive contracts"
-   :test (fn [] [(common/emit-return-do [1 2 3] helper/+default+ {})
-                 (common/emit-return-base "return" [1] helper/+default+ {})
-                 (common/emit-return "break" [1] helper/+default+ {})
-                 (common/emit-with-global nil '(!:G HELLO) {} {})
-                 (common/emit-symbol-classify 't/hello {:module {:alias {'t 'table}}})
-                 (common/emit-symbol-standard 'print! helper/+default+ {:layout :full})
-                 (common/emit-symbol 'a {:token {:symbol {:emit-fn (fn [sym _ _] (str sym 123))}}} {})
-                 (common/emit-token :string "1" {:token {:string {:quote :single}}} {})
-                 (common/emit-with-decorate nil '(!:decorate {:id 1} HELLO) {} {})])
-   :expected ["(1 2 (return 3))" "return 1" "break 1" "HELLO" [:alias 'table] "printf" "a123" "'1'" "HELLO"]}])
+  (newline-indent)
+  => "\n"
 
-^{:refer lang.base.emit-common/drop-last-value}
-(Test/check
- [{:name "invocation parsing and all invocation layouts retain their canonical output"
-   :test (fn [] [(common/drop-last-value [1 2 3])
-                 (common/first-keyword-index [1 :name "hello"])
-                 (common/invoke-kw-parse [1 2 :name "hello" :foo "bar"])
-                 (common/emit-invoke-kw-pair [:name "hello"] helper/+default+ {})
-                 (vec (common/emit-invoke-args [1 :name "hello"] helper/+default+ {}))
-                 (common/emit-invoke-layout ["ab\nc" "de\nf"] helper/+default+ {})
-                 (common/emit-invoke-raw "-" '[abc] helper/+default+ {})
-                 (common/emit-invoke-static '(:table/new "hello") helper/+default+ {})
-                 (common/emit-invoke-typecast '(:int (:char 2)) helper/+default+ {})
-                 (common/emit-invoke :invoke '(call "hello" (+ 1 2)) helper/+default+ {})
-                 (common/emit-new "new" '(String 1 2) helper/+default+ {})
-                 (common/emit-class-static-invoke nil '(String "new" 1 2) helper/+default+ {})])
-   :expected [[1 2] 1 [[1 2] [[:name "hello"] [:foo "bar"]]] "name=\"hello\"" ["1" "name=\"hello\""] "(ab\nc,de\nf)" "-(abc)" "table.new(\"hello\")" "((int)(:char 2))" "call(\"hello\",(+ 1 2))" "new String(1,2)" "String.new(1,2)"]}])
+  (with-indent [2]
+    (newline-indent))
+  => "\n  ")
 
-^{:refer lang.base.emit-common/emit-index-entry}
-(Test/check
- [{:name "indexing and recursive dispatch preserve archive grammar selection"
-   :test (fn [] [(common/emit-index-entry 'hello helper/+default+ {})
-                 (common/emit-index-entry [9] helper/+default+ {})
-                 (common/emit-index nil '[x [hello] (world foo) baz] helper/+default+ {})
-                 (common/emit-op :- '(:- "~~") (assoc helper/+default+ :reserved {:- {:emit :free}}) {})
-                 (common/form-key [] {})
-                 (common/emit-common-loop '(add 1 (:int 1)) helper/+default+ {})
-                 (common/emit-common-loop-bound '(+ 1 2) operator-grammar {} common/+emit-lookup+ common/emit-op common/emit-common-loop)
-                 (common/emit-common '(+ 1 (+ 2 3)) operator-grammar {})])
-   :expected [".hello" "[9]" "x[hello].world(foo).baz" "~~" [:vector :data nil] "add(1,(:int 1))" "1 + 2" "1 + (2 + 3)"]}])
+^{:refer lang.base.emit-common/emit-reserved-value :added "4.0"}
+(fact "emits a reserved value"
 
-^{:refer lang.base.emit-common/emit-index-entry}
-(Test/check
- [{:name "uses the member separator when a target grammar omits an apply token"
-   :test (fn []
-           (common/emit-index-entry
-            '(append e)
-            (assoc-in helper/+default+ [:default :invoke :apply] "")
-            {}))
-   :expected ".append(e)"}])
+  (emit-reserved-value 'hello
+                       {}
+                       {})
+  => nil
+
+  (emit-reserved-value 'hello
+                       {:reserved '{hello {:value true
+                                           :raw "world"}}}
+                       {})
+  => "world"
+
+
+  (emit-reserved-value 'hello
+                       {:reserved '{hello {}}}
+                       {})
+  => (throws))
+
+^{:refer lang.base.emit-common/emit-free-raw :added "4.0"}
+(fact "emits free value"
+
+  (emit-free-raw "." [1 2 3] helper/+default+ {})
+  => "1.2.3")
+
+^{:refer lang.base.emit-common/emit-free :added "4.0"}
+(fact "emits string with multiline support"
+
+  (emit-free " "
+             '(:- 1 2 3 4)
+             helper/+default+
+             {})
+  => "1 2 3 4")
+
+^{:refer lang.base.emit-common/emit-comment :added "4.0"}
+(fact "emits a comment"
+
+  (emit-comment nil '(:# "This is a comment" A B 1) helper/+default+ {})
+  => "// This is a comment A B 1"
+
+  (emit-comment nil '(:# "This \nis \na comment" A B 1)
+                helper/+default+ {})
+
+  => (prose/|
+      "// This "
+      "// is "
+      "// a comment A B 1"))
+
+^{:refer lang.base.emit-common/emit-indent :added "4.0"}
+(fact "emits an indented form"
+
+  (emit-indent nil '(\| "This\nis\nan indented" A B 1)
+               helper/+default+ {})
+  => (prose/|
+      "  This"
+      "  is"
+      "  an indented A B 1"))
+
+^{:refer lang.base.emit-common/emit-macro, :added "4.0"}
+(fact
+  "emits form"
+  (emit-macro
+    :double-array
+    '(double-array x y c)
+    {:reserved
+     {'double-array
+      {:macro
+       (fn [[_ & args]]
+         (let [args (not-empty (apply list (vec args)))]
+           (vec (concat args args))))}}}
+    {})
+  =>
+  "[x y c x y c]")
+
+^{:refer lang.base.emit-common/emit-array :added "4.0"}
+(fact  "returns an array of emitted strings"
+
+  (emit-array [1 2 3] {} {})
+  => '("1" "2" "3"))
+
+^{:refer lang.base.emit-common/emit-wrappable?, :added "4.0"}
+(fact
+  "checks if form if wrappable"
+  (emit-wrappable? '(!= 1 x) {:reserved {'!= {:emit :infix}}})
+  =>
+  true
+  (emit-wrappable? '(!= 1 x) {:reserved {'!= {:emit :none}}})
+  =>
+  false
+  (emit-wrappable?
+    '(fn:> 1)
+    {:reserved
+     {'fn {:wrappable true},
+      'fn:>
+      {:emit :macro,
+       :macro
+       (fn [_ & args]
+         (let [args (not-empty (apply list (vec args)))]
+           (apply list 'fn args)))}}})
+  =>
+  true)
+
+^{:refer lang.base.emit-common/emit-squash :added "4.0"}
+(fact "emits a squashed representation"
+
+  (emit-squash nil '(:% 1 2 3 "hello")
+               (merge helper/+default+
+                      {})
+               {})
+  => "123\"hello\"")
+
+^{:refer lang.base.emit-common/emit-wrapping :added "4.0"}
+(fact "emits a potentially wrapped form"
+
+  (emit-wrapping '(!= 1 x)
+                 (merge helper/+default+
+                        {:reserved {'!= {:emit :infix}}})
+                 {})
+  => "((!= 1 x))")
+
+^{:refer lang.base.emit-common/wrapped-str :added "3.0"}
+(fact "wrapped string using `:start` and `:end` keys of grammar"
+
+  (wrapped-str "hello" [:data :map] helper/+default+)
+  => "{hello}")
+
+^{:refer lang.base.emit-common/emit-unit :added "4.0"}
+(fact "emits a unit"
+
+  (emit-unit {:default 'hello}
+             '(:unit)
+             helper/+default+
+             {})
+  => "hello")
+
+^{:refer lang.base.emit-common/emit-internal :added "4.0"}
+(fact "emits string within the form"
+
+  (emit-internal '(% "hello")
+                 helper/+default+
+                 {})
+  => "\"hello\"")
+
+^{:refer lang.base.emit-common/emit-internal-str :added "4.0"}
+(fact "emits internal string"
+
+  (emit-internal-str
+   '(-%%- ["hello"
+           "hello"
+           "hello"])
+   helper/+default+
+   {})
+  => "\"hello\"\n\"hello\"\n\"hello\""
+
+  (binding [common/*emit-fn* common/emit-common-loop]
+    (emit-internal-str
+     '(%%% ["hello"
+            "hello"
+            "hello"])
+     helper/+default+
+     {}))
+  => "hello\nhello\nhello")
+
+^{:refer lang.base.emit-common/emit-pre :added "3.0"}
+(fact "emits string before the arg"
+
+  (emit-pre "!" '[x] helper/+default+ {})
+  => "!x")
+
+^{:refer lang.base.emit-common/emit-post :added "3.0"}
+(fact "emits string after the arg"
+
+  (emit-post "--" '[x] helper/+default+ {})
+  => "x--")
+
+^{:refer lang.base.emit-common/emit-prefix :added "4.0"}
+(fact "emits operator before the arg [lang.base.emit-common/emit-prefix]"
+
+  (emit-prefix "hello" '[x] helper/+default+ {})
+  => "hello x")
+
+^{:refer lang.base.emit-common/emit-postfix :added "4.0"}
+(fact  "emits operator before the arg [lang.base.emit-common/emit-postfix]"
+
+  (emit-postfix "hello" '[x] helper/+default+ {})
+  => "x hello")
+
+^{:refer lang.base.emit-common/emit-infix :added "3.0"}
+(fact "emits infix ops"
+
+  (emit-infix "|" '[x y z] helper/+default+ {})
+  => "x | y | z")
+
+^{:refer lang.base.emit-common/emit-infix-default :added "3.0"}
+(fact "emits infix with a default value [lang.base.emit-common/emit-infix-default]"
+
+  (emit-infix-default "/" '[x] 1 helper/+default+ {})
+  => "1 / x")
+
+^{:refer lang.base.emit-common/emit-infix-pre :added "3.0"}
+(fact "emits infix with a default value [lang.base.emit-common/emit-infix-pre]"
+
+  (emit-infix-pre "-" '[x] helper/+default+ {})
+  => "-x")
+
+^{:refer lang.base.emit-common/emit-infix-if-single :added "4.0"}
+(fact "checks for infix in single"
+
+  (emit-infix-if '(:? true x y)
+                 helper/+default+
+                 {})
+  => "true ? x : y")
+
+^{:refer lang.base.emit-common/emit-infix-if :added "3.0"}
+(fact "emits an infix if string"
+
+  (emit-infix-if '(:? true x y)
+                 helper/+default+
+                 {})
+  => "true ? x : y"
+
+  (emit-infix-if '(:? true x y)
+                 helper/+default+
+                 {})
+  => "true ? x : y"
+
+  (emit-infix-if '(:? true x
+                      :else y)
+                 helper/+default+
+                 {})
+  => "true ? x : y"
+
+  (emit-infix-if '(:? true x
+                      true y
+                      true z
+                      :else t)
+                 helper/+default+
+                 {:reserved  {:?  {:emit :infix-if}}})
+  => "true ? x : (:? true y (:? true z t))")
+
+^{:refer lang.base.emit-common/emit-between :added "3.0"}
+(fact "emits the raw symbol between two elems"
+
+  (emit-between ":" [1 2] helper/+default+ {})
+  => "1:2")
+
+^{:refer lang.base.emit-common/emit-bi :added "3.0"}
+(fact "emits infix with two args"
+
+  (emit-bi "==" '[x y] helper/+default+ {})
+  => "x == y"
+
+  (emit-bi "==" '[x y z] helper/+default+ {})
+  => (throws))
+
+^{:refer lang.base.emit-common/emit-assign :added "3.0"}
+(fact "emits a setter expression"
+
+  (emit-assign ":eq" '[x 1] helper/+default+ {})
+  => "x :eq 1"
+
+  (emit-assign "=" '[x 1] helper/+default+ {})
+  => "x = 1"
+
+  (emit-assign "=" '[x 1] helper/+default+ {})
+  => "x = 1")
+
+^{:refer lang.base.emit-common/emit-return-do :added "4.0"}
+(fact "creates a return statement on `do` block"
+
+  (emit-return-do
+   [1 2 3] helper/+default+ {})
+  => "(1 2 (return 3))")
+
+^{:refer lang.base.emit-common/emit-return-base :added "4.0"}
+(fact "return base type"
+
+  (emit-return-base "break" [1] helper/+default+ {})
+  => "break 1"
+
+  (emit-return-base "return" [1] helper/+default+ {})
+  => "return 1")
+
+^{:refer lang.base.emit-common/emit-return :added "3.0"}
+(fact "creates a return type statement"
+
+  (emit-return "break" [1] helper/+default+ {})
+  => "break 1"
+
+  (emit-return "return" [1 2 3] helper/+default+ {})
+  => (throws)
+
+  (emit-return "return" [1 2 3] (assoc-in helper/+default+
+                                          [:default :return :multi] true) {})
+  => "return 1, 2, 3")
+
+^{:refer lang.base.emit-common/emit-with-global :added "4.0"}
+(fact "customisable emit function for global vars [lang.base.emit-common/emit-with-global]"
+
+  (emit-with-global nil '(!:G HELLO) {} {})
+  => "HELLO")
+
+^{:refer lang.base.emit-common/emit-symbol-classify :added "3.0"}
+(fact "classify symbol given options"
+
+  (emit-symbol-classify 't/hello {:module {:alias '{t table}}})
+  => '[:alias table]
+
+  (emit-symbol-classify 't.n/hello {:module {:alias '{t table}}})
+  => '[:link t.n])
+
+^{:refer lang.base.emit-common/emit-symbol-standard :added "3.0"}
+(fact "emits a standard symbol"
+
+  (emit-symbol-standard 'print! helper/+default+ {:layout :full})
+  => "printf"
+
+  (emit-symbol-standard 'print!
+                        {:token {:symbol    {:replace {}}
+                                 :string    {:quote :single}}}
+                        {:layout :full})
+  => "print!")
+
+^{:refer lang.base.emit-common/emit-symbol :added "4.0"}
+(fact "emits symbol allowing for custom functions"
+
+  (emit-symbol 'a
+               {:token {:symbol {:emit-fn  (fn [sym _ _]
+                                             (str sym 123))}}}
+               {})
+  => "a123")
+
+^{:refer lang.base.emit-common/emit-token :added "3.0"}
+(fact "customisable emit function for tokens"
+
+  (emit-token :number 1 helper/+default+ {})
+  => "1"
+
+  (emit-token :string "1" {:token {:string {:quote :single}}} {})
+  => "'1'"
+
+  (emit-token :string "1" {:token {:string {:emit (fn [s _ _] (keyword s))}}} {})
+  => :1)
+
+^{:refer lang.base.emit-common/emit-with-decorate :added "4.0"}
+(fact "customisable emit function for global vars [lang.base.emit-common/emit-with-decorate]"
+
+  (emit-with-decorate nil '(!:decorate {:id 1} HELLO) {} {})
+  => "HELLO")
+
+^{:refer lang.base.emit-common/emit-with-uuid :added "4.0"}
+(fact "injects uuid for testing [lang.base.emit-common/emit-with-uuid]"
+
+  (emit-with-uuid nil '(!:uuid :hello :world) {} {})
+  => "00000000-05e9-18d2-0000-000006c11b92"
+
+  (vector :code.migrate/returned (emit-with-uuid nil '(!:uuid) {} {}))
+  => (satisfies (fn [result] (and (vector? result) (= 2 (count result)) (= :code.migrate/returned (first result)) (string? (second result))))))
+
+^{:refer lang.base.emit-common/emit-with-rand, :added "4.0"}
+(fact
+  "injects uuid for testing [lang.base.emit-common/emit-with-rand]"
+  (vector :code.migrate/returned (read-string (emit-with-rand nil '(!:rand :int) {} {})))
+  =>
+  (satisfies (fn [result] (and (vector? result) (= 2 (count result)) (= :code.migrate/returned (first result)) (integer? (second result)))))
+  (vector :code.migrate/returned (read-string (emit-with-rand nil '(!:rand) {} {})))
+  =>
+  (satisfies (fn [result] (and (vector? result) (= 2 (count result)) (= :code.migrate/returned (first result)) (double? (second result))))))
+
+^{:refer lang.base.emit-common/invoke-kw-parse :added "3.0"}
+(fact "seperates standard and keyword arguments"
+
+  (invoke-kw-parse [1 2 3 4 :name "hello" :foo "bar"])
+  => '[(1 2 3 4)
+       ((:name "hello") (:foo "bar"))])
+
+^{:refer lang.base.emit-common/emit-invoke-kw-pair :added "3.0"}
+(fact  "emits a kw argument pair"
+
+  (emit-invoke-kw-pair [:name "hello"] helper/+default+
+                       {})
+  => "name=\"hello\"")
+
+^{:refer lang.base.emit-common/emit-invoke-args :added "3.0"}
+(fact "produces the string for invoke call"
+
+  (emit-invoke-args [1 2 3 4 :name "hello" :foo "bar"]
+                    helper/+default+
+                    {})
+  => '("1" "2" "3" "4" "name=\"hello\"" "foo=\"bar\""))
+
+^{:refer lang.base.emit-common/emit-invoke-layout :added "4.0"}
+(fact "layout for invoke blocks"
+
+  (emit-invoke-layout ["ab\nc"
+                       "de\nf"]
+                      helper/+default+ {})
+  => "(ab\nc,de\nf)")
+
+^{:refer lang.base.emit-common/emit-invoke-raw :added "3.0"}
+(fact "invoke call for reserved ops"
+
+  (emit-invoke-raw "-" '[abc] helper/+default+ {})
+  => "-(abc)")
+
+^{:refer lang.base.emit-common/emit-invoke-static :added "3.0"}
+(fact "generates a static call, alternat"
+
+  (emit-invoke-static '(:table/new "hello")
+                      helper/+default+
+                      {})
+  => "table.new(\"hello\")")
+
+^{:refer lang.base.emit-common/emit-invoke-typecast :added "3.0"}
+(fact "generates typecast expression"
+
+  (emit-invoke-typecast '(:int (:char 2))
+                        helper/+default+
+                        {})
+  => "((int)(:char 2))")
+
+^{:refer lang.base.emit-common/emit-invoke :added "3.0"}
+(fact "general invoke call, incorporating keywords"
+
+  (emit-invoke :invoke
+               '(call "hello" (+ 1 2))
+               helper/+default+
+               {})
+  => "call(\"hello\",(+ 1 2))"
+
+  (emit-invoke :invoke
+               '(:help/call "hello" (+ 1 2))
+               helper/+default+
+               {}))
+
+^{:refer lang.base.emit-common/emit-new :added "3.0"}
+(fact "invokes a constructor"
+
+  (emit-new "new"
+            '(String 1 2 3 4)
+            helper/+default+
+            {})
+  => "new String(1,2,3,4)")
+
+^{:refer lang.base.emit-common/emit-class-static-invoke :added "4.0"}
+(fact "creates "
+
+  (emit-class-static-invoke
+   nil
+   '(String "new" 1 2 3 4)
+   helper/+default+
+   {})
+  => "String.new(1,2,3,4)")
+
+^{:refer lang.base.emit-common/emit-index-entry :added "3.0"}
+(fact "classifies the index entry"
+
+  (emit-index-entry 'hello helper/+default+ {})
+  => ".hello"
+
+  (emit-index-entry [9] helper/+default+ {})
+  => "[9]"
+
+  (emit-index-entry [9 10] helper/+default+ {})
+  => (throws)
+
+  (emit-index-entry '(call 1 2 3) helper/+default+ {})
+  => ".call(1,2,3)")
+
+^{:refer lang.base.emit-common/emit-index :added "3.0"}
+(fact "creates an indexed expression"
+
+  (emit-index nil '[x [hello] (world foo bar) baz] helper/+default+ {})
+  => "x[hello].world(foo,bar).baz")
+
+^{:refer lang.base.emit-common/emit-op :added "3.0"}
+(fact "helper for the emit op"
+
+  (emit-op :- '(:- "~~") (merge helper/+default+
+                                {:reserved {:-  {:emit :free}}})
+           {})
+  => "~~")
+
+^{:refer lang.base.emit-common/form-key :added "3.0"}
+(fact "returns the key associated with the form"
+
+  (form-key (first {:a 1}) {}) => [:map-entry :data nil]
+
+  (form-key [] {}) => [:vector :data nil]
+
+  (form-key () {}) => [:invoke :invoke nil])
+
+^{:refer lang.base.emit-common/emit-common-loop :added "4.0"}
+(fact "emits the raw string"
+
+  (emit-common-loop '(add 1 (:int 1))
+                   helper/+default+
+                   {})
+  => "add(1,(:int 1))"
+
+  (binding [common/*emit-fn* emit-common-loop]
+    (emit-common-loop '(add 1 (:int 1))
+                     helper/+default+
+                     {}))
+  => "add(1,((int)1))")
+
+^{:refer lang.base.emit-common/emit-common :added "4.0"}
+(fact "emits a string based on grammar"
+
+  (emit-common '(add 1
+                     (:int 1)
+                     (add (new Class 1 2 3)))
+               helper/+default+
+               {})
+  => "add(1,((int)1),add(new(Class,1,2,3)))")
+
+(comment
+  (emit-token :symbol 'for (merge helper/+default+
+                                  {:reserved '{for {}}})
+              {})
+  => (throws))
+
+^{:refer lang.base.emit-common/with:explode, :added "4.0", :id common-preserved-native-0}
+(fact
+  "form to control `explode` option [preserved native 0]"
+  (with:explode *explode*)
+  =>
+  true)
+
+^{:refer lang.base.emit-common/with-trace, :added "4.0", :id common-preserved-native-1}
+(fact
+  "form to control `trace` option [preserved native 1]"
+  (with-trace *trace*)
+  =>
+  true)
+
+^{:refer lang.base.emit-common/with-compressed, :added "3.0", :id common-preserved-native-2}
+(fact
+  "formats without newlines and indents [preserved native 2]"
+  (with-compressed *compressed*)
+  =>
+  true)
+
+^{:refer lang.base.emit-common/with-indent, :added "3.0", :id common-preserved-native-3}
+(fact
+  "adds indentation levels [preserved native 3]"
+  (with-indent [10] *indent*)
+  =>
+  10)
+
+^{:refer lang.base.emit-common/newline-indent, :added "3.0", :id common-preserved-native-4}
+(fact
+  "returns a newline with indent [preserved native 4]"
+  (newline-indent)
+  =>
+  "\n"
+  (with-indent [2] (newline-indent))
+  =>
+  "\n  ")
+
+^{:refer lang.base.emit-common/emit-reserved-value, :added "4.0", :id common-preserved-native-5}
+(fact
+  "emits a reserved value [preserved native 5]"
+  (emit-reserved-value 'hello {} {})
+  =>
+  nil
+  (emit-reserved-value
+    'hello
+    {:reserved '{hello {:value true, :raw "world"}}}
+    {})
+  =>
+  "world"
+  (emit-reserved-value 'hello {:reserved '{hello {}}} {})
+  =>
+  (throws))
+
+^{:refer lang.base.emit-common/emit-free-raw, :added "4.0", :id common-preserved-native-6}
+(fact
+  "emits free value [preserved native 6]"
+  (emit-free-raw "." [1 2 3] helper/+default+ {})
+  =>
+  "1.2.3")
+
+^{:refer lang.base.emit-common/emit-free, :added "4.0", :id common-preserved-native-7}
+(fact
+  "emits string with multiline support [preserved native 7]"
+  (emit-free " " '(:- 1 2 3 4) helper/+default+ {})
+  =>
+  "1 2 3 4")
+
+^{:refer lang.base.emit-common/emit-comment, :added "4.0", :id common-preserved-native-8}
+(fact
+  "emits a comment [preserved native 8]"
+  (emit-comment
+    nil
+    '(:# "This is a comment" A B 1)
+    helper/+default+
+    {})
+  =>
+  "// This is a comment A B 1"
+  (emit-comment
+    nil
+    '(:# "This \nis \na comment" A B 1)
+    helper/+default+
+    {})
+  =>
+  (prose/| "// This " "// is " "// a comment A B 1"))
+
+^{:refer lang.base.emit-common/emit-indent, :added "4.0", :id common-preserved-native-9}
+(fact
+  "emits an indented form [preserved native 9]"
+  (emit-indent
+    nil
+    '(\| "This\nis\nan indented" A B 1)
+    helper/+default+
+    {})
+  =>
+  (prose/| "  This" "  is" "  an indented A B 1"))
+
+^{:refer lang.base.emit-common/emit-macro, :added "4.0", :id common-preserved-native-10}
+(fact
+  "emits form [preserved native 10]"
+  (emit-macro
+    :double-array
+    '(double-array x y c)
+    {:reserved
+     {'double-array
+      {:macro (fn [form] (vec (concat (rest form) (rest form))))}}}
+    {})
+  =>
+  "[x y c x y c]")
+
+^{:refer lang.base.emit-common/emit-array, :added "4.0", :id common-preserved-native-11}
+(fact
+  "returns an array of emitted strings [preserved native 11]"
+  (emit-array [1 2 3] {} {})
+  =>
+  '("1" "2" "3"))
+
+^{:refer lang.base.emit-common/emit-wrappable?, :added "4.0", :id common-preserved-native-12}
+(fact
+  "checks if form if wrappable [preserved native 12]"
+  (emit-wrappable? '(!= 1 x) {:reserved {'!= {:emit :infix}}})
+  =>
+  true
+  (emit-wrappable? '(!= 1 x) {:reserved {'!= {:emit :none}}})
+  =>
+  false
+  (emit-wrappable?
+    '(fn:> 1)
+    {:reserved
+     {'fn {:wrappable true},
+      'fn:>
+      {:emit :macro, :macro (fn [_ & args] (apply list 'fn args))}}})
+  =>
+  true)
+
+^{:refer lang.base.emit-common/emit-squash, :added "4.0", :id common-preserved-native-13}
+(fact
+  "emits a squashed representation [preserved native 13]"
+  (emit-squash nil '(:% 1 2 3 "hello") (merge helper/+default+ {}) {})
+  =>
+  "123\"hello\"")
+
+^{:refer lang.base.emit-common/emit-wrapping, :added "4.0", :id common-preserved-native-14}
+(fact
+  "emits a potentially wrapped form [preserved native 14]"
+  (emit-wrapping
+    '(!= 1 x)
+    (merge helper/+default+ {:reserved {'!= {:emit :infix}}})
+    {})
+  =>
+  "((!= 1 x))")
+
+^{:refer lang.base.emit-common/wrapped-str, :added "3.0", :id common-preserved-native-15}
+(fact
+  "wrapped string using `:start` and `:end` keys of grammar [preserved native 15]"
+  (wrapped-str "hello" [:data :map] helper/+default+)
+  =>
+  "{hello}")
+
+^{:refer lang.base.emit-common/emit-unit, :added "4.0", :id common-preserved-native-16}
+(fact
+  "emits a unit [preserved native 16]"
+  (emit-unit {:default 'hello} '(:unit) helper/+default+ {})
+  =>
+  "hello")
+
+^{:refer lang.base.emit-common/emit-internal, :added "4.0", :id common-preserved-native-17}
+(fact
+  "emits string within the form [preserved native 17]"
+  (emit-internal '(% "hello") helper/+default+ {})
+  =>
+  "\"hello\"")
+
+^{:refer lang.base.emit-common/emit-internal-str, :added "4.0", :id common-preserved-native-18}
+(fact
+  "emits internal string [preserved native 18]"
+  (emit-internal-str
+    '(-%%- ["hello" "hello" "hello"])
+    helper/+default+
+    {})
+  =>
+  "\"hello\"\n\"hello\"\n\"hello\""
+  (binding [common/*emit-fn* common/emit-common-loop]
+    (emit-internal-str
+      '(%%% ["hello" "hello" "hello"])
+      helper/+default+
+      {}))
+  =>
+  "hello\nhello\nhello")
+
+^{:refer lang.base.emit-common/emit-pre, :added "3.0", :id common-preserved-native-19}
+(fact
+  "emits string before the arg [preserved native 19]"
+  (emit-pre "!" '[x] helper/+default+ {})
+  =>
+  "!x")
+
+^{:refer lang.base.emit-common/emit-post, :added "3.0", :id common-preserved-native-20}
+(fact
+  "emits string after the arg [preserved native 20]"
+  (emit-post "--" '[x] helper/+default+ {})
+  =>
+  "x--")
+
+^{:refer lang.base.emit-common/emit-prefix, :added "4.0", :id common-preserved-native-21}
+(fact
+  "emits operator before the arg [preserved native 21]"
+  (emit-prefix "hello" '[x] helper/+default+ {})
+  =>
+  "hello x")
+
+^{:refer lang.base.emit-common/emit-postfix, :added "4.0", :id common-preserved-native-22}
+(fact
+  "emits operator before the arg [preserved native 22]"
+  (emit-postfix "hello" '[x] helper/+default+ {})
+  =>
+  "x hello")
+
+^{:refer lang.base.emit-common/emit-infix, :added "3.0", :id common-preserved-native-23}
+(fact
+  "emits infix ops [preserved native 23]"
+  (emit-infix "|" '[x y z] helper/+default+ {})
+  =>
+  "x | y | z")
+
+^{:refer lang.base.emit-common/emit-infix-default, :added "3.0", :id common-preserved-native-24}
+(fact
+  "emits infix with a default value [preserved native 24]"
+  (emit-infix-default "/" '[x] 1 helper/+default+ {})
+  =>
+  "1 / x")
+
+^{:refer lang.base.emit-common/emit-infix-pre, :added "3.0", :id common-preserved-native-25}
+(fact
+  "emits infix with a default value [preserved native 25]"
+  (emit-infix-pre "-" '[x] helper/+default+ {})
+  =>
+  "-x")
+
+^{:refer lang.base.emit-common/emit-infix-if-single, :added "4.0", :id common-preserved-native-26}
+(fact
+  "checks for infix in single [preserved native 26]"
+  (emit-infix-if '(:? true x y) helper/+default+ {})
+  =>
+  "true ? x : y")
+
+^{:refer lang.base.emit-common/emit-infix-if, :added "3.0", :id common-preserved-native-27}
+(fact
+  "emits an infix if string [preserved native 27]"
+  (emit-infix-if '(:? true x y) helper/+default+ {})
+  =>
+  "true ? x : y"
+  (emit-infix-if '(:? true x y) helper/+default+ {})
+  =>
+  "true ? x : y"
+  (emit-infix-if '(:? true x :else y) helper/+default+ {})
+  =>
+  "true ? x : y"
+  (emit-infix-if
+    '(:? true x true y true z :else t)
+    helper/+default+
+    {:reserved {:? {:emit :infix-if}}})
+  =>
+  "true ? x : (:? true y (:? true z t))")
+
+^{:refer lang.base.emit-common/drop-last-value, :id common-preserved-native-28}
+(fact
+  "drops exactly the final value while preserving the prefix [preserved native 28]"
+  [(common/drop-last-value [1 2 3]) (common/drop-last-value [])]
+  =>
+  [[1 2] []])
+
+^{:refer lang.base.emit-common/emit-between, :added "3.0", :id common-preserved-native-29}
+(fact
+  "emits the raw symbol between two elems [preserved native 29]"
+  (emit-between ":" [1 2] helper/+default+ {})
+  =>
+  "1:2")
+
+^{:refer lang.base.emit-common/emit-bi, :added "3.0", :id common-preserved-native-30}
+(fact
+  "emits infix with two args [preserved native 30]"
+  (emit-bi "==" '[x y] helper/+default+ {})
+  =>
+  "x == y"
+  (emit-bi "==" '[x y z] helper/+default+ {})
+  =>
+  (throws))
+
+^{:refer lang.base.emit-common/emit-assign, :added "3.0", :id common-preserved-native-31}
+(fact
+  "emits a setter expression [preserved native 31]"
+  (emit-assign ":eq" '[x 1] helper/+default+ {})
+  =>
+  "x :eq 1"
+  (emit-assign "=" '[x 1] helper/+default+ {})
+  =>
+  "x = 1"
+  (emit-assign "=" '[x 1] helper/+default+ {})
+  =>
+  "x = 1")
+
+^{:refer lang.base.emit-common/emit-return-do, :added "4.0", :id common-preserved-native-32}
+(fact
+  "creates a return statement on `do` block [preserved native 32]"
+  (emit-return-do [1 2 3] helper/+default+ {})
+  =>
+  "(1 2 (return 3))")
+
+^{:refer lang.base.emit-common/emit-return-base, :added "4.0", :id common-preserved-native-33}
+(fact
+  "return base type [preserved native 33]"
+  (emit-return-base "break" [1] helper/+default+ {})
+  =>
+  "break 1"
+  (emit-return-base "return" [1] helper/+default+ {})
+  =>
+  "return 1")
+
+^{:refer lang.base.emit-common/emit-return, :added "3.0", :id common-preserved-native-34}
+(fact
+  "creates a return type statement [preserved native 34]"
+  (emit-return "break" [1] helper/+default+ {})
+  =>
+  "break 1"
+  (emit-return "return" [1 2 3] helper/+default+ {})
+  =>
+  (throws)
+  (emit-return
+    "return"
+    [1 2 3]
+    (assoc-in helper/+default+ [:default :return :multi] true)
+    {})
+  =>
+  "return 1, 2, 3")
+
+^{:refer lang.base.emit-common/emit-with-global, :added "4.0", :id common-preserved-native-35}
+(fact
+  "customisable emit function for global vars [preserved native 35]"
+  (emit-with-global nil '(!:G HELLO) {} {})
+  =>
+  "HELLO")
+
+^{:refer lang.base.emit-common/emit-symbol-classify, :added "3.0", :id common-preserved-native-36}
+(fact
+  "classify symbol given options [preserved native 36]"
+  (emit-symbol-classify 't/hello {:module {:alias '{t table}}})
+  =>
+  '[:alias table]
+  (emit-symbol-classify 't.n/hello {:module {:alias '{t table}}})
+  =>
+  '[:link t.n])
+
+^{:refer lang.base.emit-common/emit-symbol-standard, :added "3.0", :id common-preserved-native-37}
+(fact
+  "emits a standard symbol [preserved native 37]"
+  (emit-symbol-standard 'print! helper/+default+ {:layout :full})
+  =>
+  "printf"
+  (emit-symbol-standard
+    'print!
+    {:token {:symbol {:replace {}}, :string {:quote :single}}}
+    {:layout :full})
+  =>
+  "print!")
+
+^{:refer lang.base.emit-common/emit-symbol, :added "4.0", :id common-preserved-native-38}
+(fact
+  "emits symbol allowing for custom functions [preserved native 38]"
+  (emit-symbol
+    'a
+    {:token {:symbol {:emit-fn (fn [sym _ _] (str sym 123))}}}
+    {})
+  =>
+  "a123")
+
+^{:refer lang.base.emit-common/emit-token, :added "3.0", :id common-preserved-native-39}
+(fact
+  "customisable emit function for tokens [preserved native 39]"
+  (emit-token :number 1 helper/+default+ {})
+  =>
+  "1"
+  (emit-token :string "1" {:token {:string {:quote :single}}} {})
+  =>
+  "'1'"
+  (emit-token
+    :string
+    "1"
+    {:token {:string {:emit (fn [s _ _] (keyword s))}}}
+    {})
+  =>
+  :1)
+
+^{:refer lang.base.emit-common/emit-with-decorate, :added "4.0", :id common-preserved-native-40}
+(fact
+  "customisable emit function for global vars [preserved native 40]"
+  (emit-with-decorate nil '(!:decorate {:id 1} HELLO) {} {})
+  =>
+  "HELLO")
+
+^{:refer lang.base.emit-common/emit-with-uuid, :added "4.0", :id common-preserved-native-41}
+(fact
+  "injects uuid for testing [preserved native 41]"
+  (emit-with-uuid nil '(!:uuid :hello :world) {} {})
+  =>
+  "00000000-05e9-18d2-0000-000006c11b92"
+  (vector :code.migrate/returned (emit-with-uuid nil '(!:uuid) {} {}))
+  =>
+  (satisfies (fn [result] (and (vector? result) (= 2 (count result)) (= :code.migrate/returned (first result)) (string? (second result))))))
+
+^{:refer lang.base.emit-common/emit-with-rand, :id common-preserved-native-42, :added "4.0"}
+(fact
+  "random emission preserves type bounds and callback arguments [preserved native 42]"
+  (let [integer-result (read-string
+                         (emit-with-rand nil '(!:rand :int) {} {}))
+        double-result (read-string
+                        (emit-with-rand nil '(!:rand) {} {}))]
+    [(integer? integer-result)
+     (<= 0 integer-result)
+     (< integer-result 2147483647)
+     (double? double-result)
+     (<= 0 double-result)
+     (< double-result 1)])
+  =>
+  [true true true true true true]
+  (binding [common/*emit-fn* (fn [value grammar options] [(integer?
+                                                            value)
+                                                          grammar
+                                                          options])]
+    (emit-with-rand
+      nil
+      '(!:rand :int)
+      {:grammar :kept}
+      {:options :kept}))
+  =>
+  [true {:grammar :kept} {:options :kept}])
+
+^{:refer lang.base.emit-common/first-keyword-index, :id common-preserved-native-43}
+(fact
+  "finds the first keyword option boundary [preserved native 43]"
+  [(common/first-keyword-index '[value 1 :name "hello"])
+   (common/first-keyword-index '[value 1])]
+  =>
+  [2 -1])
+
+^{:refer lang.base.emit-common/invoke-kw-parse, :added "3.0", :id common-preserved-native-44}
+(fact
+  "seperates standard and keyword arguments [preserved native 44]"
+  (invoke-kw-parse [1 2 3 4 :name "hello" :foo "bar"])
+  =>
+  '[(1 2 3 4) ((:name "hello") (:foo "bar"))])
+
+^{:refer lang.base.emit-common/emit-invoke-kw-pair, :added "3.0", :id common-preserved-native-45}
+(fact
+  "emits a kw argument pair [preserved native 45]"
+  (emit-invoke-kw-pair [:name "hello"] helper/+default+ {})
+  =>
+  "name=\"hello\"")
+
+^{:refer lang.base.emit-common/emit-invoke-args, :added "3.0", :id common-preserved-native-46}
+(fact
+  "produces the string for invoke call [preserved native 46]"
+  (emit-invoke-args
+    [1 2 3 4 :name "hello" :foo "bar"]
+    helper/+default+
+    {})
+  =>
+  '("1" "2" "3" "4" "name=\"hello\"" "foo=\"bar\""))
+
+^{:refer lang.base.emit-common/emit-invoke-layout, :added "4.0", :id common-preserved-native-47}
+(fact
+  "layout for invoke blocks [preserved native 47]"
+  (emit-invoke-layout ["ab\nc" "de\nf"] helper/+default+ {})
+  =>
+  "(ab\nc,de\nf)")
+
+^{:refer lang.base.emit-common/emit-invoke-raw, :added "3.0", :id common-preserved-native-48}
+(fact
+  "invoke call for reserved ops [preserved native 48]"
+  (emit-invoke-raw "-" '[abc] helper/+default+ {})
+  =>
+  "-(abc)")
+
+^{:refer lang.base.emit-common/emit-invoke-static, :added "3.0", :id common-preserved-native-49}
+(fact
+  "generates a static call, alternat [preserved native 49]"
+  (emit-invoke-static '(:table/new "hello") helper/+default+ {})
+  =>
+  "table.new(\"hello\")")
+
+^{:refer lang.base.emit-common/emit-invoke-typecast, :added "3.0", :id common-preserved-native-50}
+(fact
+  "generates typecast expression [preserved native 50]"
+  (emit-invoke-typecast '(:int (:char 2)) helper/+default+ {})
+  =>
+  "((int)(:char 2))")
+
+^{:refer lang.base.emit-common/emit-invoke, :added "3.0", :id common-preserved-native-51}
+(fact
+  "general invoke call, incorporating keywords [preserved native 51]"
+  (emit-invoke :invoke '(call "hello" (+ 1 2)) helper/+default+ {})
+  =>
+  "call(\"hello\",(+ 1 2))"
+  (emit-invoke
+    :invoke
+    '(:help/call "hello" (+ 1 2))
+    helper/+default+
+    {}))
+
+^{:refer lang.base.emit-common/emit-new, :added "3.0", :id common-preserved-native-52}
+(fact
+  "invokes a constructor [preserved native 52]"
+  (emit-new "new" '(String 1 2 3 4) helper/+default+ {})
+  =>
+  "new String(1,2,3,4)")
+
+^{:refer lang.base.emit-common/emit-class-static-invoke, :added "4.0", :id common-preserved-native-53}
+(fact
+  "creates  [preserved native 53]"
+  (emit-class-static-invoke
+    nil
+    '(String "new" 1 2 3 4)
+    helper/+default+
+    {})
+  =>
+  "String.new(1,2,3,4)")
+
+^{:refer lang.base.emit-common/emit-index-entry, :added "3.0", :id common-preserved-native-54}
+(fact
+  "classifies the index entry [preserved native 54]"
+  (emit-index-entry 'hello helper/+default+ {})
+  =>
+  ".hello"
+  (emit-index-entry [9] helper/+default+ {})
+  =>
+  "[9]"
+  (emit-index-entry [9 10] helper/+default+ {})
+  =>
+  (throws)
+  (emit-index-entry '(call 1 2 3) helper/+default+ {})
+  =>
+  ".call(1,2,3)")
+
+^{:refer lang.base.emit-common/emit-index, :added "3.0", :id common-preserved-native-55}
+(fact
+  "creates an indexed expression [preserved native 55]"
+  (emit-index nil '[x [hello] (world foo bar) baz] helper/+default+ {})
+  =>
+  "x[hello].world(foo,bar).baz")
+
+^{:refer lang.base.emit-common/emit-op, :added "3.0", :id common-preserved-native-56}
+(fact
+  "helper for the emit op [preserved native 56]"
+  (emit-op
+    :-
+    '(:- "~~")
+    (merge helper/+default+ {:reserved {:- {:emit :free}}})
+    {})
+  =>
+  "~~")
+
+^{:refer lang.base.emit-common/form-key, :added "3.0", :id common-preserved-native-57}
+(fact
+  "returns the key associated with the form [preserved native 57]"
+  (form-key (first {:a 1}) {})
+  =>
+  [:map-entry :data nil]
+  (form-key [] {})
+  =>
+  [:vector :data nil]
+  (form-key () {})
+  =>
+  [:invoke :invoke nil])
+
+^{:refer lang.base.emit-common/emit-common-loop, :added "4.0", :id common-preserved-native-58}
+(fact
+  "emits the raw string [preserved native 58]"
+  (emit-common-loop '(add 1 (:int 1)) helper/+default+ {})
+  =>
+  "add(1,(:int 1))"
+  (binding [common/*emit-fn* emit-common-loop]
+    (emit-common-loop '(add 1 (:int 1)) helper/+default+ {}))
+  =>
+  "add(1,((int)1))")
+
+^{:refer lang.base.emit-common/emit-common, :added "4.0", :id common-preserved-native-59}
+(fact
+  "emits a string based on grammar [preserved native 59]"
+  (emit-common
+    '(add 1 (:int 1) (add (new Class 1 2 3)))
+    helper/+default+
+    {})
+  =>
+  "add(1,((int)1),add(new(Class,1,2,3)))")
+
+^{:refer lang.base.emit-common/emit-common-loop-bound, :id common-preserved-native-60}
+(fact
+  "binds recursive emission while dispatching through the supplied default [preserved native 60]"
+  (let [seen (atom nil)
+        recursive (fn [form _ _] (reset! seen form) "nested")
+        default (fn [_ _ grammar mopts]
+                  (recursive '(child) grammar mopts))]
+    [(common/emit-common-loop-bound
+       '(hello)
+       {}
+       {}
+       {}
+       default
+       recursive)
+     @seen])
+  =>
+  ["nested" '(child)])
+
+^{:refer lang.base.emit-common/emit-invoke, :added "4.0", :id common-preserved-native-61}
+(fact
+  "uses Foundation callee wrapping without adding parentheses to chained invocations [preserved native 61]"
+  (emit-invoke :invoke '((make-fn 1) 2) helper/+default+ {})
+  =>
+  "(make-fn 1)(2)"
+  (emit-invoke :invoke '((fn [x] x) 2) helper/+default+ {})
+  =>
+  "((fn [x] x))(2)"
+  (emit-invoke
+    :invoke
+    '((+ 1 2) 3)
+    (assoc-in helper/+default+ [:reserved '+] {:emit :infix})
+    {})
+  =>
+  "((+ 1 2))(3)")
+
+^{:refer lang.base.emit-common/*explode*, :id common-preserved-native-62}
+(fact
+  "explode is opt-in and its binding restores the baseline [preserved native 62]"
+  [common/*explode* (with:explode common/*explode*) common/*explode*]
+  =>
+  [nil true nil])
+
+^{:refer lang.base.emit-common/*trace*, :id common-preserved-native-63}
+(fact
+  "trace is opt-in and its binding restores the baseline [preserved native 63]"
+  [common/*trace* (with-trace common/*trace*) common/*trace*]
+  =>
+  [nil true nil])
+
+^{:refer lang.base.emit-common/*indent*, :id common-preserved-native-64}
+(fact
+  "indent is zero by default and nested indentation is scoped [preserved native 64]"
+  [common/*indent*
+   (binding [common/*indent* 3]
+     [(newline-indent)
+      (with-indent [2] (newline-indent))
+      (newline-indent)])
+   common/*indent*]
+  =>
+  [0 ["\n   " "\n     " "\n   "] 0])
+
+^{:refer lang.base.emit-common/*compressed*, :id common-preserved-native-65}
+(fact
+  "compressed whitespace is scoped and restores even after an exception [preserved native 65]"
+  [common/*compressed*
+   (with-compressed (newline-indent))
+   (try
+     (binding [common/*compressed* true]
+       (throw (ex :test/compressed {})))
+     (catch error common/*compressed*))
+   common/*compressed*]
+  =>
+  [false " " false false])
+
+^{:refer lang.base.emit-common/*multiline*, :id common-preserved-native-66}
+(fact
+  "multiline output is disabled by default and locally selectable [preserved native 66]"
+  [common/*multiline*
+   (binding [common/*multiline* true] common/*multiline*)
+   common/*multiline*]
+  =>
+  [false true false])
+
+^{:refer lang.base.emit-common/*max-len*, :id common-preserved-native-67}
+(fact
+  "the default maximum line length is sixty and scoped overrides restore it [preserved native 67]"
+  [common/*max-len*
+   (binding [common/*max-len* 12] common/*max-len*)
+   common/*max-len*]
+  =>
+  [60 12 60])
+
+^{:refer lang.base.emit-common/*emit-internal*, :id common-preserved-native-68}
+(fact
+  "internal emission is disabled by default and scoped overrides restore it [preserved native 68]"
+  [common/*emit-internal*
+   (binding [common/*emit-internal* true] common/*emit-internal*)
+   common/*emit-internal*]
+  =>
+  [false true false])
+
+^{:refer lang.base.emit-common/*emit-fn*, :id common-preserved-native-69}
+(fact
+  "the default recursive emitter prints forms and a scoped replacement restores it [preserved native 69]"
+  [(common/*emit-fn* '(call 1) {} {})
+   (binding [common/*emit-fn* (fn [form grammar options]
+                                "replacement")]
+     (common/*emit-fn* '(call 1) {} {}))
+   (common/*emit-fn* '(call 1) {} {})]
+  =>
+  ["(call 1)" "replacement" "(call 1)"])
+
+^{:refer lang.base.emit-common/+emit-lookup+, :id common-preserved-native-70}
+(fact
+  "the common dispatch table owns exactly token invocation and macro emission [preserved native 70]"
+  [(set (keys common/+emit-lookup+))
+   ((deref (get common/+emit-lookup+ :token))
+     :number
+     1
+     helper/+default+
+     {})
+   ((deref (get common/+emit-lookup+ :invoke))
+     :invoke
+     '(call 2)
+     helper/+default+
+     {})
+   ((deref (get common/+emit-lookup+ :macro))
+     :macro
+     '(expand 2)
+     (assoc-in
+       helper/+default+
+       [:reserved 'expand]
+       {:macro (fn [form] '(expanded 2))})
+     {})]
+  =>
+  [#{:token :macro :invoke} "1" "call(2)" "(expanded 2)"])
+
+^{:refer lang.base.emit-common/emit-token :id common-native-scalar-token-options}
+(fact "preserves native scalar token spellings and explicit token option maps"
+  [(common/emit-token :nil nil {:token {:nil "null"}} {})
+   (common/emit-token :true true {:token {:true "YES"}} {})
+   (common/emit-token :false false {:token {:false "NO"}} {})
+   (common/emit-token :nil nil {:token {:nil ""}} {})
+   (common/emit-token :nil nil {:token {:nil {:as "NIL"}}} {})
+   (common/emit-token :nil nil {} {})
+   (common/emit-token :number 42 {:token {:number {:as (fn [token] (str "v" token))}}} {})
+   (common/emit-token :number 42 {:token {:number {:as (var str)}}} {})]
+  => ["null" "YES" "NO" "" "NIL" "nil" "v42" "42"])

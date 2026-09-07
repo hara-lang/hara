@@ -2,7 +2,8 @@
   (:use code.test)
   (:require [lang.base.emit-common :as common]
             [lang.base.emit-helper :as helper]
-            [lang.base.emit-special :as special]))
+            [lang.base.emit-special :as special]
+            [lang.core.script :as script]))
 
 (def snapshot
   {:js {:book {:modules {'app.core
@@ -42,17 +43,41 @@
   => "print(1)")
 
 ^{:refer lang.base.emit-special/emit-with-eval :added "4.0"}
-(fact "portable emission rejects implicit host evaluation"
-  (special/emit-with-eval nil nil '(!:eval (+ 1 2)) {} {})
-  => (throws))
+(fact "evaluates host forms and emits their values"
+  (special/emit-with-eval nil nil '(!:eval (+ 1 2 3)) helper/+default+ {})
+  => "6"
+
+  (special/emit-with-eval nil nil '(!:eval '(+ 1 2 3)) helper/+default+ {})
+  => "(+ 1 2 3)"
+
+  (special/emit-with-eval nil nil '(!:eval (+ host-value 2)) helper/+default+
+                          {:namespace 'lang.base.emit-special-test})
+  => "3"
+
+  (try
+    (special/emit-with-eval
+     nil nil '(!:eval (throw (ex :argument {} :ex/message "host failure")))
+     helper/+default+ {})
+    :no-error
+    (catch error [(:ex/code (ex-data error)) (:ex/message (ex-data error))]))
+  => [:hara/argument "host failure"])
 
 ^{:refer lang.base.emit-special/emit-with-deref :added "4.0"}
-(fact "portable emission rejects implicit host dereference"
+(fact "dereferences host Vars and rejects non-Var forms"
+  (special/emit-with-deref nil nil
+                           '(!:deref (var lang.base.emit-special-test/host-value))
+                           helper/+default+ {})
+  => "1"
+
+  (special/emit-with-deref nil nil '(!:deref (var host-value)) helper/+default+
+                           {:namespace 'lang.base.emit-special-test})
+  => "1"
+
   (try
-    (special/emit-with-deref nil nil '(!:deref (var x)) {} {})
-    :not-rejected
-    (catch error :rejected))
-  => :rejected)
+    (special/emit-with-deref nil nil '(!:deref (+ 1 2)) helper/+default+ {})
+    :no-error
+    (catch error [(:ex/code (ex-data error)) (:form (ex-data error))]))
+  => [:hara/argument '(+ 1 2)])
 
 ^{:refer lang.base.emit-special/emit-with-lang :added "4.0"}
 (fact "selects a snapshot language before emitting"
@@ -75,3 +100,33 @@
           :reserved {'quote {:op :quote :emit :quote}})
    {})
   => "(1,2,3)")
+
+^{:refer lang.base.emit-special/allowed-op? :added "0.1"}
+(fact "allows every operation without a filter and only members with a filter"
+  [(special/allowed-op? nil :def)
+   (special/allowed-op? #{:def :defn} :def)
+   (special/allowed-op? #{:def :defn} :test)
+   (special/allowed-op? #{} :def)]
+  => [true true false false])
+
+(def host-value 1)
+
+^{:refer lang.base.emit-special/emit-with-preprocess :added "4.0"}
+(fact "emits evaluated target forms without native staging markers and retains metadata"
+  (let [baseline (script/script-snapshot)
+        result
+        (try
+          (script/script-reset!)
+          (script/setup :lua 'demo.bootstrap {} true 'lang.base.emit-special-test)
+          (let [book (script/selected-book :lua)
+                options {:lang :lua :book book}]
+            [(binding [common/*emit-fn* special/test-special-loop]
+               (special/emit-with-eval nil nil '(!:eval '(+ 1 2 3))
+                                       (:grammar book) options))
+             (binding [common/*emit-fn* (fn [form grammar mopts]
+                                         [(first form) (:line (meta form))])]
+               (special/emit-with-preprocess
+                (with-meta '(+ 1 2 3) {:line 23}) (:grammar book) options))])
+          (finally (script/script-restore! baseline)))]
+    [result (= baseline (script/script-snapshot))])
+  => [["1 + 2 + 3" ['+ 23]] true])

@@ -2,108 +2,72 @@
 
 (def ^:dynamic *symbol* nil)
 
-(defn as-list
-  [values]
-  (reduce (fn [result value]
-            (cons value result))
-          '()
-          (reverse (vec values))))
-
 (defn get-comment
   "gets the comment access prefix for a language
-
+ 
    (get-comment helper/+default+ {})
    => \"//\""
-    [grammar _]
-  (get-in grammar [:default :comment :prefix]))
+  {:added "4.0"}
+  [grammar _] 
+  (-> grammar :default :comment :prefix))
 
 (defn format-fargs
   "formats function inputs"
+  {:added "3.0"}
   [args]
   (let [values (vec args)
-        amount (count values)
-        doc-value (if (> amount 0) (nth values 0) nil)
-        has-doc (string? doc-value)
-        doc (if has-doc doc-value "")
-        attr-index (if has-doc 1 0)
-        attr-value (if (> amount attr-index)
-                     (nth values attr-index)
-                     nil)
-        has-attr (map? attr-value)
-        attr (if has-attr attr-value {})
-        body-index (if has-attr (+ attr-index 1) attr-index)
-        body (as-list (drop body-index values))
-        body (if (and (= 1 (count body))
-                      (sequential? (first body))
-                      (vector? (first (first body))))
-               (first body)
-               body)]
-    [doc attr body]))
-
-(defn mixin-value
-  [value]
-  (if (= value '*symbol*) *symbol* value))
-
-(defn mixin-map
-  [value]
-  (reduce-kv (fn [result key item]
-               (assoc result key (mixin-value item)))
-             {}
-             value))
-
-(defn mixin-pairs
-  [values]
-  (loop [result {}
-         remaining values]
-    (if (empty? remaining)
-      result
-      (recur (assoc result
-                    (mixin-value (first remaining))
-                    (mixin-value (second remaining)))
-             (rest (rest remaining))))))
-
-(defn evaluate-mixin-form
-  [form]
-  (let [operation (first form)
-        arguments (vec (map mixin-value (rest form)))]
-    (cond (= operation 'hash-map)
-          (mixin-pairs arguments)
-
-          :else
-          (let [resolved (resolve operation)]
-            (if resolved
-              (apply (deref resolved) arguments)
-              (throw (ex :dependency {:form form}
-                         :ex/message "Unable to resolve mixin form")))))))
+        doc-value (first values)
+        attr-value (first (drop 1 values))
+        more (seq (drop 2 values))
+        initialized (if (string? doc-value)
+                      [doc-value attr-value more]
+                      (if (nil? attr-value)
+                        ["" doc-value more]
+                        ["" doc-value (cons attr-value more)]))
+        doc (first initialized)
+        possible-attr (second initialized)
+        tail (first (drop 2 initialized))
+        attr (if (map? possible-attr) possible-attr {})
+        body (if (map? possible-attr) tail (cons possible-attr tail))
+        head (first body)
+        result (cond
+                 (vector? head) body
+                 (and (form? head) (vector? (first head))) (if
+                                                             (seq
+                                                               (rest
+                                                                 body))
+                                                             body
+                                                             head)
+                 :else (throw
+                         (ex
+                           :generic
+                           {:body body}
+                           :ex/message
+                           "Invalid body")))]
+    [doc attr result]))
 
 (defn format-defn-mixins
   "applies all mixins in order"
+  {:added "4.0"}
   [m mixins]
-  (reduce (fn [m entry]
-            (cond (symbol? entry)
-                  ((deref (resolve entry)) m)
-
-                  (map? entry)
-                  (merge m (mixin-map entry))
-
-                  :else
-                  (evaluate-mixin-form entry)))
-          m
-          mixins))
+  (reduce
+    (fn [m entry]
+      (cond
+        (symbol? entry) ((deref (resolve entry)) m)
+        (form? entry) (eval entry)
+        (map? entry) (merge m (eval entry))
+        :else m))
+    m
+    mixins))
 
 (defn format-defn
   "standardize defn forms"
-  [form]
-  (let [op (first form)
-        sym (second form)
-        args (drop 2 form)
-        formatted (format-fargs args)
-        doc (first formatted)
-        attr (second formatted)
-        body (first (rest (rest formatted)))
+  {:added "3.0"}
+  ([[op sym & args]]
+   (let [[doc attr body] (format-fargs args)
          attr (merge attr {:doc doc})
-         sym-meta (or (meta sym) {})
-         mixins (:! sym-meta)
+         {mixins :!
+          :as sym-meta} (meta sym)
          mixed (if (not (nil? mixins))
                  (binding [*symbol* sym]
                    (format-defn-mixins (merge attr sym-meta)
@@ -111,43 +75,29 @@
                                          mixins
                                          [mixins]))))]
      [attr
-      (as-list
-       (concat (cons op
-                     (cons (IObjType/with-meta
-                            sym
-                            (dissoc (merge sym-meta mixed) :!))
-                           '()))
-               body))]))
+      (concat (list op (with-meta sym
+                         (dissoc (merge sym-meta mixed) :!)))
+              body)])))
 
 (defn tf-for-index
   "default for-index transform
-
+ 
    (tf-for-index '(for:index
                    [i [0 2 3]]))
    => '(for [(var i := 0) (< i 2) (:= i (+ i 3))])"
-  [form]
-  (let [binding-form (second form)
-        i (first binding-form)
-        range-form (second binding-form)
-        start (first range-form)
-        stop (second range-form)
-        step (first (rest (rest range-form)))
-        body (drop 2 form)
-        step (or step 1)
+  {:added "4.0"}
+  [[_ [i [start stop step]] & body]]
+  (let [step (or step 1)
         sign (if (and (number? step)
                       (pos? step))
                '<
                '>)]
-    (as-list
-     (concat
-      (cons 'for
-            (cons [(as-list ['var i ':= start])
-                   (as-list [sign i stop])
-                   (as-list [':= i (as-list ['+ i step])])]
-                  '()))
-      body))))
+    `(~'for [(var ~i := ~start) (~sign ~i ~stop) (:= ~i (~'+ ~i ~step))]
+      ~@body)))
 
+;;
 ;; SPEC
+;;
 
 (def +op-builtin+
   [{:op :with-lang     :symbol #{'!:lang}      :emit :with-lang}
@@ -178,7 +128,7 @@
    {:op :c-minus     :symbol #{\- 'comment}  :emit :discard    :raw " "   :value true   :free " " :sep " " :type :free}
    {:op :c-vert      :symbol #{\|}           :emit :indent     :raw "|"   :value true}])
 
-(def +op-free-literal+
+(def +op-free-literal+                       
   [{:op :c-null      :symbol #{\0}           :emit :throw   :raw ""    :value true   :free  ""}
    {:op :c-hat       :symbol #{\^}           :emit :throw   :raw "^"   :value true   :free  "^"}
    {:op :c-comma     :symbol #{\,}           :emit :throw   :raw ","   :value true   :free  ","}
@@ -251,7 +201,7 @@
   [{:op :seteq       :symbol #{:=}           :emit :assign      :raw "="}
    {:op :var         :symbol #{'var}         :emit :def-assign  :raw ""      :assign "="}])
 
-(def +op-bit+
+(def +op-bit+        
   [{:op :bor         :symbol #{'b:|}      :emit :infix    :raw "|"}
    {:op :band        :symbol #{'b:&}      :emit :infix    :raw "&"}
    {:op :bxor        :symbol #{'b:xor}    :emit :infix    :raw "^"}
@@ -262,7 +212,9 @@
   [{:op :ptr-deref   :symbol '#{:&}  :raw "&" :emit :pre}
    {:op :ptr-ref     :symbol '#{:*}  :raw "*" :emit :pre}])
 
+;;
 ;; LAMBDA
+;;
 
 (def +op-fn+
   [{:op   :fn        :symbol #{'fn}
@@ -270,62 +222,69 @@
                               :main #{:body}}}])
 
 (def +op-block+
-  [{:op   :block     :symbol #{'block}
+  [{:op   :block     :symbol #{'block}           
     :type :block     :block  {:raw ""
                               :main #{:body}}}])
 
+;;
 ;; BLOCKS
+;;
+
 
 (def +op-control-base+
   [{:op :do*         :symbol #{'do*}        :emit :do*  :type :block}
    {:op :do          :symbol #{'do}         :emit :do   :type :block}])
 
 (def +op-control-general+
-  [{:op :for         :symbol #{'for}
+  [{:op :for         :symbol #{'for}       
     :type :block     :block  {:main  #{:parameter :body}}}
-   {:op :while       :symbol #{'while}
-    :type :block     :block  {:main #{:parameter :body}}}
-   {:op :branch      :symbol #{'br*}
+   {:op :while       :symbol #{'while}                             
+    :type :block     :block  {:main #{:parameter :body}}} 
+   {:op :branch      :symbol #{'br*}                            
     :type :block     :block  {:main  #{}
                               :raw ""
-                              :control [[:if      {:required true
-                                                   :main #{:parameter :body}}]
+	                      :control [[:if      {:required true
+	                                           :main #{:parameter :body}}]
                                         [:elseif  {:main #{:parameter :body}}]
                                         [:else    {:main #{:body}}]]}}])
 
 (def +op-control-try-catch+
-  [{:op :try         :symbol #{'try}
+  [{:op :try         :symbol #{'try}     
     :type :block     :block  {:main #{:body}
                               :control [[:catch   {:required true
                                                    :main #{:parameter :body}}]
                                         [:finally {:main #{:body}}]]}}])
 
+;;
 ;; TOP LEVEL
+;;
 
 (def +op-top-base+
-  [{:op :defn        :symbol #{'defn 'defn- 'defabstract} :spec :defn
+  [{:op :defn        :symbol #{'defn 'defn- 'defabstract} :spec :defn    
     :type :def       :section :code             :fn true
-    :arglists '([sym doc? & [attr? & body]])
+    :arglists '([sym doc? & [attr? & body]])      
     :format #'format-defn}
-
-   {:op :def         :symbol #{'def}        :spec :def
+   
+   {:op :def         :symbol #{'def}        :spec :def     
     :type :def       :section :code
     :arglists '([sym body])}
-
-   {:op :defrun      :symbol #{'defrun}     :spec :defrun
+   
+   {:op :defrun      :symbol #{'defrun}     :spec :defrun   
     :type :def       :section :code
     :arglists '([sym & body])}])
 
 (def +op-top-global+
-  [{:op :defglobal   :symbol #{'defglobal 'deftemp}  :spec :def
+  [{:op :defglobal   :symbol #{'defglobal 'deftemp}  :spec :def  
     :type :def       :section :code         :raw ""
     :arglists '([sym body])}])
 
+;;
 ;; OBJECT ORIENTATED
+;;
 
 (def +op-class+
   [{:op :new         :symbol #{'new}        :emit :new  :value true :raw "new"}
-   {:op :defclass    :symbol #{'defclass}   :spec :defclass
+   {:op :defclass    :symbol #{'defclass}   :spec :defclass  
     :type :def       :section :code         :abstract true}
    {:op :static-invoke      :symbol #{'$}   :emit :static-invoke}
    {:op :this        :symbol #{'this}       :emit :throw     :raw "this"  :value true}
@@ -333,7 +292,9 @@
    {:op :fn.inner    :symbol #{'fn.inner}   :type :fn :block  {:raw "" :main #{:body}}}
    {:op :var.inner   :symbol #{'var.inner}  :assign "=" :raw "" :emit :def-assign}])
 
+;;
 ;; FUNCTIONAL CORE
+;;
 
 (def +op-functional-core+
   [{:op :letrec            :symbol #{'letrec 'letfn}
@@ -343,7 +304,10 @@
     :emit :abstract        :type :block
     :block {:main #{:parameter :body}}}])
 
+
+;;
 ;; EXECUTION PRIMITIVES
+;;
 
 (def +op-for+
   [{:op :for-index   :symbol #{'for:index}     :emit :macro :macro #'tf-for-index :style/indent 1}
@@ -352,13 +316,15 @@
    {:op :for-iter    :symbol #{'for:iter}      :emit :abstract :style/indent 1}])
 
 (def +op-coroutine+
-  [{:op :defgen    :symbol #{'defgen}   :spec :defgen
+  [{:op :defgen    :symbol #{'defgen}   :spec :defgen  
     :type :def     :section :code       :abstract true :fn true
     :arglists '([sym doc? & [attr? & body]])
     :format #'format-defn}
    {:op :yield     :symbol #{'yield}     :emit :return   :raw "yield"}])
 
+;;
 ;; Prototypes
+;;
 
 (def +op-prototype+
   [{:op :prototype-get       :symbol #{'proto:get}       :emit :abstract
@@ -371,3 +337,46 @@
      :op-spec {:arglists '([obj key])}}
    {:op :prototype-tostring  :symbol #{'proto:tostring}  :emit :abstract
      :op-spec {:arglists '([])}}])
+
+(defn as-list
+  [values]
+  (reduce (fn [result value]
+            (cons value result))
+          '()
+          (reverse (vec values))))
+
+(defn mixin-value
+  [value]
+  (if (= value '*symbol*) *symbol* value))
+
+(defn mixin-map
+  [value]
+  (reduce-kv (fn [result key item]
+               (assoc result key (mixin-value item)))
+             {}
+             value))
+
+(defn mixin-pairs
+  [values]
+  (loop [result {}
+         remaining values]
+    (if (empty? remaining)
+      result
+      (recur (assoc result
+                    (mixin-value (first remaining))
+                    (mixin-value (second remaining)))
+             (rest (rest remaining))))))
+
+(defn evaluate-mixin-form
+  [form]
+  (let [operation (first form)
+        arguments (vec (map mixin-value (rest form)))]
+    (cond (= operation 'hash-map)
+          (mixin-pairs arguments)
+
+          :else
+          (let [resolved (resolve operation)]
+            (if resolved
+              (apply (deref resolved) arguments)
+              (throw (ex :dependency {:form form}
+                         :ex/message "Unable to resolve mixin form")))))))

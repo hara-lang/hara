@@ -3,6 +3,7 @@
             [lang.base.emit-common :as common]
             [lang.base.emit-data :as data]
             [lang.base.emit-helper :as helper]
+            [lang.base.preprocess-assign :as assign]
             [lang.base.preprocess-input :as input]
             [lang.base.preprocess-staging :as staging]))
 
@@ -55,26 +56,40 @@
     (data/emit-table nil nil (apply list (concat ['tab] pairs)) grammar mopts)))
 
 (defn emit-with-preprocess
-  "stages and emits a form"
+  "stages and emits a form, removing native reserved-head markers at emission"
   {:added "4.0"}
   [form grammar mopts]
   (let [prepared (input/to-input form)
         staged (staging/to-staging prepared grammar
                                    (or (get-in mopts [:book :modules]) {})
-                                   mopts)]
-    (common/*emit-fn* (first staged) grammar mopts)))
+                                   mopts)
+        body (prewalk (fn [value]
+                        (if (assign/protected-head? value)
+                          (assign/unwrap-protected-head value)
+                          value))
+                      (first staged))]
+    (common/*emit-fn* body grammar mopts)))
 
 (defn emit-with-eval
-  "marks host evaluation as an explicit unavailable capability"
+  "emits an eval form; :namespace selects the native host evaluation context"
   {:added "4.0"}
-  [key props form grammar mopts]
-  (throw (ex :database {:form form :capability :host/eval} :ex/message "Host eval is not available in portable Hara emission")))
+  [_ _ [_ form] grammar mopts]
+  (let [value (if-let [namespace (:namespace mopts)]
+                (eval-in-ns namespace [form])
+                (eval form))]
+    (emit-with-preprocess value grammar mopts)))
 
 (defn emit-with-deref
-  "marks host Var dereference as an unavailable capability"
+  "emits an embedded var; :namespace selects the native host evaluation context"
   {:added "4.0"}
-  [key props form grammar mopts]
-  (throw (ex :database {:form form :capability :host/var-deref} :ex/message "Host Var dereference is not available in portable Hara emission")))
+  [_ _ [_ form] grammar mopts]
+  (if (= 'var (first form))
+    (let [variable (if-let [namespace (:namespace mopts)]
+                     (eval-in-ns namespace [form])
+                     (eval form))]
+      (emit-with-preprocess (deref variable) grammar mopts))
+    (throw (ex :argument {:form form}
+               :ex/message "Needs to be a native Var"))))
 
 (defn emit-with-lang
   "emits a form with a language book selected from the snapshot"

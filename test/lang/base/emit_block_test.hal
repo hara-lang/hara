@@ -1,145 +1,243 @@
 (ns lang.base.emit-block-test
-  (:use code.test)
-  (:require [lang.base.emit-block :as block]
+  (:require [lang.base.emit-block :refer :all]
             [lang.base.emit-common :as common]
-            [lang.base.emit-helper :as helper]))
+            [lang.base.emit-helper :as helper]
+            [lang.base.grammar :as grammar]
+            [std.lib.format.prose :as prose])
+  (:use code.test))
+
+(def +reserved+
+  (-> (grammar/build)
+      (grammar/to-reserved)))
+
+(def +grammar+
+  (grammar/grammar :test +reserved+ helper/+default+))
+
+^{:refer lang.base.emit-block/member?}
+(fact "checks membership without changing the input collection"
+  [(member? [1 2 3] 2)
+   (member? [1 2 3] 4)]
+  => [true false])
+
+^{:refer lang.base.emit-block/parameter-groups}
+(fact "groups block parameters at keyword boundaries"
+  (parameter-groups '[:for i 1 :while (< i 3) :step (inc i)])
+  => '[[:for i 1] [:while (< i 3)] [:step (inc i)]])
 
 ^{:refer lang.base.emit-block/emit-statement :added "3.0"}
-(fact "emits statements and do blocks"
-  (binding [common/*emit-fn* common/emit-common]
-    [(block/emit-statement '(print 1) helper/+default+ {})
-     (block/emit-do '((print 1) (print 2)) helper/+default+ {})
-     (block/emit-do* '((print 1) (print 2)) helper/+default+ {})])
-  => ["print(1);" "print(1);\nprint(2);" "print(1);\nprint(2)"])
-
-^{:refer lang.base.emit-block/block-options :added "3.0"}
-(fact "merges block options"
-  (:space (block/block-options :for {:parameter {:space "|"}}
-                               :parameter helper/+default+))
-  => "|")
-
-^{:refer lang.base.emit-block/parse-params :added "3.0"}
-(fact "parses and emits block parameters"
-  (block/parse-params '[i v :in (pairs)])
-  => [:statement '[i v :in (pairs)]]
+(fact "emits a statement given grammar"
 
   (binding [common/*emit-fn* common/emit-common]
-    (block/emit-params-statement :for {} '[i v :in (pairs x)]
-                                 helper/+default+ {}))
-  => "i, v in pairs(x)")
-
-^{:refer lang.base.emit-block/emit-block-body :added "3.0"}
-(fact "emits a block body"
-  (binding [common/*emit-fn* common/emit-common]
-    (block/emit-block-body :while {} '[(print 1) (print 2)]
-                           helper/+default+ {}))
-  => "{\n  print(1);\n  print(2);\n}")
-
-^{:refer lang.base.emit-block/emit-block-setup :added "4.0"}
-(fact "separates control clauses from a block body"
-  (block/emit-block-setup
-   :branch
-   {:raw "" :main #{:body}
-    :control {:if {} :elseif {} :else {}}}
-   '(branch
-      (if (= x 1) (print 1))
-      (elseif (= x 2) (print 2))
-      (else (print 3)))
-   helper/+default+ {})
-  => '["" nil []
-       {:if [(if (= x 1) (print 1))]
-        :elseif [(elseif (= x 2) (print 2))]
-        :else [(else (print 3))]}
-       nil])
-
-^{:refer lang.base.emit-block/emit-block-controls :added "3.0"}
-(fact "emits and validates required control clauses"
-  (let [definition {:main #{:body}
-                    :control
-                    {:catch {:main #{:parameter :body}
-                             :required true}}}]
-    (block/emit-block-controls
-     :try definition (:control definition)
-     {:catch '[(catch e (print e))]}
-     helper/+default+ {}))
-  => "\ncatch(e){\n  (print e);\n}"
-
-  (block/emit-block-controls
-   :try
-   {:main #{:body} :control {:catch {:required true}}}
-   {:catch {:required true}}
-   {} helper/+default+ {})
-  => (throws))
+    (emit-statement '(+ 1 2) +grammar+ {}))
+  => "1 + 2;")
 
 ^{:refer lang.base.emit-block/emit-do :added "3.0"}
-(fact "emits a terminated do sequence"
+(fact "emits a do block"
+
   (binding [common/*emit-fn* common/emit-common]
-    (block/emit-do '((print 1) (print 2)) helper/+default+ {}))
-  => "print(1);\nprint(2);")
+    (emit-do '((add 1 2) (add 3 4)) +grammar+ {}))
+  => "add(1,2);\nadd(3,4);")
 
 ^{:refer lang.base.emit-block/emit-do* :added "3.0"}
-(fact "emits a value-returning do sequence"
+(fact "like do but removes the statment at the end, useful for macros"
   (binding [common/*emit-fn* common/emit-common]
-    (block/emit-do* '((print 1) (print 2)) helper/+default+ {}))
-  => "print(1);\nprint(2)")
+    (emit-do* '((add 1 2) (add 3 4)) +grammar+ {}))
+  => "add(1,2);\nadd(3,4)")
+
+^{:refer lang.base.emit-block/block-options :added "3.0"}
+(fact "gets the block options"
+
+  (block-options :for {:parameter {:space "|"}} :parameter +grammar+)
+  => {:statement ";",
+      :sep ",",
+      :space "|",
+      :static ".",
+      :start "(",
+      :line-spacing 1,
+      :assign "=",
+      :namespace-full "____",
+      :apply ".",
+      :access ".",
+      :end ")",
+      :namespace ".",
+      :range ":"})
+
+^{:refer lang.base.emit-block/emit-block-body :added "3.0"}
+(fact "helper to emit a block body"
+
+  (emit-block-body :while
+                   {}
+                   '[(add 1 2 3)
+                     (add 1 2 3)]
+                   +grammar+
+                   {})
+
+  => (prose/| "{"
+                   "  (add 1 2 3);"
+                   "  (add 1 2 3);"
+                   "}"))
+
+^{:refer lang.base.emit-block/parse-params :added "3.0"}
+(fact "parses params for a block"
+
+  (parse-params '[i v :in (pairs)])
+  => '[:statement [i v :in (pairs)]]
+
+  (parse-params '(< x 1))
+  => '[:raw (< x 1)])
 
 ^{:refer lang.base.emit-block/emit-params-statement :added "3.0"}
-(fact "emits statement-style parameters"
-  (binding [common/*emit-fn* common/emit-common]
-    (block/emit-params-statement :for {} '[i v :in (pairs x)]
-                                 helper/+default+ {}))
-  => "i, v in pairs(x)")
+(fact "emits the params for statement"
+
+  (emit-params-statement :for {} '[i v :in (pairs x)] +grammar+ {})
+  => "i, v in (pairs x)")
 
 ^{:refer lang.base.emit-block/emit-params :added "3.0"}
-(fact "wraps emitted block parameters"
-  (binding [common/*emit-fn* common/emit-common]
-    (block/emit-params :for {} '[i v :in (pairs x)] helper/+default+ {}))
-  => "(i, v in pairs(x))")
+(fact "constructs string to for loop args"
+
+  (emit-params :for {:parameter {:sep ";" :space " "}}
+               '[(:= i 1) (< i 1) (inc i)]
+               +grammar+
+               {})
+  => "((:= i 1); (< i 1); (inc i))"
+
+  (emit-params :for {:parameter {:statement ";"}}
+               '[[(:= i 1) (:= j 0)] (< (* i j) 1) [(inc i) (inc j)]]
+               +grammar+
+               {})
+  => "((:= i 1), (:= j 0); (< (* i j) 1); (inc i), (inc j))")
 
 ^{:refer lang.base.emit-block/emit-block-control :added "3.0"}
-(fact "emits one control block"
-  (binding [common/*emit-fn* common/emit-common]
-    (block/emit-block-control
-     :catch {:main #{:parameter :body}} {}
-     '(catch e (print e)) helper/+default+ {}))
-  => "catch(e){\n  print(e);\n}")
+(fact "emits a control form code"
+
+  (emit-block-controls :catch
+                       (get-in +grammar+ '[:reserved try :block])
+                       (get-in +grammar+ '[:reserved try :block :control])
+                       '{:catch [(catch e (print e))]}
+                       +grammar+ {})
+  => "\ncatch(e){\n  (print e);\n}")
+
+^{:refer lang.base.emit-block/emit-block-controls :added "3.0"}
+(fact "emits control blocks for a form"
+
+  (emit-block-controls :catch
+                       (get-in +grammar+ '[:reserved try :block])
+                       (get-in +grammar+ '[:reserved try :block :control])
+                       '{:catch [(catch e (print e))]
+                         :finally [(finally print 123)]}
+                       +grammar+ {})
+  => (prose/|
+             ""
+             "catch(e){"
+             "  (print e);"
+             "}"
+             "finally{"
+             "  print;"
+             "  123;"
+             "}"))
+
+^{:refer lang.base.emit-block/emit-block-setup :added "4.0"}
+(fact "parses main and control blocks"
+
+  (emit-block-setup :br
+                    (get-in +grammar+ '[:reserved br* :block])
+                    '(br*
+                      (if (= x 1) (pr 1) (pr 2))
+                      (elseif (= x 2) (pr 3) (pr 4))
+                      (elseif (= x 3) (pr 5) (pr 6))
+                      (elseif (= x 4) (pr 7))
+                      (else (pr 8)))
+                    +grammar+
+                    {})
+  => '["" nil ()
+       {:if [(if (= x 1) (pr 1) (pr 2))],
+        :elseif [(elseif (= x 2) (pr 3) (pr 4))
+                 (elseif (= x 3) (pr 5) (pr 6))
+                 (elseif (= x 4) (pr 7))],
+        :else [(else (pr 8))]}
+       nil])
+
+^{:refer lang.base.emit-block/emit-block-inner :added "4.0"}
+(fact "returns the inner block"
+
+  (emit-block-inner :switch
+                    (get-in +grammar+ '[:reserved switch :block])
+                    '(switch
+                      [(type obj)]
+                      (case [:A] (return A))
+                      (case [:B] (return B))
+                      (default (return X)))
+                    +grammar+
+                    {})
+  => (prose/|
+      "switch((type obj)){"
+      "  case A :"
+      "    (return A);"
+      "  "
+      "  case B :"
+      "    (return B);"
+      "  "
+      "  default:"
+      "    (return X);"
+      "}"))
 
 ^{:refer lang.base.emit-block/emit-block-standard :added "3.0"}
 (fact "emits a generic block"
-  (binding [common/*emit-fn* common/emit-common]
-    (block/emit-block-standard
-     :while {:raw "while" :main #{:parameter :body}}
-     '(while (< 1 2) (print 1)) helper/+default+ {}))
-  => "while(_lt(1,2)){\n  print(1);\n}")
 
-^{:refer lang.base.emit-block/emit-block-inner :added "4.0"}
-(fact "emits an inner control-owned block"
   (binding [common/*emit-fn* common/emit-common]
-    (block/emit-block-inner
-     :branch {:raw "" :main #{}
-              :control {:else {:main #{:body}}}}
-     '(branch (else (print 1))) helper/+default+ {}))
-  => "{else{\n    print(1);\n  }\n}")
+    (emit-block-standard :br
+                         (get-in +grammar+ '[:reserved br* :block])
+                         '(br
+                           (if (== x 1) (pr 1) (pr 2))
+                           (elseif (== x 2) (pr 3) (pr 4))
+                           (elseif (== x 3) (pr 5) (pr 6))
+                           (elseif (== x 4) (pr 7))
+                           (else (pr 8)))
+                         +grammar+
+                         {}))
+
+  => (prose/|
+      "if(x == 1){"
+      "  pr(1);"
+      "  pr(2);"
+      "}"
+      "elseif(x == 2){"
+      "  pr(3);"
+      "  pr(4);"
+      "}"
+      "elseif(x == 3){"
+      "  pr(5);"
+      "  pr(6);"
+      "}"
+      "elseif(x == 4){"
+      "  pr(7);"
+      "}"
+      "else{"
+      "  pr(8);"
+      "}"))
 
 ^{:refer lang.base.emit-block/emit-block :added "3.0"}
-(fact "dispatches a block operation"
-  (binding [common/*emit-fn* common/emit-common]
-    (block/emit-block
-     :do '(do (print 1))
-     (assoc helper/+default+
-            :reserved {'do {:op :do :type :block :emit :do}})
-     {}))
-  => "print(1);")
+(fact "emits a minimal block expression"
+
+  (emit-block :while
+              '(while (< 1 2)
+                 (add 1 2 3)
+                 (add 1 2 3))
+              +grammar+
+              {})
+  => (prose/|
+   "while((< 1 2)){"
+   "  (add 1 2 3);"
+   "  (add 1 2 3);"
+   "}"))
+
 
 ^{:refer lang.base.emit-block/test-block-loop :added "4.0"}
-(fact "the Foundation block loop retains direct dispatch"
-  (block/test-block-loop '(print 1) helper/+default+ {}) => "print(1)")
+(fact "emits with blocks"
+  (test-block-loop '(+ 1 2) +grammar+ {})
+  => "1 + 2")
 
 ^{:refer lang.base.emit-block/test-block-emit :added "4.0"}
-(fact "the Foundation block test emitter installs recursive dispatch"
-  (block/test-block-emit
-   '(do (print 1) (print 2))
-   (assoc helper/+default+
-          :reserved {'do {:op :do :type :block :emit :do}})
-   {})
-  => "print(1);\nprint(2);")
+(fact "emit with blocks"
+  (test-block-emit '(+ 1 2) +grammar+ {})
+  => "1 + 2")

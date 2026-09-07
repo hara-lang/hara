@@ -1,504 +1,1387 @@
 (ns lang.base.emit-common
   (:require [lang.base.emit-helper :as helper]
-            [lang.base.util :as util]))
+    [lang.base.preprocess-base :as preprocess-base]
+    [lang.base.util :as ut]
+    [std.lib.format.prose :as prose]))
 
+;; controls whether to fail with a stacktrace
 (def ^:dynamic *explode* nil)
+
 (def ^:dynamic *trace* nil)
+
 (def ^:dynamic *indent* 0)
+
 (def ^:dynamic *compressed* false)
+
 (def ^:dynamic *multiline* false)
+
 (def ^:dynamic *max-len* 60)
+
 (def ^:dynamic *emit-internal* false)
+
 (def ^:dynamic *emit-fn* helper/default-emit-fn)
 
 (defmacro with:explode
   "form to control `explode` option"
   {:added "4.0"}
-  [& body]
-  `(binding [lang.base.emit-common/*explode* true] ~@body))
+  ([& body]
+   `(binding [*explode* true]
+      ~@body)))
 
 (defmacro with-trace
   "form to control `trace` option"
   {:added "4.0"}
-  [& body]
-  `(binding [lang.base.emit-common/*trace* true] ~@body))
+  ([& body]
+   `(binding [*trace* true]
+      ~@body)))
 
 (defmacro with-compressed
   "formats without newlines and indents"
   {:added "3.0"}
-  [& body]
-  `(binding [lang.base.emit-common/*compressed* true] ~@body))
+  ([& body]
+   `(binding [*compressed* true]
+      ~@body)))
 
 (defmacro with-indent
   "adds indentation levels"
   {:added "3.0"}
-  [increments & body]
-  `(binding [lang.base.emit-common/*indent*
-             (+ lang.base.emit-common/*indent*
-                (or (first ~increments) 2))]
-     ~@body))
+  ([[& increment] & body]
+   `(binding [*indent* (+ *indent* (or ~@increment 2))]
+      ~@body)))
 
 (defn newline-indent
   "returns a newline with indent"
   {:added "3.0"}
   []
-  (if *compressed* " " (str "\n" (str/repeat " " *indent*))))
+  (if-not *compressed*
+    (str "\n"
+         (apply str (repeat *indent* " ")))
+    " "))
 
 (defn emit-reserved-value
   "emits a reserved value"
   {:added "4.0"}
-  [form grammar mopts]
-  (let [entry (get-in grammar [:reserved form])]
-    (if entry
-      (if (:value entry)
-        (or (:free entry) (:raw entry)
-            (throw (ex :generic {:form form :entry entry} :ex/message "Reserved value has no emitted representation")))
-        (throw (ex :generic {:form form :entry entry} :ex/message "Reserved operation cannot be used as a value")))
-      nil)))
+  [form {:keys [reserved], :as grammar} mopts]
+  (if-let [{:keys [emit value free raw], :as props} (get
+                                                      reserved
+                                                      form)]
+    (or
+      (and
+        value
+        (or
+          free
+          raw
+          (throw
+            (ex :generic props :ex/message "No raw value found"))))
+      (throw
+        (ex
+          :generic
+          props
+          :ex/message
+          "Cannot use reserved token in body")))))
 
 (defn emit-free-raw
-  "emits free values"
+  "emits free value"
   {:added "4.0"}
-  [sep args grammar mopts]
-  (let [values
-        (binding [*indent* 0]
-          (vec (map (fn [value]
-                      [value (cond (string? value) value
-                                   (keyword? value)
-                                   (let [entry (get-in grammar [:reserved value])]
-                                     ;; Quoted free forms retain target modifiers such as
-                                     ;; `:*` in `import * as value`.  They are raw tokens,
-                                     ;; not value-position invocation operators.
-                                     (if (and entry (not (:value entry)) (:raw entry))
-                                       (:raw entry)
-                                       (or (emit-reserved-value value grammar mopts)
-                                           (name value))))
-                                   :else (*emit-fn* value grammar mopts))])
-                    args)))]
-    (if (empty? values)
-      ""
-      (loop [previous (first (first values))
-             output (second (first values))
-             remaining (rest values)]
-        (if (empty? remaining)
-          output
-          (let [current (first remaining)
-                value (first current)
-                emitted (second current)]
-            (recur value
-                   (str output
-                        (if (or (char? previous) (char? value))
-                          ""
-                          (or sep " "))
-                        emitted)
-                   (rest remaining))))))))
+  ([sep args grammar mopts]
+    (let [str-array (binding [*indent* 0]
+                      (mapv
+                        (fn [e] [e
+                                 (or
+                                   (and (string? e) e)
+                                   (if
+                                     (keyword? e)
+                                     (let
+                                       [entry
+                                        (get-in grammar [:reserved e])]
+                                       (if
+                                         (and
+                                           entry
+                                           (not (:value entry))
+                                           (:raw entry))
+                                         (:raw entry)
+                                         (or
+                                           (emit-reserved-value
+                                             e
+                                             grammar
+                                             mopts)
+                                           ((fn
+                                              [value]
+                                              (cond
+                                                (bytes? value)
+                                                (str/decode-utf8 value)
+                                                (keyword? value)
+                                                (str/to-string value)
+                                                (string? value) value
+                                                :else (pr-str value)))
+                                             e))))
+                                     false)
+                                   (*emit-fn* e grammar mopts))])
+                        args))]
+      (if (empty? str-array)
+        ""
+        (loop [previous-pair (first str-array) input (rest str-array)]
+          (let [prev (first previous-pair)
+                out (second previous-pair)
+                curr (first (first input))
+                s (second (first input))]
+            (cond
+              (empty? input) out
+              (or (char? curr) (char? prev)) (recur
+                                               [curr (str out s)]
+                                               (rest input))
+              :else (recur
+                      [curr (str out (or sep " ") s)]
+                      (rest input)))))))))
 
 (defn emit-free
-  "emits a free form"
+  "emits string with multiline support"
   {:added "4.0"}
-  [sep form grammar mopts]
-  (emit-free-raw sep (rest form) grammar mopts))
+  ([migration-free-options [tag & more :as form] grammar mopts]
+    (let [sep (if (string? migration-free-options)
+                migration-free-options
+                (get migration-free-options :sep))]
+      (let [more (not-empty (apply list (vec more)))]
+        (let [{:keys [indent prefix full-body]} (meta form)
+              prev *indent*
+              output (emit-free-raw sep more grammar mopts)]
+          (if (prose/multi-line? output)
+            (let [indent-fn (if full-body
+                              prose/indent
+                              prose/indent-rest)]
+              (indent-fn output (+ (or prev 0) (or indent 0))))
+            output))))))
+
+;;
+;; COMMENT
+;;
 
 (defn emit-comment
   "emits a comment"
   {:added "4.0"}
-  [raw form grammar mopts]
-  (let [prefix (or raw (get-in grammar [:default :comment :prefix]) "//")
-        lines (str/split-lines (emit-free-raw " " (rest form) grammar mopts))]
-    (str/join (newline-indent)
-              (map (fn [line] (str prefix " " line)) lines))))
+  ([_ [tag & more :as form] grammar mopts]
+    (let [more (not-empty (apply list (vec more)))]
+      (let [{:keys [indent prefix full-body]} (meta form)
+            prefix (or prefix (:prefix (:comment (:default grammar))))
+            prev *indent*
+            output (emit-free-raw " " more grammar mopts)]
+        (if (prose/multi-line? output)
+          (let [indent-fn (if full-body
+                            prose/indent
+                            prose/indent-rest)]
+            (str
+              prefix
+              " "
+              (indent-fn
+                output
+                0
+                {:custom
+                 (str
+                   (prose/spaces (+ (or prev 0) (or indent 0)))
+                   prefix
+                   " ")})))
+          (str prefix " " output))))))
 
 (defn emit-indent
   "emits an indented form"
   {:added "4.0"}
-  [_ form grammar mopts]
-  (emit-comment " " form grammar mopts))
+  ([_ [tag & more :as form] grammar mopts]
+    (let [more (not-empty (apply list (vec more)))]
+      (let [{:keys [indent prefix full-body]} (meta form)]
+        (emit-comment
+          nil
+          (with-meta form (merge {:prefix " "} (meta form)))
+          grammar
+          mopts)))))
+
+;;
+;; MACRO
+;;
 
 (defn emit-macro
-  "expands and emits a grammar macro"
+  "emits form"
   {:added "4.0"}
-  [_ form grammar mopts]
-  (let [entry (get-in grammar [:reserved (first form)])
-        macro-fn (or (:macro entry) (:value/template entry))]
-    (if macro-fn
-      (*emit-fn* (macro-fn form) grammar mopts)
-      (throw (ex :generic {:form form :entry entry} :ex/message "Macro operation has no expansion function")))))
+  ([_ [tag & more :as form] grammar mopts]
+    (let [more (not-empty (apply list (vec more)))]
+      (let [{:keys [macro], :as m} (get-in grammar [:reserved tag])]
+        (if m
+          (binding [preprocess-base/*macro-opts* mopts
+                    preprocess-base/*macro-grammar* grammar]
+            (*emit-fn* (macro form) grammar mopts))
+          (throw
+            (ex :generic {:input form} :ex/message "Not found: ")))))))
+
+;;
+;; HELPERS
+;;
 
 (defn emit-array
   "returns an array of emitted strings"
   {:added "4.0"}
-  ([array grammar mopts]
-   (emit-array array grammar mopts *emit-fn*))
-  ([array grammar mopts emit-fn]
-   (map (fn [value] (emit-fn value grammar mopts)) array)))
+  ([array grammar mopts] (emit-array array grammar mopts *emit-fn*))
+  ([array grammar mopts emit-fn] (map (fn [migration-argument-0] (emit-fn migration-argument-0 grammar mopts))
+                                   array)))
 
 (defn emit-wrappable?
-  "checks whether a form must be wrapped when nested"
+  "checks if form if wrappable"
   {:added "4.0"}
-  [form grammar]
-  (if (std.foundation/form? form)
-    (let [entry (get-in grammar [:reserved (first form)])
-          mode (:emit entry)]
-      (boolean
-       (or (:wrappable entry)
-           (reduce (fn [found candidate] (or found (= candidate mode)))
-                   false
-                   [:infix :infix* :infix- :infix-if :assign
-                    :bi :prefix :postfix :fn]))))
-    false))
+  ([form grammar]
+    (if (form? form)
+      (let [infix? #{:infix
+                     :infix*
+                     :bi
+                     :postfix
+                     :prefix
+                     :assign
+                     :infix-
+                     :infix-if}
+            {:keys [macro emit wrappable]} (get-in
+                                             grammar
+                                             [:reserved (first form)])]
+        (boolean
+          (or
+            wrappable
+            (infix? emit)
+            ('#{fn.inner fn} (first form))
+            (and
+              (= :macro emit)
+              (emit-wrappable? (macro form) grammar)))))
+      false)))
 
 (defn emit-squash
   "emits a squashed representation"
   {:added "4.0"}
-  [_ form grammar mopts]
-  (str/join "" (emit-array (rest form) grammar mopts)))
+  [_ [tag & more] grammar mopts]
+  (let [more (not-empty (apply list (vec more)))]
+    (str/join "" (emit-array more grammar mopts))))
 
 (defn emit-wrapping
   "emits a potentially wrapped form"
   {:added "4.0"}
-  [form grammar mopts]
-  (let [output (*emit-fn* form grammar mopts)
-        options (get-in grammar [:default :common])]
-    (if (emit-wrappable? form grammar)
-      (str (:start options) output (:end options))
-      output)))
+  ([form grammar mopts]
+   (let [result (*emit-fn* form grammar mopts)
+         {:keys [start end]} (get-in grammar [:default :common])
+         wrap? (emit-wrappable? form grammar)]
+     (if wrap?
+       (str start result end)
+       result))))
 
 (defn wrapped-str
-  "wraps a string using the grammar path's start and end options"
+  "wrapped string using `:start` and `:end` keys of grammar"
   {:added "3.0"}
-  [inner path grammar]
-  (let [options (helper/get-options grammar path)]
-    (str (:start options) inner (:end options))))
+  ([inner path grammar]
+   (let [{:keys [start end]} (helper/get-options grammar path)]
+     (str start inner end))))
+
+;;
+;; OP
+;;
 
 (defn emit-unit
   "emits a unit"
   {:added "4.0"}
-  [props form grammar mopts]
-  (let [value (or (second form) (:default props))
-        transform (:transform props)]
-    (*emit-fn* (if transform (transform (:raw props)) value)
-               grammar mopts)))
+  ([{:keys [raw default transform] :as props} [_ value] grammar mopts]
+   (*emit-fn* (cond-> (or value default)
+                transform (transform raw))
+              grammar mopts)))
 
 (defn emit-internal
-  "emits the value within an internal form"
+  "emits string within the form"
   {:added "4.0"}
-  [form grammar mopts]
-  (*emit-fn* (second form) grammar mopts))
+  ([[_ value] grammar mopts]
+   (*emit-fn* value grammar mopts)))
 
 (defn emit-internal-str
-  "emits internal strings without quoting"
+  "emits internal string"
   {:added "4.0"}
-  [form grammar mopts]
-  (let [value (second form)]
-    (binding [*emit-internal* true]
-      (if (vector? value)
-        (str/join "\n" (map (fn [item] (*emit-fn* item grammar mopts)) value))
-        (*emit-fn* value grammar mopts)))))
+  ([[_ value] grammar mopts] (binding [*emit-internal* true]
+                               (cond (vector? value)
+                                 (str/join "
+"
+                                   (mapv (fn [migration-argument-0] (*emit-fn* migration-argument-0 grammar mopts))
+                                     value))
+                                 :else
+                                 (*emit-fn* value grammar mopts)))))
 
 (defn emit-pre
-  "emits a string before one argument"
+  "emits string before the arg"
   {:added "3.0"}
-  [raw args grammar mopts]
-  (if (not (= 1 (count args)))
-    (throw (ex :dependency {:raw raw :arguments args} :ex/message "Single argument required"))
+  ([raw args grammar mopts]
+    (if (= 1 (count args))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "Single argument for " raw)
+            "\n"
+            "(= 1 (count args))"))))
     (str raw (emit-wrapping (first args) grammar mopts))))
 
 (defn emit-post
-  "emits a string after one argument"
+  "emits string after the arg"
   {:added "3.0"}
-  [raw args grammar mopts]
-  (if (not (= 1 (count args)))
-    (throw (ex :dependency {:raw raw :arguments args} :ex/message "Single argument required"))
+  ([raw args grammar mopts]
+    (if (= 1 (count args))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "Single argument " raw)
+            "\n"
+            "(= 1 (count args))"))))
     (str (emit-wrapping (first args) grammar mopts) raw)))
 
+
 (defn emit-prefix
-  "emits a spaced prefix operation"
+  "emits operator before the arg"
   {:added "4.0"}
-  [raw args grammar mopts]
-  (if (not (= 1 (count args)))
-    (throw (ex :dependency {:raw raw :arguments args} :ex/message "Single argument required"))
-    (str raw (get-in grammar [:default :common :space])
-         (emit-wrapping (first args) grammar mopts))))
+  ([raw args grammar mopts]
+    (if (= 1 (count args))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "Single argument for " raw)
+            "\n"
+            "(= 1 (count args))"))))
+    (let [{:keys [space]} (get-in grammar [:default :common])]
+      (str raw space (emit-wrapping (first args) grammar mopts)))))
 
 (defn emit-postfix
-  "emits a spaced postfix operation"
+  "emits operator before the arg"
   {:added "4.0"}
-  [raw args grammar mopts]
-  (if (not (= 1 (count args)))
-    (throw (ex :dependency {:raw raw :arguments args} :ex/message "Single argument required"))
-    (str (emit-wrapping (first args) grammar mopts)
-         (get-in grammar [:default :common :space]) raw)))
+  ([raw args grammar mopts]
+    (if (= 1 (count args))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "Single argument " raw)
+            "\n"
+            "(= 1 (count args))"))))
+    (let [{:keys [space]} (get-in grammar [:default :common])]
+      (str (emit-wrapping (first args) grammar mopts) space raw))))
 
 (defn emit-infix
-  "emits infix operations"
+  "emits infix ops"
   {:added "3.0"}
-  [raw args grammar mopts]
-  (if (= 0 (count args))
-    (throw (ex :dependency {:raw raw} :ex/message "One or more arguments required"))
-    (let [space (get-in grammar [:default :common :space])]
-      (str/join (str space raw space)
-                   (emit-array args grammar mopts emit-wrapping)))))
+  ([raw args grammar mopts]
+    (if (pos? (count args))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "One or more arguments " raw)
+            "\n"
+            "(pos? (count args))"))))
+    (let [{:keys [start end space]} (get-in
+                                      grammar
+                                      [:default :common])]
+      (str/join
+        (str space raw space)
+        (emit-array args grammar mopts emit-wrapping)))))
 
 (defn emit-infix-default
-  "emits infix with a default left value"
+  "emits infix with a default value"
   {:added "3.0"}
-  [raw args default grammar mopts]
-  (emit-infix raw
-              (if (= 1 (count args)) (vec (concat [default] args)) args)
-              grammar mopts))
+  ([raw args default grammar mopts]
+    (if (pos? (count args))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "One or more arguments " raw)
+            "\n"
+            "(pos? (count args))"))))
+    (let [args (case (count args) 1 (cons default args) args)]
+      (emit-infix raw args grammar mopts))))
 
 (defn emit-infix-pre
-  "emits unary prefix or multi-argument infix"
+  "emits infix with a default value"
   {:added "3.0"}
-  [raw args grammar mopts]
-  (if (= 1 (count args))
-    (emit-pre raw args grammar mopts)
-    (emit-infix raw args grammar mopts)))
+  ([raw args grammar mopts]
+    (if (pos? (count args))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "One or more arguments " raw)
+            "\n"
+            "(pos? (count args))"))))
+    (case
+      (count args)
+      1
+      (emit-pre raw args grammar mopts)
+      (emit-infix raw args grammar mopts))))
 
 (defn emit-infix-if-single
-  "emits one ternary expression"
+  "checks for infix in single\n \n   (emit-infix-if '(:? true x y)\n                  helper/+default+\n                  {})\n   => \"true ? x : y\""
   {:added "4.0"}
-  [form grammar mopts]
-  (let [arguments (vec (rest form))]
-    (if (not (= 3 (count arguments)))
-      (throw (ex :argument {:form form} :ex/message "Ternary operation expects three arguments"))
-      (let [space (get-in grammar [:default :common :space])
-            infix (get-in grammar [:default :infix :if])]
-        (str (emit-wrapping (nth arguments 0) grammar mopts)
-             space (or (:check infix) "?") space
-             (emit-wrapping (nth arguments 1) grammar mopts)
-             space (or (:then infix) ":") space
-             (emit-wrapping (nth arguments 2) grammar mopts))))))
-
-(defn drop-last-value [values]
-  (vec (take (- (count values) 1) values)))
+  ([[_ check then else] grammar mopts]
+    (let [{:keys [start end space]} (get-in grammar [:default :common])
+          inif (get-in grammar [:default :infix :if])]
+      (let [% (emit-array
+                [check then else]
+                grammar
+                mopts
+                emit-wrapping)
+            % (interleave
+                %
+                [(str space (or (:check inif) "?") space)
+                 (str space (or (:then inif) ":") space)
+                 ""])
+            % (str/join "" %)]
+        %))))
 
 (defn emit-infix-if
-  "emits one or more ternary branches"
+  "emits an infix if string"
   {:added "3.0"}
-  [form grammar mopts]
-  (let [forms (vec (rest form))]
-    (if (<= (count forms) 3)
-      (emit-infix-if-single
-       (if (= 2 (count forms))
-         (list :? (nth forms 0) (nth forms 1) nil)
-         (list :? (nth forms 0) (nth forms 1)
-               (if (= :else (nth forms 2)) (nth forms 3) (nth forms 2))))
-       grammar mopts)
-      (let [pairs (vec (partition 2 forms))
-            final-pair (last pairs)]
-        (if (not (= :else (first final-pair)))
-          (throw (ex :generic {:form final-pair} :ex/message "ternary cond has to end with :else"))
-          (emit-infix-if-single
-           (reduce (fn [acc pair]
-                     (list :? (first pair) (second pair) acc))
-                   (second final-pair)
-                   (reverse (drop-last-value pairs)))
-           grammar mopts))))))
+  ([[_ & forms] grammar mopts]
+    (let [forms (not-empty (apply list (vec forms)))]
+      (let [[check & args] forms
+            args (not-empty (apply list (vec args)))]
+        (cond
+          (>= 2 (count args)) (emit-infix-if-single
+                                (apply list :? check args)
+                                grammar
+                                mopts)
+          :else (let [pairs (map vec (partition 2 forms))
+                      _ (if (not= :else (first (last pairs)))
+                          (throw
+                            (ex
+                              :generic
+                              {:form (last pairs)}
+                              :ex/message
+                              "ternary cond has to end with :else")))]
+                  (emit-infix-if-single
+                    (reduce
+                      (fn [acc [q alt]] (list :? q alt acc))
+                      (last (last pairs))
+                      (reverse (butlast pairs)))
+                    grammar
+                    mopts)))))))
 
 (defn emit-between
-  "emits the raw string between elements"
+  "emits the raw symbol between two elems"
   {:added "3.0"}
-  [raw args grammar mopts]
-  (str/join raw (emit-array args grammar mopts emit-wrapping)))
+  ([raw args grammar mopts]
+    (str/join raw (emit-array args grammar mopts emit-wrapping))))
 
 (defn emit-bi
-  "emits an infix operation with exactly two arguments"
+  "emits infix with two args"
   {:added "3.0"}
-  [raw args grammar mopts]
-  (if (not (= 2 (count args)))
-    (throw (ex :dependency {:raw raw :arguments args} :ex/message "Two arguments required"))
+  ([raw args grammar mopts]
+    (if (= 2 (count args))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "Two arguments for " raw)
+            "\n"
+            "(= 2 (count args))"))))
     (emit-infix raw args grammar mopts)))
 
 (defn emit-assign
-  "emits an assignment expression"
+  "emits a setter expression"
   {:added "3.0"}
-  [raw args grammar mopts]
-  (if (not (= 2 (count args)))
-    (throw (ex :dependency {:arguments args} :ex/message "Two assignment arguments required"))
-    (let [space (get-in grammar [:default :common :space])
-          assign (or raw (get-in grammar [:default :common :assign]))]
-      (str/join (str space assign space)
-                   (emit-array args grammar mopts emit-wrapping)))))
+  ([raw args grammar mopts]
+    (if (= 2 (count args))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "Two arguments for assign")
+            "\n"
+            "(= 2 (count args))"))))
+    (let [{:keys [space assign]} (get-in grammar [:default :common])]
+      (str/join
+        (str space (or raw assign) space)
+        (emit-array args grammar mopts emit-wrapping)))))
 
 (defn emit-return-do
-  "adds a return operation to the last value of a do form"
+  "creates a return statement on `do` block"
   {:added "4.0"}
-  [arg grammar mopts]
-  (let [values (vec arg)
-        output (concat (drop-last-value values)
-                       [(list 'return (last values))])]
-    (*emit-fn* (apply list output) grammar mopts)))
+  ([arg grammar mopts]
+   (let [{:keys [space]} (get-in grammar [:default :common])
+         pre-form (butlast arg)
+         ret-form (list 'return (last arg))]
+     (*emit-fn* (apply list
+                       (concat pre-form
+                               [ret-form]))
+                grammar mopts))))
 
 (defn emit-return-base
-  "emits the base return representation"
+  "return base type"
   {:added "4.0"}
-  [raw args grammar mopts]
-  (let [multi (get-in grammar [:default :return :multi])
-        values (vec args)
-        space (get-in grammar [:default :common :space])
-        separator (get-in grammar [:default :common :sep])]
-    (if (and (not multi) (> (count values) 1))
-      (throw (ex :generic {:raw raw :arguments values} :ex/message "One or zero arguments for return"))
-      (str raw
-           (if (empty? values) "" space)
-           (str/join (str separator space)
-                     (emit-array values grammar mopts))))))
+  ([raw args grammar mopts]
+    (let [{:keys [space sep]} (get-in grammar [:default :common])
+          {:keys [multi]} (get-in grammar [:default :return])
+          _ (if (not multi)
+              (if (>= 2 (count args))
+                nil
+                (throw
+                  (ex
+                    :generic
+                    {:migration/source-class
+                     "java.lang.AssertionError"}
+                    :ex/message
+                    (str
+                      "Assert failed: "
+                      (str "One or Zero arguments for " raw)
+                      "\n"
+                      "(>= 2 (count args))")))))
+          out (str/join
+                (str sep space)
+                (emit-array args grammar mopts))]
+      (cond
+        (and (form? (first args)) (:return/none (meta (first args)))) out
+        :else (str raw (if (not-empty args) space) out)))))
 
 (defn emit-return
-  "emits a return operation"
+  "creates a return type statement"
   {:added "3.0"}
-  [raw args grammar mopts]
-  (let [value (first args)]
-    (cond (and (list? value) (= 'return (first value)))
-          (emit-return raw (rest value) grammar mopts)
+  ([raw args grammar mopts]
+    (let [val (first args)]
+      (cond
+        (not (form? val)) (emit-return-base raw args grammar mopts)
+        ('#{return} (first val)) (emit-return
+                                   raw
+                                   (apply list (rest val))
+                                   grammar
+                                   mopts)
+        ('#{do do*} (first val)) (emit-return-do val grammar mopts)
+        :else (emit-return-base raw args grammar mopts)))))
 
-          (and (list? value)
-               (or (= 'do (first value)) (= 'do* (first value))))
-          (emit-return-do value grammar mopts)
-
-          :else (emit-return-base raw args grammar mopts))))
+;;
+;; GLOBAL
+;;
 
 (defn emit-with-global
-  "emits a global symbol through the configured transform"
+  "customisable emit function for global vars"
   {:added "4.0"}
-  [_ form grammar mopts]
-  (let [token (second form)
-        transform (get-in grammar [:token :symbol :global])]
-    (if transform
-      (*emit-fn* (transform token grammar mopts) grammar mopts)
-      (apply str (helper/emit-symbol-full token (namespace token) grammar)))))
+  [_ [_ token] grammar mopts]
+  (if-let [transform (get-in grammar [:token :symbol :global])]
+    (*emit-fn* (transform token grammar mopts) grammar mopts)
+    (apply str (helper/emit-symbol-full token (namespace token) grammar))))
+
+;;
+;; TOKEN
+;;
 
 (defn emit-symbol-classify
-  "classifies a qualified symbol against module options"
+  "classify symbol given options
+ 
+   (emit-symbol-classify 't/hello {:module {:alias '{t table}}})
+   => '[:alias table]
+ 
+   (emit-symbol-classify 't.n/hello {:module {:alias '{t table}}})
+   => '[:unknown t.n]"
   {:added "3.0"}
-  [sym mopts]
-  (let [module (:module mopts)
-        entry (:entry mopts)
-        book (:book mopts)
-        sym-ns (util/sym-module sym)
-        sym-id (util/sym-id sym)]
-    (if (nil? sym-ns)
-      [:unknown nil]
-      (let [alias (get (:alias module) sym-ns)]
-        (if alias
-          [:alias alias]
-          (let [link-ns (or (if (get (:internal module) sym-ns) sym-ns nil)
-                            (if (or (= (:id module) sym-ns)
-                                    (= (:module entry) sym-ns))
-                              sym-ns nil)
-                            (get (:link module) sym-ns))
-                target-ns (or link-ns sym-ns)
-                external (get-in book [:modules target-ns])]
-            (cond (= :defglobal (get-in external [:code sym-id :op-key]))
-                  [:global target-ns]
-                  (or (= (:id module) target-ns)
-                      (= (:module entry) target-ns))
-                  [:self target-ns]
-                  :else [:link target-ns])))))))
+  ([sym {:keys [module entry book] :as mopts}]
+    (cond (not (namespace sym))
+          [:unknown nil]
+
+          :else
+          (let [[sym-ns sym-id] (ut/sym-pair sym)]
+            (or (if-let [ns (get (:alias module) sym-ns)]
+                  [:alias ns])
+               
+                (let [link-ns (or (if (get (:internal module)
+                                          sym-ns)
+                                   sym-ns)
+                                 
+                                 (if (or (= (:id module) sym-ns)
+                                         (= (:module entry) sym-ns))
+                                   sym-ns)
+
+                                  (get (:link module) sym-ns))
+                      sym-ns  (or link-ns sym-ns)
+                      ext-module (and book
+                                      (get-in book [:modules sym-ns]))]
+                  (cond (= :defglobal (get-in ext-module [:code sym-id :op-key]))
+                         [:global sym-ns]
+
+                        (or (= (:id module) sym-ns)
+                            (= (:module entry) sym-ns))
+                       [:self sym-ns]
+                       
+                       :else
+                       [:link sym-ns]))
+               
+               (do [:unknown sym-ns]))))))
 
 (defn emit-symbol-standard
-  "emits a symbol using Foundation module and replacement rules"
+  "emits a standard symbol\n \n   (emit-symbol-standard 'print! helper/+default+ {:layout :full})\n   => \"printf\"\n \n   (emit-symbol-standard 'print!\n                         {:token {:symbol    {:replace {}}\n                                  :string    {:quote :single}}}\n                         {:layout :full})\n   => \"print!\""
   {:added "3.0"}
-  [sym grammar mopts]
-  (let [classification (emit-symbol-classify sym mopts)
-        kind (first classification)
-        target-ns (second classification)
-        options (get-in grammar [:token :symbol])
-        link-fn (:link-fn options)
-        separator (or (get-in grammar [:default :common :namespace]) ".")
-        layout (:layout mopts)
-        module (:module mopts)
-        module-symbol (fn [value]
-                        (str (or (get (:internal module) target-ns)
-                                 (namespace value))
-                             separator
-                             (name value)))
-        link-symbol (fn [value]
-                      (cond (= layout :flat) (name value)
-                            (= layout :module)
-                            (if (= target-ns (:id module))
-                              (name value)
-                              (module-symbol value))
-                            :else (module-symbol value)))
-        base (cond (= kind :alias) (str target-ns separator (name sym))
-                   (= kind :global)
-                   (emit-with-global nil
-                                     [nil (symbol (str target-ns) (name sym))]
-                                     grammar mopts)
-                   (= kind :unknown)
-                   (if target-ns
-                     (throw (ex :dependency {:lang (:lang mopts)
-                                      :namespace target-ns
-                                      :input sym
-                                      :layout layout
-                                      :classify classification} :ex/message "Unknown namespace"))
-                     (name sym))
-                   link-fn (*emit-fn* (link-fn sym mopts) grammar mopts)
-                   (or (= layout :full) (= layout :host))
-                   (helper/emit-symbol-full sym target-ns grammar)
-                   (= kind :self) (name sym)
-                   (= kind :link) (link-symbol sym))]
-    (if (or (= kind :global) link-fn)
-      base
-      (reduce-kv (fn [out match replacement]
-                   (str/replace out (str match) replacement))
-                 base
-                 (or (:replace options) {})))))
+  ([sym grammar {:keys [lang layout module], :as mopts}]
+    (let [[type ns] (emit-symbol-classify sym mopts)
+          {:keys [link-fn], :as opts} (get-in grammar [:token :symbol])
+          dopts (get-in grammar [:default :common])
+          module-symbol (fn [sym]
+                          (str
+                            (or
+                              (get (:internal module) ns)
+                              (namespace sym))
+                            (:namespace dopts)
+                            (name sym)))
+          link-symbol (fn [sym]
+                        (cond
+                          (= layout :flat) (name sym)
+                          (= layout :module) (if
+                                               (= ns (:id module))
+                                               (name sym)
+                                               (module-symbol sym))
+                          :else (module-symbol sym)))
+          sym (cond
+                (= type :alias) (str ns (:namespace dopts) (name sym))
+                (= type :global) (emit-with-global
+                                   nil
+                                   [nil (symbol (str ns) (name sym))]
+                                   grammar
+                                   mopts)
+                (= type :unknown) (if
+                                    ns
+                                    (throw
+                                      (ex
+                                        :generic
+                                        {:lang lang,
+                                         :namespace ns,
+                                         :input sym,
+                                         :layout layout,
+                                         :classify [type ns]}
+                                        :ex/message
+                                        "Unknown namespace."))
+                                    (name sym))
+                link-fn (*emit-fn* (link-fn sym mopts) grammar mopts)
+                (#{:full :host} layout) (helper/emit-symbol-full
+                                          sym
+                                          ns
+                                          grammar)
+                (= type :self) (name sym)
+                (= type :link) (link-symbol sym))]
+      (if (or (= type :global) (and (not= type :unknown) link-fn))
+        sym
+        (apply
+          str
+          (map (fn [ch] (get (:replace opts) ch ch)) (seq sym)))))))
 
 (defn emit-symbol
-  "emits a symbol"
+  "emits symbol allowing for custom functions"
   {:added "4.0"}
-  [form grammar mopts]
-  (let [custom (get-in grammar [:token :symbol :emit-fn])]
-    (if custom
-      (custom form grammar mopts)
-      (emit-symbol-standard form grammar mopts))))
+  [sym grammar mopts]
+  (let [{:keys [emit-fn]}  (get-in grammar [:token :symbol])]
+    (if emit-fn
+      (emit-fn sym grammar mopts)
+      (emit-symbol-standard sym grammar mopts))))
 
 (defn emit-token
-  "emits a token selected by its Foundation token key"
+  "customisable emit function for tokens"
   {:added "3.0"}
-  [token-key form grammar mopts]
-  (let [configured (if (= token-key :boolean)
-                     (or (get-in grammar [:token :boolean])
-                         (get-in grammar [:token (if form :true :false)]))
-                     (get-in grammar [:token token-key]))
-        options (if (map? configured) configured {})
-        custom (:custom options)
-        emit-fn (:emit options)
-        as (if (map? configured) (:as options) configured)]
-    (cond (and (= token-key :string) *emit-internal*) form
-          (and (= token-key :string) (= :single (:quote options)))
-          (helper/pr-single form)
-          (= token-key :number)
-          (let [output (pr-str form)]
-            (if (and (str/starts-with? output "(double ")
-                     (str/ends-with? output ")"))
-              (str/slice output 8 (- (str/length output) 1))
-              output))
-          (= token-key :symbol) (emit-symbol form grammar mopts)
-          custom (custom form)
-          as (if (and (fn? as) (not (keyword? as))) (as form) as)
-          emit-fn (emit-fn form grammar mopts)
-          :else (pr-str form))))
+  ([key token grammar mopts] (let [{:keys [emit as custom]} (let [token-options (get-in grammar [:token key])]
+                                                              (if (string? token-options) {:as token-options} token-options))
+                                   custom-fn                (case
+                                                             key                                                                                                                                                             :string
+                                                             (cond
+                                                              *emit-internal*                                      identity
+                                                              (= :single (get-in grammar [:token :string :quote])) helper/pr-single
+                                                              :else                                                custom)                                                                                                   :symbol
+                                                             (or
+                                                              (if
+                                                               custom (fn [migration-argument-0] (custom migration-argument-0 grammar mopts))) (fn [migration-argument-0] (emit-symbol migration-argument-0 grammar mopts))) custom)
+                                   output                   (cond
+                                                             custom-fn (custom-fn token)
+                                                             as        (if
+                                                                        (or (fn? as) (= (Base/type as) :std.native.Var)) ((if (= (Base/type as) :std.native.Var) (deref as) as) token)
+                                                                        as)
+                                                             emit      (emit token grammar mopts)
+                                                             :else     (pr-str token))]
+                               output)))
 
 (defn emit-with-decorate
-  "emits the decorated form"
+  "customisable emit function for global vars"
   {:added "4.0"}
-  [_ form grammar mopts]
-  (*emit-fn* (nth form 2) grammar mopts))
+  [_ [_ opts form] grammar mopts]
+  (*emit-fn* form grammar mopts))
 
 (defn emit-with-uuid
-  "emits a portable unique identifier"
+  "injects uuid for testing"
   {:added "4.0"}
   [_ form grammar mopts]
-  (str (gensym "uuid-")))
+  (letfn
+    [(positive-mod
+       [value modulus]
+       (let [remainder (mod value modulus)]
+         (if (neg? remainder) (+ remainder modulus) remainder)))
+     (signed32
+       [value]
+       (let [value (positive-mod value 4294967296)]
+         (if (>= value 2147483648) (- value 4294967296) value)))
+     (long-hash
+       [value]
+       (let [bits (positive-mod
+                    value
+                    (read-string "18446744073709551616"))]
+         (signed32
+           (Bits/xor
+             (positive-mod bits 4294967296)
+             (quot bits 4294967296)))))
+     (power-two
+       [exponent]
+       (loop [value 1 exponent exponent]
+         (if (zero? exponent)
+           value
+           (recur (* value 2) (dec exponent)))))
+     (integer-hash
+       [value]
+       (if (and
+             (>= value -9223372036854775808)
+             (<= value 9223372036854775807))
+         (long-hash value)
+         (let [negative (neg? value)]
+           (loop [value (if negative (- value) value)
+                  weight 1
+                  result 0]
+             (if (zero? value)
+               (signed32 (if negative (- result) result))
+               (recur
+                 (quot value 4294967296)
+                 (positive-mod (* weight 31) 4294967296)
+                 (positive-mod
+                   (+
+                     result
+                     (* (positive-mod value 4294967296) weight))
+                   4294967296)))))))
+     (double-hash
+       [value]
+       (let [negative (str/starts-with? (pr-str value) "(double -")
+             magnitude (if negative (- value) value)
+             unsigned (if (zero? magnitude)
+                        0
+                        (let [binary (loop
+                                       [scaled magnitude exponent 0]
+                                       (cond
+                                         (< scaled 1)
+                                         (recur
+                                           (* scaled (double 2))
+                                           (dec exponent))
+                                         (>= scaled 2)
+                                         (recur
+                                           (/ scaled (double 2))
+                                           (inc exponent))
+                                         :else
+                                         [(long
+                                            (*
+                                              scaled
+                                              (double
+                                                4503599627370496)))
+                                          exponent]))
+                              coefficient (first binary)
+                              exponent (second binary)]
+                          (if (< exponent -1022)
+                            (quot
+                              coefficient
+                              (power-two (- -1022 exponent)))
+                            (+
+                              (* (+ exponent 1023) 4503599627370496)
+                              (- coefficient 4503599627370496)))))]
+         (long-hash
+           (+
+             unsigned
+             (if negative (read-string "9223372036854775808") 0)))))
+     (random-double
+       []
+       (let [data (Crypto/random-bytes 7)
+             value (reduce
+                     (fn [n i] (+ (* n 256) (bytes/get data i)))
+                     (positive-mod (bytes/get data 0) 32)
+                     [1 2 3 4 5 6])]
+         (/ (double value) (double 9007199254740992))))
+     (seed-hash
+       [value]
+       (cond
+         (double? value) (double-hash value)
+         (integer? value) (integer-hash value)
+         (string? value) (Base/hash value)
+         (keyword? value) (Base/hash (str/to-string value))
+         (bytes? value) (Base/hash (str/decode-utf8 value))
+         :else (Base/hash (canonical-seed-text value))))
+     (canonical-seed-text
+       [value]
+       (cond
+         (map? value) (str
+                        "{"
+                        (str/join
+                          ", "
+                          (sort
+                            (mapv
+                              (fn [[key entry]]
+                                (str
+                                  (canonical-seed-text key)
+                                  " "
+                                  (canonical-seed-text entry)))
+                              (vec value))))
+                        "}")
+         (set? value) (str
+                        "#{"
+                        (str/join
+                          " "
+                          (sort
+                            (mapv canonical-seed-text (vec value))))
+                        "}")
+         (vector? value) (str
+                           "["
+                           (str/join
+                             " "
+                             (mapv canonical-seed-text (vec value)))
+                           "]")
+         (form? value) (str
+                         "("
+                         (str/join
+                           " "
+                           (mapv canonical-seed-text (vec value)))
+                         ")")
+         :else (pr-str value)))]
+    (let [seeds (vec (rest form))
+          value (if (empty? seeds)
+                  (uuid)
+                  (uuid
+                    (seed-hash (or (first seeds) (random-double)))
+                    (seed-hash (or (second seeds) (random-double)))))
+          printed (str value)]
+      (subs printed 7 (dec (count printed))))))
 
 (defn emit-with-rand
-  "emits a portable generated number"
+  "injects uuid for testing"
   {:added "4.0"}
   [_ form grammar mopts]
-  (*emit-fn* (if (= :int (second form)) 1 0.5) grammar mopts))
+  (let [type (second form)
+        token (if (= type :int)
+                (loop []
+                  (let [data (Crypto/random-bytes 4)
+                        value (reduce
+                                (fn
+                                  [n i]
+                                  (+ (* n 256) (bytes/get data i)))
+                                (mod (bytes/get data 0) 128)
+                                [1 2 3])]
+                    (if (= value 2147483647) (recur) value)))
+                (let [data (Crypto/random-bytes 7)
+                      value (reduce
+                              (fn [n i]
+                                (+ (* n 256) (bytes/get data i)))
+                              (mod (bytes/get data 0) 32)
+                              [1 2 3 4 5 6])]
+                  (/ (double value) (double 9007199254740992))))]
+    (*emit-fn* token grammar mopts)))
+
+;;
+;; INVOKE
+;;
+
+(defn invoke-kw-parse
+  "seperates standard and keyword arguments"
+  {:added "3.0"}
+  ([args]
+    (let [idx (first-keyword-index args)]
+      (if (neg? idx)
+        [args []]
+        [(take idx args) (partition 2 (drop idx args))]))))
+
+(defn emit-invoke-kw-pair
+  "emits a kw argument pair"
+  {:added "3.0"}
+  ([[k v] grammar mopts]
+    (let [{:keys [assign]} (helper/get-options
+                             grammar
+                             [:default :invoke])]
+      (str
+        (str/snake-case
+          ((fn [value]
+             (cond
+               (bytes? value) (str/decode-utf8 value)
+               (keyword? value) (str/to-string value)
+               (string? value) value
+               :else (pr-str value)))
+            k))
+        assign
+        (*emit-fn* v grammar mopts)))))
+
+(defn emit-invoke-args
+  "produces the string for invoke call"
+  {:added "3.0"}
+  ([args grammar mopts] (let [[args
+                               kwargs] (invoke-kw-parse args)
+                              cargs    (concat
+                                        (if (not-empty args) (emit-array args grammar mopts))
+                                        (if
+                                         (not-empty kwargs)
+                                         (map
+                                          (fn
+                                           [migration-argument-0]
+                                           (emit-invoke-kw-pair migration-argument-0 grammar mopts))
+                                          kwargs)))]
+                          cargs)))
+
+(defn emit-invoke-layout
+  "layout for invoke blocks\n \n   (emit-invoke-layout [\"ab\\nc\"\n                        \"de\\nf\"]\n                       helper/+default+ {})\n   => \"(ab\\nc,de\\nf)\""
+  {:added "4.0"}
+  ([str-array grammar mopts]
+    (let [{:keys [sep space]} (helper/get-options
+                                grammar
+                                [:default :invoke])]
+      (cond
+        (or
+          (some prose/multi-line? str-array)
+          (and
+            (not *multiline*)
+            (< (reduce + 0 (map count str-array)) *max-len*))) (wrapped-str
+                                                                 (str/join
+                                                                   (str
+                                                                     sep
+                                                                     space)
+                                                                   str-array)
+                                                                 [:default
+                                                                  :invoke]
+                                                                 grammar)
+        :else (let [% (str/join
+                        (str sep "\n" (prose/spaces 2))
+                        str-array)
+                    % (str "\n" (prose/spaces 2) % "\n")
+                    % (wrapped-str % [:default :invoke] grammar)
+                    % (prose/indent-rest % *indent*)]
+                %)))))
+
+(defn emit-invoke-raw
+  "invoke call for reserved ops"
+  {:added "3.0"}
+  ([raw args grammar mopts]
+   (let [{:keys [sep space]} (helper/get-options grammar [:default :invoke])
+         isep (str sep space)
+         cargs (emit-invoke-args args grammar mopts)]
+     (str raw  (emit-invoke-layout cargs grammar mopts)))))
+
+(defn emit-invoke-static
+  "generates a static call, alternat"
+  {:added "3.0"}
+  ([[sym & args] grammar mopts]
+    (let [args (not-empty (apply list (vec args)))]
+      (let [sns (namespace sym)
+            sfn (name sym)
+            {:keys [static]} (helper/get-options
+                               grammar
+                               [:default :invoke])]
+        (emit-invoke-raw (str sns static sfn) args grammar mopts)))))
+
+(defn emit-invoke-typecast
+  "generates typecast expression"
+  {:added "3.0"}
+  ([form grammar mopts]
+    (if (<= 2 (count form))
+      nil
+      (throw
+        (ex
+          :generic
+          {:migration/source-class "java.lang.AssertionError"}
+          :ex/message
+          (str
+            "Assert failed: "
+            (str "At least two arguments for cast")
+            "\n"
+            "(<= 2 (count form))"))))
+    (let [{:keys [start end]} (helper/get-options
+                                grammar
+                                [:default :invoke])
+          sym (last form)
+          casts (map name (butlast form))]
+      (str
+        start
+        start
+        (str/join " " casts)
+        end
+        (*emit-fn* sym grammar mopts)
+        end))))
+
+(defn emit-invoke
+  "general invoke call, incorporating keywords"
+  {:added "3.0"}
+  ([_ [sym & args :as form] grammar mopts]
+    (let [args (not-empty (apply list (vec args)))]
+      (let [{:keys [custom keyword-fn]} (get-in
+                                          grammar
+                                          [:default :invoke])]
+        (cond
+          custom (custom form grammar mopts)
+          (keyword? sym) (cond
+                           keyword-fn (keyword-fn form grammar mopts)
+                           (namespace sym) (emit-invoke-static
+                                             form
+                                             grammar
+                                             mopts)
+                           :else (emit-invoke-typecast
+                                   form
+                                   grammar
+                                   mopts))
+          :else (emit-invoke-raw
+                  (emit-wrapping sym grammar mopts)
+                  args
+                  grammar
+                  mopts))))))
+
+;;
+;; New Constructor Call
+;;
+
+(defn emit-new
+  "invokes a constructor"
+  {:added "3.0"}
+  ([raw [sym & more :as args] grammar mopts]
+    (let [more (not-empty (apply list (vec more)))]
+      (if (<= 1 (count args))
+        nil
+        (throw
+          (ex
+            :generic
+            {:migration/source-class "java.lang.AssertionError"}
+            :ex/message
+            (str
+              "Assert failed: "
+              (str "One or more arguments for " raw)
+              "\n"
+              "(<= 1 (count args))"))))
+      (let [sym (if (keyword? sym) (name sym) sym)]
+        (str
+          raw
+          " "
+          (emit-invoke raw (cons sym more) grammar mopts))))))
+
+(defn emit-class-static-invoke
+  "creates"
+  {:added "4.0"}
+  ([raw [sym field & args] grammar mopts]
+    (let [args (not-empty (apply list (vec args)))]
+      (let [{:keys [static]} (helper/get-options
+                               grammar
+                               [:default :invoke])]
+        (cond
+          (keyword? field) (str sym (or raw static) (name field))
+          :else (emit-invoke-raw
+                  (str sym (or raw static) field)
+                  args
+                  grammar
+                  mopts))))))
+
+;;
+;; INDEX
+;;
+
+(defn emit-index-entry
+  "classifies the index entry"
+  {:added "3.0"}
+  ([v grammar mopts]
+    (cond
+      (symbol? v) (do
+                    (if (nil? (namespace v))
+                      nil
+                      (throw
+                        (ex
+                          :generic
+                          {:migration/source-class
+                           "java.lang.AssertionError"}
+                          :ex/message
+                          (str
+                            "Assert failed: "
+                            "No namespace"
+                            "\n"
+                            "(nil? (namespace v))"))))
+                    (str "." (emit-symbol v grammar mopts)))
+      (form? v) (let [sym (first v)
+                      sym (if (string? sym) (symbol sym) sym)
+                      _ (if (symbol? sym)
+                          nil
+                          (throw
+                            (ex
+                              :generic
+                              {:migration/source-class
+                               "java.lang.AssertionError"}
+                              :ex/message
+                              "Assert failed: (symbol? sym)")))
+                      {:keys [apply]} (helper/get-options
+                                        grammar
+                                        [:default :invoke])
+                      braces (meta sym)]
+                  (emit-invoke-raw
+                    (str
+                      apply
+                      (emit-symbol sym grammar mopts)
+                      (if (not-empty braces)
+                        (*emit-fn* braces grammar mopts)
+                        ""))
+                    (rest v)
+                    grammar
+                    mopts))
+      (vector? v) (do
+                    (if (= 1 (count v))
+                      nil
+                      (throw
+                        (ex
+                          :generic
+                          {:migration/source-class
+                           "java.lang.AssertionError"}
+                          :ex/message
+                          (str
+                            "Assert failed: "
+                            "Only one index"
+                            "\n"
+                            "(= 1 (count v))"))))
+                    (let [{:keys [start end]} (helper/get-options
+                                                grammar
+                                                [:default :index])]
+                      (str
+                        start
+                        (*emit-fn* (first v) grammar mopts)
+                        end)))
+      (set? v) (str "." (*emit-fn* v grammar mopts))
+      :else (throw (ex :generic {:input v} :ex/message "Not valid")))))
+
+(defn emit-index
+  "creates an indexed expression"
+  {:added "3.0"}
+  ([raw args grammar mopts] (if (<= 2 (count args))
+                              nil
+                              (throw (ex :generic
+                                       {:migration/source-class "java.lang.AssertionError"}
+                                       :ex/message
+                                       (str "Assert failed: "
+                                         (str "Two or more arguments for raw" raw)
+                                         "
+"
+                                         "(<= 2 (count args))"))))
+    (let [[sym
+           &
+           more] args
+          more   (not-empty (apply list (vec more)))
+          index  (mapv
+                  (fn
+                   [migration-argument-0]
+                   (emit-index-entry migration-argument-0 grammar mopts))
+                  more)
+          sym    (emit-wrapping sym grammar mopts)]
+      (apply str sym index))))
+
+;; Ops
+;;
+
+(defn emit-op
+  "helper for the emit op"
+  {:added "3.0"}
+  ([key
+    [sym & args :as form]
+    {:keys [reserved], :as grammar}
+    mopts
+    &
+    [expansion]]
+    (let [args (not-empty (apply list (vec args)))]
+      (let [{:keys [op emit transform raw default type], :as props} (get
+                                                                      reserved
+                                                                      sym)]
+        (case
+          emit
+          :discard
+          ""
+          :free
+          (emit-free props form grammar mopts)
+          :squash
+          (emit-squash key form grammar mopts)
+          :comment
+          (emit-comment key form grammar mopts)
+          :indent
+          (emit-indent key form grammar mopts)
+          :token
+          raw
+          :alias
+          (*emit-fn* (cons raw args) grammar mopts)
+          :unit
+          (emit-unit props form grammar mopts)
+          :internal
+          (emit-internal form grammar mopts)
+          :internal-str
+          (emit-internal-str form grammar mopts)
+          :pre
+          (emit-pre raw args grammar mopts)
+          :post
+          (emit-post raw args grammar mopts)
+          :prefix
+          (emit-prefix raw args grammar mopts)
+          :postfix
+          (emit-postfix raw args grammar mopts)
+          :infix
+          (emit-infix raw args grammar mopts)
+          :infix-
+          (emit-infix-pre raw args grammar mopts)
+          :infix*
+          (emit-infix-default raw args default grammar mopts)
+          :infix-if
+          (emit-infix-if form grammar mopts)
+          :bi
+          (emit-bi raw args grammar mopts)
+          :between
+          (emit-between raw args grammar mopts)
+          :assign
+          (emit-assign raw args grammar mopts)
+          :invoke
+          (emit-invoke-raw raw args grammar mopts)
+          :new
+          (emit-new raw args grammar mopts)
+          :static-invoke
+          (emit-class-static-invoke raw args grammar mopts)
+          :index
+          (emit-index raw args grammar mopts)
+          :return
+          (emit-return raw args grammar mopts)
+          :macro
+          (emit-macro key form grammar mopts)
+          :template
+          (emit-macro key form grammar mopts)
+          :hard-link
+          (*emit-fn* (cons raw args) grammar mopts)
+          :with-global
+          (emit-with-global key form grammar mopts)
+          :with-decorate
+          (emit-with-decorate key form grammar mopts)
+          :with-uuid
+          (emit-with-uuid key form grammar mopts)
+          :with-rand
+          (emit-with-rand key form grammar mopts)
+          :throw
+          (throw
+            (ex
+              :generic
+              {:symbol sym, :form form}
+              :ex/message
+              "Not allowed as op"))
+          (if-let [f (get expansion emit)]
+            (f key props form grammar mopts)
+            (throw
+              (ex
+                :generic
+                {:emit emit,
+                 :key key,
+                 :symbol sym,
+                 :form form,
+                 :props props}
+                :ex/message
+                "No matching clause"))))))))
+
+
+(defn form-key
+  "returns the key associated with the form"
+  {:added "3.0"}
+  ([form {:keys [banned reserved], :as grammar}]
+    (let [key (helper/form-key-base form)
+          check-fn (fn [val input]
+                     (if-let [m (get reserved val)]
+                       [(:op m) (or (:type m) :statement)]
+                       input))
+          [key type check?] (cond
+                              (vector? key) key
+                              :else (check-fn
+                                      (first form)
+                                      [:invoke :invoke]))
+          _ (if (get banned key)
+              (throw
+                (ex
+                  :generic
+                  {:form form, :key key, :type type}
+                  :ex/message
+                  "Disallowed in form")))]
+      [key type check?])))
+
+;;
+;;
+;;
+
+(def +emit-lookup+
+  {:token    #'emit-token
+   :invoke   #'emit-invoke
+   :macro    #'emit-macro})
+
+(defn emit-common-loop
+  "emits the raw string"
+  {:added "4.0"}
+  ([form grammar mopts]
+    (emit-common-loop form grammar mopts +emit-lookup+ emit-op))
+  ([form grammar mopts fn-lookup fn-default]
+    (let [output-fn (fn [[key type]]
+                      (let [emit-fn (or
+                                      (get fn-lookup type)
+                                      fn-default)]
+                        ((if (= (Base/type emit-fn) :std.native.Var)
+                           (deref emit-fn)
+                           emit-fn)
+                          key
+                          form
+                          grammar
+                          mopts)))
+          [key type check? :as input] (form-key form grammar)]
+      (cond
+        check? (or
+                 (emit-reserved-value form grammar mopts)
+                 (output-fn input))
+        :else (output-fn input)))))
+
+(defn emit-common
+  "emits a string based on grammar"
+  {:added "4.0"}
+  [form grammar mopts]
+  (binding [*emit-fn* emit-common-loop]
+    (emit-common-loop form grammar mopts)))
+
+
+(comment
+  
+  (./import)
+  (./create-tests))
+
+(defn drop-last-value [values]
+  (if (empty? values)
+    []
+    (vec (take (- (count values) 1) values))))
 
 (defn first-keyword-index
   [args]
@@ -510,272 +1393,6 @@
         index
         (recur (+ index 1) values)))))
 
-(defn invoke-kw-parse
-  "separates positional and keyword arguments"
-  {:added "3.0"}
-  [args]
-  (let [values (vec args)
-        index (first-keyword-index values)]
-    (if (< index 0)
-      [values []]
-      [(take index values)
-       (partition 2 (drop index values))])))
-
-(defn emit-invoke-kw-pair
-  "emits one keyword argument pair"
-  {:added "3.0"}
-  [pair grammar mopts]
-  (let [options (helper/get-options grammar [:default :invoke])
-        key (first pair)
-        value (second pair)]
-    (str (util/sym-default-str (name key))
-         (:assign options)
-         (*emit-fn* value grammar mopts))))
-
-(defn emit-invoke-args
-  "returns emitted positional and keyword arguments"
-  {:added "3.0"}
-  [args grammar mopts]
-  (let [parsed (invoke-kw-parse args)
-        positional (first parsed)
-        keyword-args (second parsed)]
-    (concat (emit-array positional grammar mopts)
-            (map (fn [pair]
-                   (emit-invoke-kw-pair pair grammar mopts))
-                 keyword-args))))
-
-(defn emit-invoke-layout
-  "lays out emitted invocation arguments"
-  {:added "4.0"}
-  [str-array grammar mopts]
-  (let [options (helper/get-options grammar [:default :invoke])]
-    (wrapped-str
-     (str/join (str (:sep options) (:space options)) str-array)
-     [:default :invoke]
-     grammar)))
-
-(defn emit-invoke-raw
-  "emits a reserved invocation"
-  {:added "3.0"}
-  [raw args grammar mopts]
-  (str raw (emit-invoke-layout (emit-invoke-args args grammar mopts)
-                               grammar mopts)))
-
-(defn emit-invoke-static
-  "emits a namespaced static invocation"
-  {:added "3.0"}
-  [form grammar mopts]
-  (let [sym (first form)
-        separator (:static (helper/get-options grammar [:default :invoke]))]
-    (emit-invoke-raw (str (namespace sym) separator (name sym))
-                     (rest form) grammar mopts)))
-
-(defn emit-invoke-typecast
-  "emits a typecast expression"
-  {:added "3.0"}
-  [form grammar mopts]
-  (let [options (helper/get-options grammar [:default :invoke])
-        values (vec form)
-        target (last values)
-        casts (map name (drop-last-value values))]
-    (str (:start options)
-         (:start options)
-         (str/join " " casts)
-         (:end options)
-         (*emit-fn* target grammar mopts)
-         (:end options))))
-
-(defn emit-invoke
-  "emits a general invocation"
-  {:added "3.0"}
-  [_ form grammar mopts]
-  (let [sym (first form)
-        custom (get-in grammar [:default :invoke :custom])
-        keyword-fn (get-in grammar [:default :invoke :keyword-fn])]
-    (cond custom (custom form grammar mopts)
-          (and (keyword? sym) keyword-fn) (keyword-fn form grammar mopts)
-          (and (keyword? sym) (namespace sym))
-          (emit-invoke-static form grammar mopts)
-          (keyword? sym) (emit-invoke-typecast form grammar mopts)
-          :else
-          (let [target (*emit-fn* sym grammar mopts)
-                options (get-in grammar [:default :common])
-                target (if (symbol? sym)
-                         target
-                         (str (:start options) target (:end options)))]
-            (emit-invoke-raw target (rest form) grammar mopts)))))
-
-(defn emit-new
-  "emits a constructor invocation"
-  {:added "3.0"}
-  [raw args grammar mopts]
-  (let [sym (first args)
-        target (if (keyword? sym) (name sym) sym)]
-    (if (nil? sym)
-      (throw (ex :dependency {:raw raw :arguments args} :ex/message "One or more arguments required for constructor"))
-      (str raw " "
-           (*emit-fn* target grammar mopts)
-           (emit-invoke-layout
-            (emit-invoke-args (rest args) grammar mopts)
-            grammar mopts)))))
-
-(defn emit-class-static-invoke
-  "emits a static field or method access"
-  {:added "4.0"}
-  [raw args grammar mopts]
-  (let [sym (first args)
-        field (second args)
-        separator (or raw (:static (helper/get-options grammar [:default :invoke])))]
-    (if (keyword? field)
-      (str sym separator (name field))
-      (emit-invoke-raw (str sym separator field)
-                       (drop 2 args) grammar mopts))))
-
-(defn emit-index-entry
-  "emits one index or member-access entry"
-  {:added "3.0"}
-  [entry grammar mopts]
-  (cond (symbol? entry)
-        (if (namespace entry)
-          (throw (ex :dependency {:entry entry} :ex/message "Index symbol cannot be namespaced"))
-          (str "." (emit-symbol entry grammar mopts)))
-
-        (list? entry)
-        (let [operation (first entry)
-              operation (if (string? operation) (symbol operation) operation)
-              apply-token (or (not-empty (:apply (helper/get-options grammar [:default :invoke]))) ".")
-              braces (meta operation)]
-          (if (not (symbol? operation))
-            (throw (ex :dependency {:entry entry} :ex/message "Index invocation requires a symbol"))
-            (emit-invoke-raw
-             (str apply-token
-                  (emit-symbol operation grammar mopts)
-                  (if (empty? braces) "" (*emit-fn* braces grammar mopts)))
-             (rest entry) grammar mopts)))
-
-        (vector? entry)
-        (if (not (= 1 (count entry)))
-          (throw (ex :dependency {:entry entry} :ex/message "Index vector requires one value"))
-          (let [options (helper/get-options grammar [:default :index])]
-            (str (:start options)
-                 (*emit-fn* (first entry) grammar mopts)
-                 (:end options))))
-
-        (set? entry) (str "." (*emit-fn* entry grammar mopts))
-        :else (throw (ex :argument {:entry entry} :ex/message "Invalid index entry"))))
-
-(defn emit-index
-  "emits an indexed expression"
-  {:added "3.0"}
-  [_ args grammar mopts]
-  (if (< (count args) 2)
-    (throw (ex :dependency {:arguments args} :ex/message "Indexed expression requires two or more arguments"))
-    (let [target (emit-wrapping (first args) grammar mopts)
-          entries (map (fn [entry] (emit-index-entry entry grammar mopts))
-                       (rest args))]
-      (apply str target entries))))
-
-(defn emit-op
-  "dispatches a reserved common operation"
-  {:added "3.0"}
-  ([key form grammar mopts]
-   (emit-op key form grammar mopts {}))
-  ([key form grammar mopts expansion]
-   (let [entry (get-in grammar [:reserved (first form)])
-         mode (:emit entry)
-         raw (:raw entry)
-         args (vec (rest form))
-         custom (get expansion mode)]
-     (cond (= mode :discard) ""
-           (= mode :free) (emit-free (:sep entry) form grammar mopts)
-           (= mode :squash) (emit-squash key form grammar mopts)
-           (= mode :comment) (emit-comment raw form grammar mopts)
-           (= mode :indent) (emit-indent key form grammar mopts)
-           (= mode :token) raw
-           (= mode :alias) (*emit-fn* (apply list (concat [raw] args)) grammar mopts)
-           (= mode :unit) (emit-unit entry form grammar mopts)
-           (= mode :internal) (emit-internal form grammar mopts)
-           (= mode :internal-str) (emit-internal-str form grammar mopts)
-           (= mode :pre) (emit-pre raw args grammar mopts)
-           (= mode :post) (emit-post raw args grammar mopts)
-           (= mode :prefix) (emit-prefix raw args grammar mopts)
-           (= mode :postfix) (emit-postfix raw args grammar mopts)
-           (= mode :infix) (emit-infix raw args grammar mopts)
-           (= mode :infix-) (emit-infix-pre raw args grammar mopts)
-           (= mode :infix*) (emit-infix-default raw args (:default entry) grammar mopts)
-           (= mode :infix-if) (emit-infix-if form grammar mopts)
-           (= mode :bi) (emit-bi raw args grammar mopts)
-           (= mode :between) (emit-between raw args grammar mopts)
-           (= mode :assign) (emit-assign raw args grammar mopts)
-           (= mode :invoke) (emit-invoke-raw raw args grammar mopts)
-           (= mode :new) (emit-new raw args grammar mopts)
-           (= mode :static-invoke) (emit-class-static-invoke raw args grammar mopts)
-           (= mode :index) (emit-index raw args grammar mopts)
-           (= mode :return) (emit-return raw args grammar mopts)
-           (or (= mode :macro) (= mode :template))
-           (emit-macro key form grammar mopts)
-           (or (= mode :hard-link) (= mode :alias))
-           (*emit-fn* (apply list (concat [raw] args)) grammar mopts)
-           (= mode :with-global) (emit-with-global key form grammar mopts)
-           (= mode :with-decorate) (emit-with-decorate key form grammar mopts)
-           (= mode :with-uuid) (emit-with-uuid key form grammar mopts)
-           (= mode :with-rand) (emit-with-rand key form grammar mopts)
-           (= mode :throw)
-           (throw (ex :generic {:symbol (first form) :form form} :ex/message "Not allowed as op"))
-           custom (custom key entry form grammar mopts)
-           :else (throw (ex :generic {:emit mode :key key :form form :entry entry} :ex/message "No matching emit clause"))))))
-
-(defn form-key
-  "returns the grammar key and type associated with a form"
-  {:added "3.0"}
-  [form grammar]
-  (let [base (helper/form-key-base form)
-        classified-base
-        (if (vector? base)
-          base
-          (let [entry (get-in grammar [:reserved (first form)])]
-            (if entry
-              [(:op entry) (or (:type entry) :statement)]
-              [:invoke :invoke])))
-        classified (if (= 2 (count classified-base))
-                     (conj (vec classified-base) nil)
-                     classified-base)
-        key (first classified)]
-    (if (reduce (fn [found banned-key]
-                  (or found (= banned-key key)))
-                false
-                (or (:banned grammar) #{}))
-      (throw (ex :generic {:form form :key key :type (second classified)} :ex/message "Disallowed in form"))
-      classified)))
-
-(def +emit-lookup+
-  {:token emit-token
-   :invoke emit-invoke
-   :macro emit-macro})
-
-(defn emit-common-loop
-  "emits one form without installing recursive common emission"
-  {:added "4.0"}
-  ([form grammar mopts]
-   (emit-common-loop form grammar mopts +emit-lookup+ emit-op))
-  ([form grammar mopts fn-lookup fn-default]
-   (if (and (list? form)
-            (= 'double (first form))
-            (= 2 (count form))
-            (number? (second form)))
-     (emit-token :number (second form) grammar mopts)
-     (let [classification (form-key form grammar)
-           key (first classification)
-           type (second classification)
-           checked (if (> (count classification) 2)
-                     (nth classification 2)
-                     nil)
-           output-fn (or (get fn-lookup type) fn-default)]
-       (if checked
-         (or (emit-reserved-value form grammar mopts)
-             (output-fn key form grammar mopts))
-         (output-fn key form grammar mopts))))))
-
 (defn emit-common-loop-bound
   "Emits through a supplied top-level dispatch table and recursive emitter.
 
@@ -785,10 +1402,3 @@
   [form grammar mopts fn-lookup fn-default recursive-emit]
   (binding [*emit-fn* recursive-emit]
     (emit-common-loop form grammar mopts fn-lookup fn-default)))
-
-(defn emit-common
-  "emits one form using common emission recursively"
-  {:added "4.0"}
-  [form grammar mopts]
-  (binding [*emit-fn* emit-common-loop]
-    (emit-common-loop form grammar mopts)))

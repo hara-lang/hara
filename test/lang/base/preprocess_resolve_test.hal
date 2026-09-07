@@ -129,3 +129,42 @@
             {:form '(quote (console.log untouched))}
             {:module {:native-lu {'console :node}}}))
    :expected {:node #{'console}}}])
+
+^{:refer lang.base.preprocess-resolve/fragment-template-args}
+(Test/check
+ [{:name "preserves Foundation anonymous and multi-arity fn argument shapes"
+   :test (fn []
+           [(resolve/fragment-template-args
+             '(fn [x y] (list '+ x y)) (fn [x y] (list '+ x y)))
+            (resolve/fragment-template-args
+             '(fn ([x] x) ([x y] (+ x y))) nil)
+            (resolve/fragment-template-args '(fn [] :empty) nil)
+            (resolve/fragment-template-args '(fn [x & more] more) nil)
+            (resolve/fragment-template-args '(fn named [x y] (+ x y)) nil)
+            (resolve/fragment-template-args
+             '(fn [ignored] ignored)
+             (with-meta (fn [] nil) {:arglists '([preferred])}))
+            (try (resolve/fragment-template-args '(fn :invalid) nil)
+                 :unexpected
+                 (catch error [(ex-message error) (:form (ex-data error))]))])
+   :expected [['x 'y] ['x] [] ['x '& 'more] ['x 'y] ['preferred]
+              ["Unable to derive standalone fragment args" '(fn :invalid)]]}])
+
+^{:refer lang.base.preprocess-resolve/process-fragment-entry}
+(Test/check
+ [{:name "recreates the original standalone add fragment and records its dependency"
+   :test (fn []
+           (let [baseline #{'existing/value}
+                 dependencies (atom baseline)
+                 output
+                 (try
+                   [(resolve/process-fragment-entry
+                     {:id 'add :form '(fn [x y] (list '+ x y))
+                      :template (fn [x y] (list '+ x y)) :standalone true}
+                     'L.core/add 'L.core 'L.core/add dependencies
+                     (fn [form] [:walk form]))
+                    (deref dependencies)]
+                   (finally (reset! dependencies baseline)))]
+             [output (= baseline (deref dependencies))]))
+   :expected [[[:walk '(fn [x y] (return (+ x y)))]
+               #{'existing/value 'L.core/add}] true]}])

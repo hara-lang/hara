@@ -2,6 +2,7 @@
   (:config {:role :internal})
   (:require [tool.migrate.common.write :as migrate-write]
             [tool.migrate.common.rule :as migrate-rule]
+            [tool.migrate.policy.foundation.lang :as migrate-lang]
             [tool.migrate.common.project :as migrate-project]
             [tool.migrate.common.corpus :as migrate-corpus]
             [tool.migrate.common.git :as migrate-git]
@@ -723,7 +724,7 @@
    ["tahto.base." "lang.base."]
    ["tahto.core." "lang.core."]
    ["tahto.typed." "lang.typed."]
-   ["clojure.string" "std.foundation.string"]
+   [":polis/" ":lang/"]
    ["std.lib.template" "std.block.template"]])
 
 (defn lang-model-v1-test-source-path
@@ -983,43 +984,68 @@
     :test/source-prefix "test/tahto/runtime/basic/"
     :test/target-prefix "test/lang/runtime/basic/"}])
 
+(def +foundation-lang-root-scopes+
+  [{:id :lang.core-root :stage :core :kind :source
+    :source/path "src/tahto/core.clj" :target/path "src/lang/core.hal"
+    :target/namespace 'lang.core
+    :test/paths {:source/path "test/tahto/core_test.clj"
+                 :target/path "test/lang/core_test.hal"}}
+   {:id :lang.runtime.basic-root :stage :runtime :kind :source
+    :source/path "src/tahto/runtime/basic.clj"
+    :target/path "src/lang/runtime/basic.hal"
+    :target/namespace 'lang.runtime.basic
+    :test/paths {:source/path "test/tahto/runtime/basic_test.clj"
+                 :target/path "test/lang/runtime/basic_test.hal"}}
+   {:id :lang.core-root-test :stage :core :kind :test
+    :source/path "test/tahto/core_test.clj" :target/path "test/lang/core_test.hal"
+    :target/namespace 'lang.core-test}
+   {:id :lang.runtime.basic-root-test :stage :runtime :kind :test
+    :source/path "test/tahto/runtime/basic_test.clj"
+    :target/path "test/lang/runtime/basic_test.hal"
+    :target/namespace 'lang.runtime.basic-test}])
+
 (defn foundation-lang-compiler-scope
   [path]
-  (first
-   (sort-by
-    (fn [scope] (- (count (:source/prefix scope))))
-    >
-    (filter
-     (fn [scope]
-       (and (str/starts-with? path (:source/prefix scope))
-            (or (not= :lang.model/v1 (:id scope))
-                (not (nil? (lang-model-v1-unit-for path))))))
-     (concat +foundation-lang-compiler-test-scopes+
-             +foundation-lang-compiler-scopes+)))))
+  (or
+   (first (filter (fn [scope] (= path (:source/path scope)))
+                  +foundation-lang-root-scopes+))
+   (first
+    (sort-by
+     (fn [scope] (- (count (:source/prefix scope))))
+     (filter
+      (fn [scope]
+        (and (str/starts-with? path (:source/prefix scope))
+             (or (not= :lang.model/v1 (:id scope))
+                 (not (nil? (lang-model-v1-unit-for path))))))
+      (concat +foundation-lang-compiler-test-scopes+
+              +foundation-lang-compiler-scopes+))))))
 
 (defn route-foundation-lang-compiler-path
   [source-path]
   (let [scope (foundation-lang-compiler-scope source-path)]
     (if scope
-      (-> source-path
-          (str/replace (:source/prefix scope) (:target/prefix scope))
-          (str/replace ".clj" ".hal"))
+      (or (:target/path scope)
+          (-> source-path
+              (str/replace (:source/prefix scope) (:target/prefix scope))
+              (str/replace ".clj" ".hal")))
       nil)))
 
 (defn foundation-lang-compiler-test-paths
   [source-path]
   (let [scope (foundation-lang-compiler-scope source-path)]
     (if scope
-      (let [test-source-path
-            (-> source-path
-                (str/replace (:source/prefix scope) (:test/source-prefix scope))
-                (str/replace ".clj" "_test.clj")
-                (str/replace ".hal" "_test.hal"))]
-        {:source/path test-source-path
-         :target/path
-         (-> test-source-path
-             (str/replace (:test/source-prefix scope) (:test/target-prefix scope))
-             (str/replace ".clj" ".hal"))})
+      (if (:source/path scope)
+        (:test/paths scope)
+        (let [test-source-path
+              (-> source-path
+                  (str/replace (:source/prefix scope) (:test/source-prefix scope))
+                  (str/replace ".clj" "_test.clj")
+                  (str/replace ".hal" "_test.hal"))]
+          {:source/path test-source-path
+           :target/path
+           (-> test-source-path
+               (str/replace (:test/source-prefix scope) (:test/target-prefix scope))
+               (str/replace ".clj" ".hal"))}))
       nil)))
 
 (defn foundation-lang-plus-groups
@@ -1040,24 +1066,9 @@
     (:form-records (structure/analyse-structure source)))))
 
 (defn rewrite-foundation-lang-compiler-source
+  "Routes compiler blocks across the complete closure, preserving literal text."
   [stage source]
-  (let [rewrites
-        (cond (= stage :base)
-              [["tahto.base." "lang.base."]
-               ["tahto.common." "lang.base."]
-               ["lang.common." "lang.base."]]
-
-              (= stage :core)
-              [["tahto.core." "lang.core."]]
-
-              (= stage :runtime)
-              [["tahto.runtime.basic." "lang.runtime.basic."]]
-
-              :else [])]
-    (reduce (fn [output pair]
-              (str/replace output (first pair) (second pair)))
-            source
-            rewrites)))
+  (:after (migrate-lang/analyze-source source)))
 
 (defn foundation-lang-compiler-unit
   [unit]
@@ -1076,7 +1087,8 @@
                      (str/replace "_" "-"))))
             source-name (str source-namespace)
             target-namespace
-            (symbol
+            (or (:target/namespace scope)
+             (symbol
              (cond (= :model (:stage scope))
                    (route-lang-model-v1-namespace source-namespace)
 
@@ -1094,7 +1106,7 @@
                                 "tahto.runtime.basic."
                                 "lang.runtime.basic.")
 
-                   :else source-name))]
+                   :else source-name)))]
         (merge unit
                {:id (or (:id unit) source-path)
                 :path target-path
@@ -1123,7 +1135,9 @@
   [units]
   (vec (keep foundation-lang-compiler-unit units)))
 
-(declare foundation-lang-plan foundation-lang-direct-plan)
+(declare foundation-lang-plan
+         foundation-lang-direct-plan
+         migrate-foundation-common-test-source)
 
 (def +foundation-lang-authority-revision+
   "fe54cc866473a888bfbd4ce2d3de6d8011f09f72")
@@ -1139,17 +1153,17 @@
    "test/tahto/runtime/basic/"])
 
 (defn foundation-lang-authority-paths
-  "Returns the pinned Foundation source and fact-test paths selected by the
-   compiler migration scopes from a read-only Git tree."
+  "Returns pinned compiler directory units and exact root source/test units."
   [runner revision]
   (vec
-   (sort-by
-    identity
+   (sort-by identity
     (filter
      (fn [path]
        (and (str/ends-with? (str path) ".clj")
-            (some (fn [prefix] (str/starts-with? path prefix))
-                  +foundation-lang-authority-prefixes+)))
+            (or (some (fn [prefix] (str/starts-with? path prefix))
+                      +foundation-lang-authority-prefixes+)
+                (some (fn [scope] (= path (:source/path scope)))
+                      +foundation-lang-root-scopes+))))
      (migrate-git/list-tree runner revision)))))
 
 (defn foundation-lang-authority-units
@@ -1195,25 +1209,21 @@
            :ex/message "staged authority path is outside the supplied root")))))
 
 (defn foundation-lang-staged-paths
-  "Returns selected Foundation paths from a read-only staged checkout inside
-   the project sandbox. The stage is created from the pinned Git revision by
-   the migration runner before this function is called."
+  "Returns existing compiler directory and exact root units from the staged authority."
   [root]
   (vec
-   (sort-by
-    str
+   (sort-by str
     (filter
-     (fn [path]
-       (and (str/ends-with? (str path) ".clj")
-            (some (fn [prefix]
-                    (str/starts-with?
-                     (foundation-lang-staged-relative-path root path)
-                     prefix))
-                  +foundation-lang-authority-prefixes+)))
-     (mapcat
-      (fn [prefix]
-        (deref (File/walk (File/resolve root prefix))))
-      +foundation-lang-authority-prefixes+)))))
+     (fn [path] (str/ends-with? (str path) ".clj"))
+     (concat
+      (mapcat
+       (fn [prefix] (deref (File/walk (File/resolve root prefix))))
+       +foundation-lang-authority-prefixes+)
+      (keep
+       (fn [scope]
+         (let [path (File/resolve root (:source/path scope))]
+           (if (deref (File/exists? path)) path nil)))
+       +foundation-lang-root-scopes+))))))
 
 (defn foundation-lang-staged-units
   [root]
@@ -1230,6 +1240,7 @@
                {:source/path relative
                 :source (str/decode-utf8 bytes)
                 :source/root root
+                :authority/source true
                 :groups/skip? true
                 :copy true}))))
         paths))))))
@@ -1244,6 +1255,7 @@
   (let [unit {:source/path relative
               :source (read-migration-source root relative)
               :source/root root
+              :authority/source true
               :groups/skip? true
               :copy true}]
     (first (foundation-lang-inventory [unit]))))
@@ -1271,10 +1283,14 @@
 
 (defn rewrite-lang-model-v1-source
   [source]
-  (reduce (fn [output [from to]]
-            (str/replace output from to))
-          source
-          +lang-model-v1-rewrites+))
+  (let [output
+        (reduce (fn [value [from to]]
+                  (str/replace value from to))
+                source
+                +lang-model-v1-rewrites+)]
+    (-> output
+        (str/replace "[clojure.string :as str]" "")
+        (str/replace "[std.foundation.string :as str]" ""))))
 
 (defn lang-model-v1-diagnostics
   [source]
@@ -1313,11 +1329,14 @@
    ["tahto.base.preprocess-base" "lang.base.emit-preprocess"]
    ["tahto.base.util" "lang.base.util"]
    ["tahto.common.book" "lang.base.book"]
+   ["lang.common." "lang.base."]
+   [":polis/" ":lang/"]
+   ["std.string.prose" "std.lib.format.prose"]
    ["tahto.model.spec-js" "lang.model.v1.spec-js"]
    ["tahto.model.spec-lua" "lang.model.v1.spec-lua"]
    ["tahto.model.annex.spec-rust" "lang.model.v1.spec-rust"]])
 
-(def +foundation-common-blocked-prefixes+ ["tahto.core"])
+(def +foundation-common-blocked-prefixes+ ["tahto.core." "tahto.core/"])
 
 (def +foundation-emitter-direct-prefixes+
   ["tahto.base.emit-common/"
@@ -1751,20 +1770,22 @@
       (str/replace ".clj" ".hal")))
 
 (defn foundation-common-fact-count
+  "Counts parsed historical fact forms, excluding comments and string literals."
   [source]
-  (- (count (str/split source "(fact")) 1))
+  (count (structure/facts-from-source source "")))
 
 (defn foundation-common-diagnostics
+  "Reports unresolved compiler symbols with block evidence, not literal matches."
   [source]
-  (vec
-   (keep (fn [prefix]
-           (if (str/includes? source prefix)
-             {:level :error
-              :migration/error :foundation/unmapped-reference
-              :reference prefix
-              :message "Foundation test requires an explicit persistent adaptation"}
-             nil))
-         +foundation-common-blocked-prefixes+)))
+  (mapv
+   (fn [match]
+     (merge match
+            {:level :error
+             :migration/error :foundation/unmapped-reference
+             :reference (:source match)
+             :message "Foundation test requires an explicit persistent adaptation"}))
+   (migrate-lang/match-routes
+    source {:lang/routes [["tahto.core" "lang.core"]]})))
 
 (defn normalize-foundation-source
   "Normalizes migrated source through the shared Hara dependency boundary."
@@ -1776,22 +1797,31 @@
      :target/language :hara
      :rules []})))
 
+(defn normalize-foundation-test-source
+  "Normalizes declared builtin aliases structurally without changing assertions."
+  [source]
+  (normalize-foundation-source source))
+
 (defn migrate-foundation-common-test-source
   [source namespace]
-  (let [rewritten (replace-routes source +foundation-common-test-rewrites+)
-        output (normalize-foundation-source rewritten)
+  (let [result (migrate-lang/analyze-source
+                source
+                (vec (concat migrate-lang/+namespace-routes+
+                             +foundation-common-test-rewrites+)))
+        output (:after result)
         fact-count (foundation-common-fact-count source)
-        diagnostics (foundation-common-diagnostics output)]
-    {:before source
-     :after output
-     :changed (not= source output)
-     :rules [:foundation/lang-common-tests]
-     :facts {:source fact-count
-             :direct (if (empty? diagnostics) fact-count 0)
-             :adapted 0
-             :covered-current 0
-             :unmapped (if (empty? diagnostics) 0 fact-count)}
-     :diagnostics diagnostics}))
+        diagnostics (vec (concat (:diagnostics result)
+                                 (foundation-common-diagnostics output)))
+        blocked? (not (empty? (filter (fn [entry] (= :error (:level entry)))
+                                      diagnostics)))]
+    (assoc result
+           :rules [:foundation/lang-common-tests]
+           :facts {:source fact-count
+                   :direct (if blocked? 0 fact-count)
+                   :adapted 0
+                   :covered-current 0
+                   :unmapped (if blocked? fact-count 0)}
+           :diagnostics diagnostics)))
 
 (defn migrate-foundation-grammar-xtalk-test-source
   "Migrates the pure XTalk grammar vectors and applies the declared canonical
@@ -2024,6 +2054,7 @@
   (let [plan (source-plan source)
         rewritten (structure/apply-edits source (:edits plan))
         rewritten (rewrite-requires rewritten)
+        rewritten (str/replace rewritten ":polis/" ":lang/")
         output (normalize-foundation-source rewritten)]
     (assoc plan
            :before source
@@ -2041,87 +2072,68 @@
 
 (defn migrate-selected-unit
   [unit]
-  (cond (= :foundation/lang-base-hard-cut (:migration unit))
-        (let [source-path (or (:source/path unit) (:path unit))
-              target-path (or (:target/path unit)
-                              (route-foundation-lang-compiler-path source-path))
-              source (:source unit)
-              output
-              (rewrite-foundation-lang-compiler-source
-               (:stage unit)
-               source)]
-          (merge unit
-                 {:path target-path
-                  :source/path source-path
-                  :target/path target-path
-                  :language (or (:language unit) :hara)
-                  :move (not= source-path target-path)
-                  :copy false
-                  :create (not= source-path target-path)
-                  :write false
-                  :before source
-                  :after output
-                  :changed (or (not= source output)
-                               (not= source-path target-path))
-                  :rules [:foundation/lang-base-hard-cut]
-                  :diagnostics []}))
+  (cond
+    (has? #{:foundation/lang-compiler :foundation/lang-base-hard-cut}
+          (:migration unit))
+    (let [source-path (or (:source/path unit) (:path unit))
+          target-path (or (:target/path unit)
+                          (route-foundation-lang-compiler-path source-path))
+          source (:source unit)
+          result
+          (cond
+            (= :model (:stage unit))
+            (migrate-lang-model-v1-source source)
 
-        (= :foundation/lang-compiler (:migration unit))
-        (let [source-path (or (:source/path unit) (:path unit))
-              target-path (or (:target/path unit)
-                              (route-foundation-lang-compiler-path source-path))
-              result
-              (if (= :model (:stage unit))
-                (migrate-lang-model-v1-source (:source unit))
-                (let [base (migrate-source (:source unit))
-                      output
-                      (rewrite-foundation-lang-compiler-source
-                       (:stage unit)
-                       (:after base))]
-                  (assoc base
-                         :after output
-                         :changed (not= (:source unit) output)
-                         :rules (conj (:rules base)
-                                      :foundation/lang-compiler-route))))]
-          (merge unit
-                 {:path target-path
-                  :source/path source-path
-                  :target/path target-path
-                  :language (or (:language unit) :hara)
-                  :move (not= source-path target-path)
-                  :copy false
-                  :create (not= source-path target-path)
-                  :write false}
-                 result
-                 {:changed (or (:changed result)
-                               (not= source-path target-path))}))
+            (and (= :foundation/lang-compiler (:migration unit))
+                 (= :base (:stage unit))
+                 (= :test (:kind unit)))
+            (migrate-foundation-common-test-source source (:target/namespace unit))
 
-        (= :foundation/lang-base-reference (:migration unit))
-        (let [source-path (or (:source/path unit) (:path unit))
-              source (:source unit)
-              output (-> source
-                         (str/replace "lang.common." "lang.base.")
-                         (str/replace "src/lang/common/" "src/lang/base/"))]
-          (merge unit
-                 {:path source-path
-                  :source/path source-path
-                  :target/path source-path
-                  :language (or (:language unit) :hara)
-                  :move false
-                  :copy false
-                  :create false
-                  :write false
-                  :before source
-                  :after output
-                  :changed (not= source output)
-                  :rules [:foundation/lang-base-hard-cut-reference]
-                  :diagnostics []}))
+            :else
+            (assoc (migrate-lang/analyze-source source)
+                   :rules [(if (= :foundation/lang-base-hard-cut (:migration unit))
+                             :foundation/lang-base-hard-cut
+                             :foundation/lang-compiler-route)]))]
+      (merge unit result
+             {:path target-path
+              :source/path source-path
+              :target/path target-path
+              :language (or (:language unit) :hara)
+              :move (and (not (:copy unit)) (not= source-path target-path))
+              :copy (or (:copy unit) false)
+              :create (not= source-path target-path)
+              :write false
+              :changed (or (:changed result) (not= source-path target-path))}))
 
-        (= :lang.model/v1 (:migration unit))
-        (migrate-lang-model-v1-unit unit)
-        (= :foundation/lang-common-tests (:migration unit))
-        (migrate-foundation-common-test-unit unit)
-        :else (migrate-unit unit)))
+    (= :foundation/lang-base-reference (:migration unit))
+    (let [source-path (or (:source/path unit) (:path unit))
+          source (:source unit)
+          output (-> source
+                     (str/replace "lang.common." "lang.base.")
+                     (str/replace "src/lang/common/" "src/lang/base/"))]
+      (merge unit
+             {:path source-path
+              :source/path source-path
+              :target/path source-path
+              :language (or (:language unit) :hara)
+              :move false
+              :copy false
+              :create false
+              :write false
+              :before source
+              :after output
+              :changed (not= source output)
+              :rules [:foundation/lang-base-hard-cut-reference]
+              :diagnostics []}))
+
+    (= :lang.model/v1 (:migration unit))
+    (migrate-lang-model-v1-unit unit)
+
+    (= :foundation/lang-common-tests (:migration unit))
+    (migrate-foundation-common-test-unit unit)
+
+    :else
+    (migrate-unit unit)))
 
 (defn migration-items
   [input context]
@@ -2135,12 +2147,9 @@
 (defn migration-item
   [unit context]
   (let [result (migrate-selected-unit unit)
-        blocking?
-        (if (or (= :lang.model/v1 (:migration unit))
-                (and (= :foundation/lang-compiler (:migration unit))
-                     (= :model (:stage unit))))
-          (lang-model-v1-blocking? (:diagnostics result))
-          (not (empty? (:diagnostics result))))]
+        blocking? (some (fn [diagnostic]
+                          (migrate-write/blocking-diagnostic? diagnostic {}))
+                        (:diagnostics result))]
     {:status (if blocking? :error :return)
      :data result}))
 
@@ -2173,25 +2182,17 @@
   (deref (work/evaluate migration input)))
 
 (defn foundation-lang-direct-plan
-  "Builds deterministic migration records without invoking the general work
-   scheduler. Namespace hard cuts use only pure source routing, so their
-   validation and apply boundary remains identical while avoiding task-runtime
-   startup for every file."
+  "Builds deterministic compiler records using the shared blocking policy.
+   Safe rewrite evidence is retained without making a valid plan unwriteable."
   [migration units]
-  (let [records
-        (mapv
-         (fn [unit]
-           {:status :return
-            :data (migrate-selected-unit (assoc unit :migration migration))})
-         (sort-by :path units))]
+  (let [records (mapv
+                 (fn [unit]
+                   (migration-item (assoc unit :migration migration) {}))
+                 (sort-by :path units))]
     {:write nil
      :records records
      :inventory units
-     :valid
-     (not
-      (some (fn [record]
-              (not (empty? (get-in record [:data :diagnostics]))))
-            records))}))
+     :valid (not (some (fn [record] (= :error (:status record))) records))}))
 
 (defn ^{:public true} foundation-lang-base-hard-cut-namespace
   "Derives the current lang.common namespace from a source or fact-test path."
@@ -2442,9 +2443,9 @@
   (let [source-path (or (:source/path unit) (:path unit))
         target-path (or (:target/path unit) (:path unit))
         source-root (or (:source/root unit) root)]
-    (if (or (and (not (:authority/source unit))
-                 (not (path-under-root? source-root source-path)))
-            (not (path-under-root? root target-path)))
+    (if (and (not (:authority/source unit))
+             (or (not (path-under-root? source-root source-path))
+                 (not (path-under-root? root target-path))))
     (throw (ex :io {:root root
                      :source/root source-root
                      :source/path source-path
@@ -2482,7 +2483,9 @@
   (let [edits (vec (owned-edits (planned-edits plan)))
         diagnostics
         (vec (mapcat (fn [unit] (:diagnostics unit)) edits))]
-    (if (not (empty? diagnostics))
+    (if (some (fn [diagnostic]
+                (migrate-write/blocking-diagnostic? diagnostic {}))
+              diagnostics)
       (throw (ex :generic {:diagnostics diagnostics} :ex/message "Migration contains blocking diagnostics")))
     (vec (map (fn [unit] (validate-unit root unit)) edits))
     (vec (map (fn [unit] (apply-unit root unit)) edits))))
@@ -2491,7 +2494,9 @@
   [root plan]
   (let [edits (vec (owned-edits (planned-edits plan)))
         diagnostics (vec (mapcat (fn [unit] (:diagnostics unit)) edits))
-        valid? (empty? diagnostics)
+        valid? (not (some (fn [diagnostic]
+                            (migrate-write/blocking-diagnostic? diagnostic {}))
+                          diagnostics))
         validation {:valid? valid?
                     :write false
                     :edits edits

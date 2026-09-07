@@ -2,14 +2,16 @@
   (:use code.test)
   (:require [std.block :as block]
             [tool.migrate.common.block :as nav]
-            [tool.migrate.common.rule :as rule]))
+            [tool.migrate.common.rule :as rule]
+            [tool.migrate.common.rules :as declarations]))
 
 (def foundation-source
   "(ns demo.core
      (:require [std.foundation :as h]
-               [std.foundation :as walk]))
+               [std.foundation :as walk]
+               [clojure.string :as str]))
    (defn apply-value [value]
-     (h/apply-with value (walk/prewalk identity)))")
+     (h/apply-with value (walk/prewalk identity) (str/trim value)))")
 
 (def duplicate-source
   "(ns demo.core
@@ -19,7 +21,7 @@
      (alias/value input))")
 
 ^{:refer tool.migrate.common.rule/normalize-dependency-aliases}
-(fact "Foundation aliases in Clojure input become qualified root references"
+(fact "preloaded Foundation aliases become builtin references"
   (let [output
         (:output
          (rule/analyze-source
@@ -27,12 +29,16 @@
           {:source/language :clojure
            :target/language :hara
            :rules []}))]
-    [(str/includes? output "std.foundation/apply-with")
-     (str/includes? output "std.foundation/prewalk")
+    [(str/includes? output "apply-with")
+     (str/includes? output "prewalk")
+     (str/includes? output "str/trim")
      (not (str/includes? output "[std.foundation :as h]"))
      (not (str/includes? output "[std.foundation :as walk]"))
+     (not (str/includes? output "[clojure.string :as str]"))
+     (not (str/includes? output "h/apply-with"))
+     (not (str/includes? output "walk/prewalk"))
      (not (str/includes? output ":require"))])
-  => [true true true true true])
+  => [true true true true true true true true true])
 
 ^{:refer tool.migrate.common.rule/normalize-dependency-aliases}
 (fact "duplicate dependency aliases keep the first alias and rewrite uses"
@@ -99,3 +105,324 @@
      (mapv :type (:diagnostics result))])
   => ["#?(:clj (disj values link) :cljs (disj values other))"
       false [] [:tool.migrate/unsupported]])
+
+
+(def sample-rule
+  {:id :test/rename :kind :token :match {:text "old"}
+   :rewrite {:op :replace-token :text "new"}
+   :safety :safe :priority 0 :message "Rename one symbol"
+   :evidence [{:source/path "source.clj" :target/path "target.hal"}]})
+
+^{:refer tool.migrate.common.rule/+safety-rank+}
+(fact "safety ranks retain safe review manual ordering"
+  rule/+safety-rank+ => {:safe 0 :review 1 :manual 2})
+
+^{:refer tool.migrate.common.rule/+modes+}
+(fact "only lint safe and review are execution modes"
+  rule/+modes+ => #{:lint :safe :review})
+
+^{:refer tool.migrate.common.rule/evidence-valid?}
+(fact "evidence needs both an authority and a target"
+  (mapv rule/evidence-valid?
+        [{:foundation/path "a" :hara/path "b"}
+         {:source/path "a" :target/spec :b}
+         {:source/path "a" :target/path "b"}
+         {:source/path "a"} {:target/path "b"} nil])
+  => [true true true false false false])
+
+^{:refer tool.migrate.common.rule/rewrite-valid?}
+(fact "automatic replacements require valid operands; manual rules cannot rewrite"
+  [(rule/rewrite-valid? sample-rule)
+   (rule/rewrite-valid? (assoc sample-rule :rewrite {:op :replace-token :text 1}))
+   (rule/rewrite-valid? (assoc sample-rule :safety :manual :rewrite nil))
+   (rule/rewrite-valid? (assoc sample-rule :safety :manual))
+   (rule/rewrite-valid? (assoc sample-rule :rewrite {:op :replace-call :builder :filter-keys}))]
+  => [true false true false true])
+
+^{:refer tool.migrate.common.rule/rule-valid?}
+(fact "a rule requires identity match safety priority message and source evidence"
+  (mapv rule/rule-valid?
+        [sample-rule
+         (dissoc sample-rule :id)
+         (assoc sample-rule :safety :unknown)
+         (assoc sample-rule :priority "0")
+         (assoc sample-rule :evidence [])
+         (dissoc sample-rule :match)])
+  => [true false false false false false])
+
+^{:refer tool.migrate.common.rule/automatic?}
+(fact "manual disposition prevents automatic execution"
+  (mapv (fn [safety] (rule/automatic? {:safety safety})) [:safe :review :manual])
+  => [true true false])
+
+^{:refer tool.migrate.common.rule/matcher-key}
+(fact "matcher identity includes structural conditions"
+  (rule/matcher-key (assoc sample-rule :match/when {:form-arity 2}))
+  => [:token "old" {:form-arity 2}])
+
+^{:refer tool.migrate.common.rule/compile-rules}
+(fact "compilation indexes ordered rules and rejects duplicate or conflicting declarations"
+  (mapv :compiled/index
+        (rule/compile-rules [sample-rule
+                             (assoc sample-rule :id :test/second :priority 1
+                                    :match {:text "other"})]))
+  => [0 1]
+  (mapv
+   (fn [rules]
+     (try (rule/compile-rules rules) :unexpected
+          (catch error (select-keys (ex-data error) [:id :left :right :previous]))))
+   [[sample-rule sample-rule]
+    [sample-rule (assoc sample-rule :id :test/other)]
+    [(assoc sample-rule :priority 2)
+     (assoc sample-rule :id :test/second :match {:text "other"} :priority 1)]])
+  => [{:id :test/rename}
+      {:left :test/rename :right :test/other}
+      {:previous 2}])
+
+^{:refer tool.migrate.common.rule/+ruleset+}
+(fact "the built-in ruleset preserves declaration order and contiguous indexes"
+  [(mapv :id rule/+ruleset+)
+   (mapv :compiled/index rule/+ruleset+)]
+  => [(mapv :id declarations/+rules+)
+      (vec (range 0 (count declarations/+rules+)))])
+
+^{:refer tool.migrate.common.rule/selected-mode}
+(fact "review is the default and unknown modes are rejected with supported modes"
+  [(rule/selected-mode {}) (rule/selected-mode {:mode :lint})
+   (try (rule/selected-mode {:mode :unknown}) :unexpected
+        (catch error (select-keys (ex-data error) [:mode :supported])))]
+  => [:review :lint {:mode :unknown :supported #{:lint :safe :review}}])
+
+^{:refer tool.migrate.common.rule/active?}
+(fact "mode selection never activates manual rewrites"
+  (mapv (fn [safety]
+          (mapv (fn [mode] (rule/active? {:safety safety} mode))
+                [:lint :safe :review]))
+        [:safe :review :manual])
+  => [[false true true] [false false true] [false false false]])
+
+^{:refer tool.migrate.common.rule/rule-by-id}
+(fact "lookup returns the exact selected rule or nil"
+  [(rule/rule-by-id [sample-rule] :test/rename)
+   (rule/rule-by-id [sample-rule] :missing)]
+  => [sample-rule nil])
+
+^{:refer tool.migrate.common.rule/rules-summary}
+(fact "summaries partition every rule by safety"
+  (rule/rules-summary [sample-rule (assoc sample-rule :safety :review)
+                      (assoc sample-rule :safety :manual)])
+  => {:total 3 :safe 1 :review 1 :manual 1}
+  (rule/rules-summary []) => {:total 0 :safe 0 :review 0 :manual 0})
+
+^{:refer tool.migrate.common.rule/match-condition?}
+(fact "call conditions use argument count and preserve positive and negative guards"
+  (let [location (nav/location-at "(old x y)" [0])]
+    (mapv (fn [condition]
+            (rule/match-condition? (assoc sample-rule :match/when condition) location))
+          [nil {:form-arity 2} {:form-arity 1}
+           {:second "x"} {:second "y"}
+           {:not-form-arities [1 3]} {:not-form-arity 2}
+           {:contains "x y"} {:contains "absent"}]))
+  => [true true false true false true false true false])
+
+^{:refer tool.migrate.common.rule/location-matches?}
+(fact "token and call matching distinguish exact values boundaries and literals"
+  [(rule/location-matches? sample-rule (nav/location-at "(old x)" [0 0]))
+   (rule/location-matches? sample-rule (nav/location-at "(oldish x)" [0 0]))
+   (rule/location-matches? sample-rule (nav/location-at "(f \"old\")" [0 2]))
+   (rule/location-matches? (assoc sample-rule :kind :form-head)
+                           (nav/location-at "(old x)" [0]))
+   (rule/location-matches? (assoc sample-rule :kind :token-prefix)
+                           (nav/location-at "(old.ns/x)" [0 0]))
+   (rule/location-matches? (assoc sample-rule :kind :token-prefix)
+                           (nav/location-at "(oldish/x)" [0 0]))]
+  => [true false false true true false])
+
+^{:refer tool.migrate.common.rule/match-record}
+(fact "match evidence identifies the original block and the compiled rule"
+  (select-keys
+   (rule/match-record (assoc sample-rule :compiled/index 0)
+                      (nav/location-at "(old x)" [0 0]))
+   [:rule/id :rule/index :kind :path :source :start-offset :end-offset])
+  => {:rule/id :test/rename :rule/index 0 :kind :token
+      :path [0 0] :source "old" :start-offset 1 :end-offset 4})
+
+^{:refer tool.migrate.common.rule/dependency-alias}
+(fact "only the namespace token of an aliased dependency exposes its alias"
+  [(rule/dependency-alias (nav/location-at "[demo.core :as d]" [0 0]))
+   (rule/dependency-alias (nav/location-at "[demo.core :as d]" [0 4]))
+   (rule/dependency-alias (nav/location-at "[demo.core]" [0 0]))]
+  => ["d" nil nil])
+
+^{:refer tool.migrate.common.rule/dependency-aliases}
+(fact "dependency aliases preserve distinct namespace owners"
+  (rule/dependency-aliases "(ns demo (:require [a.core :as a] [b.core :as b]))")
+  => {"a.core" "a" "b.core" "b"})
+
+^{:refer tool.migrate.common.rule/alias-variant}
+(fact "alias matching retains existing conditions and excludes alias declarations"
+  (select-keys
+   (rule/alias-variant (assoc sample-rule :match/when {:form-arity 1}) "alias")
+   [:match :match/when])
+  => {:match {:text "alias"} :match/when {:form-arity 1 :not-parent-contains ":as"}})
+
+^{:refer tool.migrate.common.rule/alias-rule}
+(fact "qualified references route through their declared alias but dependencies do not"
+  [(get-in (rule/alias-rule (assoc sample-rule :match {:text "demo.core/value"})
+                            {"demo.core" "d"}) [:match :text])
+   (get-in (rule/alias-rule (assoc sample-rule :match {:text "demo.core"})
+                            {"demo.core" "d"}) [:match :text])
+   (rule/alias-rule (assoc sample-rule :kind :dependency-entry) {"old" "d"})
+   (rule/alias-rule sample-rule {})]
+  => ["d/value" "d" nil nil])
+
+^{:refer tool.migrate.common.rule/resolve-function}
+(fact "function symbols require an explicit resolver and direct functions retain behavior"
+  [((rule/resolve-function inc {}) 4)
+   (rule/resolve-function nil {})
+   ((rule/resolve-function 'fixture/identity
+                           {:function-resolver (fn [name] (get {'fixture/identity identity} name))}) 5)
+   (try (rule/resolve-function 'fixture/missing {}) :unexpected
+        (catch error (:function (ex-data error))))]
+  => [5 nil 5 'fixture/missing])
+
+^{:refer tool.migrate.common.rule/function-spec}
+(fact "shorthand matchers and explicit matcher-rewriter pairs retain their contracts"
+  [(rule/function-spec {:function 'fixture/match})
+   (rule/function-spec {:function {:match 'fixture/match :rewrite 'fixture/rewrite}})]
+  => [{:match 'fixture/match} {:match 'fixture/match :rewrite 'fixture/rewrite}])
+
+^{:refer tool.migrate.common.rule/function-matches}
+(fact "function matches receive language context and retain rule evidence"
+  (mapv (fn [match] (select-keys match [:rule/id :source :language :target]))
+        (rule/function-matches
+         "(old)"
+         (assoc sample-rule :function
+                {:match (fn [root options]
+                          [{:source (nav/render root)
+                            :language (:language options)
+                            :target (:target/language options)}])})
+         {:source/language :clojure :target/language :hara}))
+  => [{:rule/id :test/rename :source "(old)" :language :clojure :target :hara}])
+
+^{:refer tool.migrate.common.rule/declarative-matches}
+(fact "direct and alias variants select only the matching source tokens"
+  (mapv :source
+        (rule/declarative-matches
+         sample-rule (rule/alias-variant sample-rule "alias")
+         (nav/walk-locations "(old alias other \"old\")")))
+  => ["old" "alias"])
+
+^{:refer tool.migrate.common.rule/matches}
+(fact "matching retains declaration order and original paths"
+  (mapv (fn [match] [(:rule/id match) (:source match) (:path match)])
+        (rule/matches "(old other)"
+                      (rule/compile-rules
+                       [sample-rule (assoc sample-rule :id :test/other :priority 1
+                                           :match {:text "other"})])))
+  => [[:test/rename "old" [0 0]] [:test/other "other" [0 2]]])
+
+^{:refer tool.migrate.common.rule/diagnostic-type}
+(fact "diagnostic types distinguish applied matches lint observations and manual work"
+  [(rule/diagnostic-type sample-rule :review)
+   (rule/diagnostic-type sample-rule :lint)
+   (rule/diagnostic-type (assoc sample-rule :safety :manual) :review)]
+  => [:tool.migrate/rewrite :tool.migrate/match :tool.migrate/manual])
+
+^{:refer tool.migrate.common.rule/diagnostic-level}
+(fact "safe applied rewrites are informational; deferred and manual work stay visible"
+  [(rule/diagnostic-level sample-rule :review)
+   (rule/diagnostic-level sample-rule :lint)
+   (rule/diagnostic-level (assoc sample-rule :safety :manual) :review)]
+  => [:info :notice :warning])
+
+^{:refer tool.migrate.common.rule/diagnostic}
+(fact "diagnostics retain source coordinates and omit replacement payloads"
+  (select-keys
+   (rule/diagnostic sample-rule
+                    {:path [0] :source "old" :file "a.clj"
+                     :start-offset 1 :end-offset 4 :replacement "new"}
+                    :review)
+   [:type :level :rule/id :path :source :file :start-offset :end-offset :replacement])
+  => {:type :tool.migrate/rewrite :level :info :rule/id :test/rename
+      :path [0] :source "old" :file "a.clj" :start-offset 1 :end-offset 4})
+
+^{:refer tool.migrate.common.rule/call-arguments}
+(fact "call arguments retain their own whitespace and literal spelling"
+  (rule/call-arguments "(old [1  2] \"literal\")" {:path [0]})
+  => ["[1  2]" "\"literal\""])
+
+^{:refer tool.migrate.common.rule/collection-call-replacement}
+(fact "collection adapters retain exact key value filtering and mapping semantics"
+  (mapv
+   (fn [[builder arguments]]
+     (eval (read-string (rule/collection-call-replacement builder arguments))))
+   [[:map-entries ["(fn [e] [(key e) (* (val e) 2)])" "{:a 1 :b 2}"]]
+    [:filter-keys ["(fn [k] (= k :b))" "{:a 1 :b 2}"]]
+    [:filter-vals ["(fn [v] (> v 1))" "{:a 1 :b 2}"]]
+    [:keep-vals ["(fn [v] (if (> v 1) (* v 2) nil))" "{:a 1 :b 2}"]]
+    [:keep-vals-when ["(fn [v] (+ v 1))" "(fn [v] (> v 2))" "{:a 1 :b 2}"]]])
+  => [{:a 2 :b 4} {:b 2} {:b 2} {:b 4} {:b 3}]
+  (rule/collection-call-replacement :test-check-error ["\"failure\"" "(throw problem)"])
+  => "(test-check \"failure\" (try (do (throw problem) false) (catch Throwable test_error__ true)) true)"
+  (rule/collection-call-replacement :test-result-vector ["[1 2]"])
+  => "[1 2]")
+
+^{:refer tool.migrate.common.rule/apply-match}
+(fact "replacement changes only the selected block and preserves original evidence"
+  (let [source "(old \"old\") ; old\n"
+        root (nav/block-input source)
+        match (first (rule/matches root (rule/compile-rules [sample-rule])))]
+    [(nav/render (rule/apply-match root sample-rule match))
+     (nav/render root) (:source match)])
+  => ["(new \"old\") ; old\n" "(old \"old\") ; old\n" "old"])
+
+^{:refer tool.migrate.common.rule/apply-matches}
+(fact "lint is a no-op and review applies every selected safe occurrence"
+  (let [source "(old old)"
+        rules (rule/compile-rules [sample-rule])
+        matched (rule/matches source rules)
+        lint (rule/apply-matches (nav/block-input source) matched rules :lint)
+        review (rule/apply-matches (nav/block-input source) matched rules :review)]
+    [(nav/render (:root lint)) (:applied lint)
+     (nav/render (:root review)) (mapv :source (:applied review))])
+  => ["(old old)" [] "(new new)" ["old" "old"]])
+
+^{:refer tool.migrate.common.rule/empty-dependency-clause?}
+(fact "only empty require and use clauses are removable"
+  (mapv (fn [source] (rule/empty-dependency-clause? (nav/location-at source [0])))
+        ["(:require)" "(:use)" "(:require demo)" "(:config)"])
+  => [true true false false])
+
+^{:refer tool.migrate.common.rule/cleanup-empty-dependency-clauses}
+(fact "empty clauses are removed without touching nonempty clauses or surrounding forms"
+  (let [source "(ns demo (:require) (:use code.test))\n(def value 1)"
+        output (nav/render (rule/cleanup-empty-dependency-clauses (nav/block-input source)))]
+    [(mapv nav/form-head (nav/namespace-clause-locations output))
+     (block/string (nav/current (last (nav/top-level-locations output))))
+     (= output (nav/render (rule/cleanup-empty-dependency-clauses (nav/block-input output))))])
+  => [[":use"] "(def value 1)" true])
+
+^{:refer tool.migrate.common.rule/lint-source}
+(fact "lint retains source and matches without applying rewrites"
+  (let [result (rule/lint-source "(old)" {:rules (rule/compile-rules [sample-rule])})]
+    [(:output result) (:changed result) (:rules/applied result)
+     (mapv :type (:diagnostics result))])
+  => ["(old)" false [] [:tool.migrate/match]])
+
+^{:refer tool.migrate.common.rule/translate-source}
+(fact "translation returns source provenance with exact changed output"
+  (let [result (rule/translate-source "(old)" {:rules (rule/compile-rules [sample-rule])})]
+    [(:source result) (:output result) (:changed result)
+     (mapv :source (:rules/applied result))])
+  => ["(old)" "(new)" true ["old"]])
+
+^{:refer tool.migrate.common.rule/normalize-dependency-aliases}
+(fact "builtin aliases lose their separator while string aliases and literal text survive"
+  (let [source "(ns demo (:require [std.foundation :as h] [clojure.string :as text]))\n(h/vector (text/trim \"h/value\"))\n"
+        result (rule/analyze-source source {:rules []})
+        output (:output result)]
+    [(block/string (nav/current (last (nav/top-level-locations output))))
+     (= source (:source result))
+     (= output (:output (rule/analyze-source output {:rules []})))])
+  => ["(vector (str/trim \"h/value\"))" true true])

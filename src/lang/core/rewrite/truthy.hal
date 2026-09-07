@@ -1,58 +1,46 @@
 (ns lang.core.rewrite.truthy
-  (:config {:role :internal})
-  (:require [lang.core.rewrite.common :as common]))
+  (:require [lang.core.rewrite.common :as common])
+  (:config {:role :internal}))
 
-(defn dot-boolish-call?
-  [form dot-boolish-calls]
-  (and (std.foundation/form? form)
-       (= '. (first form))
-       (<= 3 (count form))
-       (std.foundation/form? (nth form 2))
-       (has? dot-boolish-calls
-             (first (nth form 2)))))
+(defn dot-boolish-call? [form dot-boolish-calls]
+  (and
+    (form? form)
+    (= '. (first form))
+    (form? (first (drop 2 form)))
+    (has? dot-boolish-calls (first (first (drop 2 form))))))
 
 (defn boolish-form?
-  ([form]
-   (boolish-form? form {}))
-  ([form {:keys [boolish-ops dot-boolish-calls recursive-not? recursive-and-or?]
-          :or {boolish-ops #{}
-               dot-boolish-calls #{}
-               recursive-not? false
-               recursive-and-or? false}}]
-   (cond
-     (boolean? form)
-     true
-
-     (and recursive-not?
-          (std.foundation/form? form)
-          (= 'not (first form)))
-     (boolish-form? (second form)
-                    {:boolish-ops boolish-ops
-                     :dot-boolish-calls dot-boolish-calls
-                     :recursive-not? recursive-not?
-                     :recursive-and-or? recursive-and-or?})
-
-     (and recursive-and-or?
-          (std.foundation/form? form)
-          (#{'and 'or} (first form)))
-     (every? (fn [value]
-               (boolish-form?
-                value
-                {:boolish-ops boolish-ops
-                 :dot-boolish-calls dot-boolish-calls
-                 :recursive-not? recursive-not?
-                 :recursive-and-or? recursive-and-or?}))
-             (rest form))
-
-     (dot-boolish-call? form dot-boolish-calls)
-     true
-
-     (and (std.foundation/form? form)
-          (has? boolish-ops (first form)))
-     true
-
-     :else
-     false)))
+  ([form] (boolish-form? form {}))
+  ([form
+    {:keys [boolish-ops
+            dot-boolish-calls
+            recursive-not?
+            recursive-and-or?]
+     :or {boolish-ops #{}
+          dot-boolish-calls #{}
+          recursive-not? false
+          recursive-and-or? false}}]  (cond (boolean? form)
+                                       true
+                                       (and recursive-not? (form? form) (= (quote not) (first form)))
+                                       (boolish-form? (second form)
+                                         {:boolish-ops       boolish-ops
+                                          :dot-boolish-calls dot-boolish-calls
+                                          :recursive-not?    recursive-not?
+                                          :recursive-and-or? recursive-and-or?})
+                                       (and recursive-and-or? (form? form) (#{(quote and) (quote or)} (first form)))
+                                       (every? (fn [migration-argument-0]
+                                                 (boolish-form? migration-argument-0
+                                                   {(keyword "boolish-ops")       boolish-ops
+                                                    (keyword "dot-boolish-calls") dot-boolish-calls
+                                                    (keyword "recursive-not?")    recursive-not?
+                                                    (keyword "recursive-and-or?") recursive-and-or?}))
+                                         (rest form))
+                                       (dot-boolish-call? form dot-boolish-calls)
+                                       true
+                                       (and (form? form) (has? boolish-ops (first form)))
+                                       true
+                                       :else
+                                       false)))
 
 (defn truthy-check-form
   [value]
@@ -65,7 +53,7 @@
    (wrap-truthy-check source form truthy-check-form))
   ([source form truthy-check]
    (common/with-form-meta source
-     (truthy-check form))))
+      (truthy-check form))))
 
 (defn truthy-form
   ([source form boolish?]
@@ -80,7 +68,7 @@
    (truthy-or-form source value fallback truthy-check-form))
   ([source value fallback truthy-check]
    (common/with-form-meta source
-     (list :?
-           (truthy-check value)
-           value
+      (list :?
+            (truthy-check value)
+            value
            fallback))))

@@ -3,82 +3,112 @@
   (:require [lang.core.rewrite.walk :as walk]))
 
 ^{:refer lang.core.rewrite.walk/rewrite-coll :added "4.0"}
-(fact "applies the item rewrite to every collection member"
+(fact "applies rewrite-item to every element, returning a sequence"
   (walk/rewrite-coll [1 2 3] inc)
   => '(2 3 4))
 
 ^{:refer lang.core.rewrite.walk/rewrite-map-entry :added "4.0"}
-(fact "rewrites both a map entry key and value"
-  (walk/rewrite-map-entry
-   [:a 1]
-   (fn [value]
-     (cond (keyword? value) (name value)
-           (number? value) (inc value)
-           :else value)))
+(fact "applies rewrite-item to both key and value of a map entry"
+  (walk/rewrite-map-entry [:a 1]
+                         (fn [x]
+                           (cond (keyword? x) (name x)
+                                 (number? x) (inc x)
+                                 :else x)))
   => ["a" 2])
 
-^{:refer lang.core.rewrite.walk/rewrite-map :added "4.0"}
-(fact "rewrites map keys and values while preserving the map representation"
-  (let [source (hash-map :a 1 :b 2)
-        output (walk/rewrite-map
-                source
-                (fn [value]
-                  (cond (keyword? value) (name value)
-                        (number? value) (inc value)
-                        :else value)))]
-    [output (= (type source) (type (walk/rewrite-map source identity)))])
-  => [{"a" 2 "b" 3} true])
+^{:refer lang.core.rewrite.walk/rewrite-map, :added "4.0"}
+(fact
+  "applies rewrite-item to every key and value while preserving map type"
+  (let [m (hash-map :a 1 :b 2)]
+    [(walk/rewrite-map
+       m
+       (fn [x]
+         (cond (keyword? x) (name x) (number? x) (inc x) :else x)))
+     (type (walk/rewrite-map m identity))])
+  =>
+  [{"a" 2, "b" 3} (type (hash-map))])
 
-^{:refer lang.core.rewrite.walk/rewrite-vector :added "4.0"}
-(fact "rewrites vector elements and preserves metadata"
-  (let [source (with-meta [1 2 3] {:line 5})]
-    [(walk/rewrite-vector source inc)
-     (meta (walk/rewrite-vector source inc))])
-  => [[2 3 4] {:line 5}])
+^{:refer lang.core.rewrite.walk/rewrite-vector, :added "4.0"}
+(fact
+  "rewrites each vector element and preserves metadata"
+  (let [v (with-meta [1 2 3] {:line 5})]
+    [(walk/rewrite-vector v inc) (meta (walk/rewrite-vector v inc))])
+  =>
+  [[2 3 4] {:line 5}])
 
-^{:refer lang.core.rewrite.walk/rewrite-set :added "4.0"}
-(fact "rewrites set elements and preserves metadata"
-  (let [source (with-meta #{1 2 3} {:line 5})]
-    [(walk/rewrite-set source inc)
-     (meta (walk/rewrite-set source inc))])
-  => [#{2 3 4} {:line 5}])
+^{:refer lang.core.rewrite.walk/rewrite-set, :added "4.0"}
+(fact
+  "rewrites each set element and preserves metadata"
+  (let [s (with-meta #{1 3 2} {:line 5})]
+    [(walk/rewrite-set s inc) (meta (walk/rewrite-set s inc))])
+  =>
+  [#{4 3 2} {:line 5}])
 
 ^{:refer lang.core.rewrite.walk/rewrite-map-form :added "4.0"}
 (fact "rewrites map entries and preserves metadata"
-  (let [source (with-meta {:a 1} {:line 5})]
-    [(walk/rewrite-map-form
-      source
-      (fn [value]
-        (cond (keyword? value) (name value)
-              (number? value) (inc value)
-              :else value)))
-     (meta (walk/rewrite-map-form source identity))])
+  (let [m (with-meta {:a 1} {:line 5})]
+    [(walk/rewrite-map-form m (fn [x]
+                                (cond (keyword? x) (name x)
+                                      (number? x) (inc x)
+                                      :else x)))
+     (meta (walk/rewrite-map-form m identity))])
   => [{"a" 2} {:line 5}])
 
 ^{:refer lang.core.rewrite.walk/rewrite-form :added "4.1"}
-(fact "rewrites vectors, sets, and maps while preserving their metadata"
-  (let [vector-form (with-meta ['a 1] {:line 10})
-        set-form    (with-meta '#{a 1} {:line 11})
-        map-form    (with-meta '{a 1} {:line 12})
-        rewrite-item (fn [value]
-                       (if (symbol? value) 'b value))
-        vector-out (walk/rewrite-form vector-form identity rewrite-item)
-        set-out    (walk/rewrite-form set-form identity rewrite-item)
-        map-out    (walk/rewrite-form map-form identity rewrite-item)]
-    [(= vector-out '[b 1])
+(fact "rewrites vectors, sets and maps while preserving top-level metadata"
+  (let [vec-form (with-meta ['a 1] {:line 10})
+        set-form (with-meta '#{a 1} {:line 11})
+        map-form (with-meta '{a 1} {:line 12})
+        rewrite-item (fn [migration-argument-0] (if (symbol? migration-argument-0) (quote b) migration-argument-0))
+        vec-out (walk/rewrite-form vec-form identity rewrite-item)
+        set-out (walk/rewrite-form set-form identity rewrite-item)
+        map-out (walk/rewrite-form map-form identity rewrite-item)]
+    [(= vec-out '[b 1])
      (= set-out '#{b 1})
      (= map-out '{b 1})
-     (= (meta vector-out) {:line 10})
+     (= (meta vec-out) {:line 10})
      (= (meta set-out) {:line 11})
      (= (meta map-out) {:line 12})])
   => [true true true true true true])
 
-^{:refer lang.core.rewrite.walk/rewrite-binding-vector :added "4.1"}
-(fact "rewrites only the rhs of a binding vector"
+^{:refer lang.core.rewrite.walk/rewrite-binding-vector, :added "4.1"}
+(fact
+  "rewrites the rhs of binding vectors"
   (walk/rewrite-binding-vector
-   '[a (+ 1 2) :meta]
-   (fn [form]
-     (if (list? form)
-       '(+ 2 3)
-       form)))
-  => '[a (+ 2 3) :meta])
+    '[a (+ 1 2) :meta]
+    (fn [form] (if (form? form) '(+ 2 3) form)))
+  =>
+  '[a (+ 2 3) :meta])
+
+^{:refer lang.core.rewrite.walk/with-form-meta :id walker-alias-metadata}
+(fact "copies source metadata through the callable alias without changing scalar values"
+  (let [source (with-meta [] {:line 7})
+        result (walk/with-form-meta source 'item)]
+    [result (meta result) (walk/with-form-meta source 42) (walk/with-form-meta source nil)])
+  => ['item {:line 7} 42 nil])
+
+^{:refer lang.core.rewrite.walk/rewrite-map-entry :id walker-short-entry}
+(fact "preserves destructuring defaults for absent map entry values"
+  [(walk/rewrite-map-entry [:only] identity)
+   (walk/rewrite-map-entry nil (fn [value] (if (nil? value) :missing value)))]
+  => [[:only nil] [:missing :missing]])
+
+^{:refer lang.core.rewrite.walk/rewrite-binding-vector :id walker-binding-boundaries}
+(fact "preserves short bindings and rewrites exactly one rhs while retaining metadata and trailers"
+  (let [calls (atom [])
+        rewrite (fn [value] (swap! calls conj value) (list 'rewritten value))
+        output (mapv (fn [value] (walk/rewrite-binding-vector value rewrite))
+                     [nil :scalar [] '[x] (with-meta '[x rhs :meta] {:line 11})])]
+    [output (deref calls) (meta (last output))])
+  => [[nil :scalar [] '[x] '[x (rewritten rhs) :meta]] '[rhs] {:line 11}])
+
+^{:refer lang.core.rewrite.walk/rewrite-form :id walker-list-and-scalar-dispatch}
+(fact "delegates whole lists once and preserves scalars without invoking item rewriting"
+  [(walk/rewrite-form '(a b) (fn [form] (list 'list-branch form))
+                      (fn [value] (throw (ex :test {:unexpected value}))))
+   (mapv (fn [value]
+           (walk/rewrite-form value
+             (fn [form] (throw (ex :test {:unexpected form})))
+             (fn [item] (throw (ex :test {:unexpected item})))))
+         [nil true 42 "text" :key 'symbol])]
+  => ['(list-branch (a b)) [nil true 42 "text" :key 'symbol]])

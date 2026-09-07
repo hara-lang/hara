@@ -1,35 +1,75 @@
 (ns lang.core.rewrite.conditional-test
   (:use code.test)
-  (:require [lang.core.rewrite.conditional :as subject]))
+  (:require [lang.core.rewrite.conditional :as condrw]))
 
-^{:refer lang.core.rewrite.conditional/rewrite-conditional-expression-list}
+^{:refer lang.core.rewrite.conditional/rewrite-conditional-expression-list :added "4.1"}
 (fact "rewrites shared conditional-expression skeletons"
-  [(subject/rewrite-conditional-expression-list
-    '(or a b) identity #(list 'test %) #(list 'expr %))
-   (subject/rewrite-conditional-expression-list
-    '(:? a b c) identity #(list 'test %) #(list 'expr %))
-   (subject/rewrite-conditional-expression-list
-    '((f x) a) identity #(list 'test %) #(list 'expr %))]
+  [(condrw/rewrite-conditional-expression-list
+    '(or a b)
+    identity
+    (fn [migration-argument-0] (list (quote test) migration-argument-0))
+    (fn [migration-argument-0] (list (quote expr) migration-argument-0)))
+   (condrw/rewrite-conditional-expression-list
+    '(:? a b c)
+    identity
+    (fn [migration-argument-0] (list (quote test) migration-argument-0))
+    (fn [migration-argument-0] (list (quote expr) migration-argument-0)))
+   (condrw/rewrite-conditional-expression-list
+    '((f x) a)
+    identity
+    (fn [migration-argument-0] (list (quote test) migration-argument-0))
+    (fn [migration-argument-0] (list (quote expr) migration-argument-0)))]
   => ['(or (test a) (test b))
-      '(:? (test a) (expr b) (expr c))
-      '((expr (f x)) (expr a))])
+       '(:? (test a) (expr b) (expr c))
+       '((expr (f x)) (expr a))])
 
-^{:refer lang.core.rewrite.conditional/rewrite-conditional-expression}
-(fact "rewrites a form and wraps it for truthiness checks"
-  (letfn [(rewrite-conditional [form]
-            (subject/rewrite-conditional-expression
-             form
-             #(subject/rewrite-conditional-expression-list
-               % identity rewrite-conditional (fn [value] (list 'expr value)))
-             #(list 'expr %)
-             (fn [source value] (list 'truthy source value))))]
-    [(rewrite-conditional 'a)
-     (rewrite-conditional '(or a b))
-     (rewrite-conditional '(not a))
-     (rewrite-conditional '(:? a b c))
-     (rewrite-conditional '(f a))])
-  => ['(truthy a a)
-      '(truthy (or a b) (or (truthy a a) (truthy b b)))
-      '(truthy (not a) (not (truthy a a)))
-      '(truthy (:? a b c) (:? (truthy a a) (expr b) (expr c)))
-      '(truthy (f a) (f (expr a)))])
+^{:refer lang.core.rewrite.conditional/rewrite-conditional-expression, :added "4.1"}
+(fact
+  "rewrites a form and wraps it for truthiness checks"
+  (letfn
+    [(rewrite-cond-expr
+       [form]
+       (condrw/rewrite-conditional-expression
+         form
+         (fn [migration-argument-0] (condrw/rewrite-conditional-expression-list migration-argument-0 identity rewrite-cond-expr (fn [x] (list (quote expr) x))))
+         (fn [migration-argument-0] (list (quote expr) migration-argument-0))
+         (fn [source form] (list 'truthy source form))))]
+    [(rewrite-cond-expr 'a)
+     (rewrite-cond-expr '(or a b))
+     (rewrite-cond-expr '(not a))
+     (rewrite-cond-expr '(:? a b c))
+     (rewrite-cond-expr '(f a))])
+  =>
+  ['(truthy a a)
+   '(truthy (or a b) (or (truthy a a) (truthy b b)))
+   '(truthy (not a) (not (truthy a a)))
+   '(truthy (:? a b c) (:? (truthy a a) (expr b) (expr c)))
+   '(truthy (f a) (f (expr a)))])
+
+^{:refer lang.core.rewrite.conditional/with-form-meta :id conditional-alias-metadata}
+(fact "copies metadata to collection results without changing scalar results"
+  (let [source (with-meta '(source) {:line 7})
+        result (condrw/with-form-meta source '[a b])]
+    [result (meta result) (condrw/with-form-meta source 42)
+     (condrw/with-form-meta source nil)])
+  => ['[a b] {:line 7} 42 nil])
+
+^{:refer lang.core.rewrite.conditional/rewrite-conditional-expression-list :id conditional-branch-metadata}
+(fact "preserves branch routing and metadata while leaving quoted forms untouched"
+  (mapv (fn [input]
+          (let [result (condrw/rewrite-conditional-expression-list
+                        (with-meta input {:line 9})
+                        (fn [value] (list 'lambda value))
+                        (fn [value] (list 'test value))
+                        (fn [value] (list 'expr value)))]
+            [result (meta result)]))
+        ['(quote (f a)) '(fn [x] x) '(or a b) '(and a b)
+         '(not a) '(:? a b c) '(f a) '((f x) a)])
+  => [['(quote (f a)) {:line 9}]
+      ['(lambda (fn [x] x)) nil]
+      ['(or (test a) (test b)) {:line 9}]
+      ['(and (test a) (test b)) {:line 9}]
+      ['(not (test a)) {:line 9}]
+      ['(:? (test a) (expr b) (expr c)) {:line 9}]
+      ['(f (expr a)) {:line 9}]
+      ['((expr (f x)) (expr a)) {:line 9}]])

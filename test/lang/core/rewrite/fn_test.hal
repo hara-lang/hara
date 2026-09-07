@@ -1,75 +1,197 @@
-(ns lang.core.rewrite.fn-test
-  (:use code.test)
-  (:require [lang.core.rewrite.fn :as subject]))
+(ns lang.core.rewrite.fn-test (:require [std.foundation.string :as str] [lang.core.rewrite.fn :as fnrw]) (:use code.test))
 
-^{:refer lang.core.rewrite.fn/do-form?}
+(defn passthrough-rewrite [forms] forms)
+
+^{:refer lang.core.rewrite.fn/do-form? :added "4.0"}
 (fact "identifies do and do* forms"
-  [(subject/do-form? '(do 1))
-   (subject/do-form? '(do* 1))
-   (subject/do-form? '(fn [value] value))
-   (subject/do-form? 1)]
-  => ['do 'do* nil false])
+  (fnrw/do-form? '(do 1 2 3))
+  => 'do
 
-^{:refer lang.core.rewrite.fn/fn-form?}
-(fact "identifies anonymous and named functions"
-  [(subject/fn-form? '(fn [value] value))
-   (subject/fn-form? '(fn named [value] value))
-   (subject/fn-form? '(do 1))]
-  => [true true false])
+  (fnrw/do-form? '(do* 1 2 3))
+  => 'do*
 
-^{:refer lang.core.rewrite.fn/fn-parts}
-(fact "splits function names, arguments, and bodies without losing the tail"
-  [(subject/fn-parts '(fn [value] (return value)))
-   (subject/fn-parts '(fn named [value] (return value)))]
-  => [[nil '[value] '((return value))]
-      '[named [value] ((return value))]])
+  (fnrw/do-form? '(fn [x] x))
+  => nil
 
-^{:refer lang.core.rewrite.fn/splice-do*}
-(fact "splices nested do* bodies into their parent body"
-  (subject/splice-do* '[(do* 1 2) 3])
-  => '(1 2 3))
+  (fnrw/do-form? 1)
+  => false)
 
-^{:refer lang.core.rewrite.fn/wrap-body}
-(fact "wraps only multi-form function bodies"
-  [(subject/wrap-body [])
-   (subject/wrap-body '[(return value)])
-   (subject/wrap-body '[(step value) (return value)])]
-  => [[]
-      '((return value))
-      '((do (step value) (return value)))])
+^{:refer lang.core.rewrite.fn/fn-form? :added "4.0"}
+(fact "identifies fn forms"
+  (fnrw/fn-form? '(fn [x] x))
+  => true
 
-^{:refer lang.core.rewrite.fn/rewrite-fn-form}
-(fact "rewrites a function body with the supplied preparation"
-  (subject/rewrite-fn-form
-   '(fn named [value] (step value) (return value))
-   identity
+  (fnrw/fn-form? '(fn named [x] x))
+  => true
+
+  (fnrw/fn-form? '(do 1 2))
+  => false
+
+  (fnrw/fn-form? 1)
+  => false)
+
+^{:refer lang.core.rewrite.fn/fn-parts :added "4.0"}
+(fact "splits fn forms into name, args and body"
+  (fnrw/fn-parts '(fn [x] (return x)))
+  => [nil '[x] '((return x))]
+
+  (fnrw/fn-parts '(fn named [x] (return x)))
+  => '[named [x] ((return x))]
+
+  (fnrw/fn-parts '(fn [x]))
+  => [nil '[x] nil])
+
+^{:refer lang.core.rewrite.fn/splice-do* :added "4.0"}
+(fact "splices do* forms into surrounding list"
+  (fnrw/splice-do* '[(do* 1 2) 3])
+  => '(1 2 3)
+
+  (fnrw/splice-do* '[1 (do* 2 3) 4])
+  => '(1 2 3 4)
+
+  (fnrw/splice-do* '[1 2 3])
+  => '(1 2 3)
+
+  (fnrw/splice-do* '[(do* (step x) (return x))])
+  => '((step x) (return x)))
+
+^{:refer lang.core.rewrite.fn/wrap-body :added "4.0"}
+(fact "wraps multi-form bodies in do"
+  (fnrw/wrap-body [])
+  => []
+
+  (fnrw/wrap-body '[(return x)])
+  => '((return x))
+
+  (fnrw/wrap-body '[(step x) (return x)])
+  => '((do (step x) (return x))))
+
+^{:refer lang.core.rewrite.fn/rewrite-fn-form :added "4.1"}
+(fact "rewrites function bodies with optional preparation"
+  (fnrw/rewrite-fn-form
+   '(fn named [x]
+      (step x)
+      (return x))
+   passthrough-rewrite
    {:prepare-body reverse})
-  => '(fn named [value] (do (return value) (step value))))
+  => '(fn named [x]
+        (do
+          (return x)
+          (step x))))
 
-^{:refer lang.core.rewrite.fn/rewrite-fn-body}
-(fact "rewrites multi-form function bodies through the common owner"
-  (subject/rewrite-fn-body
-   '(fn [value] (step value) (return value))
-   identity)
-  => '(fn [value] (do (step value) (return value))))
+^{:refer lang.core.rewrite.fn/rewrite-fn-body :added "4.0"}
+(fact "rewrites function bodies, wrapping multi-form bodies in do"
+  (fnrw/rewrite-fn-body '(fn [x]
+                           (step x)
+                           (return x))
+                        passthrough-rewrite)
+  => '(fn [x]
+        (do
+          (step x)
+          (return x)))
 
-^{:refer lang.core.rewrite.fn/normalize-fn}
-(fact "removes a lifted function name while retaining its body"
-  (subject/normalize-fn
-   '(fn named [value] (return value))
-   identity)
-  => '(fn [value] (return value)))
+  (fnrw/rewrite-fn-body '(fn named [x] (return x))
+                        passthrough-rewrite)
+  => '(fn named [x] (return x)))
 
-^{:refer lang.core.rewrite.fn/lambda-compatible?}
-(fact "accepts only anonymous single-expression functions"
-  [(subject/lambda-compatible? '(fn [value] (return value)))
-   (subject/lambda-compatible? '(fn named [value] (return value)))
-   (subject/lambda-compatible? '(fn [value] (do (step value) (return value))))]
-  => [true false false])
+^{:refer lang.core.rewrite.fn/normalize-fn :added "4.1"}
+(fact "normalizes lifted functions to anonymous block bodies"
+  (fnrw/normalize-fn '(fn named [x]
+                        (step x)
+                        (return x))
+                     passthrough-rewrite)
+  => '(fn [x]
+        (do
+          (step x)
+          (return x))))
 
-^{:refer lang.core.rewrite.fn/lift-named-lambda}
-(fact "lifts named lambdas into a preceding var binding"
-  (subject/lift-named-lambda
-   '(fn named [value] (return value))
-   identity)
-  => '[[(var named (fn [value] (return value)))] named])
+^{:refer lang.core.rewrite.fn/lambda-compatible?, :added "4.1"}
+(fact
+  "detects lambda-compatible function forms"
+  (fnrw/lambda-compatible? '(fn [x] (return x)))
+  =>
+  true
+  (fnrw/lambda-compatible? '(fn named [x] (return x)))
+  =>
+  false
+  (fnrw/lambda-compatible?
+    '(fn [x] (if cond (return x) (return nil)))
+    (fn [form] (and (form? form) (= 'if (first form)))))
+  =>
+  false
+  (fnrw/lambda-compatible? '(fn [x] (do (step x) (return x))))
+  =>
+  false)
+
+^{:refer lang.core.rewrite.fn/lift-named-lambda :added "4.1"}
+(fact "lifts named lambdas into prior var bindings"
+  (fnrw/lift-named-lambda '(fn named [x] (return x))
+                          passthrough-rewrite
+                          {:symbol-prefix "test_lambda__"})
+  => '[[(var named (fn [x] (return x)))] named]
+
+  (let [[prefix sym] (fnrw/lift-named-lambda '(fn [x]
+                                                (return x))
+                                             passthrough-rewrite
+                                             {:symbol-prefix "test_lambda__"})]
+    [(symbol? sym)
+     (str/starts-with? (name sym) "test_lambda__")
+     (= 'var (ffirst prefix))
+     (= sym (second (first prefix)))
+     (= '(fn [x] (return x)) (nth (first prefix) 2))])
+  => [true true true true true])
+
+^{:refer lang.core.rewrite.fn/do-form? :id fn-sequence-predicates}
+(fact "accepts reusable sequence forms without narrowing them to persistent lists"
+  [(fnrw/do-form? (seq '[do 1]))
+   (fnrw/fn-form? (seq '[fn [x] x]))
+   (fnrw/splice-do* [(seq '[do* 1 2]) 3])]
+  => ['do true '(1 2 3)])
+
+^{:refer lang.core.rewrite.fn/fn-parts :id fn-reusable-tail}
+(fact "returns a reusable body and preserves the nil empty-body contract"
+  (let [[name args body] (fnrw/fn-parts '(fn named [x] (step x) (return x)))]
+    [name args (vec body) (vec body)
+     (fnrw/fn-parts '(fn [x])) (fnrw/fn-parts nil)])
+  => ['named '[x] '[(step x) (return x)] '[(step x) (return x)]
+      [nil '[x] nil] [nil nil nil]])
+
+^{:refer lang.core.rewrite.fn/rewrite-fn-form :id fn-prepare-order-metadata}
+(fact "rewrites then prepares then splices while preserving metadata and idempotent normalization"
+  (let [calls (atom [])
+        input (with-meta '(fn named [x] (step x) (return x)) {:line 12})
+        output (fnrw/rewrite-fn-form
+                input
+                (fn [body] (swap! calls conj [:rewrite (vec body)]) body)
+                {:prepare-body (fn [body]
+                                 (swap! calls conj [:prepare (vec body)])
+                                 [(apply list 'do* (reverse body))])})
+        normalized (fnrw/normalize-fn output identity)]
+    [output (meta output) (deref calls) normalized
+     (= normalized (fnrw/normalize-fn normalized identity))
+     (meta normalized)])
+  => ['(fn named [x] (do (return x) (step x))) {:line 12}
+      [[:rewrite '[(step x) (return x)]] [:prepare '[(step x) (return x)]]]
+      '(fn [x] (do (return x) (step x))) true {:line 12}])
+
+^{:refer lang.core.rewrite.fn/lift-named-lambda :id fn-symbol-callback}
+(fact "uses the name before a callback and invokes the callback once only for anonymous functions"
+  (let [calls (atom [])
+        options {:symbol-fn (fn [form] (swap! calls conj form) 'chosen)}
+        named (fnrw/lift-named-lambda '(fn named [x] x) identity options)
+        anonymous (fnrw/lift-named-lambda '(fn [x] x) identity options)]
+    [named anonymous (deref calls)])
+  => ['[[(var named (fn [x] x))] named]
+      '[[(var chosen (fn [x] x))] chosen]
+      '[(fn [x] x)]])
+
+^{:refer lang.core.rewrite.fn/fn-parts :id fn-sequence-inputs}
+(fact "reads names arguments and reusable bodies from sequence and cons inputs"
+  (mapv fnrw/fn-parts
+        [(seq '[fn named [x] x])
+         (seq '[fn [x] x])
+         (seq '[fn [x]])
+         (cons 'fn '(named [x] x))
+         nil])
+  => ['[named [x] (x)] [nil '[x] '(x)] [nil '[x] nil]
+      '[named [x] (x)] [nil nil nil]])

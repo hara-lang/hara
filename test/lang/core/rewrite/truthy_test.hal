@@ -1,47 +1,137 @@
-(ns lang.core.rewrite.truthy-test
-  (:use code.test)
-  (:require [lang.core.rewrite.truthy :as subject]))
+(ns lang.core.rewrite.truthy-test (:use code.test) (:require [lang.core.rewrite.truthy :as truthy]) (:config {:role :internal}))
 
-^{:refer lang.core.rewrite.truthy/dot-boolish-call?}
-(fact "detects dotted calls declared to return booleans"
-  [(subject/dot-boolish-call? '(. obj (containsKey "a")) #{'containsKey})
-   (subject/dot-boolish-call? '(. obj (isEmpty)) #{'isEmpty})
-   (subject/dot-boolish-call? '(containsKey "a") #{'containsKey})]
-  => [true true false])
+^{:refer lang.core.rewrite.truthy/dot-boolish-call? :added "4.0"}
+(fact "detects dotted method calls returning booleans"
+  [(truthy/dot-boolish-call? '(. obj (containsKey "a")) '#{containsKey})
+   (truthy/dot-boolish-call? '(. obj (isEmpty)) '#{isEmpty})
+   (truthy/dot-boolish-call? '(. obj (containsKey "a")) '#{isEmpty})
+   (truthy/dot-boolish-call? '(containsKey "a") '#{containsKey})
+   (truthy/dot-boolish-call? '(. obj "a") '#{containsKey})
+   (truthy/dot-boolish-call? '(. obj containsKey) '#{containsKey})]
+  => [true true false false false false])
 
-^{:refer lang.core.rewrite.truthy/boolish-form?}
-(fact "detects boolish forms with configurable recursive rules"
-  [(subject/boolish-form? '(x:eq a b) {:boolish-ops #{'x:eq}})
-   (subject/boolish-form? '(. obj (containsKey "a"))
-                         {:dot-boolish-calls #{'containsKey}})
-   (subject/boolish-form? '(and (x:eq a b) (not (x:nil? c)))
-                         {:boolish-ops #{'x:eq 'x:nil?}
-                          :recursive-not? true :recursive-and-or? true})
-   (subject/boolish-form? '(or a b) {:boolish-ops #{'x:eq}})]
+^{:refer lang.core.rewrite.truthy/boolish-form? :added "4.1"}
+(fact "detects boolish forms with configurable rules"
+  [(truthy/boolish-form? '(x:eq a b)
+                         {:boolish-ops '#{x:eq}})
+   (truthy/boolish-form? '(. obj (containsKey "a"))
+                         {:dot-boolish-calls '#{containsKey}})
+   (truthy/boolish-form? '(and (x:eq a b)
+                               (not (x:nil? c)))
+                         {:boolish-ops '#{x:eq x:nil?}
+                          :recursive-not? true
+                          :recursive-and-or? true})
+   (truthy/boolish-form? '(or a b)
+                         {:boolish-ops '#{x:eq}})]
   => [true true true false])
 
-^{:refer lang.core.rewrite.truthy/truthy-check-form}
-(fact "builds a Dart-compatible truthiness check"
-  (subject/truthy-check-form 'value)
-  => '(and (x:not-nil? value) (not= false value)))
+^{:refer lang.core.rewrite.truthy/truthy-check-form :added "4.0"}
+(fact "builds a truthiness check for a value"
+  (truthy/truthy-check-form 'x)
+  => '(and (x:not-nil? x) (not= false x)))
 
-^{:refer lang.core.rewrite.truthy/wrap-truthy-check}
-(fact "wraps a form while preserving source metadata"
-  [(subject/wrap-truthy-check 'source 'value)
-   (subject/wrap-truthy-check 'source 'value (fn [item] (list 'truthy? item)))
-   (meta (subject/wrap-truthy-check (with-meta 'source {:from :test}) 'value))]
+^{:refer lang.core.rewrite.truthy/wrap-truthy-check :added "4.0"}
+(fact "wraps a form in a truthiness check, preserving source metadata"
+  [(truthy/wrap-truthy-check 'source 'x)
+   (truthy/wrap-truthy-check 'source 'x (fn [v] (list 'truthy? v)))
+   (meta (truthy/wrap-truthy-check (with-meta 'source {:foo true}) 'x))]
+  => ['(and (x:not-nil? x) (not= false x))
+      '(truthy? x)
+      {:foo true}])
+
+^{:refer lang.core.rewrite.truthy/truthy-form :added "4.1"}
+(fact "wraps non-bool forms with configurable truthy checks"
+  [(truthy/truthy-form 'curr
+                       'curr
+                       (fn [migration-argument-0] (= (quote curr) migration-argument-0))
+                       (fn [_ form]
+                         (list 'wrapped form)))
+   (truthy/truthy-form 'curr
+                       'curr
+                       (fn [migration-argument-0] (= (quote ready) migration-argument-0))
+                       (fn [_ form]
+                         (truthy/wrap-truthy-check form form)))]
+  => ['curr
+      '(and (x:not-nil? curr)
+            (not= false curr))])
+
+^{:refer lang.core.rewrite.truthy/truthy-or-form :added "4.1"}
+(fact "builds value-preserving truthy fallback chains"
+  (truthy/truthy-or-form 'source 'value 'fallback)
+  => '(:? (and (x:not-nil? value)
+               (not= false value))
+          value
+          fallback))
+
+^{:refer lang.core.rewrite.truthy/dot-boolish-call? :id native-dot-boundaries}
+(fact "preserves native dotted-call cases and handles short and sequence-backed forms"
+  [(truthy/dot-boolish-call? '(. obj (containsKey "a")) #{'containsKey})
+   (truthy/dot-boolish-call? '(. obj (isEmpty)) #{'isEmpty})
+   (truthy/dot-boolish-call? '(containsKey "a") #{'containsKey})
+   (truthy/dot-boolish-call? nil #{'isEmpty})
+   (truthy/dot-boolish-call? '(.) #{'isEmpty})
+   (truthy/dot-boolish-call? '(. obj) #{'isEmpty})
+   (truthy/dot-boolish-call? (seq '[. obj (isEmpty)]) #{'isEmpty})]
+  => [true true false false false false true])
+
+^{:refer lang.core.rewrite.truthy/boolish-form? :id native-boolish-boundaries}
+(fact "preserves native recursive checks and boolean and empty-recursion boundaries"
+  [(truthy/boolish-form? '(x:eq a b) {:boolish-ops #{'x:eq}})
+   (truthy/boolish-form? '(. obj (containsKey "a")) {:dot-boolish-calls #{'containsKey}})
+   (truthy/boolish-form? '(and (x:eq a b) (not (x:nil? c)))
+                         {:boolish-ops #{'x:eq 'x:nil?} :recursive-not? true :recursive-and-or? true})
+   (truthy/boolish-form? '(or a b) {:boolish-ops #{'x:eq}})
+   (truthy/boolish-form? true)
+   (truthy/boolish-form? false)
+   (truthy/boolish-form? nil)
+   (truthy/boolish-form? '(and) {:recursive-and-or? true})
+   (truthy/boolish-form? '(or) {:recursive-and-or? true})
+   (truthy/boolish-form? '(not true))
+   (truthy/boolish-form? '(not true) {:recursive-not? true})
+   (truthy/boolish-form? '(and true value) {:recursive-and-or? true})
+   (truthy/boolish-form? (seq '[x:eq a b]) {:boolish-ops #{'x:eq}})]
+  => [true true true false true true false true true false true false true])
+
+^{:refer lang.core.rewrite.truthy/truthy-check-form :id native-truthy-check}
+(fact "preserves the native value expression and false literal in the generated check"
+  [(truthy/truthy-check-form 'value)
+   (truthy/truthy-check-form false)]
   => ['(and (x:not-nil? value) (not= false value))
-      '(truthy? value)
-      {:from :test}])
+      '(and (x:not-nil? false) (not= false false))])
 
-^{:refer lang.core.rewrite.truthy/truthy-form}
-(fact "leaves boolish values alone and wraps value expressions"
-  [(subject/truthy-form 'ready 'ready #(= 'ready %))
-   (subject/truthy-form 'value 'value #(= 'ready %)
-                      (fn [_ item] (subject/wrap-truthy-check item item)))]
-  => ['ready '(and (x:not-nil? value) (not= false value))])
+^{:refer lang.core.rewrite.truthy/wrap-truthy-check :id native-truthy-metadata}
+(fact "preserves native wrapper behavior and source metadata with a custom check"
+  [(truthy/wrap-truthy-check 'source 'value)
+   (truthy/wrap-truthy-check 'source 'value (fn [item] (list 'truthy? item)))
+   (meta (truthy/wrap-truthy-check (with-meta 'source {:from :test}) 'value))
+   (let [output (truthy/wrap-truthy-check
+                  (with-meta 'source {:line 8}) 'value
+                  (fn [item] (list 'custom item)))]
+     [output (meta output)])]
+  => ['(and (x:not-nil? value) (not= false value))
+      '(truthy? value) {:from :test} ['(custom value) {:line 8}]])
 
-^{:refer lang.core.rewrite.truthy/truthy-or-form}
-(fact "constructs a value-preserving truthy fallback"
-  (subject/truthy-or-form 'source 'value 'fallback)
-  => '(:? (and (x:not-nil? value) (not= false value)) value fallback))
+^{:refer lang.core.rewrite.truthy/truthy-form :id native-truthy-branch}
+(fact "preserves native default wrapping and does not wrap a boolish form twice"
+  [(truthy/truthy-form 'ready 'ready (fn [item] (= 'ready item)))
+   (truthy/truthy-form 'value 'value (fn [item] (= 'ready item))
+                      (fn [_ item] (truthy/wrap-truthy-check item item)))
+   (let [form (with-meta '(x:eq a b) {:original true})
+         output (truthy/truthy-form 'source form
+                  (fn [item] (truthy/boolish-form? item {:boolish-ops #{'x:eq}}))
+                  (fn [_ _] (throw (ex :unexpected-wrap {}))))]
+     [output (meta output)
+      (= output (truthy/truthy-form 'source output
+                    (fn [item] (truthy/boolish-form? item {:boolish-ops #{'x:eq}}))))])]
+  => ['ready '(and (x:not-nil? value) (not= false value))
+      ['(x:eq a b) {:original true} true]])
+
+^{:refer lang.core.rewrite.truthy/truthy-or-form :id native-truthy-fallback}
+(fact "preserves native fallback output and custom checks with source metadata"
+  [(truthy/truthy-or-form 'source 'value 'fallback)
+   (let [output (truthy/truthy-or-form
+                  (with-meta 'source {:line 9}) false nil
+                  (fn [item] (list 'custom item)))]
+     [output (meta output)])]
+  => ['(:? (and (x:not-nil? value) (not= false value)) value fallback)
+      ['(:? (custom false) false nil) {:line 9}]])

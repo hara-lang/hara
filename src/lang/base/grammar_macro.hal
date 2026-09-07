@@ -1,5 +1,251 @@
 (ns lang.base.grammar-macro
-  (:require [lang.base.grammar-spec :as spec]))
+  (:require [lang.base.grammar-spec :as spec] [std.foundation :as f]))
+
+;;
+;; macros
+;;
+
+(defn tf-macroexpand
+  "macroexpands the current form"
+  {:added "3.0"}
+  ([form]
+    (let [operation (if (form? form) (first form) nil)]
+      (if (or (= operation '->) (= operation '->>))
+        (reduce
+          (fn [result step]
+            (if (form? step)
+              (with-meta
+                (apply
+                  list
+                  (if (= operation '->)
+                    (concat [(first step) result] (rest step))
+                    (concat [(first step)] (rest step) [result])))
+                (meta step))
+              (list step result)))
+          (nth form 1)
+          (drop 2 form))
+        (macroexpand-1 form)))))
+
+(defn tf-when
+  "transforms `when` to branch
+ 
+   (tf-when '(when true :A :B :C))
+   => '(br* (if true :A :B :C))"
+  {:added "3.0"}
+  ([[_ check & body]] (let [body (not-empty (apply list (vec body)))]
+                        (std.foundation/seq (std.foundation/concat (std.foundation/list (quote br*))
+                                              (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote if))
+                                                                                         (std.foundation/list check)
+                                                                                         body))))))))
+
+(defn tf-if
+  "transforms `if` to branch
+ 
+   (tf-if '(if true :A :B))
+   => '(br* (if true :A) (else :B))"
+  {:added "3.0"}
+  ([[_ check then & else-values]] (let [else-values (not-empty (apply list (vec else-values)))]
+                                    (let [else (first else-values)]
+                                      (std.foundation/seq (std.foundation/concat (std.foundation/list (quote br*))
+                                                            (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote if))
+                                                                                                       (std.foundation/list check)
+                                                                                                       (std.foundation/list then))))
+                                                            (if else
+                                                              (std.foundation/apply std.foundation/vector
+                                                                (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote else))
+                                                                                                                                                      (std.foundation/list else))))))))))))))
+
+(defn tf-cond
+  "transforms `cond` to branch"
+  {:added "3.0"}
+  ([[_ check then & more]] (let [more (not-empty (apply list (vec more)))]
+                             (let [args    (vec (partition 2 more))
+                                   [ei el] (if (= :else (first (last args))) [(butlast args) (last args)] [args nil])]
+                               (std.foundation/seq (std.foundation/concat (std.foundation/list (quote br*))
+                                                     (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote if))
+                                                                                                (std.foundation/list check)
+                                                                                                (std.foundation/list then))))
+                                                     (map (fn [[check then]]
+                                                            (std.foundation/seq (std.foundation/concat (std.foundation/list (quote elseif))
+                                                                                  (std.foundation/list check)
+                                                                                  (std.foundation/list then))))
+                                                       ei)
+                                                     (if el
+                                                       (std.foundation/apply std.foundation/vector
+                                                         (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote else))
+                                                                                                                                               (std.foundation/list (second el)))))))))))))))
+
+(defn tf-let-bind
+  "converts to a statement"
+  {:added "4.0"}
+  ([[_ bindings & body]] (let [body (not-empty (apply list (vec body)))]
+                           (std.foundation/seq (std.foundation/concat (std.foundation/list (quote do*))
+                                                 (map (fn [[sym val]]
+                                                        (if (= (quote _) sym)
+                                                          val
+                                                          (std.foundation/seq (std.foundation/concat (std.foundation/list (quote var))
+                                                                                (std.foundation/list sym)
+                                                                                (std.foundation/list :=)
+                                                                                (std.foundation/list val)))))
+                                                   (partition 2 bindings))
+                                                 body)))))
+
+(defn tf-case
+  "transforms the case statement to switch representation"
+  {:added "4.0"}
+  ([[_ val & options]] (let [options (not-empty (apply list (vec options)))]
+                         (let [cs      (vec (partition-all 2 options))
+                               [cs df] (if (= 1 (count (last cs))) [(butlast cs) [(last cs)]] [cs []])]
+                           (std.foundation/seq (std.foundation/concat (std.foundation/list (quote switch))
+                                                 (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                                        (std.foundation/seq (std.foundation/concat (std.foundation/list val)))))
+                                                 (map (fn [[val body]]
+                                                        (std.foundation/seq (std.foundation/concat (std.foundation/list (quote case))
+                                                                              (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                                                                     (std.foundation/seq (std.foundation/concat (std.foundation/list val)))))
+                                                                              (std.foundation/list body))))
+                                                   cs)
+                                                 (map (fn [[body]]
+                                                        (std.foundation/seq (std.foundation/concat (std.foundation/list (quote default))
+                                                                              (std.foundation/list body))))
+                                                   df)))))))
+
+(defn tf-lambda-arrow
+  "generalized lambda transformation"
+  {:added "4.0"}
+  ([[_ & more]] (let [more (not-empty (apply list (vec more)))]
+                  (let [[args
+                         &
+                         exprs] (if (= 1 (count more)) [[] (first more)] more)
+                        exprs   (not-empty (apply list (vec exprs)))
+                        final   (last exprs)
+                        body    (butlast exprs)]
+                    (std.foundation/seq (std.foundation/concat (std.foundation/list (quote fn))
+                                          (std.foundation/list args)
+                                          body
+                                          (if (and (form? final) (= (quote return) (first final)))
+                                            [final]
+                                            (std.foundation/apply std.foundation/vector
+                                              (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote return))
+                                                                                                                                    (std.foundation/list final))))))))))))))
+
+(defn tf-tcond
+  "transforms the ternary cond\n \n   (tf-tcond '(:?> :a a :b b :else c))\n   => '(:? :a [a (:? :b [b c])])"
+  {:added "4.0"}
+  ([[_ & more]]
+    (let [more (not-empty (apply list (vec more)))]
+      (let [pairs (vec (map vec (partition 2 more)))
+            _ (if (not= :else (first (last pairs)))
+                (f/error
+                  "ternary cond has to end with :else"
+                  {:form (last pairs)}))]
+        (reduce
+          (fn [acc [q alt]] (list :? q [alt acc]))
+          (last (last pairs))
+          (reverse (butlast pairs)))))))
+
+(defn tf-xor
+  "transforms to xor using ternary if
+  
+    (tf-xor '(xor a b))
+    => '(== (not (not a)) (not (not b)))"
+  {:added "4.0"}
+  ([[_ a b]]
+   (list '==
+         (list 'not (list 'not a))
+         (list 'not (list 'not b)))))
+
+(defn tf-doto
+  "basic transformation for `doto` syntax"
+  {:added "4.0"}
+  ([[_ sym & forms]]
+    (let [forms (not-empty (apply list (vec forms)))]
+      (let [sforms (map
+                     (fn [form]
+                       (apply list (first form) sym (rest form)))
+                     forms)]
+        (apply list 'do sforms)))))
+
+(defn tf-do-arrow
+  "do:> transformation
+  
+    (tf-do-arrow '(do:>
+                   1 2 (return 3)))
+    => '((fn [] 1 2 (return 3)))"
+  {:added "4.0"}
+  ([[_ & body]] (let [body (not-empty (apply list (vec body)))]
+                  (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote fn))
+                                                                                                        (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                                                                                               (std.foundation/seq (std.foundation/concat))))
+                                                                                                        body))))))))
+
+(defn tf-forange
+  "creates the forange form
+ 
+   (tf-forange '(forange [i 10] (print i)))
+   => '(for [(var i 0) (< i 10) [(:= i (+ i 1))]] (print i))
+ 
+   (tf-forange '(forange [i [10 3 -2]] (print i)))
+   => '(for [(var i 10) (< i 3) [(:= i (- i 2))]] (print i))"
+  {:added "4.0"}
+  ([[_ [type? sym size params] & body]] (let [body (not-empty (apply list (vec body)))]
+                                          (let [[types
+                                                 sym
+                                                 size
+                                                 params] (if (keyword? type?) [[type?] sym size params] [nil type? sym size])
+                                                [start
+                                                 end
+                                                 step]   (if (vector? size) size [0 size])
+                                                step     (or step 1)
+                                                [sign
+                                                 step]   (if (and (number? step) (neg? step)) [(quote -) (- step)] [(quote +) step])]
+                                            (std.foundation/seq (std.foundation/concat (std.foundation/list (quote for))
+                                                                  (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                                                         (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote var))
+                                                                                                                                                                               types
+                                                                                                                                                                               (std.foundation/list sym)
+                                                                                                                                                                               (std.foundation/list start))))
+                                                                                                               (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote <))
+                                                                                                                                                          (std.foundation/list sym)
+                                                                                                                                                          (std.foundation/list end))))
+                                                                                                               (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                                                                                                      (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list :=)
+                                                                                                                                                                                                                            (std.foundation/list sym)
+                                                                                                                                                                                                                            (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list sign)
+                                                                                                                                                                                                                                                                       (std.foundation/list sym)
+                                                                                                                                                                                                                                                                       (std.foundation/list step)))))))
+                                                                                                                                                            params))))))))
+                                                                  body))))))
+
+(def +op-macro+
+  [{:op :tfirst    :symbol #{'->}     :emit :macro  :macro #'tf-macroexpand   :type :template}
+   {:op :tlast     :symbol #{'->>}    :emit :macro  :macro #'tf-macroexpand   :type :template}
+   {:op :doto      :symbol #{'doto}   :emit :macro  :macro  #'tf-doto     :type :block}
+   {:op :if        :symbol #{'if}     :emit :macro  :macro  #'tf-if       :type :block}
+   {:op :cond      :symbol #{'cond}   :emit :macro  :macro  #'tf-cond     :type :block}
+   {:op :when      :symbol #{'when}   :emit :macro  :macro  #'tf-when     :type :block}])
+
+(def +op-macro-arrow+
+  [{:op :dofn      :symbol #{'do:>}   :emit :macro :macro #'tf-do-arrow       :type :template}
+   {:op :fn-arrow  :symbol '#{fn:>}   :emit :macro :macro #'tf-lambda-arrow   :type :template}])
+
+(def +op-macro-let+
+  [{:op :let-bind  :symbol #{'let}    :emit :macro :macro #'tf-let-bind       :type :block}])
+
+(def +op-macro-xor+
+  [{:op :txor      :symbol #{'xor}    :emit :macro :macro #'tf-xor}])
+
+(def +op-macro-case+
+  [{:op :switch     :symbol #{'switch}     :emit :inner 
+    :type :block    :block  {:main #{:parameter  :body}
+                             :control [[:case     {:required true
+                                                   :main #{:parameter :body}}]
+                                       [:default  {:main #{:body}}]]}}
+   {:op :case       :symbol #{'case}   :emit :macro  :macro  #'tf-case     :type :block}])
+
+(def +op-macro-forange+
+  [{:op :forange :symbol '#{forange} :style/indent 1
+    :emit :macro  :macro  #'tf-forange  :type :block}])
 
 (defn form
   "Builds a persistent Hara list used as generated source."
@@ -13,246 +259,3 @@
     (if (> amount 0)
       (vec (take (- amount 1) items))
       [])))
-
-(defn tf-macroexpand
-  "Macroexpands the current form once."
-  [input]
-  (let [items (vec input)
-        operation (first items)
-        initial (nth items 1)
-        steps (drop 2 items)]
-    (cond (= operation '->)
-          (reduce (fn [result step]
-                    (let [step-items (vec step)]
-                      (form
-                       (concat [(first step-items) result]
-                               (drop 1 step-items)))))
-                  initial
-                  steps)
-
-          (= operation '->>)
-          (reduce (fn [result step]
-                    (form (concat (vec step) [result])))
-                  initial
-                  steps)
-
-          :else input)))
-
-(defn tf-when
-  "Transforms `when` to a branch form."
-  [input]
-  (let [items (vec input)
-        check (nth items 1)
-        body (drop 2 items)]
-    (form ['br*
-           (form (concat ['if check] body))])))
-
-(defn tf-if
-  "Transforms `if` to a branch form."
-  [input]
-  (let [items (vec input)
-        check (nth items 1)
-        then (nth items 2)
-        else (if (> (count items) 3) (nth items 3) nil)
-        branches (if (nil? else)
-                   [(form ['if check then])]
-                   [(form ['if check then])
-                    (form ['else else])])]
-    (form (concat ['br*] branches))))
-
-(defn tf-cond
-  "Transforms `cond` to a branch form."
-  [input]
-  (let [items (vec (drop 1 input))
-        pairs (vec (partition 2 items))
-        final-pair (last pairs)
-        has-else (and final-pair (= :else (first final-pair)))
-        conditional-pairs (if has-else (all-but-last pairs) pairs)
-        first-pair (first conditional-pairs)
-        remaining-pairs (drop 1 conditional-pairs)
-        branches (vec
-                  (concat
-                   [(form ['if (first first-pair) (second first-pair)])]
-                   (map (fn [pair]
-                          (form ['elseif (first pair) (second pair)]))
-                        remaining-pairs)
-                   (if has-else
-                     [(form ['else (second final-pair)])]
-                     [])))]
-    (form (concat ['br*] branches))))
-
-(defn tf-let-bind
-  "Converts a `let` form to target-language statements."
-  [input]
-  (let [items (vec input)
-        bindings (nth items 1)
-        body (drop 2 items)
-        pairs (vec (partition 2 bindings))
-        statements
-        (map (fn [pair]
-               (let [sym (first pair)
-                     value (second pair)]
-                 (if (= '_ sym)
-                   value
-                   (form ['var sym ':= value]))))
-             pairs)]
-    (form (concat ['do*] statements body))))
-
-(defn tf-case
-  "Transforms a case statement to its switch representation."
-  [input]
-  (let [items (vec input)
-        value (nth items 1)
-        options (drop 2 items)
-        groups (vec (partition-all 2 options))
-        final-group (last groups)
-        has-default (= 1 (count final-group))
-        cases (if has-default (all-but-last groups) groups)
-        case-forms
-        (map (fn [pair]
-               (form ['case [(first pair)] (second pair)]))
-             cases)
-        default-forms
-        (if has-default
-          [(form ['default (first final-group)])]
-          [])]
-    (form
-     (concat ['switch [value]]
-             case-forms
-             default-forms))))
-
-(defn tf-lambda-arrow
-  "Generalized lambda transformation."
-  [input]
-  (let [more (vec (drop 1 input))
-        normalized (if (= 1 (count more))
-                     [[] (first more)]
-                     more)
-        args (first normalized)
-        expressions (vec (drop 1 normalized))
-        final-expression (last expressions)
-        body (all-but-last expressions)
-        returned
-        (if (and (not (nil? final-expression))
-                 (not (symbol? final-expression))
-                 (= 'return (first final-expression)))
-          [final-expression]
-          [(form ['return final-expression])])]
-    (form (concat ['fn args] body returned))))
-
-(defn tf-tcond
-  "Transforms a ternary cond."
-  [input]
-  (let [pairs (vec
-               (map vec
-                    (partition 2 (drop 1 input))))
-        final-pair (last pairs)]
-    (if (not (= :else (first final-pair)))
-      (throw (ex :generic {:form final-pair} :ex/message "ternary cond has to end with :else"))
-      (reduce (fn [result pair]
-                (form [:? (first pair) [(second pair) result]]))
-              (second final-pair)
-              (reverse (all-but-last pairs))))))
-
-(defn tf-xor
-  "Transforms xor into boolean-normalized equality."
-  [input]
-  (let [items (vec input)
-        a (nth items 1)
-        b (nth items 2)]
-    (form ['==
-           (form ['not (form ['not a])])
-           (form ['not (form ['not b])])])))
-
-(defn tf-doto
-  "Basic transformation for `doto` syntax."
-  [input]
-  (let [items (vec input)
-        sym (nth items 1)
-        source-forms (drop 2 items)
-        transformed
-        (map (fn [source]
-               (form
-                (concat [(first source) sym]
-                        (drop 1 source))))
-             source-forms)]
-    (form (concat ['do] transformed))))
-
-(defn tf-do-arrow
-  "Transforms a `do:>` form to an immediately invoked function."
-  [input]
-  (let [body (drop 1 input)]
-    (form [(form (concat ['fn []] body))])))
-
-(defn tf-forange
-  "Creates the portable `forange` representation."
-  [input]
-  (let [items (vec input)
-        binding (vec (nth items 1))
-        body (drop 2 items)
-        first-value (nth binding 0)
-        typed (keyword? first-value)
-        types (if typed [first-value] [])
-        sym (if typed (nth binding 1) first-value)
-        size (if typed (nth binding 2) (nth binding 1))
-        params (if typed
-                 (if (> (count binding) 3) (nth binding 3) nil)
-                 (if (> (count binding) 2) (nth binding 2) nil))
-        range (if (vector? size) size [0 size])
-        start (nth range 0)
-        end (nth range 1)
-        raw-step (if (> (count range) 2) (nth range 2) nil)
-        step (or raw-step 1)
-        negative (and (number? step) (neg? step))
-        sign (if negative '- '+)
-        amount (if negative (- step) step)
-        declaration (form (concat ['var] types [sym start]))
-        condition (form ['< sym end])
-        increment (form [':= sym (form [sign sym amount])])
-        iteration (vec
-                   (concat [increment]
-                           (if params params [])))]
-    (form
-     (concat ['for [declaration condition iteration]]
-             body))))
-
-(def +op-macro+
-  [{:op :tfirst :symbol #{'->} :emit :macro
-    :macro #'tf-macroexpand :type :template}
-   {:op :tlast :symbol #{'->>} :emit :macro
-    :macro #'tf-macroexpand :type :template}
-   {:op :doto :symbol #{'doto} :emit :macro
-    :macro #'tf-doto :type :block}
-   {:op :if :symbol #{'if} :emit :macro
-    :macro #'tf-if :type :block}
-   {:op :cond :symbol #{'cond} :emit :macro
-    :macro #'tf-cond :type :block}
-   {:op :when :symbol #{'when} :emit :macro
-    :macro #'tf-when :type :block}])
-
-(def +op-macro-arrow+
-  [{:op :dofn :symbol #{'do:>} :emit :macro
-    :macro #'tf-do-arrow :type :template}
-   {:op :fn-arrow :symbol #{'fn:>} :emit :macro
-    :macro #'tf-lambda-arrow :type :template}])
-
-(def +op-macro-let+
-  [{:op :let-bind :symbol #{'let} :emit :macro
-    :macro #'tf-let-bind :type :block}])
-
-(def +op-macro-xor+
-  [{:op :txor :symbol #{'xor} :emit :macro :macro #'tf-xor}])
-
-(def +op-macro-case+
-  [{:op :switch :symbol #{'switch} :emit :inner
-    :type :block
-    :block {:main #{:parameter :body}
-            :control [[:case {:required true
-                              :main #{:parameter :body}}]
-                      [:default {:main #{:body}}]]}}
-   {:op :case :symbol #{'case} :emit :macro
-    :macro #'tf-case :type :block}])
-
-(def +op-macro-forange+
-  [{:op :forange :symbol #{'forange} :style/indent 1
-    :emit :macro :macro #'tf-forange :type :block}])

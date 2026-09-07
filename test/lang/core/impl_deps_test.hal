@@ -1,6 +1,7 @@
 (ns lang.core.impl-deps-test
   (:use code.test)
-  (:require [lang.core.impl-deps :as deps]))
+  (:require [lang.core.impl-deps :as deps]
+            [lang.core.script :as script]))
 
 (def +hooks+
   {:module-import (fn [name module-value options]
@@ -179,3 +180,76 @@
    (deps/native-name-with-override "date" {:override {'math "fast-math"}})
    (deps/native-name-with-override 'date {})]
   => '["fast-math" "date" date])
+
+^{:refer lang.core.impl-deps/order-script-entries}
+(fact "preserves Foundation source order inside a module even when entries depend on later entries"
+  (let [early {:id 'early :module 'demo.one :section :code
+               :deps #{'demo.one/late} :priority 1 :line 1 :time 1}
+        late {:id 'late :module 'demo.one :section :code
+              :deps #{} :priority 2 :line 2 :time 1}
+        book-value {:lang :js :grammar {}
+                    :modules {'demo.one {:id 'demo.one :code {'early early 'late late}}}}]
+    [(mapv :id (deps/order-script-entries book-value [late early]))
+     (mapv :id (deps/order-script-entries book-value [early late]))])
+  => [['early 'late] ['early 'late]])
+
+^{:refer lang.core.impl-deps/order-script-entries}
+(fact "keeps absent priority distinct from zero and uses line before time"
+  (let [entries [{:id 'negative :module 'demo.one :priority -1 :line 1 :time 1}
+                 {:id 'absent :module 'demo.one :line 9 :time 9}
+                 {:id 'later-line :module 'demo.one :priority 2 :line 2 :time 1}
+                 {:id 'earlier-line :module 'demo.one :priority 2 :line 1 :time 9}]
+        book-value {:lang :js :grammar {} :modules {'demo.one {:id 'demo.one :code {}}}}]
+    (mapv :id (deps/order-script-entries book-value entries)))
+  => ['absent 'negative 'earlier-line 'later-line])
+
+^{:refer lang.core.impl-deps/collect-script-entries}
+(fact "retains linked modules without selected code entries in the module lookup"
+  (let [entry {:id 'run :module 'demo.app :section :code :deps #{}}
+        base {:id 'demo.base :code {}}
+        app {:id 'demo.app :link {'base 'demo.base} :code {'run entry}}
+        book-value {:lang :js :grammar {} :modules {'demo.base base 'demo.app app}}
+        [entries module-lu] (deps/collect-script-entries book-value ['demo.app/run])]
+    [(mapv deps/entry-symbol entries)
+     (get-in module-lu ['demo.base :index])
+     (get-in module-lu ['demo.app :index])
+     (= base (get-in module-lu ['demo.base :module]))
+     (= app (get-in module-lu ['demo.app :module]))])
+  => [['demo.app/run] 0 1 true true])
+
+^{:refer lang.core.impl-deps/collect-script-entries}
+(fact "accepts a single Foundation symbol and produces the same closure as a collection"
+  (= (deps/collect-script-entries +fixture-book+ 'demo.app/run)
+     (deps/collect-script-entries +fixture-book+ ['demo.app/run]))
+  => true
+  (deps/collect-script-entries +fixture-book+ [])
+  => [[] {}])
+
+^{:refer lang.core.impl-deps/collect-script-entries}
+(fact "rejects cyclic module dependencies even when selected code has no dependencies"
+  (let [book-value {:lang :js :grammar {}
+                    :modules
+                    {'demo.a {:id 'demo.a :link {'b 'demo.b}
+                              :code {'run {:id 'run :module 'demo.a :section :code :deps #{}}}}
+                     'demo.b {:id 'demo.b :link {'a 'demo.a} :code {}}}}]
+    (try
+      (deps/collect-script-entries book-value ['demo.a/run])
+      :no-error
+      (catch error (:ex/code (ex-data error)))))
+  => :foundation/circular-dependency)
+
+^{:refer lang.core.impl-deps/collect-script}
+(fact "collects a staged expression and its empty code and native closure"
+  (let [baseline (script/script-snapshot)
+        result
+        (try
+          (script/script-reset!)
+          (script/setup :lua 'demo.bootstrap {} true 'lang.core.impl-deps-test)
+          (let [book (script/selected-book :lua)]
+            (deps/collect-script-summary
+             (deps/collect-script book '(+ 1 2 3)
+                                  {:lang :lua
+                                   :module (get-in book [:modules 'demo.bootstrap])})))
+          (finally (script/script-restore! baseline)))]
+    [result (= baseline (script/script-snapshot))])
+  => [['(+ 1 2 3) [] {}] true])

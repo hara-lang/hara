@@ -1,5 +1,6 @@
 (ns lang.base.grammar-test
-  (:require [lang.base.grammar :as grammar]))
+  (:require [lang.base.grammar :as grammar])
+  (:use code.test))
 
 ^{:refer lang.base.grammar/key-member?}
 (Test/check
@@ -103,16 +104,16 @@
                   (grammar/grammar-sections reserved)
                   (grammar/grammar-macros reserved)
                   (grammar/grammar? value)
-                  (select-keys value [:polis/type :tag :reserved :sections :macros :structure])]))
+                  (select-keys value [:lang/type :tag :reserved :sections :macros :structure])]))
    :expected [#{:loop}
-              {:block #{:loop} :def #{:defn} :fn #{:call}}
-              #{:code} #{:defn} true
-              {:polis/type :polis/grammar :tag :fixture
+              {:block #{'loop} :def #{'defn} :fn #{'call}}
+              #{:code} #{'defn} true
+              {:lang/type :lang/grammar :tag :fixture
                :reserved {'loop {:op :loop :type :block :section :code}
                           'defn {:op :defn :type :def :section :code}
                           'call {:op :call :type :fn}}
-               :sections #{:code} :macros #{:defn}
-               :structure {:block #{:loop} :def #{:defn} :fn #{:call}}}]}])
+               :sections #{:code} :macros #{'defn}
+               :structure {:block #{'loop} :def #{'defn} :fn #{'call}}}]}])
 
 ^{:refer lang.base.grammar/grammar-structure}
 (Test/check
@@ -124,10 +125,232 @@
                  elapsed (- (time-ms) started)]
              [(set (keys structure))
               (= (count (:block structure))
-                 (count (grammar/ops-of-type reserved :block)))
+                 (count (filter (fn [pair] (= :block (:type (second pair)))) reserved)))
               (= (count (:def structure))
-                 (count (grammar/ops-of-type reserved :def)))
+                 (count (filter (fn [pair] (= :def (:type (second pair)))) reserved)))
               (= (count (:fn structure))
-                 (count (grammar/ops-of-type reserved :fn)))
+                 (count (filter (fn [pair] (= :fn (:type (second pair)))) reserved)))
               (< elapsed 1000)]))
    :expected [#{:block :def :fn} true true true true]}])
+
+
+;; Semantic correspondence for the native grammar surface. The pinned override
+;; repair is deliberately narrower than a complete grammar namespace migration.
+(def +op-fixture+ [{:op :fixture :symbol #{'fixture}}])
+
+^{:refer lang.base.grammar/key-member? :id grammar-contract-key-member}
+(fact "membership distinguishes absent keys from present nil values"
+  [(grammar/key-member? {:a nil} :a) (grammar/key-member? {:a nil} :b)
+   (grammar/key-member? {} :a)] => [true false false])
+
+^{:refer lang.base.grammar/gen-ops :id grammar-contract-gen-ops}
+(fact "operator Vars produce category keys and shortcut-qualified symbols"
+  (grammar/gen-ops 'lang.base.grammar-test "sample")
+  => [[:fixture 'sample/+op-fixture+]])
+
+^{:refer lang.base.grammar/normalize-op-entry :id grammar-contract-normalize}
+(fact "normalization preserves explicit false defaults and ordered controls"
+  (grammar/normalize-op-entry
+    {:emit :macro :macro 'sample/expand :lower false :value/template false
+     :value/standalone false :block {:control [[:if {:test true}] [:else {}]]}})
+  => {:emit :macro :macro 'sample/expand :lower false :value/template false
+      :value/standalone false :block {:control {:if {:test true} :else {}}
+                                     :control-order [:if :else]}}
+  (grammar/normalize-op-entry {:emit :hard-link :raw 'sample/run})
+  => {:emit :hard-link :raw 'sample/run :value/standalone 'sample/run})
+
+^{:refer lang.base.grammar/entries-by-op :id grammar-contract-entries}
+(fact "duplicate operator identifiers retain the later entry"
+  (grammar/entries-by-op [{:op :a :raw "old"} {:op :b :raw "b"} {:op :a :raw "new"}])
+  => {:a {:op :a :raw "new"} :b {:op :b :raw "b"}})
+
+^{:refer lang.base.grammar/collect-ops :id grammar-contract-collect}
+(fact "categories retain their own operators and empty groups"
+  (grammar/collect-ops [[:one [{:op :a :raw "a"}]] [:empty []]])
+  => {:one {:a {:op :a :raw "a"}} :empty {}})
+
+^{:refer lang.base.grammar/+optional-categories+ :id grammar-contract-optional}
+(fact "functional operators are opt-in"
+  grammar/+optional-categories+ => #{:functional-core})
+
+^{:refer lang.base.grammar/+op-categories+ :id grammar-contract-categories}
+(fact "core category order retains the pinned literal grouping"
+  (vec (take 38 (map first grammar/+op-categories+)))
+  => [:builtin :builtin-global :builtin-module :builtin-helper :free-control
+      :free-literal :math :compare :logic :counter :return :throw :await :async
+      :data-table :data-shortcuts :data-range :vars :bit :pointer :fn :block
+      :control-base :control-general :control-try-catch :top-base :top-global
+      :class :for :coroutine :prototype :functional-core :macro :macro-arrow
+      :macro-let :macro-xor :macro-case :macro-forange])
+
+^{:refer lang.base.grammar/+op-order+ :id grammar-contract-order}
+(fact "category order is complete and has no duplicate keys"
+  [(= grammar/+op-order+ (vec (map first grammar/+op-categories+)))
+   (= (count grammar/+op-order+) (count (set grammar/+op-order+)))]
+  => [true true])
+
+^{:refer lang.base.grammar/+op-all+ :id grammar-contract-all}
+(fact "every category is indexed by its original operator identifiers"
+  (every? (fn [pair]
+            (= (set (map :op (second pair)))
+               (set (keys (get grammar/+op-all+ (first pair))))))
+          grammar/+op-categories+)
+  => true)
+
+^{:refer lang.base.grammar/ops-list :id grammar-contract-list}
+(fact "the listing preserves the full declared category order"
+  (vec (grammar/ops-list)) => grammar/+op-order+)
+
+^{:refer lang.base.grammar/ops-symbols :id grammar-contract-symbols}
+(fact "symbol listings preserve category order and every declared symbol"
+  (let [groups (grammar/ops-symbols)]
+    [(vec (map first groups))
+     (every? (fn [pair]
+               (= (set (second pair))
+                  (set (mapcat :symbol (vals (get grammar/+op-all+ (first pair)))))))
+             groups)])
+  => [grammar/+op-order+ true])
+
+^{:refer lang.base.grammar/symbol-summary :id grammar-contract-summary}
+(fact "symbol summaries keep operator keys and omit unrelated entry fields"
+  (grammar/symbol-summary {:one {:symbol #{'a 'b} :raw "ignored"} :none {}})
+  => {:one #{'a 'b} :none nil})
+
+^{:refer lang.base.grammar/ops-summary :id grammar-contract-ops-summary}
+(fact "category selection accepts vector and variadic calls including missing groups"
+  [(grammar/ops-summary [:absent]) (grammar/ops-summary :absent)
+   (vec (map first (grammar/ops-summary)))]
+  => [[[:absent {}]] [[:absent {}]] grammar/+op-order+])
+
+^{:refer lang.base.grammar/ops-detail :id grammar-contract-detail}
+(fact "details retain the complete selected category and report missing groups"
+  [(grammar/ops-detail :absent)
+   (= (grammar/ops-detail :math) (get grammar/+op-all+ :math))]
+  => [nil true])
+
+^{:refer lang.base.grammar/default-lookup :id grammar-contract-default}
+(fact "only optional categories are removed"
+  (grammar/default-lookup {:functional-core {:f 1} :math {:add 2}})
+  => {:math {:add 2}})
+
+^{:refer lang.base.grammar/merge-lookups :id grammar-contract-merge}
+(fact "later lookups win and empty lookup collections produce an empty map"
+  [(grammar/merge-lookups [{:a 1 :b 2} {:a 3}]) (grammar/merge-lookups [])]
+  => [{:a 3 :b 2} {}])
+
+^{:refer lang.base.grammar/parse-build-options :id grammar-contract-options}
+(fact "explicit lookup and later repeated options take precedence"
+  (grammar/parse-build-options [:lookup {:a {}} :include [:a] :include [:b]])
+  => {:lookup {:a {}} :include [:b]})
+
+^{:refer lang.base.grammar/select-category :id grammar-contract-select}
+(fact "category selection includes or excludes exact operator keys"
+  [(grammar/select-category {:math {:add 1 :sub 2}} [:math :include [:sub]])
+   (grammar/select-category {:math {:add 1 :sub 2}} [:math :exclude [:sub]])]
+  => [{:sub 2} {:add 1}])
+
+^{:refer lang.base.grammar/build :id grammar-contract-build}
+(fact "build handles optional categories and whole or partial selections"
+  (let [lookup {:math {:add 1 :sub 2} :logic {:and 3} :functional-core {:fn 4}}]
+    [(grammar/build :lookup lookup)
+     (grammar/build :lookup lookup :include [:functional-core [:math :include [:add]]])
+     (grammar/build :lookup lookup :exclude [:logic [:math :exclude [:sub]]])])
+  => [{:add 1 :sub 2 :and 3} {:fn 4 :add 1} {:add 1}])
+
+^{:refer lang.base.grammar/+minimum-categories+ :id grammar-contract-minimum}
+(fact "minimum grammar includes the pinned baseline categories"
+  grammar/+minimum-categories+
+  => [:builtin :builtin-module :builtin-helper :free-control :free-literal
+      :math :compare :logic :return :vars :fn :data-table :control-base
+      :control-general :top-base :top-global :macro])
+
+^{:refer lang.base.grammar/build-min :id grammar-contract-build-min}
+(fact "minimum build allows explicit optional categories"
+  [(set (keys (grammar/build-min)))
+   (set (keys (grammar/build-min [:functional-core])))]
+  => [(set (keys (grammar/build :include grammar/+minimum-categories+)))
+      (set (keys (grammar/build :include (conj grammar/+minimum-categories+ :functional-core))))])
+
+^{:refer lang.base.grammar/build-xtalk :id grammar-contract-build-xtalk}
+(fact "XTalk build uses the complete profile selection"
+  (set (keys (grammar/build-xtalk)))
+  => (set (keys (grammar/build :include lang.base.grammar-xtalk-system/+xtalk-profile-order+))))
+
+^{:refer lang.base.grammar/missing-keys :id grammar-contract-missing}
+(fact "override membership is key-based even when values are nil"
+  (grammar/missing-keys {:a nil :b {}} {:a nil}) => #{:b})
+
+^{:refer lang.base.grammar/nested-merge-entry :id grammar-contract-nested}
+(fact "nested overrides retain untouched metadata and are idempotent"
+  (let [original {:op :prototype-create :op-spec {:arglists '([m]) :attrs {:keep 1 :change 2}}}
+        replacement {:op-spec {:allow-blocks true :attrs {:change 3}}}
+        merged (grammar/nested-merge-entry original replacement)]
+    [merged (= merged (grammar/nested-merge-entry merged replacement)) original])
+  => [{:op :prototype-create
+       :op-spec {:arglists '([m]) :attrs {:keep 1 :change 3} :allow-blocks true}}
+      true {:op :prototype-create :op-spec {:arglists '([m]) :attrs {:keep 1 :change 2}}}])
+
+^{:refer lang.base.grammar/build:override :id grammar-contract-override}
+(fact "operator overrides preserve unrelated operators and nested argument metadata"
+  (grammar/build:override
+    {:one {:op-spec {:arglists '([x]) :allow-blocks false}} :two {:raw "two"}}
+    {:one {:op-spec {:allow-blocks true}}})
+  => {:one {:op-spec {:arglists '([x]) :allow-blocks true}} :two {:raw "two"}})
+
+^{:refer lang.base.grammar/build:extend :id grammar-contract-extend}
+(fact "extensions normalize new entries without changing existing operators"
+  (grammar/build:extend {:one {:raw "one"}}
+                        {:two {:emit :hard-link :raw 'sample/two}})
+  => {:one {:raw "one"}
+      :two {:emit :hard-link :raw 'sample/two :value/standalone 'sample/two}})
+
+^{:refer lang.base.grammar/to-reserved :id grammar-contract-reserved}
+(fact "all symbol aliases point to the complete operator entry"
+  (grammar/to-reserved {:one {:op :one :symbol #{'a 'b} :raw "one"}})
+  => {'a {:op :one :symbol #{'a 'b} :raw "one"}
+      'b {:op :one :symbol #{'a 'b} :raw "one"}})
+
+^{:refer lang.base.grammar/ops-of-type :id grammar-contract-of-type}
+(fact "native structure lookup returns unique operator identifiers"
+  (grammar/ops-of-type {'a {:op :one :type :fn} 'b {:op :one :type :fn}
+                        'c {:op :two :type :block}} :fn)
+  => #{:one})
+
+^{:refer lang.base.grammar/grammar-structure :id grammar-contract-structure}
+(fact "native structure retains all three sets and ignores other operator types"
+  (grammar/grammar-structure {'a {:op :one :type :fn} 'b {:op :two :type :literal}})
+  => {:block #{} :def #{} :fn #{'a}})
+
+^{:refer lang.base.grammar/grammar-sections :id grammar-contract-sections}
+(fact "sections deduplicate values and omit absent sections"
+  (grammar/grammar-sections {'a {:section :code} 'b {:section :code} 'c {}})
+  => #{:code})
+
+^{:refer lang.base.grammar/grammar-macros :id grammar-contract-macros}
+(fact "macro inventory selects reserved definition symbols"
+  (grammar/grammar-macros {'a {:op :one :type :def} 'b {:op :two :type :fn}})
+  => #{'a})
+
+^{:refer lang.base.grammar/grammar? :id grammar-contract-predicate}
+(fact "only maps bearing the grammar type marker are recognized"
+  [(grammar/grammar? nil) (grammar/grammar? {}) (grammar/grammar? :lang/grammar)
+   (grammar/grammar? {:lang/type :lang/grammar})]
+  => [false false false true])
+
+^{:refer lang.base.grammar/grammar :id grammar-contract-constructor}
+(fact "grammar construction retains extension fields and replaces derived metadata"
+  (grammar/grammar :sample {} {:custom {:retain true} :tag :old :sections #{:old}})
+  => {:custom {:retain true} :tag :sample :lang/type :lang/grammar :reserved {}
+      :sections #{} :macros #{} :structure {:block #{} :def #{} :fn #{}}})
+
+^{:refer lang.base.grammar/grammar-structure :id grammar-reserved-aliases}
+(fact "reserved aliases remain distinct while operator lookup stays operator-based"
+  (let [reserved {'lambda {:op :fn :type :fn} 'fn {:op :fn :type :fn}
+                  'define {:op :defn :type :def} 'defn {:op :defn :type :def}
+                  'loop {:op :loop :type :block}}]
+    [(grammar/grammar-structure reserved) (grammar/grammar-macros reserved)
+     (grammar/ops-of-type reserved :fn)
+     (:structure (grammar/grammar :fixture reserved {}))])
+  => [{:block #{'loop} :def #{'define 'defn} :fn #{'lambda 'fn}}
+      #{'define 'defn} #{:fn}
+      {:block #{'loop} :def #{'define 'defn} :fn #{'lambda 'fn}}])

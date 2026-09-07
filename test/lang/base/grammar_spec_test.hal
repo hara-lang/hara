@@ -1,99 +1,433 @@
 (ns lang.base.grammar-spec-test
-  (:require [lang.base.grammar-spec :as spec]))
+  (:require [lang.base.emit-helper :as helper]
+    [lang.base.grammar-spec :refer :all]
+    [lang.base.v1.grammar-spec :as snapshot])
+  (:use code.test))
 
 (defn mixin-add-symbol
-  [value]
-  {:symbol spec/*symbol* :base (:base value)})
+  [m]
+  {:symbol *symbol*
+   :base (:base m)})
 
-^{:refer lang.base.grammar-spec/as-list}
-(Test/check
- [{:name "builds persistent generated list forms in archive order"
-   :test (fn [] (spec/as-list '[a b]))
-   :expected '(a b)}])
+^{:refer lang.base.grammar-spec/get-comment :added "4.0"}
+(fact "gets the comment access prefix for a language"
 
-^{:refer lang.base.grammar-spec/get-comment}
-(Test/check
- [{:name "gets the comment prefix from a target grammar"
-   :test (fn [] (spec/get-comment {:default {:comment {:prefix "//"}}} {}))
-   :expected "//"}])
+  (get-comment helper/+default+ {})
+  => "//")
 
-^{:refer lang.base.grammar-spec/format-fargs}
-(Test/check
- [{:name "preserves archive function documentation attributes and multiple arities"
-   :test (fn [] [(spec/format-fargs '[[a b]])
-                 (spec/format-fargs '["docstring" [a b]])
-                 (spec/format-fargs '(([a] a) ([a b] (+ a b))))])
-   :expected '(["" {} ([a b])]
-               ["docstring" {} ([a b])]
-               ["" {} (([a] a) ([a b] (+ a b)))])}])
+^{:refer lang.base.grammar-spec/format-fargs :added "3.0"}
+(fact "formats function inputs"
 
-^{:refer lang.base.grammar-spec/mixin-value}
-(Test/check
- [{:name "substitutes only the archive dynamic symbol marker"
-   :test (fn []
-           (binding [spec/*symbol* 'hello]
-             [(spec/mixin-value '*symbol*) (spec/mixin-value :literal)]))
-   :expected '[hello :literal]}])
+  (format-fargs '[[a b]])
+  => '["" {} ([a b])]
 
-^{:refer lang.base.grammar-spec/mixin-map}
-(Test/check
- [{:name "substitutes dynamic-symbol values in literal mixin maps"
-   :test (fn []
-           (binding [spec/*symbol* 'hello]
-             (spec/mixin-map {:from-map '*symbol* :literal true})))
-   :expected {:from-map 'hello :literal true}}])
+  (format-fargs '["docstring" [a b]])
+  => '["docstring" {} ([a b])]
 
-^{:refer lang.base.grammar-spec/mixin-pairs}
-(Test/check
- [{:name "builds mixin maps from alternating evaluated form values"
-   :test (fn []
-           (binding [spec/*symbol* 'hello]
-             (spec/mixin-pairs [:from-form '*symbol*])))
-   :expected {:from-form 'hello}}])
+  (format-fargs '(([a] a)
+                  ([a b] (+ a b))))
+  => '["" {} (([a] a)
+              ([a b] (+ a b)))])
 
-^{:refer lang.base.grammar-spec/evaluate-mixin-form}
-(Test/check
- [{:name "evaluates portable hash-map mixin forms with dynamic substitution"
-   :test (fn []
-           (binding [spec/*symbol* 'hello]
-             (spec/evaluate-mixin-form '(hash-map :from-form *symbol*))))
-   :expected {:from-form 'hello}}])
+^{:refer lang.base.grammar-spec/format-defn-mixins, :added "4.1"}
+(fact
+  "applies mixins from symbols, forms and maps in order"
+  (binding [*symbol* 'hello]
+    [(format-defn-mixins
+       {:base true}
+       ['lang.base.grammar-spec-test/mixin-add-symbol])
+     (format-defn-mixins
+       {:base true}
+       ['(hash-map :from-form *symbol*)])
+     (format-defn-mixins {:base true} ['{:from-map true}])])
+  =>
+  '[{:symbol hello, :base true}
+    {:from-form hello}
+    {:base true, :from-map true}])
 
-^{:refer lang.base.grammar-spec/format-defn-mixins}
-(Test/check
- [{:name "applies archive symbol form and map mixins in declared order"
-   :test (fn []
-           (binding [spec/*symbol* 'hello]
-             [(spec/format-defn-mixins {:base true}
-                                        ['lang.base.grammar-spec-test/mixin-add-symbol])
-              (spec/format-defn-mixins {:base true}
-                                        ['(hash-map :from-form *symbol*)])
-              (spec/format-defn-mixins {:base true}
-                                        [{:from-map true}])]))
-   :expected '[{:symbol hello :base true}
-               {:from-form hello}
-               {:base true :from-map true}]}])
+^{:refer lang.base.grammar-spec/format-defn :added "3.0"}
+(fact "standardize defn forms"
 
-^{:refer lang.base.grammar-spec/format-defn}
-(Test/check
- [{:name "standardizes definition metadata while preserving the portable form"
-   :test (fn [] (spec/format-defn '(defn hello "hello" {:list 1} [])))
-   :expected '[{:list 1 :doc "hello"} (defn hello [])]}])
+  (format-defn '(defn hello "hello" {:list 1} []))
+  => '[{:list 1, :doc "hello"} (defn hello [])])
 
-^{:refer lang.base.grammar-spec/tf-for-index}
-(Test/check
- [{:name "lowers indexed loops to archive-compatible for declarations"
-   :test (fn [] (spec/tf-for-index '(for:index [i [0 2 3]])))
-   :expected '(for [(var i := 0) (< i 2) (:= i (+ i 3))])}])
+^{:refer lang.base.grammar-spec/tf-for-index :added "4.0"}
+(fact "default for-index transform"
 
-^{:refer lang.base.grammar-spec/+op-top-base+}
-(Test/check
- [{:name "retains top-level grammar entries with callable archive formatters"
-   :test (fn []
-           (let [entry (first spec/+op-top-base+)]
-             [(set (:symbol entry))
-              (:format entry)
-              (set (map :op spec/+op-for+))]))
-   :expected [#{'defn 'defn- 'defabstract}
-              #'spec/format-defn
-              #{:for-index :for-object :for-array :for-iter}]}])
+  (tf-for-index '(for:index
+                  [i [0 2 3]]))
+  => '(for [(var i := 0) (< i 2) (:= i (+ i 3))]))
+^{:refer lang.base.grammar-spec/as-list, :id grammar-native-preserved-0}
+(fact
+  "builds persistent generated list forms in archive order"
+  ((fn [] (lang.base.grammar-spec/as-list '[a b])))
+  =>
+  '(a b))
+
+^{:refer lang.base.grammar-spec/get-comment, :id grammar-native-preserved-1}
+(fact
+  "gets the comment prefix from a target grammar"
+  ((fn []
+     (lang.base.grammar-spec/get-comment
+       {:default {:comment {:prefix "//"}}}
+       {})))
+  =>
+  "//")
+
+^{:refer lang.base.grammar-spec/format-fargs, :id grammar-native-preserved-2}
+(fact
+  "preserves archive function documentation attributes and multiple arities"
+  ((fn [] [(lang.base.grammar-spec/format-fargs '[[a b]])
+           (lang.base.grammar-spec/format-fargs '["docstring" [a b]])
+           (lang.base.grammar-spec/format-fargs
+             '(([a] a) ([a b] (+ a b))))]))
+  =>
+  '(["" {} ([a b])]
+     ["docstring" {} ([a b])]
+     ["" {} (([a] a) ([a b] (+ a b)))]))
+
+^{:refer lang.base.grammar-spec/mixin-value, :id grammar-native-preserved-3}
+(fact
+  "substitutes only the archive dynamic symbol marker"
+  ((fn []
+     (binding [lang.base.grammar-spec/*symbol* 'hello]
+       [(lang.base.grammar-spec/mixin-value '*symbol*)
+        (lang.base.grammar-spec/mixin-value :literal)])))
+  =>
+  '[hello :literal])
+
+^{:refer lang.base.grammar-spec/mixin-map, :id grammar-native-preserved-4}
+(fact
+  "substitutes dynamic-symbol values in literal mixin maps"
+  ((fn []
+     (binding [lang.base.grammar-spec/*symbol* 'hello]
+       (lang.base.grammar-spec/mixin-map
+         {:from-map '*symbol*, :literal true}))))
+  =>
+  {:from-map 'hello, :literal true})
+
+^{:refer lang.base.grammar-spec/mixin-pairs, :id grammar-native-preserved-5}
+(fact
+  "builds mixin maps from alternating evaluated form values"
+  ((fn []
+     (binding [lang.base.grammar-spec/*symbol* 'hello]
+       (lang.base.grammar-spec/mixin-pairs [:from-form '*symbol*]))))
+  =>
+  {:from-form 'hello})
+
+^{:refer lang.base.grammar-spec/evaluate-mixin-form, :id grammar-native-preserved-6}
+(fact
+  "evaluates portable hash-map mixin forms with dynamic substitution"
+  ((fn []
+     (binding [lang.base.grammar-spec/*symbol* 'hello]
+       (lang.base.grammar-spec/evaluate-mixin-form
+         '(hash-map :from-form *symbol*)))))
+  =>
+  {:from-form 'hello})
+
+^{:refer lang.base.grammar-spec/format-defn-mixins, :id grammar-native-preserved-7}
+(fact
+  "applies archive symbol form and map mixins in declared order"
+  ((fn []
+     (binding [lang.base.grammar-spec/*symbol* 'hello]
+       [(lang.base.grammar-spec/format-defn-mixins
+          {:base true}
+          ['lang.base.grammar-spec-test/mixin-add-symbol])
+        (lang.base.grammar-spec/format-defn-mixins
+          {:base true}
+          ['(hash-map :from-form *symbol*)])
+        (lang.base.grammar-spec/format-defn-mixins
+          {:base true}
+          [{:from-map true}])])))
+  =>
+  '[{:symbol hello, :base true}
+    {:from-form hello}
+    {:base true, :from-map true}])
+
+^{:refer lang.base.grammar-spec/format-defn, :id grammar-native-preserved-8}
+(fact
+  "standardizes definition metadata while preserving the portable form"
+  ((fn []
+     (lang.base.grammar-spec/format-defn
+       '(defn hello "hello" {:list 1} []))))
+  =>
+  '[{:list 1, :doc "hello"} (defn hello [])])
+
+^{:refer lang.base.grammar-spec/tf-for-index, :id grammar-native-preserved-9}
+(fact
+  "lowers indexed loops to archive-compatible for declarations"
+  ((fn []
+     (lang.base.grammar-spec/tf-for-index '(for:index [i [0 2 3]]))))
+  =>
+  '(for [(var i := 0) (< i 2) (:= i (+ i 3))]))
+
+^{:refer lang.base.grammar-spec/+op-top-base+, :id grammar-native-preserved-10}
+(fact
+  "retains top-level grammar entries with callable archive formatters"
+  ((fn []
+     (let [entry (first lang.base.grammar-spec/+op-top-base+)]
+       [(set (:symbol entry))
+        (:format entry)
+        (set (map :op lang.base.grammar-spec/+op-for+))])))
+  =>
+  [#{'defn 'defn- 'defabstract}
+   #'lang.base.grammar-spec/format-defn
+   #{:for-index :for-array :for-iter :for-object}])
+
+^{:refer lang.base.grammar-spec/*symbol* :id grammar-symbol-scope}
+(fact "restores the nil symbol baseline after normal and exceptional bindings"
+  [lang.base.grammar-spec/*symbol*
+   (binding [lang.base.grammar-spec/*symbol* 'normal] lang.base.grammar-spec/*symbol*)
+   lang.base.grammar-spec/*symbol*
+   (try (binding [lang.base.grammar-spec/*symbol* 'failed]
+          (throw (ex :argument {:symbol lang.base.grammar-spec/*symbol*})))
+        (catch error (:symbol (ex-data error))))
+   lang.base.grammar-spec/*symbol*]
+  => [nil 'normal nil 'failed nil])
+
+^{:refer lang.base.grammar-spec/+op-builtin+ :id grammar-builtin-order}
+(fact "keeps builtin operations in their source-owned order"
+  (mapv :op lang.base.grammar-spec/+op-builtin+)
+  => [:with-lang :with-eval :with-deref :with-decorate :free :squash :comment :index :quote :internal :internal-str])
+
+^{:refer lang.base.grammar-spec/+op-builtin-global+}
+(fact "owns the global binding builtin"
+  lang.base.grammar-spec/+op-builtin-global+
+  => [{:op :with-global :symbol #{'!:G} :emit :with-global}])
+
+^{:refer lang.base.grammar-spec/+op-builtin-module+}
+(fact "owns the module binding builtin"
+  lang.base.grammar-spec/+op-builtin-module+
+  => [{:op :with-module :symbol #{'!:module} :emit :with-module}])
+
+^{:refer lang.base.grammar-spec/+op-builtin-helper+}
+(fact "owns ordered UUID and random helper operations"
+  lang.base.grammar-spec/+op-builtin-helper+
+  => [{:op :with-uuid :symbol #{'!:uuid} :emit :with-uuid}
+      {:op :with-rand :symbol #{'!:rand} :emit :with-rand}])
+
+^{:refer lang.base.grammar-spec/+op-free-control+}
+(fact "keeps free control, discard and indent operations in source order"
+  (mapv (fn [entry] [(:op entry) (:emit entry) (:raw entry)]) lang.base.grammar-spec/+op-free-control+)
+  => [[:c-slash :free "\n"] [:c-star :free "\n"] [:c-minus :discard " "] [:c-vert :indent "|"]])
+
+^{:refer lang.base.grammar-spec/+op-free-literal+}
+(fact "retains literal delimiters and prefix ordering including curly source spelling"
+  (mapv (fn [entry] [(:op entry) (:raw entry) (:free entry)]) lang.base.grammar-spec/+op-free-literal+)
+  => [[:c-null "" ""] [:c-hat "^" "^"] [:c-comma "," ","] [:c-colon ":" ":"]
+      [:c-semicolon ";" ";"] [:c-lparens "(" "("] [:c-rparens ")" ")"]
+      [:c-lbracket "[" "["] [:c-rbracket "]" "]"] [:c-lcurly "[" "{"] [:c-rcurly "}" "}"]
+      [:c-dquote "\"" "\""] [:c-squote "'" "'"] [:c-at "@" "@"] [:c-tilda "~" "~"] [:c-backtick "`" "`"]])
+
+^{:refer lang.base.grammar-spec/+op-math+}
+(fact "keeps arithmetic spelling, emission shape and division default"
+  [(mapv (fn [entry] [(:op entry) (:emit entry) (:raw entry)]) lang.base.grammar-spec/+op-math+)
+   (:default (nth lang.base.grammar-spec/+op-math+ 3))]
+  => [[[:add :infix "+"] [:mul :infix "*"] [:sub :infix- "-"] [:div :infix* "/"] [:pow :bi "^"] [:mod :bi "%"]] 1])
+
+^{:refer lang.base.grammar-spec/+op-compare+}
+(fact "keeps comparison spelling and chained less-than emission"
+  (mapv (fn [entry] [(:op entry) (:emit entry) (:raw entry)]) lang.base.grammar-spec/+op-compare+)
+  => [[:eq :bi "=="] [:neq :bi "!="] [:lt :infix "<"] [:lte :bi "<="] [:gt :bi ">"] [:gte :bi ">="]])
+
+^{:refer lang.base.grammar-spec/+op-logic+}
+(fact "keeps ternary, negation and short-circuit operator shapes"
+  (mapv (fn [entry] [(:op entry) (:emit entry) (:raw entry)]) lang.base.grammar-spec/+op-logic+)
+  => [[:inif :infix-if nil] [:not :pre "!"] [:or :infix "||"] [:and :infix "&&"]])
+
+^{:refer lang.base.grammar-spec/+op-counter+}
+(fact "distinguishes compound assignment and prefix counter operations"
+  (mapv (fn [entry] [(:op entry) (:emit entry) (:raw entry)]) lang.base.grammar-spec/+op-counter+)
+  => [[:incby :assign "+="] [:decby :assign "-="] [:mulby :assign "*="] [:incto :pre "++"] [:decto :pre "--"]])
+
+^{:refer lang.base.grammar-spec/+op-return+}
+(fact "retains return and break value-return emission"
+  lang.base.grammar-spec/+op-return+
+  => [{:op :ret :symbol #{'return} :emit :return :raw "return"}
+      {:op :break :symbol #{'break} :emit :return :raw "break"}])
+
+^{:refer lang.base.grammar-spec/+op-throw+}
+(fact "retains throwing as a return-shaped operation"
+  lang.base.grammar-spec/+op-throw+
+  => [{:op :throw :symbol #{'throw} :emit :return :raw "throw"}])
+
+^{:refer lang.base.grammar-spec/+op-await+}
+(fact "retains await spelling and return-shaped emission"
+  lang.base.grammar-spec/+op-await+
+  => [{:op :await :symbol #{'await} :emit :return :raw "await"}])
+
+^{:refer lang.base.grammar-spec/+op-async+}
+(fact "retains async spelling and return-shaped emission"
+  lang.base.grammar-spec/+op-async+
+  => [{:op :async :symbol #{'async} :emit :return :raw "async"}])
+
+^{:refer lang.base.grammar-spec/+op-data-table+}
+(fact "maps tab to table emission"
+  lang.base.grammar-spec/+op-data-table+
+  => [{:op :table :symbol #{'tab} :emit :table}])
+
+^{:refer lang.base.grammar-spec/+op-data-shortcuts+}
+(fact "maps the spread keyword to prefix ellipsis"
+  lang.base.grammar-spec/+op-data-shortcuts+
+  => [{:op :spread :symbol #{:..} :emit :pre :raw "..."}])
+
+^{:refer lang.base.grammar-spec/+op-data-range+}
+(fact "maps range syntax to a value-bearing colon separator"
+  lang.base.grammar-spec/+op-data-range+
+  => [{:op :range :symbol #{:to} :emit :between :value true :raw ":"}])
+
+^{:refer lang.base.grammar-spec/+op-vars+}
+(fact "distinguishes assignment and variable declaration contracts"
+  lang.base.grammar-spec/+op-vars+
+  => [{:op :seteq :symbol #{:=} :emit :assign :raw "="}
+      {:op :var :symbol #{'var} :emit :def-assign :raw "" :assign "="}])
+
+^{:refer lang.base.grammar-spec/+op-bit+}
+(fact "keeps bitwise operator spelling and shift emission order"
+  (mapv (fn [entry] [(:op entry) (:emit entry) (:raw entry)]) lang.base.grammar-spec/+op-bit+)
+  => [[:bor :infix "|"] [:band :infix "&"] [:bxor :infix "^"] [:bsr :bi ">>"] [:bsl :bi "<<"]])
+
+^{:refer lang.base.grammar-spec/+op-pointer+}
+(fact "preserves the authority's address and reference keyword mapping"
+  lang.base.grammar-spec/+op-pointer+
+  => [{:op :ptr-deref :symbol #{:&} :raw "&" :emit :pre}
+      {:op :ptr-ref :symbol #{:*} :raw "*" :emit :pre}])
+
+^{:refer lang.base.grammar-spec/+op-fn+}
+(fact "declares anonymous functions as body-bearing function blocks"
+  lang.base.grammar-spec/+op-fn+
+  => [{:op :fn :symbol #{'fn} :type :fn :block {:raw "function" :main #{:body}}}])
+
+^{:refer lang.base.grammar-spec/+op-block+}
+(fact "declares unlabelled body blocks"
+  lang.base.grammar-spec/+op-block+
+  => [{:op :block :symbol #{'block} :type :block :block {:raw "" :main #{:body}}}])
+
+^{:refer lang.base.grammar-spec/+op-control-base+}
+(fact "distinguishes the two do block emitters"
+  lang.base.grammar-spec/+op-control-base+
+  => [{:op :do* :symbol #{'do*} :emit :do* :type :block}
+      {:op :do :symbol #{'do} :emit :do :type :block}])
+
+^{:refer lang.base.grammar-spec/+op-control-general+}
+(fact "preserves loop parameters and ordered required and optional branch clauses"
+  lang.base.grammar-spec/+op-control-general+
+  => [{:op :for :symbol #{'for} :type :block :block {:main #{:parameter :body}}}
+      {:op :while :symbol #{'while} :type :block :block {:main #{:parameter :body}}}
+      {:op :branch :symbol #{'br*} :type :block
+       :block {:main #{} :raw ""
+               :control [[:if {:required true :main #{:parameter :body}}]
+                         [:elseif {:main #{:parameter :body}}]
+                         [:else {:main #{:body}}]]}}])
+
+^{:refer lang.base.grammar-spec/+op-control-try-catch+}
+(fact "preserves required catch and optional finally clause shapes"
+  lang.base.grammar-spec/+op-control-try-catch+
+  => [{:op :try :symbol #{'try} :type :block
+       :block {:main #{:body}
+               :control [[:catch {:required true :main #{:parameter :body}}]
+                         [:finally {:main #{:body}}]]}}])
+
+^{:refer lang.base.grammar-spec/+op-top-base+ :id grammar-top-definition-order}
+(fact "retains function, value and run definition sections and signatures"
+  (mapv (fn [entry] [(:op entry) (:spec entry) (:type entry) (:section entry) (:arglists entry)])
+        lang.base.grammar-spec/+op-top-base+)
+  => '[[:defn :defn :def :code ([sym doc? & [attr? & body]])]
+       [:def :def :def :code ([sym body])]
+       [:defrun :defrun :def :code ([sym & body])]])
+
+^{:refer lang.base.grammar-spec/+op-top-global+}
+(fact "keeps both global definition spellings and their value signature"
+  lang.base.grammar-spec/+op-top-global+
+  => [{:op :defglobal :symbol #{'defglobal 'deftemp} :spec :def :type :def
+       :section :code :raw "" :arglists '([sym body])}])
+
+^{:refer lang.base.grammar-spec/+op-class+}
+(fact "keeps construction, class definition and inner member operations in order"
+  (mapv (fn [entry] [(:op entry) (:emit entry) (:type entry)]) lang.base.grammar-spec/+op-class+)
+  => [[:new :new nil] [:defclass nil :def] [:static-invoke :static-invoke nil]
+      [:this :throw nil] [:super :invoke nil] [:fn.inner nil :fn] [:var.inner :def-assign nil]])
+
+^{:refer lang.base.grammar-spec/+op-functional-core+}
+(fact "retains recursive binding and match as abstract parameter-and-body blocks"
+  lang.base.grammar-spec/+op-functional-core+
+  => [{:op :letrec :symbol #{'letrec 'letfn} :emit :abstract :type :block :block {:main #{:parameter :body}}}
+      {:op :match :symbol #{'match} :emit :abstract :type :block :block {:main #{:parameter :body}}}])
+
+^{:refer lang.base.grammar-spec/+op-for+}
+(fact "distinguishes indexed macro lowering from abstract iteration variants"
+  [(mapv (fn [entry] [(:op entry) (:emit entry) (:style/indent entry)]) lang.base.grammar-spec/+op-for+)
+   (:macro (first lang.base.grammar-spec/+op-for+))]
+  => [[[:for-index :macro 1] [:for-object :abstract 1] [:for-array :abstract 1] [:for-iter :abstract 1]]
+      #'lang.base.grammar-spec/tf-for-index])
+
+^{:refer lang.base.grammar-spec/+op-coroutine+}
+(fact "retains generator formatting identity and yield emission"
+  [(select-keys (first lang.base.grammar-spec/+op-coroutine+) [:op :spec :type :section :abstract :fn :format])
+   (second lang.base.grammar-spec/+op-coroutine+)]
+  => [{:op :defgen :spec :defgen :type :def :section :code :abstract true :fn true
+       :format #'lang.base.grammar-spec/format-defn}
+      {:op :yield :symbol #{'yield} :emit :return :raw "yield"}])
+
+^{:refer lang.base.grammar-spec/+op-prototype+}
+(fact "preserves prototype operation order and exact receiver signatures"
+  (mapv (fn [entry] [(:op entry) (:emit entry) (get-in entry [:op-spec :arglists])])
+        lang.base.grammar-spec/+op-prototype+)
+  => '[[:prototype-get :abstract ([obj])]
+       [:prototype-set :abstract ([obj proto])]
+       [:prototype-create :abstract ([m])]
+       [:prototype-method :abstract ([obj key])]
+       [:prototype-tostring :abstract ([])]])
+
+
+^{:refer lang.base.grammar-spec/format-fargs :id grammar-argument-boundaries}
+(fact "matches exact invalid-body data, nil slots and nested parameter vector shape"
+  (mapv (fn [input]
+          (try [:ok (pr-str (lang.base.grammar-spec/format-fargs input))]
+               (catch error [:error (ex-message error) (pr-str (:body (ex-data error)))])))
+    (vector nil (vector) (vector (vector)) (vector (vector) nil)
+            (vector "doc" (vector) nil) (vector {} (vector) nil)
+            (list (list (vector 'a) 'a))
+            (list (list (vector 'a) 'a) (list (vector 'a 'b) (list '+ 'a 'b)))
+            (vector (vector (vector 'nested) 'value)) (vector 42) (vector "doc")))
+  => [[:error "Invalid body" "(nil)"] [:error "Invalid body" "(nil)"]
+      [:ok "[\"\" {} ([])]"] [:ok "[\"\" {} ([])]"]
+      [:ok "[\"doc\" {} ([] nil)]"] [:ok "[\"\" {} ([] nil)]"]
+      [:ok "[\"\" {} ([a] a)]"] [:ok "[\"\" {} (([a] a) ([a b] (+ a b)))]"]
+      [:ok "[\"\" {} ([[nested] value])]"] [:error "Invalid body" "(42)"]
+      [:error "Invalid body" "(nil)"]])
+
+^{:refer lang.base.grammar-spec/format-defn-mixins :id grammar-ignored-mixins}
+(fact "ignores nil and scalar mixins without evaluating or replacing the accumulated map"
+  (lang.base.grammar-spec/format-defn-mixins {:base true} [nil 42 false])
+  => {:base true})
+
+^{:refer lang.base.grammar-spec/format-defn-mixins :id grammar-general-form-mixins}
+(fact "evaluates nested mixin forms and replaces the accumulated map with the form result"
+  (lang.base.grammar-spec/format-defn-mixins {:base true} ['(hash-map :answer (+ 1 2))])
+  => {:answer 3})
+
+^{:refer lang.base.grammar-spec/format-defn-mixins :id grammar-evaluated-map-mixins}
+(fact "evaluates map values before merging with the accumulated map"
+  (lang.base.grammar-spec/format-defn-mixins {:base true} [{:answer '(+ 1 2)}])
+  => {:base true :answer 3})
+
+^{:refer lang.base.grammar-spec/+op-builtin+ :id grammar-all-group-field-parity}
+(fact "preserves every canonical snapshot field and callback identity with idempotent normalization"
+  (let [canonicalize
+        (fn [entries]
+          (mapv (fn [entry]
+                  (reduce (fn [out field]
+                            (let [value (get out field)]
+                              (if (= (type value) :std.native.Var)
+                                (assoc out field (var-sym value))
+                                out)))
+                          entry snapshot/+reference-fields+))
+                entries))
+        groups (mapv (fn [group-name]
+                       (deref (resolve (symbol "lang.base.grammar-spec" (name group-name)))))
+                     (take 32 snapshot/+feature-group-names+))
+        actual (mapv canonicalize groups)]
+    [actual (mapv canonicalize actual)])
+  => [(vec (take 32 snapshot/+feature-group-data+))
+      (vec (take 32 snapshot/+feature-group-data+))])

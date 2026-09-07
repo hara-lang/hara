@@ -1,0 +1,177 @@
+(ns tool.migrate.policy.foundation.lang-test
+  (:use code.test)
+  (:require [tool.migrate.policy.foundation.lang :as subject]
+            [tool.migrate.common.block :as nav]))
+
+^{:refer tool.migrate.policy.foundation.lang/+namespace-routes+ :added "0.1"}
+(fact "the complete compiler closure routes independently of the selected stage"
+  (mapv (fn [text] (:after (subject/route-token text subject/+namespace-routes+)))
+        ["tahto.base.emit" "tahto.common.util" "lang.common.util"
+         "tahto.core" "tahto.runtime.basic" "tahto.model.spec-js"
+         ":polis/default" ":tahto/lang"])
+  => ["lang.base.emit" "lang.base.util" "lang.base.util"
+      "lang.core" "lang.runtime.basic" "lang.model.v1.spec-js"
+      ":lang/default" ":lang/lang"])
+
+^{:refer tool.migrate.policy.foundation.lang/route-token :added "0.1"}
+(fact "routes respect token boundaries and the longest specific owner wins"
+  (subject/route-token "tahto.base.emit/value"
+                       [["tahto" "wrong"] ["tahto.base" "lang.base"]])
+  => {:from "tahto.base" :to "lang.base"
+      :before "tahto.base.emit/value" :after "lang.base.emit/value"}
+  (mapv (fn [text] (subject/route-token text [["tahto.base" "lang.base"]]))
+        ["tahto.baseball" "other/tahto.base" "tahto.bas"])
+  => [nil nil nil]
+  (try
+    (subject/route-token "tahto.base/x"
+                        [["tahto.base" "a"] ["tahto.base" "b"]])
+    :unexpected
+    (catch error (let [data (ex-data error)] {:token (:token data) :routes (set (:routes data))})))
+  => {:token "tahto.base/x" :routes #{["tahto.base" "a"] ["tahto.base" "b"]}})
+
+^{:refer tool.migrate.policy.foundation.lang/match-routes :added "0.1"}
+(fact "quoted code and metadata are structural while literal text is opaque"
+  (let [source ";; tahto.base/a\n^{:refer tahto.base/a}\n'(tahto.base/a :polis/value \"tahto.base/a\" #\"tahto.base/a\")"
+        matches (subject/match-routes (nav/block-input source)
+                                     {:lang/routes subject/+namespace-routes+})]
+    [(mapv :source matches)
+     (mapv :replacement matches)
+     (mapv (fn [match]
+             (= (:source match)
+                (nav/render (nav/current (nav/location-at source (:path match))))))
+           matches)])
+  => [["tahto.base/a" "tahto.base/a" ":polis/value"]
+      ["lang.base/a" "lang.base/a" ":lang/value"]
+      [true true true]])
+
+^{:refer tool.migrate.policy.foundation.lang/rewrite-route :added "0.1"}
+(fact "a replacement edits exactly one block and its evidence reverses the edit"
+  (let [source "(tahto.base/a  \"tahto.base/a\") ; keep\n"
+        root (nav/block-input source)
+        match (first (subject/match-routes root
+                                          {:lang/routes subject/+namespace-routes+}))
+        output (subject/rewrite-route root match {})
+        restored (subject/rewrite-route output
+                                         (assoc match :replacement (:source match)) {})]
+    [(nav/render output) (nav/render root) (= source (nav/render restored))])
+  => ["(lang.base/a  \"tahto.base/a\") ; keep\n"
+      "(tahto.base/a  \"tahto.base/a\") ; keep\n" true])
+
+^{:refer tool.migrate.policy.foundation.lang/analyze-source :added "0.1"}
+(fact "structural translation preserves text and assertions with reversible provenance"
+  (let [source "(ns tahto.core.demo (:require [tahto.base.emit :as emit] [tahto.runtime.basic :as rt]))\n;; tahto.core.demo\n^{:refer tahto.core.demo/value}\n(fact \"tahto.core.demo h/value\" (math/value \"walk/value\") => float?)\n(def +forms+ '(tahto.core/run :polis/default))\n"
+        expected "(ns lang.core.demo (:require [lang.base.emit :as emit] [lang.runtime.basic :as rt]))\n;; tahto.core.demo\n^{:refer lang.core.demo/value}\n(fact \"tahto.core.demo h/value\" (math/value \"walk/value\") => float?)\n(def +forms+ '(lang.core/run :lang/default))\n"
+        result (subject/analyze-source source)
+        repeated (subject/analyze-source (:after result))]
+    [(= expected (:after result))
+     (= (:after result) (:output result))
+     (= source (:source result))
+     (= source (:before result))
+     (= expected (:after repeated))
+     (:changed repeated)
+     (get-in result [:provenance :operation])])
+  => [true true true true true false :foundation/lang-structural]
+  (let [source "(ns tahto.base.demo)\n#?(:clj tahto.base/a :cljs tahto.base/b)\n"
+        result (subject/analyze-source source)]
+    [(= source (:after result)) (:rules/applied result)
+     (mapv :reason (filter (fn [entry] (= :error (:level entry)))
+                          (:diagnostics result)))])
+  => [true [] [:reader-conditional]]
+  (let [source "(ns demo)\n(fact (math/value \"h/value walk/value\") => float?)\n"
+        result (subject/analyze-source source [])]
+    [(:after result) (:changed result) (:rules/applied result)])
+  => ["(ns demo)\n(fact (math/value \"h/value walk/value\") => float?)\n" false []])
+
+
+^{:refer tool.migrate.policy.foundation.lang/validate-definition :added "0.1"}
+(fact "recipes preserve named definition identity and reject ambiguous replacement text"
+  (let [recipe {:name "value"
+                :before "(defn- value \"original\" [] 1)"
+                :after "(defn value \"original\" [] 2)"
+                :reason "native visibility"}]
+    [(= recipe (subject/validate-definition recipe))
+     (mapv (fn [change]
+             (try (subject/validate-definition (merge recipe change))
+                  :unexpected
+                  (catch error (:ex/code (ex-data error)))))
+           [{:name nil} {:reason ""} {:before nil}
+            {:before "(defn other [] 1)"}
+            {:after "(defn value [] 2) (def extra 3)"}
+            {:after ";; outside\n(defn value [] 2)"}
+            {:after "(do (defn value [] 2))"}])])
+  => [true [:tool.migrate/definition-recipe :tool.migrate/definition-recipe
+            :tool.migrate/definition-recipe :tool.migrate/definition-recipe
+            :tool.migrate/definition-recipe :tool.migrate/definition-recipe
+            :tool.migrate/definition-recipe]])
+
+^{:refer tool.migrate.policy.foundation.lang/match-definitions :added "0.1"}
+(fact "matching is top-level, evidence-bearing, namespace-scoped, and fail-closed"
+  (let [before "(defn value [] 1)"
+        after "(defn value [] 2)"
+        recipe {:name "value" :before before :after after :reason "native"}
+        options {:lang/namespace "demo" :lang/definitions [recipe]}
+        source (str "(ns demo)\n'(defn value [] :quoted)\n" before)
+        root (nav/block-input source)
+        matches (subject/match-definitions root options)]
+    [(mapv :source matches) (mapv :replacement matches)
+     (mapv :definition/name matches) (mapv :definition/reason matches)
+     (= before (nav/render (nav/current (nav/location-at root (:path (first matches))))))
+     (subject/match-definitions (nav/block-input (str "(ns demo)\n" after)) options)
+     (mapv
+      (fn [[text configuration]]
+        (try (subject/match-definitions (nav/block-input text) configuration)
+             :unexpected
+             (catch error (:ex/code (ex-data error)))))
+      [[source (assoc options :lang/namespace "other")]
+       [source (dissoc options :lang/namespace)]
+       [source (assoc options :lang/definitions [recipe recipe])]
+       ["(ns demo)" options]
+       [(str "(ns demo)\n" before "\n" before) options]
+       ["(ns demo)\n(defn value [] :drift)" options]])])
+  => [["(defn value [] 1)"] ["(defn value [] 2)"] ["value"] ["native"] true []
+      [:tool.migrate/namespace :tool.migrate/namespace
+       :tool.migrate/definition-conflict :tool.migrate/definition-count
+       :tool.migrate/definition-count :tool.migrate/definition-drift]])
+
+^{:refer tool.migrate.policy.foundation.lang/analyze-definitions :added "0.1"}
+(fact "definition edits preserve all unselected bytes and reverse with their block evidence"
+  (let [before "(defn ^{:public true} value \"雪\" [] 1)"
+        after "(defn ^{:public true} value \"雪\" [] 2)"
+        macro-before "(defmacro code [x] x)"
+        macro-after "(defmacro code [x] (list 'quote x))"
+        prefix "(ns demo (:require [std.foundation :as h]))\n;; — preserve\n"
+        separator " ; keep this spacing\n\n"
+        suffix "\n(def literal \"(defn value [] 1)\")\n"
+        source (str prefix before separator macro-before suffix)
+        expected (str prefix after separator macro-after suffix)
+        options {:lang/namespace "demo"
+                 :lang/definitions
+                 [{:name "value" :before before :after after :reason "host adaptation"}
+                  {:name "code" :before macro-before :after macro-after :reason "macro adaptation"}]}
+        result (subject/analyze-definitions source options)
+        repeated (subject/analyze-definitions (:after result) options)
+        restored (reduce (fn [root match]
+                           (subject/rewrite-route root
+                             (assoc match :replacement (:source match)) {}))
+                         (nav/block-input (:after result))
+                         (:rules/applied result))
+        empty-result (subject/analyze-definitions source
+                      {:lang/namespace "demo" :lang/definitions []})
+        blocked-source (str source "#?(:clj 1 :cljs 2)\n")]
+    [(= expected (:after result)) (= expected (:output result))
+     (= source (:source result)) (= source (:before result))
+     (:changed result) (mapv :definition/name (:rules/applied result))
+     (= expected (:after repeated)) (:changed repeated) (:rules/applied repeated)
+     (= source (nav/render restored))
+     (= {:operation :foundation/lang-definitions :namespace "demo"
+         :definitions (:lang/definitions options)} (:provenance result))
+     (= source (:after empty-result)) (:changed empty-result) (:rules/applied empty-result)
+     (try
+       (subject/analyze-definitions blocked-source options)
+       :unexpected
+       (catch error [(:ex/code (ex-data error))
+                     (= blocked-source (:source (ex-data error)))]))])
+  => [true true true true true ["value" "code"] true false [] true true
+      true false [] [:tool.migrate/reader-conditional true]])
+
+(pr-str (run {:namespace "tool.migrate.policy.foundation.lang-test"}))

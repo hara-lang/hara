@@ -1,22 +1,174 @@
 (ns lang.base.emit-helper
-  (:require [lang.base.util :as util]))
+  (:require [lang.base.util :as ut]))
 
 (defn default-emit-fn
   "the default emit function"
   {:added "4.0"}
   [form grammar mopts]
-  (pr-str form))
+  (if (not (double? form))
+    (pr-str form)
+    (let [printed (pr-str form)
+          negative (str/starts-with? printed "(double -")
+          sign (if negative "-" "")
+          magnitude (if negative (- form) form)]
+      (if (zero? magnitude)
+        (str sign "0.0")
+        (letfn
+          [(power
+             [base exponent]
+             (loop [result 1 remaining exponent]
+               (if (= remaining 0)
+                 result
+                 (recur (* result base) (dec remaining)))))
+           (roundtrips
+             [digits exponent]
+             (try
+               (=
+                 magnitude
+                 (Num/parse-double (str digits "e" exponent)))
+               (catch error false)))
+           (render
+             [coefficient exponent]
+             (let [initial (str coefficient)
+                   pair (loop [digits initial exponent exponent]
+                          (if (and
+                                (> (count digits) 1)
+                                (str/ends-with? digits "0"))
+                            (recur
+                              (subs digits 0 (dec (count digits)))
+                              (inc exponent))
+                            [digits exponent]))
+                   digits (first pair)
+                   exponent (second pair)
+                   scientific (+ exponent (dec (count digits)))
+                   position (inc scientific)]
+               (str
+                 sign
+                 (cond
+                   (or (< scientific -3) (>= scientific 7)) (str
+                                                              (subs
+                                                                digits
+                                                                0
+                                                                1)
+                                                              "."
+                                                              (if
+                                                                (=
+                                                                  1
+                                                                  (count
+                                                                    digits))
+                                                                "0"
+                                                                (subs
+                                                                  digits
+                                                                  1))
+                                                              "E"
+                                                              scientific)
+                   (<= position 0) (str
+                                     "0."
+                                     (apply
+                                       str
+                                       (repeat (- position) "0"))
+                                     digits)
+                   (>= position (count digits)) (str
+                                                  digits
+                                                  (apply
+                                                    str
+                                                    (repeat
+                                                      (-
+                                                        position
+                                                        (count digits))
+                                                      "0"))
+                                                  ".0")
+                   :else (str
+                           (subs digits 0 position)
+                           "."
+                           (subs digits position))))))]
+          (let [binary (loop [value magnitude exponent 0]
+                         (cond
+                           (< value 1) (recur
+                                         (* value (double 2))
+                                         (dec exponent))
+                           (>= value 2) (recur
+                                          (/ value (double 2))
+                                          (inc exponent))
+                           :else [(long
+                                    (*
+                                      value
+                                      (double 4503599627370496)))
+                                  (- exponent 52)]))
+                coefficient (first binary)
+                exponent (second binary)
+                numerator (if (neg? exponent)
+                            coefficient
+                            (* coefficient (power 2 exponent)))
+                denominator (if (neg? exponent)
+                              (power 2 (- exponent))
+                              1)
+                decimal (loop [numerator numerator
+                               denominator denominator
+                               exponent 0]
+                          (cond
+                            (>= numerator (* 10 denominator)) (recur
+                                                                numerator
+                                                                (*
+                                                                  10
+                                                                  denominator)
+                                                                (inc
+                                                                  exponent))
+                            (< numerator denominator) (recur
+                                                        (*
+                                                          10
+                                                          numerator)
+                                                        denominator
+                                                        (dec exponent))
+                            :else [numerator denominator exponent]))
+                denominator (second decimal)
+                exponent (nth decimal 2)]
+            (loop [numerator (* 10 (first decimal)) precision 2]
+              (let [lower (quot numerator denominator)
+                    upper (inc lower)
+                    remainder (mod numerator denominator)
+                    scale (- exponent (dec precision))
+                    lower-valid (roundtrips lower scale)
+                    upper-valid (roundtrips upper scale)]
+                (cond
+                  (and lower-valid upper-valid) (render
+                                                  (if
+                                                    (or
+                                                      (>
+                                                        (* 2 remainder)
+                                                        denominator)
+                                                      (and
+                                                        (=
+                                                          (*
+                                                            2
+                                                            remainder)
+                                                          denominator)
+                                                        (odd? lower)))
+                                                    upper
+                                                    lower)
+                                                  scale)
+                  lower-valid (render lower scale)
+                  upper-valid (render upper scale)
+                  (< precision 17) (recur
+                                     (* 10 numerator)
+                                     (inc precision))
+                  :else (throw
+                          (ex
+                            :generic
+                            {:value form}
+                            :ex/message
+                            "No round-tripping finite decimal")))))))))))
 
 (defn pr-single
   "prints a single quoted string"
   {:added "3.0"}
-  [s]
-  (let [escaped0 (str/replace s "\\" "\\\\")
-        escaped1 (str/replace escaped0 "'" "\\'")
-        escaped2 (str/replace escaped1 "\n" "\\n")
-        escaped3 (str/replace escaped2 "\r" "\\r")
-        escaped4 (str/replace escaped3 "\t" "\\t")]
-    (str "'" escaped4 "'")))
+  ([s]
+    (let [printed (pr-str s)
+          body (subs printed 1 (dec (count printed)))]
+      (str
+        "'"
+        (str/replace (str/replace body "'" "\\'") "\\\"" "\"")
+        "'"))))
 
 (def +sym-replace+
   {\- "_"
@@ -28,141 +180,342 @@
    \> "_gt"})
 
 (def +default+
-  {:type :std/algol
+  {:type   :std/algol
    :banned #{:set :keyword}
-   :allow {:assign #{:symbol}}
+   :allow  {:assign #{:symbol}}
    :highlight '#{return break set= br}
-   :default
-   {:modifier {:vector-last true}
-    :comment {:prefix "//" :suffix ""}
-    :common {:start "("
-             :end ")"
-             :space " "
-             :assign "="
-             :statement ";"
-             :range ":"
-             :sep ","
-             :namespace "."
-             :namespace-full "____"
-             :access "."
-             :static "."
-             :apply "."
-             :line-spacing 1}
-    :symbol {:full {:replace {\. "_"}
-                    :sep "_"}
-             :global identity}
-    :index {:start "[" :end "]"
-            :offset 0 :end-inclusive false}
-    :invoke {:space ""}
-    :macro {:statement ""}
-    :block {:statement ""
-            :parameter {:start "(" :end ")"}
-            :body {:start "{" :end "}"}}
-    :typehint {:enabled false :assign "->" :space " " :after false}
-    :function {:raw "function"
-               :args {:start "(" :end ")" :space ""}
-               :body {:start "{" :end "}"}}
-    :module {:key-fn #'util/sym-default-str
-             :allow '#{defn def defgen defclass defabstract}}}
-   :token {:string {:quote nil}
-           :symbol {:replace +sym-replace+}}
-   :data {:map {:start "{" :end "}" :space ""}
-          :map-entry {:start "" :end "" :assign ":" :space "" :keyword :string}
-          :vector {:start "[" :end "]" :space ""}
-          :tuple {:start "(" :end ")" :space "" :tighten true}
-          :free {:start "" :end "" :space ""}}
-   :block {:branch {:control {:elseif {:raw "else if"}}}
-           :switch {:control {:default {:parameter {:start " " :end ""}
-                                        :body {:start ":" :end ""}}}}}
-   :define {:defglobal {:raw "global"}
-            :def {:raw "def"}}})
+   :default {:modifier  {:vector-last true}
+             :comment   {:prefix "//" :suffix ""}
+             :common    {:start  "(" :end ")"
+                         :space " "
+                         :assign "="
+                         :statement ";"
+                         :range ":"
+                         :sep ","
+                         :namespace "."
+                         :namespace-full "____"
+                         :access "."
+                         :static "."
+                         :apply "."
+                         :line-spacing 1}
+             :symbol    {:full {:replace {\. "_"}
+                                :sep "_"}
+                         :global identity}
+             :index     {:start "[" :end "]"
+                         :offset 0  :end-inclusive false}
+             :invoke    {:space ""}
+             :macro     {:statement ""}
+             :block     {:statement ""
+                         :parameter {:start "(" :end ")"}
+                         :body      {:start "{" :end "}"}}
+             :typehint  {:enabled false :assign "->" :space " " :after false}
+             :function  {:raw "function"
+                         :args      {:start "(" :end ")" :space ""}
+                         :body      {:start "{" :end "}"}}
+             :module    {:key-fn #'ut/sym-default-str
+                         :allow  '#{defn def defgen defclass defabstract}}}
+   :token  {:string     {:quote nil}
+            :symbol     {:replace +sym-replace+}}
+   :data   {:map        {:start "{" :end "}" :space ""}
+            :map-entry  {:start ""  :end ""  :assign ":" :space "" :keyword :string}
+            :vector     {:start "[" :end "]" :space ""}
+            :tuple      {:start "(" :end ")" :space "" :tighten true}
+            :free       {:start ""  :end ""  :space ""}}
+   :block  {:branch     {:control {:elseif {:raw "else if"}}}
+            :switch     {:control {:default {:parameter {:start " " :end ""}
+                                             :body      {:start ":" :end ""}}}}}
+   :define {:defglobal  {:raw "global"}
+            :def        {:raw "def"}}})
 
 (defn get-option
   "gets either the path option or the default one"
   {:added "3.0"}
-  [grammar path option]
-  (or (get-in grammar (vec (concat path [option])))
-      (get-in grammar [:default :common option])))
+  ([grammar path option]
+   (let [default [:default :common]]
+     (or (get-in grammar (conj path option))
+         (get-in grammar (conj default option))))))
 
 (defn get-options
   "gets the path option merged with defaults"
   {:added "3.0"}
-  [grammar path]
-  (merge (get-in grammar [:default :common])
-         (get-in grammar path)))
+  ([grammar path]
+   (merge (get-in grammar [:default :common])
+          (get-in grammar path))))
+
+;;
+;; CLASSIFY
+;;
 
 (defn form-key-base
-  "gets the key for a form
-
-   (form-key-base :a)
-   => [:keyword :token true]
-
-   (form-key-base ())
-   => :expression"
+  "gets the key for a form\n \n   (form-key-base :a)\n   => [:keyword :token true]\n \n   (form-key-base ())\n   => :expression"
   {:added "4.0"}
   [form]
-  (cond (char? form) [:char :token true]
-        (keyword? form) [:keyword :token true]
-        (symbol? form) [:symbol :token true]
-        (std.foundation/form? form) :expression
-        (number? form) [:number :token]
-        (boolean? form) [:boolean :token]
-        (regexp? form) [:regex :token]
-        (string? form) [:string :token]
-        (nil? form) [:nil :token]
-        (uuid? form) [:uuid :token]
-        (map? form) [:map :data]
-        (pair? form) [:map-entry :data]
-        (vector? form) [:vector :data]
-        (set? form) [:set :data]
-        :else
-        (throw
-         (ex :argument {:input form
-                   :type (type form)} :ex/message "Not Valid"))))
+  (cond
+    (char? form) [:char :token true]
+    (keyword? form) [:keyword :token true]
+    (symbol? form) [:symbol :token true]
+    (form? form) :expression
+    (number? form) [:number :token]
+    (boolean? form) [:boolean :token]
+    (regexp? form) [:regex :token]
+    (string? form) [:string :token]
+    (nil? form) [:nil :token]
+    (uuid? form) [:uuid :token]
+    (map? form) [:map :data]
+    (pair? form) [:map-entry :data]
+    (vector? form) [:vector :data]
+    (set? form) [:set :data]
+    :else (throw
+            (ex
+              :generic
+              {:input form, :type (type form)}
+              :ex/message
+              "Not Valid"))))
 
 (defn basic-typed-args
   "typed args without grammar checks
-
-   (map (juxt meta identity)
+ 
+   (mapv (juxt meta identity)
          (basic-typed-args '(:int i, :const :int j)))
    => '[[{:- [:int]} i]
         [{:- [:const :int]} j]]"
   {:added "4.0"}
-  [args]
-  (loop [modifiers []
-         all []
-         remaining (vec args)]
-    (if (= 0 (count remaining))
-      all
-      (let [current (first remaining)]
-        (if (symbol? current)
-          (recur []
-                 (conj all
-                       (IObjType/with-meta
-                        current
-                        {:- modifiers}))
-                 (vec (drop 1 remaining)))
-          (recur (conj modifiers current)
-                 all
-                 (vec (drop 1 remaining))))))))
+  ([args]
+   (:all (reduce (fn [{:keys [modifiers all]} curr]
+                   (if (symbol? curr)
+                     {:modifiers []
+                      :all (conj all (with-meta curr {:- modifiers}))}
+                     {:modifiers (conj modifiers curr)
+                      :all all}))
+                 {:modifiers []
+                  :all []}
+                 args))))
+
+;;
+;; DEFINE
+;;
 
 (defn rest-arg-form?
   "checks for the canonical xtalk rest argument form `(:.. args)`"
   {:added "4.1"}
   [form]
-  (and (list? form)
-       (= 2 (count form))
-       (= :.. (first form))
-       (symbol? (second form))))
+  (and
+    (form? form)
+    (= 2 (count form))
+    (= :.. (first form))
+    (symbol? (second form))))
 
 (defn rest-arg-symbol
   "returns the symbol bound by a canonical xtalk rest argument form"
   {:added "4.1"}
   [form]
-  (if (rest-arg-form? form)
-    (second form)
-    nil))
+  (when (rest-arg-form? form)
+    (second form)))
 
+(defn emit-typed-allowed-args
+  "allowed declared args other than symbols"
+  {:added "4.0"}
+  [[all curr] grammar]
+  (let [{:keys [modifiers]} curr arg (last modifiers)]
+    (if (has? (get-option grammar [:allow] :assign)
+          (first ((fn [value] (if (sequential? value) value [value])) (form-key-base arg))))
+      [all
+       (-> curr (assoc :symbol arg :modifiers (vec (butlast modifiers)) :assign true))]
+      (throw (ex :generic {:all all :curr curr} :ex/message "Cannot assign to non symbol")))))
+
+(defn emit-typed-args
+  "create types args from declarationns"
+  {:added "3.0"}
+  ([args grammar] (emit-typed-args args grammar nil))
+  ([args grammar options]
+    (let [shorthand (:shorthand options)]
+      (loop [all [] curr {:modifiers []} args args]
+        (let [sym (first args) more (rest args)]
+          (cond
+            (empty? args) (if (:symbol curr) (conj all curr) all)
+            (= := sym) (if (:symbol curr)
+                         (recur
+                           all
+                           (assoc curr :assign true :force true)
+                           more)
+                         (let [[all curr] (emit-typed-allowed-args
+                                            [all curr]
+                                            grammar)]
+                           (recur all (assoc curr :force true) more)))
+            (= :% sym) (if (:symbol curr)
+                         (recur
+                           (conj all curr)
+                           {:modifiers [(first more)]}
+                           (rest more))
+                         (recur
+                           all
+                           (update curr :modifiers conj (first more))
+                           (rest more)))
+            (:assign curr) (recur
+                             (conj all (assoc curr :value sym))
+                             {:modifiers []}
+                             more)
+            (rest-arg-form? sym) (let
+                                   [all
+                                    (if
+                                      (:symbol curr)
+                                      (conj all curr)
+                                      all)]
+                                   (when
+                                     (or
+                                       (not-empty more)
+                                       (and
+                                         (not (:symbol curr))
+                                         (not-empty
+                                           (:modifiers curr))))
+                                     (throw
+                                       (ex
+                                         :generic
+                                         {:input sym,
+                                          :args args,
+                                          :curr curr}
+                                         :ex/message
+                                         "Rest argument must be the final declared argument")))
+                                   (recur
+                                     all
+                                     {:modifiers [],
+                                      :symbol (rest-arg-symbol sym),
+                                      :rest true}
+                                     more))
+            (and
+              (not (:symbol curr))
+              (list? sym)
+              (not (neg? (index-of-value sym :=)))) (let
+                                                      [[symbol val]
+                                                       (remove
+                                                         #{:=}
+                                                         sym)]
+                                                      (recur
+                                                        (conj
+                                                          all
+                                                          (assoc
+                                                            curr
+                                                            :symbol
+                                                            symbol
+                                                            :value
+                                                            val))
+                                                        {:modifiers []}
+                                                        more))
+            (or
+              (and
+                (symbol? sym)
+                (not (and shorthand (:symbol curr) (empty? more))))
+              (and (set? sym) (-> grammar :allow :assign :set))
+              (and (map? sym) (-> grammar :allow :assign :map))
+              (and (vector? sym) (-> grammar :allow :assign :vector))
+              (and
+                (form? sym)
+                (= 'quote (first sym))
+                (-> grammar :allow :assign :quote))
+              (and (form? sym) (= := (first sym)))) (if
+                                                      (:symbol curr)
+                                                      (recur
+                                                        (conj all curr)
+                                                        {:modifiers [],
+                                                         :symbol sym}
+                                                        more)
+                                                      (recur
+                                                        all
+                                                        (assoc
+                                                          curr
+                                                          :symbol
+                                                          sym)
+                                                        more))
+            (and (form? sym) (keyword? (first sym))) (if
+                                                       (:symbol curr)
+                                                       (recur
+                                                         (conj
+                                                           all
+                                                           curr)
+                                                         {:type
+                                                          (butlast
+                                                            sym),
+                                                          :symbol
+                                                          (last sym)}
+                                                         more)
+                                                       (recur
+                                                         all
+                                                         (assoc
+                                                           curr
+                                                           :symbol
+                                                           sym
+                                                           :type
+                                                           (butlast
+                                                             sym)
+                                                           :symbol
+                                                           (last sym))
+                                                         more))
+            (and
+              shorthand
+              (:symbol curr)
+              (empty? more)
+              (or (vector? sym) (map? sym) (set? sym))) (recur
+                                                          (conj
+                                                            all
+                                                            (assoc
+                                                              curr
+                                                              :value
+                                                              sym))
+                                                          {:modifiers
+                                                           []}
+                                                          more)
+            (or (keyword? sym) (vector? sym)) (if
+                                                (:symbol curr)
+                                                (recur
+                                                  (conj all curr)
+                                                  {:modifiers [sym]}
+                                                  more)
+                                                (recur
+                                                  all
+                                                  (update
+                                                    curr
+                                                    :modifiers
+                                                    conj
+                                                    sym)
+                                                  more))
+            (:symbol curr) (recur
+                             (conj all (assoc curr :value sym))
+                             {:modifiers []}
+                             more)
+            :else (throw
+                    (ex
+                      :generic
+                      {:input sym, :all all, :curr curr}
+                      :ex/message
+                      "Not a valid input"))))))))
+
+(defn emit-symbol-full
+  "emits a full symbol"
+  {:added "4.0"}
+  [sym ns grammar]
+  (let [dopts (get-in grammar [:default :common])
+        sopts (get-in grammar [:default :symbol :full])
+        topts (get-in grammar [:token :symbol])
+        sym-str (if ns
+                  (str ns (:namespace-full dopts) (name sym))
+                  (name sym))]
+    (let [replacements (merge (:replace sopts) (:replace topts))]
+      (apply
+        str
+        (map
+          (fn [ch] (get replacements ch ch))
+          (seq
+            (str/replace
+              sym-str
+              "."
+              (or (:namespace-sep dopts) "_"))))))))
+
+(defn emit-type-record
+  "formats to standard"
+  {:added "4.0"}
+  [{:keys [modifiers symbol]}]
+  {:symbol (ut/sym-default-str symbol)
+   :type (name (first modifiers))})
 (defn key-member?
   [values key]
   (reduce (fn [found value]
@@ -181,30 +534,8 @@
         (recur (+ index 1)
                (vec (drop 1 remaining)))))))
 
-(defn drop-last-one
-  [values]
-  (apply list (vec (take (- (count values) 1) values))))
-
-(defn emit-typed-allowed-args
-  "allowed declared args other than symbols"
-  {:added "4.0"}
-  [state grammar]
-  (let [all (first state)
-        current (second state)
-        modifiers (:modifiers current)
-        argument (last modifiers)
-        allowed (get-option grammar [:allow] :assign)
-        key (first (if (vector? (form-key-base argument))
-                     (form-key-base argument)
-                     [(form-key-base argument)]))]
-    (if (key-member? allowed key)
-      [all
-       (assoc current
-              :symbol argument
-              :modifiers (vec (drop-last-one modifiers))
-              :assign true)]
-      (throw
-       (ex :generic {:curr current :all all} :ex/message "Cannot assign to non symbol")))))
+(defn drop-last-one [values]
+  (apply list (vec (take (max 0 (- (count values) 1)) values))))
 
 (defn emit-typed-args-loop
   [grammar shorthand all current remaining]
@@ -362,18 +693,6 @@
                         :all all
                         :curr current} :ex/message "Not a valid input"))))))
 
-(defn emit-typed-args
-  "create types args from declarationns"
-  {:added "3.0"}
-  ([args grammar]
-   (emit-typed-args args grammar nil))
-  ([args grammar options]
-   (emit-typed-args-loop grammar
-                         (:shorthand options)
-                         []
-                         {:modifiers []}
-                         (vec args))))
-
 (defn replace-symbol-parts
   [value replacements]
   (reduce (fn [result pair]
@@ -382,31 +701,3 @@
                             (second pair)))
           value
           replacements))
-
-(defn emit-symbol-full
-  "emits a full symbol"
-  {:added "4.0"}
-  [sym ns grammar]
-  (let [common-options (get-in grammar [:default :common])
-        symbol-options (get-in grammar [:default :symbol :full])
-        token-options (get-in grammar [:token :symbol])
-        symbol-string (if ns
-                        (str ns
-                             (:namespace-full common-options)
-                             (name sym))
-                        (name sym))
-        namespaced (str/replace
-                    symbol-string
-                    "."
-                    (or (:namespace-sep common-options) "_"))]
-    (replace-symbol-parts
-     namespaced
-     (merge (:replace symbol-options)
-            (:replace token-options)))))
-
-(defn emit-type-record
-  "formats to standard"
-  {:added "4.0"}
-  [argument]
-  {:symbol (util/sym-default-str (:symbol argument))
-   :type (name (first (:modifiers argument)))})

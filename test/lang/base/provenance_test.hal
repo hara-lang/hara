@@ -1,34 +1,190 @@
 (ns lang.base.provenance-test
-  (:require [lang.base.provenance :as provenance]))
+  (:use code.test)
+  (:require [lang.base.provenance :refer :all]))
+
+^{:refer lang.base.provenance/module-id :added "4.1"}
+(fact "extracts module ids from maps and symbols"
+  [(module-id {:id 'demo.core})
+   (module-id 'demo.core)]
+  => '[demo.core demo.core])
+
+^{:refer lang.base.provenance/namespace-id, :added "4.1"}
+(fact
+  "normalizes namespace references"
+  [(namespace-id (ns-current)) (namespace-id 'demo.core)]
+  =>
+  '[lang.base.provenance-test demo.core])
+
+^{:refer lang.base.provenance/line-of :added "4.1"}
+(fact "finds line metadata across nested values"
+  (let [form (with-meta '(+ 1 2) {:line 12})]
+    [(line-of nil)
+     (line-of form)
+     (line-of {:form form})])
+  => [nil 12 12])
+
+^{:refer lang.base.provenance/compact :added "4.1"}
+(fact "drops nil values from maps"
+  (compact {:a 1 :b nil :c 3})
+  => '{:a 1 :c 3})
+
+^{:refer lang.base.provenance/frame, :added "4.1"}
+(fact
+  "builds a compact provenance frame"
+  (let [form (with-meta '(boom 1) {:line 33})]
+    (frame
+      {:lang/provenance {:lang/phase :emit/form},
+       :lang/subsystem :probe/op,
+       :lang/module {:id 'demo.core},
+       :lang/namespace (ns-current),
+       :lang/form form}))
+  =>
+  '{:lang/phase :emit/form,
+    :lang/subsystem :probe/op,
+    :lang/module demo.core,
+    :lang/namespace lang.base.provenance-test,
+    :lang/line 33,
+    :lang/form (boom 1)})
+
+^{:refer lang.base.provenance/provenance, :added "4.1"}
+(fact
+  "merges provenance inputs into a single frame"
+  (provenance
+    {:lang/module 'demo.core}
+    {:lang/line 10}
+    {:lang/subsystem :emit/direct})
+  =>
+  '{:lang/module demo.core,
+    :lang/line 10,
+    :lang/subsystem :emit/direct})
+
+^{:refer lang.base.provenance/provenance-stack, :added "4.1"}
+(fact
+  "returns stack frames from explicit stacks or a single frame"
+  [(provenance-stack
+     {:lang/provenance-stack
+      [{:lang/module 'demo.core} {:lang/module 'demo.next}]})
+   (provenance-stack {:lang/module 'demo.core})]
+  =>
+  '[[{:lang/module demo.core} {:lang/module demo.next}]
+    [{:lang/module demo.core}]])
+
+^{:refer lang.base.provenance/same-site?, :added "4.1"}
+(fact
+  "compares provenance frames by site fields"
+  [(same-site?
+     {:lang/phase :emit/form,
+      :lang/subsystem :probe,
+      :lang/module 'demo.core,
+      :lang/line 10}
+     {:lang/phase :emit/form,
+      :lang/subsystem :probe,
+      :lang/module 'demo.core,
+      :lang/line 10,
+      :lang/form '(ignored)})
+   (same-site? {:lang/phase :emit/form} {:lang/phase :emit/direct})]
+  =>
+  [true false])
+
+^{:refer lang.base.provenance/append-frame, :added "4.1"}
+(fact
+  "appends only distinct provenance sites"
+  [(append-frame [{:lang/phase :emit/form}] {:lang/phase :emit/form})
+   (append-frame
+     [{:lang/phase :emit/form}]
+     {:lang/phase :emit/direct})]
+  =>
+  '[[{:lang/phase :emit/form}]
+    [{:lang/phase :emit/form} {:lang/phase :emit/direct}]])
+
+^{:refer lang.base.provenance/with-provenance, :added "4.1"}
+(fact
+  "threads merged provenance into mopts"
+  (with-provenance
+    {:lang :lua}
+    {:lang/module 'demo.core}
+    {:lang/line 10})
+  =>
+  '{:lang :lua,
+    :lang/provenance {:lang/module demo.core, :lang/line 10}})
+
+^{:refer lang.base.provenance/error-with-provenance, :added "4.1"}
+(fact
+  "wraps throwables with merged provenance data"
+  (try
+    (throw
+      ((fn [migration-message migration-data] (ex :generic migration-data :ex/message migration-message)) "inner" {:inner true :lang/provenance {:lang/module (quote demo.inner) :lang/phase :emit/form}}))
+    (catch
+      t
+      (let [wrapped (error-with-provenance
+                      "wrap"
+                      {:outer true,
+                       :lang/phase :emit/direct,
+                       :lang/module 'demo.outer}
+                      t)]
+        [(ex-message wrapped)
+         (select-keys
+           (ex-data wrapped)
+           [:inner
+            :outer
+            :lang/phase
+            :lang/module
+            :lang/wrapped
+            :lang/cause-message])])))
+  =>
+  '["wrap: inner"
+    {:inner true,
+     :outer true,
+     :lang/phase :emit/form,
+     :lang/module demo.inner,
+     :lang/wrapped true,
+     :lang/cause-message "inner"}])
+
+^{:refer lang.base.provenance/throw-with-provenance, :added "4.1"}
+(fact
+  "throws wrapped provenance exceptions"
+  (try
+    (throw ((fn [migration-message migration-data] (ex :generic migration-data :ex/message migration-message)) "inner" {:inner true}))
+    (catch
+      t
+      (try
+        (throw-with-provenance "wrap" {:outer true} t)
+        (catch
+          wrapped
+          [(ex-message wrapped) (:outer (ex-data wrapped))]))))
+  =>
+  ["wrap: inner" true])
+
+
 
 ^{:refer lang.base.provenance/module-id}
 (Test/check
  [{:name "reduces archived module maps to their stable identifier"
-   :test (fn [] [(provenance/module-id {:id :fixture})
-                 (provenance/module-id :fixture)])
+   :test (fn [] [(lang.base.provenance/module-id {:id :fixture})
+                 (lang.base.provenance/module-id :fixture)])
    :expected [:fixture :fixture]}])
 
 ^{:refer lang.base.provenance/namespace-id}
 (Test/check
  [{:name "normalizes loaded namespace handles while retaining unresolved values"
-   :test (fn [] [(provenance/namespace-id 'std.foundation)
-                 (provenance/namespace-id 'missing.namespace)
-                 (provenance/namespace-id :fixture)])
+   :test (fn [] [(lang.base.provenance/namespace-id 'std.foundation)
+                 (lang.base.provenance/namespace-id 'missing.namespace)
+                 (lang.base.provenance/namespace-id :fixture)])
    :expected ['std.foundation 'missing.namespace :fixture]}])
 
 ^{:refer lang.base.provenance/line-of}
 (Test/check
  [{:name "finds explicit and nested archive source-line metadata"
-   :test (fn [] [(provenance/line-of nil)
-                 (provenance/line-of {:line 1})
-                 (provenance/line-of {:entry {:line 2}})
-                 (provenance/line-of {:form {:line 3}})])
+   :test (fn [] [(lang.base.provenance/line-of nil)
+                 (lang.base.provenance/line-of {:line 1})
+                 (lang.base.provenance/line-of {:entry {:line 2}})
+                 (lang.base.provenance/line-of {:form {:line 3}})])
    :expected [nil 1 2 3]}])
 
 ^{:refer lang.base.provenance/compact}
 (Test/check
  [{:name "drops only nil provenance fields"
-   :test (fn [] (provenance/compact {:lang/module :fixture
+   :test (fn [] (lang.base.provenance/compact {:lang/module :fixture
                                      :lang/line nil
                                      :lang/source false}))
    :expected {:lang/module :fixture :lang/source false}}])
@@ -37,17 +193,17 @@
 (Test/check
  [{:name "retains canonical provenance and ignores unrecognized historical keys"
    :test (fn []
-           [(provenance/frame {:lang/provenance {:lang/module {:id :inner}}
+           [(lang.base.provenance/frame {:lang/provenance {:lang/module {:id :inner}}
                                :lang/line 7
                                :lang/source :fixture})
-            (provenance/frame {:tahto/module :legacy})])
+            (lang.base.provenance/frame {:tahto/module :legacy})])
    :expected [{:lang/module :inner :lang/line 7 :lang/source :fixture}
               {}]}])
 
 ^{:refer lang.base.provenance/provenance}
 (Test/check
  [{:name "merges nonempty archive provenance frames in order"
-   :test (fn [] (provenance/provenance {:lang/module :module}
+   :test (fn [] (lang.base.provenance/provenance {:lang/module :module}
                                         nil
                                         {}
                                         {:lang/line 8}))
@@ -57,10 +213,10 @@
 (Test/check
  [{:name "uses a supplied stack or creates one frame from plain provenance"
    :test (fn []
-           [(provenance/provenance-stack {:lang/provenance-stack [{:lang/module :outer}
+           [(lang.base.provenance/provenance-stack {:lang/provenance-stack [{:lang/module :outer}
                                                                     {:lang/line 9}]})
-            (provenance/provenance-stack {:lang/module :single})
-            (provenance/provenance-stack nil)])
+            (lang.base.provenance/provenance-stack {:lang/module :single})
+            (lang.base.provenance/provenance-stack nil)])
    :expected [[{:lang/module :outer} {:lang/line 9}]
               [{:lang/module :single}]
               []]}])
@@ -69,9 +225,9 @@
 (Test/check
  [{:name "compares only stable source-site identity fields"
    :test (fn []
-           [(provenance/same-site? {:lang/module :m :lang/line 1 :lang/source :a}
+           [(lang.base.provenance/same-site? {:lang/module :m :lang/line 1 :lang/source :a}
                                    {:lang/module :m :lang/line 1 :lang/source :b})
-            (provenance/same-site? {:lang/module :m :lang/line 1}
+            (lang.base.provenance/same-site? {:lang/module :m :lang/line 1}
                                    {:lang/module :m :lang/line 2})])
    :expected [true false]}])
 
@@ -79,10 +235,10 @@
 (Test/check
  [{:name "adds new provenance frames and eliminates adjacent duplicate sites"
    :test (fn []
-           [(provenance/append-frame [] {:lang/module :m :lang/line 1})
-            (provenance/append-frame [{:lang/module :m :lang/line 1}]
+           [(lang.base.provenance/append-frame [] {:lang/module :m :lang/line 1})
+            (lang.base.provenance/append-frame [{:lang/module :m :lang/line 1}]
                                      {:lang/module :m :lang/line 1})
-            (provenance/append-frame [{:lang/module :m :lang/line 1}]
+            (lang.base.provenance/append-frame [{:lang/module :m :lang/line 1}]
                                      {:lang/module :m :lang/line 2})])
    :expected [[{:lang/module :m :lang/line 1}]
               [{:lang/module :m :lang/line 1}]
@@ -93,9 +249,9 @@
 (Test/check
  [{:name "attaches merged canonical provenance without changing empty input"
    :test (fn []
-           [(provenance/with-provenance {:lang/provenance {:lang/module :outer}}
+           [(lang.base.provenance/with-provenance {:lang/provenance {:lang/module :outer}}
                                         {:lang/line 4})
-            (provenance/with-provenance {:value :unchanged} nil)])
+            (lang.base.provenance/with-provenance {:value :unchanged} nil)])
    :expected [{:lang/provenance {:lang/module :outer :lang/line 4}}
               {:value :unchanged}]}])
 
@@ -103,7 +259,7 @@
 (Test/check
  [{:name "wraps errors once with a canonical provenance stack"
    :test (fn []
-           (let [error (provenance/error-with-provenance
+           (let [error (lang.base.provenance/error-with-provenance
                         "compile"
                         {:lang/module :fixture :lang/line 12}
                         (ex :generic {:reason :inner} :ex/message "inner"))]
@@ -122,9 +278,23 @@
  [{:name "throws the same canonical provenance wrapper"
    :test (fn []
            (try
-             (provenance/throw-with-provenance "compile" {:lang/module :fixture}
+             (lang.base.provenance/throw-with-provenance "compile" {:lang/module :fixture}
                                                (ex :generic {} :ex/message "inner"))
              :missing
              (catch error
                [(ex-message error) (:lang/module (ex-data error))])))
    :expected ["compile: inner" :fixture]}])
+
+^{:refer lang.base.provenance/+field-keys+}
+(fact "preserves ordered authority fields and native provenance extensions"
+  +field-keys+
+  => [:lang/phase :lang/subsystem :lang/lang :lang/module :lang/namespace
+      :lang/entry :lang/symbol :lang/line :lang/form :lang/hook
+      :lang/grammar-coordinate :lang/grammar-fingerprint :lang/actor :lang/source :lang/work]
+
+  (frame {:lang/hook :before :lang/grammar-coordinate 'lang/js
+          :lang/grammar-fingerprint "abc" :lang/actor :compiler
+          :lang/source false :lang/work 0 :ignored true})
+  => {:lang/hook :before :lang/grammar-coordinate 'lang/js
+      :lang/grammar-fingerprint "abc" :lang/actor :compiler
+      :lang/source false :lang/work 0})

@@ -27,17 +27,21 @@
   (if (or (= :manual (:safety rule))
           (:function rule))
     (nil? (:rewrite rule))
-    (let [rewrite (:rewrite rule)]
+    (let [rewrite (:rewrite rule)
+          operation (:op rewrite)]
       (and (map? rewrite)
-           (or (and (or (= :replace-token (:op rewrite))
-                        (= :replace-token-prefix (:op rewrite)))
-                    (string? (:text rewrite)))
-               (and (= :replace-call (:op rewrite))
-                    (keyword? (:builder rewrite)))
-               (= :delete-parent (:op rewrite))
-               ;; Registry-owned operations may be handled by a function rule
-               ;; in a later phase; keep them valid for deterministic review.
-               (keyword? (:op rewrite)))))))
+           (cond
+             (has? #{:replace-token :replace-token-prefix} operation)
+             (string? (:text rewrite))
+
+             (= :replace-call operation)
+             (keyword? (:builder rewrite))
+
+             (= :delete-parent operation)
+             true
+
+             ;; Registry-owned operations may be implemented by later phases.
+             :else (keyword? operation))))))
 
 (defn rule-valid?
   [rule]
@@ -595,9 +599,10 @@
 
    A dependency entry with options beyond `:as` is left untouched because
    removing it could discard an explicit refer, exclude, or rename contract.
-   In Hara output, `std.foundation` is an embedded root namespace, so simple
-   `:require` aliases for it are expanded to fully-qualified symbols and
-   removed."
+   In Hara output, Foundation is preloaded. Simple `std.foundation`
+   `:require` aliases are removed and their prefixes are dropped; simple
+   `clojure.string` aliases are removed while retaining the builtin `str`
+   prefix."
   ([root]
    (normalize-dependency-aliases root {}))
   ([root options]
@@ -629,11 +634,21 @@
                     (nav/code-child-locations clause)))
                  (filter dependency-clause?
                          (nav/namespace-clause-locations input)))))
-             (foundation-entry?
+             (builtin-entry?
                [record]
                (and (= :hara target-language)
-                    (= "std.foundation" (:namespace record))
-                    (= ":require" (:clause record))))
+                    (= ":require" (:clause record))
+                    (has? #{"std.foundation"
+                            "std.foundation.string"
+                            "clojure.string"}
+                          (:namespace record))))
+             (foundation-entry?
+               [record]
+               (= "std.foundation" (:namespace record)))
+             (string-entry?
+               [record]
+               (has? #{"std.foundation.string" "clojure.string"}
+                     (:namespace record)))
              (rewrite-uses
                [input entries]
                (reduce
@@ -654,7 +669,9 @@
                              (nav/path location)
                              (str to
                                   (str/slice text
-                                             (str/length from)
+                                             (if (= to "")
+                                               (str/length prefix)
+                                               (str/length from))
                                              (str/length text)))))
                            output)))
                      current
@@ -662,8 +679,10 @@
                 input
                 entries))]
        (let [records (dependency-entries root)
-             foundation-records (vec (filter foundation-entry? records))
-             generic-records (vec (filter (fn [record] (not (foundation-entry? record))) records))
+             builtin-records (vec (filter builtin-entry? records))
+             foundation-records (vec (filter foundation-entry? builtin-records))
+             string-records (vec (filter string-entry? builtin-records))
+             generic-records (vec (filter (fn [record] (not (builtin-entry? record))) records))
              aliases
              (reduce
               (fn [state record]
@@ -682,8 +701,11 @@
              (vec
               (concat
                (map (fn [record]
-                      (assoc record :replacement "std.foundation"))
+                      (assoc record :replacement ""))
                     foundation-records)
+               (map (fn [record]
+                      (assoc record :replacement "str"))
+                    string-records)
                (map (fn [record]
                       (assoc record :replacement (:primary-alias record)))
                     (:duplicates aliases))))
@@ -691,7 +713,7 @@
              paths (vec
                     (reverse
                      (concat
-                      (map :path foundation-records)
+                      (map :path builtin-records)
                       (map :path (:duplicates aliases)))))]
          (loop [current rewritten
                 remaining paths]

@@ -1,35 +1,97 @@
 (ns lang.base.preprocess-base-test
-  (:require [lang.base.preprocess-base :as base]))
+  (:use code.test)
+  (:require [lang.base.preprocess-base :refer :all]))
+
+^{:refer lang.base.preprocess-base/macro-form :added "4.1"}
+(fact "gets the current macro form"
+  (binding [*macro-form* 'hello]
+    (macro-form))
+  => 'hello)
+
+^{:refer lang.base.preprocess-base/macro-opts :added "4.1"}
+(fact "gets current macro-opts"
+  (binding [*macro-opts* {:a 1}]
+    (macro-opts))
+  => {:a 1})
+
+^{:refer lang.base.preprocess-base/macro-grammar :added "4.1"}
+(fact "gets the current grammar"
+  (binding [*macro-grammar* {:a 1}]
+    (macro-grammar))
+  => {:a 1})
+
+^{:refer lang.base.preprocess-base/with:macro-opts :added "4.1"}
+(fact "bind macro opts"
+  (with:macro-opts [{:a 1}]
+    (macro-opts))
+  => {:a 1})
+
+
 
 ^{:refer lang.base.preprocess-base/macro-form}
 (Test/check
  [{:name "projects the dynamic macro form only inside its archive binding"
    :test (fn []
-           [(base/macro-form)
-            (binding [base/*macro-form* '(fixture value)]
-              (base/macro-form))])
+           [(lang.base.preprocess-base/macro-form)
+            (binding [lang.base.preprocess-base/*macro-form* '(fixture value)]
+              (lang.base.preprocess-base/macro-form))])
    :expected [nil '(fixture value)]}])
 
 ^{:refer lang.base.preprocess-base/macro-opts}
 (Test/check
  [{:name "projects macro options from the dynamic preprocessing context"
    :test (fn []
-           (binding [base/*macro-opts* {:profile :fixture}]
-             (base/macro-opts)))
+           (binding [lang.base.preprocess-base/*macro-opts* {:profile :fixture}]
+             (lang.base.preprocess-base/macro-opts)))
    :expected {:profile :fixture}}])
 
 ^{:refer lang.base.preprocess-base/macro-grammar}
 (Test/check
  [{:name "projects grammar data from the dynamic preprocessing context"
    :test (fn []
-           (binding [base/*macro-grammar* {:default {:index {:offset 1}}}]
-             (base/macro-grammar)))
+           (binding [lang.base.preprocess-base/*macro-grammar* {:default {:index {:offset 1}}}]
+             (lang.base.preprocess-base/macro-grammar)))
    :expected {:default {:index {:offset 1}}}}])
 
 ^{:refer lang.base.preprocess-base/with:macro-opts}
 (Test/check
  [{:name "binds macro options for the lexical archive transform body"
    :test (fn []
-           (base/with:macro-opts [{:target :fixture}]
-             (base/macro-opts)))
+           (lang.base.preprocess-base/with:macro-opts [{:target :fixture}]
+             (lang.base.preprocess-base/macro-opts)))
    :expected {:target :fixture}}])
+
+^{:refer lang.base.preprocess-base/*macro-form*}
+(fact "keeps form context scoped and restores its nil baseline"
+  [*macro-form* (binding [*macro-form* '(call 1)] (macro-form)) *macro-form*]
+  => [nil '(call 1) nil])
+
+^{:refer lang.base.preprocess-base/*macro-grammar*}
+(fact "keeps grammar context scoped and restores its nil baseline"
+  [*macro-grammar* (binding [*macro-grammar* {:reserved {:call :entry}}] (macro-grammar)) *macro-grammar*]
+  => [nil {:reserved {:call :entry}} nil])
+
+^{:refer lang.base.preprocess-base/*macro-opts*}
+(fact "restores outer macro options after nested bindings and failure"
+  [*macro-opts*
+   (with:macro-opts [{:level :outer}]
+     [(macro-opts)
+      (with:macro-opts [{:level :inner}] (macro-opts))
+      (try (with:macro-opts [{:level :failed}] (throw (ex :state {:probe true})))
+           (catch error :failed))
+      (macro-opts)])
+   *macro-opts*]
+  => [nil [{:level :outer} {:level :inner} :failed {:level :outer}] nil])
+
+^{:refer lang.base.preprocess-base/*macro-splice*}
+(fact "keeps splice context scoped and restores its nil baseline"
+  [*macro-splice* (binding [*macro-splice* '[a b]] *macro-splice*) *macro-splice*]
+  => [nil '[a b] nil])
+
+^{:refer lang.base.preprocess-base/*macro-skip-deps*}
+(fact "preserves the Foundation nil default and explicit true or false overrides"
+  [*macro-skip-deps*
+   (binding [*macro-skip-deps* true] *macro-skip-deps*)
+   (binding [*macro-skip-deps* false] *macro-skip-deps*)
+   *macro-skip-deps*]
+  => [nil true false nil])

@@ -1,21 +1,21 @@
 (ns lang.core.rewrite.statement
-  (:config {:role :internal})
-  (:require [lang.core.rewrite.common :as common]
-            [lang.core.rewrite.fn :as fnrw]))
+  (:require [lang.core.rewrite.common :as common] [lang.core.rewrite.fn :as fnrw])
+  (:config {:role :internal}))
 
 (def with-form-meta
   common/with-form-meta)
 
-(defn rewrite-for-statement
-  [form rewrite-binding rewrite-statements]
-  (let [tag (first form)
-        binding (second form)
-        body (drop 2 form)]
+(defn rewrite-for-statement [form rewrite-binding rewrite-statements]
+  (let [[tag binding & migration-body-tail] form
+        body (seq migration-body-tail)]
     (with-form-meta
       form
-      (apply list tag
-             (concat [(rewrite-binding binding)]
-                     (rewrite-statements body))))))
+      (apply
+        list
+        tag
+        (concat
+          [(rewrite-binding binding)]
+          (rewrite-statements body))))))
 
 (defn rewrite-cond-statement
   [form rewrite-conditional-expression rewrite-statement]
@@ -24,25 +24,30 @@
     (apply list 'cond
            (mapcat (fn [[test body]]
                      (if (= :else test)
-                       [test (rewrite-statement body)]
+                       [test
+                        (rewrite-statement body)]
                        [(rewrite-conditional-expression test)
                         (rewrite-statement body)]))
                    (partition 2 (rest form))))))
 
-(defn rewrite-branch-control
-  [form rewrite-conditional-expression rewrite-statements]
-  (let [tag (first form)
-        args (rest form)]
+(defn rewrite-branch-control [form
+                              rewrite-conditional-expression
+                              rewrite-statements]
+  (let [[tag & migration-args-tail] form
+        args (seq migration-args-tail)]
     (with-form-meta
       form
-      (if (= 'else tag)
+      (case
+        tag
+        else
         (apply list tag (rewrite-statements args))
-
-        (let [test (first args)
-              body (rest args)]
-          (apply list tag
-                 (concat [(rewrite-conditional-expression test)]
-                         (rewrite-statements body))))))))
+        (let [test (first args) body (rest args)]
+          (apply
+            list
+            tag
+            (concat
+              [(rewrite-conditional-expression test)]
+              (rewrite-statements body))))))))
 
 (defn rewrite-branch-statement
   [form rewrite-branch-control]
@@ -53,89 +58,96 @@
 
 (defn rewrite-do-statement
   ([form rewrite-statements]
-   (rewrite-do-statement form rewrite-statements identity))
+    (rewrite-do-statement form rewrite-statements identity))
   ([form rewrite-statements prepare-body]
-   (let [tag (first form)
-         body (rest form)
-         body (prepare-body body)]
-     (with-form-meta
-       form
-       (apply list tag
-              (-> body
-                  rewrite-statements
-                  fnrw/splice-do*))))))
+    (let [[tag & migration-body-tail] form
+          body (seq migration-body-tail)
+          body (prepare-body body)]
+      (with-form-meta
+        form
+        (apply
+          list
+          tag
+          (-> body rewrite-statements fnrw/splice-do*))))))
 
-(defn rewrite-var-statement
-  [form rewrite-expression]
-  (let [tag (first form)
-        target (second form)
-        args (drop 2 form)]
+(defn rewrite-var-statement [form rewrite-expression]
+  (let [[tag target & migration-args-tail] form
+        args (seq migration-args-tail)]
     (if (empty? args)
       form
-      (let [bound (last args)
-            leading (butlast args)]
+      (let [bound (last args) leading (butlast args)]
         (with-form-meta
           form
-          (apply list tag target
-                 (concat leading
-                         [(rewrite-expression bound)])))))))
+          (apply
+            list
+            tag
+            target
+            (concat leading [(rewrite-expression bound)])))))))
 
-(defn rewrite-return-statement
-  [form rewrite-expression]
-  (let [tag (first form)
-        args (rest form)]
+(defn rewrite-return-statement [form rewrite-expression]
+  (let [[tag & migration-args-tail] form
+        args (seq migration-args-tail)]
     (with-form-meta
       form
       (apply list tag (map rewrite-expression args)))))
 
-(defn rewrite-if-statement
-  [form rewrite-conditional-expression rewrite-statement]
-  (let [tag (first form)
-        test (second form)
-        then (nth form 2)
-        else (if (< 3 (count form)) (nth form 3) nil)]
+(defn rewrite-if-statement [form
+                            rewrite-conditional-expression
+                            rewrite-statement]
+  (let [[tag test then & migration-else-tail] form
+        else (first (seq migration-else-tail))]
     (with-form-meta
       form
-      (apply list tag
-             (cond-> [(rewrite-conditional-expression test)
-                      (rewrite-statement then)]
-               else (conj (rewrite-statement else)))))))
+      (apply
+        list
+        tag
+        (cond->
+          [(rewrite-conditional-expression test)
+           (rewrite-statement then)]
+          else
+          (conj (rewrite-statement else)))))))
 
-(defn rewrite-when-statement
-  [form rewrite-conditional-expression rewrite-statements]
-  (let [tag (first form)
-        test (second form)
-        body (drop 2 form)]
+(defn rewrite-when-statement [form
+                              rewrite-conditional-expression
+                              rewrite-statements]
+  (let [[tag test & migration-body-tail] form
+        body (seq migration-body-tail)]
     (with-form-meta
       form
-      (apply list tag
-             (rewrite-conditional-expression test)
-             (rewrite-statements body)))))
+      (apply
+        list
+        tag
+        (rewrite-conditional-expression test)
+        (rewrite-statements body)))))
 
-(defn rewrite-while-statement
-  [form rewrite-conditional-expression rewrite-statements]
-  (let [tag (first form)
-        test (second form)
-        body (drop 2 form)]
+(defn rewrite-while-statement [form
+                               rewrite-conditional-expression
+                               rewrite-statements]
+  (let [[tag test & migration-body-tail] form
+        body (seq migration-body-tail)]
     (with-form-meta
       form
-      (apply list tag
-             (rewrite-conditional-expression test)
-             (rewrite-statements body)))))
+      (apply
+        list
+        tag
+        (rewrite-conditional-expression test)
+        (rewrite-statements body)))))
 
 (defn rewrite-defn-statement
   ([form rewrite-statements]
-   (rewrite-defn-statement form rewrite-statements identity))
+    (rewrite-defn-statement form rewrite-statements identity))
   ([form rewrite-statements finalize-body]
-   (let [tag (first form)
-         name (second form)
-         args (nth form 2)
-         body (drop 3 form)]
-     (with-form-meta
-       form
-       (apply list tag name args
-              (-> body
-                  rewrite-statements
-                  finalize-body
-                  fnrw/splice-do*
-                  fnrw/wrap-body))))))
+    (let [[tag name args & migration-body-tail] form
+          body (seq migration-body-tail)]
+      (with-form-meta
+        form
+        (apply
+          list
+          tag
+          name
+          args
+          (-> body
+           rewrite-statements
+           finalize-body
+           fnrw/splice-do*
+           fnrw/wrap-body))))))

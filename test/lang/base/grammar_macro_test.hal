@@ -1,113 +1,386 @@
 (ns lang.base.grammar-macro-test
-  (:require [lang.base.grammar-macro :as macro]))
+  (:require [lang.base.grammar-macro :refer :all]
+    [lang.base.v1.grammar-spec :as snapshot])
+  (:use code.test))
 
-^{:refer lang.base.grammar-macro/form}
-(Test/check
- [{:name "builds generated list forms in archive order"
-   :test (fn [] (macro/form '[a b]))
-   :expected '(a b)}])
+^{:refer lang.base.grammar-macro/tf-macroexpand :added "3.0"}
+(fact "macroexpands the current form"
+  (tf-macroexpand '(-> 1 (inc)))
+  => '(inc 1))
 
-^{:refer lang.base.grammar-macro/all-but-last}
-(Test/check
- [{:name "retains all values except the final value"
-   :test (fn [] [(macro/all-but-last '[a b c]) (macro/all-but-last [])])
-   :expected '[[a b] []]}])
+^{:refer lang.base.grammar-macro/tf-when :added "3.0"}
+(fact "transforms `when` to branch"
 
-^{:refer lang.base.grammar-macro/tf-macroexpand}
-(Test/check
- [{:name "expands archive first and last threading forms once"
-   :test (fn [] [(macro/tf-macroexpand '(-> 1 (inc)))
-                 (macro/tf-macroexpand '(->> 1 (add 2)))])
-   :expected '[(inc 1) (add 2 1)]}])
+  (tf-when '(when true :A :B :C))
+  => '(br* (if true :A :B :C)))
 
-^{:refer lang.base.grammar-macro/tf-when}
-(Test/check
- [{:name "transforms when to an archive branch form"
-   :test (fn [] (macro/tf-when '(when true :A :B :C)))
-   :expected '(br* (if true :A :B :C))}])
+^{:refer lang.base.grammar-macro/tf-if :added "3.0"}
+(fact "transforms `if` to branch"
 
-^{:refer lang.base.grammar-macro/tf-if}
-(Test/check
- [{:name "transforms if with explicit and absent else branches"
-   :test (fn [] [(macro/tf-if '(if true :A :B))
-                 (macro/tf-if '(if true :A))])
-   :expected '[(br* (if true :A) (else :B))
-               (br* (if true :A))]}])
+  (tf-if '(if true :A :B))
+  => '(br* (if true :A) (else :B)))
 
-^{:refer lang.base.grammar-macro/tf-cond}
-(Test/check
- [{:name "transforms cond pairs to archive branch controls"
-   :test (fn [] (macro/tf-cond '(cond true :A false :B :else :C)))
-   :expected '(br* (if true :A) (elseif false :B) (else :C))}])
+^{:refer lang.base.grammar-macro/tf-cond :added "3.0"}
+(fact "transforms `cond` to branch"
+  (tf-cond '(cond true :A false :B))
+  => '(br* (if true :A) (elseif false :B))
 
-^{:refer lang.base.grammar-macro/tf-let-bind}
-(Test/check
- [{:name "converts bindings to portable declaration statements"
-   :test (fn [] [(macro/tf-let-bind '(let [x 1 b 2] (return (+ x b))))
-                 (macro/tf-let-bind '(let [_ (touch)] :done))])
-   :expected '[(do* (var x := 1) (var b := 2) (return (+ x b)))
-               (do* (touch) :done)]}])
+  (tf-cond '(cond true :A false :B :else :C))
+  => '(br* (if true :A) (elseif false :B) (else :C)))
 
-^{:refer lang.base.grammar-macro/tf-case}
-(Test/check
- [{:name "transforms cases and the final default to switch controls"
-   :test (fn [] (macro/tf-case '(case (type obj)
-                                   :A (return A)
-                                   :B (return B)
-                                   (return X))))
-   :expected '(switch [(type obj)]
-                      (case [:A] (return A))
-                      (case [:B] (return B))
-                      (default (return X)))}])
+^{:refer lang.base.grammar-macro/tf-let-bind :added "4.0"}
+(fact "converts to a statement"
 
-^{:refer lang.base.grammar-macro/tf-lambda-arrow}
-(Test/check
- [{:name "normalizes arrow lambdas and preserves explicit return forms"
-   :test (fn [] [(macro/tf-lambda-arrow '(fn:> [e] e))
-                 (macro/tf-lambda-arrow '(fn:> [e] (trace e) (return e)))])
-   :expected '[(fn [e] (return e))
-               (fn [e] (trace e) (return e))]}])
+  (tf-let-bind '(let [#{x} 1 b 2]
+                  (return (+ x b))))
+  => '(do* (var #{x} := 1)
+           (var b := 2)
+           (return (+ x b))))
 
-^{:refer lang.base.grammar-macro/tf-tcond}
-(Test/check
- [{:name "transforms ternary condition pairs and rejects a missing default"
-   :test (fn [] [(macro/tf-tcond '(:?> :a a :b b :else c))
-                 (try (macro/tf-tcond '(:?> :a a :b b)) false (catch _ true))])
-   :expected '[(:? :a [a (:? :b [b c])]) true]}])
+^{:refer lang.base.grammar-macro/tf-case :added "4.0"}
+(fact "transforms the case statement to switch representation"
 
-^{:refer lang.base.grammar-macro/tf-xor}
-(Test/check
- [{:name "normalizes both xor operands to booleans"
-   :test (fn [] (macro/tf-xor '(xor a b)))
-   :expected '(== (not (not a)) (not (not b)))}])
+  (tf-case '(case (type obj)
+              :A (return A)
+              :B (return B)
+              (return X)))
+  => '(switch
+       [(type obj)]
+       (case [:A] (return A))
+       (case [:B] (return B))
+       (default (return X))))
 
-^{:refer lang.base.grammar-macro/tf-doto}
-(Test/check
- [{:name "threads doto targets through archive call forms"
-   :test (fn [] (macro/tf-doto '(doto sym (. a) (b) (. c))))
-   :expected '(do (. sym a) (b sym) (. sym c))}])
+^{:refer lang.base.grammar-macro/tf-lambda-arrow :added "4.0"}
+(fact "generalized lambda transformation"
 
-^{:refer lang.base.grammar-macro/tf-do-arrow}
-(Test/check
- [{:name "wraps do-arrow bodies in one immediately invoked function"
-   :test (fn [] (macro/tf-do-arrow '(do:> 1 2 (return 3))))
-   :expected '((fn [] 1 2 (return 3)))}])
+  (tf-lambda-arrow '(fn:> [e] e))
+  => '(fn [e] (return e)))
 
-^{:refer lang.base.grammar-macro/tf-forange}
-(Test/check
- [{:name "creates portable positive and negative range-loop forms"
-   :test (fn [] [(macro/tf-forange '(forange [i 10] (print i)))
-                 (macro/tf-forange '(forange [i [10 3 -2]] (print i)))])
-   :expected '[(for [(var i 0) (< i 10) [(:= i (+ i 1))]] (print i))
-               (for [(var i 10) (< i 3) [(:= i (- i 2))]] (print i))]}])
+^{:refer lang.base.grammar-macro/tf-tcond :added "4.0"}
+(fact "transforms the ternary cond"
 
-^{:refer lang.base.grammar-macro/+op-macro+}
-(Test/check
- [{:name "retains archive macro category data with callable transform Vars"
-   :test (fn []
-           [(set (map :op macro/+op-macro+))
-            (:macro (first macro/+op-macro+))
-            (set (map :op macro/+op-macro-forange+))])
-   :expected [#{:tfirst :tlast :doto :if :cond :when}
-              #'macro/tf-macroexpand
-              #{:forange}]}])
+  (tf-tcond '(:?> :a a :b b :else c))
+  => '(:? :a [a (:? :b [b c])]))
+
+^{:refer lang.base.grammar-macro/tf-xor :added "4.0"}
+(fact "transforms xor into boolean-normalized equality"
+
+  (tf-xor '(xor a b))
+  => '(== (not (not a)) (not (not b))))
+
+^{:refer lang.base.grammar-macro/tf-doto :added "4.0"}
+(fact "basic transformation for `doto` syntax"
+
+  (tf-doto '(doto sym
+              (. a)
+              (b)
+              (. c)))
+  => '(do (. sym a) (b sym) (. sym c)))
+
+^{:refer lang.base.grammar-macro/tf-do-arrow :added "4.0"}
+(fact "do:> transformation"
+
+  (tf-do-arrow '(do:>
+                 1 2 (return 3)))
+  => '((fn [] 1 2 (return 3))))
+
+^{:refer lang.base.grammar-macro/tf-forange :added "4.0"}
+(fact "creates the forange form"
+
+  (tf-forange '(forange [i 10] (print i)))
+  => '(for [(var i 0) (< i 10) [(:= i (+ i 1))]] (print i))
+
+  (tf-forange '(forange [i [10 3 -2]] (print i)))
+  => '(for [(var i 10) (< i 3) [(:= i (- i 2))]] (print i)))
+
+^{:refer lang.base.grammar-macro/form, :id grammar-macro-preserved-0}
+(fact
+  "builds generated list forms in archive order"
+  ((fn [] (lang.base.grammar-macro/form '[a b])))
+  =>
+  '(a b))
+
+^{:refer lang.base.grammar-macro/all-but-last, :id grammar-macro-preserved-1}
+(fact
+  "retains all values except the final value"
+  ((fn [] [(lang.base.grammar-macro/all-but-last '[a b c])
+           (lang.base.grammar-macro/all-but-last [])]))
+  =>
+  '[[a b] []])
+
+^{:refer lang.base.grammar-macro/tf-macroexpand, :id grammar-macro-preserved-2}
+(fact
+  "expands archive first and last threading forms once"
+  ((fn [] [(lang.base.grammar-macro/tf-macroexpand '(-> 1 (inc)))
+           (lang.base.grammar-macro/tf-macroexpand '(->> 1 (add 2)))]))
+  =>
+  '[(inc 1) (add 2 1)])
+
+^{:refer lang.base.grammar-macro/tf-when, :id grammar-macro-preserved-3}
+(fact
+  "transforms when to an archive branch form"
+  ((fn [] (lang.base.grammar-macro/tf-when '(when true :A :B :C))))
+  =>
+  '(br* (if true :A :B :C)))
+
+^{:refer lang.base.grammar-macro/tf-if, :id grammar-macro-preserved-4}
+(fact
+  "transforms if with explicit and absent else branches"
+  ((fn [] [(lang.base.grammar-macro/tf-if '(if true :A :B))
+           (lang.base.grammar-macro/tf-if '(if true :A))]))
+  =>
+  '[(br* (if true :A) (else :B)) (br* (if true :A))])
+
+^{:refer lang.base.grammar-macro/tf-cond, :id grammar-macro-preserved-5}
+(fact
+  "transforms cond pairs to archive branch controls"
+  ((fn []
+     (lang.base.grammar-macro/tf-cond
+       '(cond true :A false :B :else :C))))
+  =>
+  '(br* (if true :A) (elseif false :B) (else :C)))
+
+^{:refer lang.base.grammar-macro/tf-let-bind, :id grammar-macro-preserved-6}
+(fact
+  "converts bindings to portable declaration statements"
+  ((fn [] [(lang.base.grammar-macro/tf-let-bind
+             '(let [x 1 b 2] (return (+ x b))))
+           (lang.base.grammar-macro/tf-let-bind
+             '(let [_ (touch)] :done))]))
+  =>
+  '[(do* (var x := 1) (var b := 2) (return (+ x b)))
+    (do* (touch) :done)])
+
+^{:refer lang.base.grammar-macro/tf-case, :id grammar-macro-preserved-7}
+(fact
+  "transforms cases and the final default to switch controls"
+  ((fn []
+     (lang.base.grammar-macro/tf-case
+       '(case (type obj) :A (return A) :B (return B) (return X)))))
+  =>
+  '(switch
+     [(type obj)]
+     (case [:A] (return A))
+     (case [:B] (return B))
+     (default (return X))))
+
+^{:refer lang.base.grammar-macro/tf-lambda-arrow, :id grammar-macro-preserved-8}
+(fact
+  "normalizes arrow lambdas and preserves explicit return forms"
+  ((fn [] [(lang.base.grammar-macro/tf-lambda-arrow '(fn:> [e] e))
+           (lang.base.grammar-macro/tf-lambda-arrow
+             '(fn:> [e] (trace e) (return e)))]))
+  =>
+  '[(fn [e] (return e)) (fn [e] (trace e) (return e))])
+
+^{:refer lang.base.grammar-macro/tf-tcond, :id grammar-macro-preserved-9}
+(fact
+  "transforms ternary condition pairs and rejects a missing default"
+  ((fn [] [(lang.base.grammar-macro/tf-tcond '(:?> :a a :b b :else c))
+           (try
+             (lang.base.grammar-macro/tf-tcond '(:?> :a a :b b))
+             false
+             (catch _ true))]))
+  =>
+  '[(:? :a [a (:? :b [b c])]) true])
+
+^{:refer lang.base.grammar-macro/tf-xor, :id grammar-macro-preserved-10}
+(fact
+  "normalizes both xor operands to booleans"
+  ((fn [] (lang.base.grammar-macro/tf-xor '(xor a b))))
+  =>
+  '(== (not (not a)) (not (not b))))
+
+^{:refer lang.base.grammar-macro/tf-doto, :id grammar-macro-preserved-11}
+(fact
+  "threads doto targets through archive call forms"
+  ((fn []
+     (lang.base.grammar-macro/tf-doto '(doto sym (. a) (b) (. c)))))
+  =>
+  '(do (. sym a) (b sym) (. sym c)))
+
+^{:refer lang.base.grammar-macro/tf-do-arrow, :id grammar-macro-preserved-12}
+(fact
+  "wraps do-arrow bodies in one immediately invoked function"
+  ((fn []
+     (lang.base.grammar-macro/tf-do-arrow '(do:> 1 2 (return 3)))))
+  =>
+  '((fn [] 1 2 (return 3))))
+
+^{:refer lang.base.grammar-macro/tf-forange, :id grammar-macro-preserved-13}
+(fact
+  "creates portable positive and negative range-loop forms"
+  ((fn [] [(lang.base.grammar-macro/tf-forange
+             '(forange [i 10] (print i)))
+           (lang.base.grammar-macro/tf-forange
+             '(forange [i [10 3 -2]] (print i)))]))
+  =>
+  '[(for [(var i 0) (< i 10) [(:= i (+ i 1))]] (print i))
+    (for [(var i 10) (< i 3) [(:= i (- i 2))]] (print i))])
+
+^{:refer lang.base.grammar-macro/+op-macro+, :id grammar-macro-preserved-14}
+(fact
+  "retains archive macro category data with callable transform Vars"
+  ((fn [] [(set (map :op lang.base.grammar-macro/+op-macro+))
+           (:macro (first lang.base.grammar-macro/+op-macro+))
+           (set
+             (map :op lang.base.grammar-macro/+op-macro-forange+))]))
+  =>
+  [#{:doto :when :if :cond :tlast :tfirst}
+   #'lang.base.grammar-macro/tf-macroexpand
+   #{:forange}])
+
+^{:refer lang.base.grammar-macro/+op-macro-arrow+}
+(fact "preserves both arrow operators and their exact callback identities"
+  lang.base.grammar-macro/+op-macro-arrow+
+  => [{:op :dofn :symbol #{'do:>} :emit :macro :macro #'lang.base.grammar-macro/tf-do-arrow :type :template}
+      {:op :fn-arrow :symbol #{'fn:>} :emit :macro :macro #'lang.base.grammar-macro/tf-lambda-arrow :type :template}])
+
+^{:refer lang.base.grammar-macro/+op-macro-let+}
+(fact "retains let as a block macro with the owned binding transform"
+  lang.base.grammar-macro/+op-macro-let+
+  => [{:op :let-bind :symbol #{'let} :emit :macro :macro #'lang.base.grammar-macro/tf-let-bind :type :block}])
+
+^{:refer lang.base.grammar-macro/+op-macro-xor+}
+(fact "retains xor spelling and transform identity"
+  lang.base.grammar-macro/+op-macro-xor+
+  => [{:op :txor :symbol #{'xor} :emit :macro :macro #'lang.base.grammar-macro/tf-xor}])
+
+^{:refer lang.base.grammar-macro/+op-macro-case+}
+(fact "retains required case and optional default block controls and the case macro"
+  lang.base.grammar-macro/+op-macro-case+
+  => [{:op :switch :symbol #{'switch} :emit :inner :type :block
+       :block {:main #{:parameter :body}
+               :control [[:case {:required true :main #{:parameter :body}}]
+                         [:default {:main #{:body}}]]}}
+      {:op :case :symbol #{'case} :emit :macro :macro #'lang.base.grammar-macro/tf-case :type :block}])
+
+^{:refer lang.base.grammar-macro/+op-macro-forange+}
+(fact "retains range-loop indentation, block role and lowering callback"
+  lang.base.grammar-macro/+op-macro-forange+
+  => [{:op :forange :symbol #{'forange} :style/indent 1
+       :emit :macro :macro #'lang.base.grammar-macro/tf-forange :type :block}])
+
+^{:refer lang.base.grammar-macro/tf-if :id macro-false-else}
+(fact "omits false and nil else values exactly as Foundation does"
+  [(lang.base.grammar-macro/tf-if '(if true :A false))
+   (lang.base.grammar-macro/tf-if '(if true :A nil))]
+  => '[(br* (if true :A)) (br* (if true :A))])
+
+^{:refer lang.base.grammar-macro/tf-cond :id macro-initial-else}
+(fact "preserves the first cond pair as the initial if even when its check is else"
+  (lang.base.grammar-macro/tf-cond '(cond :else :A))
+  => '(br* (if :else :A)))
+
+^{:refer lang.base.grammar-macro/tf-lambda-arrow :id macro-return-shapes}
+(fact "wraps scalar and vector results but does not wrap explicit list return forms twice"
+  [(lang.base.grammar-macro/tf-lambda-arrow (list 'fn:> (vector) 42))
+   (lang.base.grammar-macro/tf-lambda-arrow (list 'fn:> (vector) (vector 'return 42)))
+   (lang.base.grammar-macro/tf-lambda-arrow (list 'fn:> (vector) (list 'return 42)))]
+  => [(list 'fn (vector) (list 'return 42))
+      (list 'fn (vector) (list 'return (vector 'return 42)))
+      (list 'fn (vector) (list 'return 42))])
+
+^{:refer lang.base.grammar-macro/form :id macro-list-roundtrip}
+(fact "builds persistent forms with vector reconstruction and idempotent canonical shape"
+  (let [values [nil :a 'b [1 2]]
+        result (lang.base.grammar-macro/form values)]
+    [(vec result) (form? result)
+     (lang.base.grammar-macro/form (vec result))
+     (lang.base.grammar-macro/form [])])
+  => [[nil :a 'b [1 2]] true '(nil :a b [1 2]) '()])
+
+^{:refer lang.base.grammar-macro/+op-macro+ :id macro-all-group-field-parity}
+(fact "preserves all six snapshot groups including callback identities with idempotent normalization"
+  (let [canonicalize
+        (fn [entries]
+          (mapv (fn [entry]
+                  (reduce (fn [out field]
+                            (let [value (get out field)]
+                              (if (= (type value) :std.native.Var)
+                                (assoc out field (var-sym value))
+                                out)))
+                          entry snapshot/+reference-fields+))
+                entries))
+        groups [lang.base.grammar-macro/+op-macro+
+                lang.base.grammar-macro/+op-macro-arrow+
+                lang.base.grammar-macro/+op-macro-let+
+                lang.base.grammar-macro/+op-macro-xor+
+                lang.base.grammar-macro/+op-macro-case+
+                lang.base.grammar-macro/+op-macro-forange+]
+        actual (mapv canonicalize groups)]
+    [actual (mapv canonicalize actual)])
+  => [(vec (take 6 (drop 32 snapshot/+feature-group-data+)))
+      (vec (take 6 (drop 32 snapshot/+feature-group-data+)))])
+
+
+^{:refer lang.base.grammar-macro/tf-macroexpand, :id macro-thread-contract-0}
+(fact
+  "threading shape and step metadata"
+  ((fn []
+     (mapv
+       (fn [input]
+         (let [output (lang.base.grammar-macro/tf-macroexpand input)]
+           [(pr-str output)
+            (select-keys (or (meta output) {}) [:line :fixture])]))
+       [(list '-> 'x)
+        (list '->> 'x)
+        (list '-> 1 'inc)
+        (list '->> 1 'inc)
+        (list '-> 'x (list 'f 'a) (list 'g 'b 'c))
+        (list '->> 'x (list 'f 'a) (list 'g 'b 'c))
+        (list '-> 'x (list))
+        (list '->> 'x (list))
+        (list '-> 'x (vector :f))
+        (list '->> 'x (vector :f))
+        (list
+          '->
+          'x
+          (with-meta (list 'f 'a) {:line 7, :fixture :step}))
+        (list
+          '->>
+          'x
+          (with-meta (list 'f 'a) {:line 7, :fixture :step}))])))
+  =>
+  [["x" {}]
+   ["x" {}]
+   ["(inc 1)" {}]
+   ["(inc 1)" {}]
+   ["(g (f x a) b c)" {}]
+   ["(g b c (f a x))" {}]
+   ["(nil x)" {}]
+   ["(nil x)" {}]
+   ["([:f] x)" {}]
+   ["([:f] x)" {}]
+   ["(f x a)" {:line 7, :fixture :step}]
+   ["(f a x)" {:line 7, :fixture :step}]])
+
+^{:refer lang.base.grammar-macro/tf-macroexpand, :id macro-thread-contract-1}
+(fact
+  "threading requires an initial operand"
+  ((fn []
+     (mapv
+       (fn [input]
+         (try
+           (lang.base.grammar-macro/tf-macroexpand input)
+           :accepted
+           (catch _ :rejected)))
+       [(list '->) (list '->>)])))
+  =>
+  [:rejected :rejected])
+
+^{:refer lang.base.grammar-macro/tf-macroexpand, :id macro-thread-contract-2}
+(fact
+  "nonmacro forms remain unchanged"
+  ((fn [] [(lang.base.grammar-macro/tf-macroexpand 42)
+           (lang.base.grammar-macro/tf-macroexpand
+             (list 'ordinary-call :x))]))
+  =>
+  [42 '(ordinary-call :x)])
+
+(defmacro migration-thread-fixture [value] (list 'do value))
+
+^{:refer lang.base.grammar-macro/tf-macroexpand :id macro-nonthread-fallback}
+(fact "delegates non-thread macros to native one-step expansion"
+ (lang.base.grammar-macro/tf-macroexpand '(lang.base.grammar-macro-test/migration-thread-fixture :ok))
+ => '(do :ok))

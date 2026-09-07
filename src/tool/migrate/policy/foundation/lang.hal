@@ -1,0 +1,197 @@
+(ns tool.migrate.policy.foundation.lang
+  (:config {:role :internal})
+  (:require [std.block :as block]
+            [tool.migrate.common.block :as nav]
+            [tool.migrate.common.rule :as rule]))
+
+(def +namespace-routes+
+  [["tahto.base" "lang.base"]
+   ["tahto.common" "lang.base"]
+   ["lang.common" "lang.base"]
+   ["tahto.core" "lang.core"]
+   ["tahto.runtime.basic" "lang.runtime.basic"]
+   ["tahto.model" "lang.model.v1"]
+   [":polis" ":lang"]
+   [":tahto" ":lang"]])
+
+(defn route-token
+  "Selects the most specific namespace route at a symbol or keyword boundary.
+   Equally specific routes with different destinations are a conflict."
+  [text routes]
+  (let [matches
+        (sort-by
+         (fn [route] (- (str/length (first route))))
+         (filter
+          (fn [route]
+            (let [prefix (first route)]
+              (or (= text prefix)
+                  (str/starts-with? text (str prefix "."))
+                  (str/starts-with? text (str prefix "/")))))
+          routes))
+        selected (first matches)]
+    (when selected
+      (let [prefix (first selected)
+            destination (second selected)
+            conflicts (filter
+                       (fn [route]
+                         (and (= prefix (first route))
+                              (not= destination (second route))))
+                       matches)]
+        (if (not (empty? conflicts))
+          (throw (ex :tool.migrate/conflict
+                     {:token text :routes (vec (cons selected conflicts))}
+                     :ex/message "Namespace routes have conflicting destinations")))
+        {:from prefix
+         :to destination
+         :before text
+         :after (str destination (str/slice text (str/length prefix)))}))))
+
+(defn match-routes
+  "Matches only symbol and keyword blocks, retaining original block evidence.
+   Quoted program forms and metadata remain structural; literal text is opaque."
+  [root options]
+  (vec
+   (keep
+    (fn [location]
+      (let [value (nav/current location)]
+        (when (has? #{:symbol :keyword} (block/tag value))
+          (when-let [route (route-token (block/string value)
+                                      (:lang/routes options))]
+            (merge (nav/evidence location)
+                   {:route/from (:from route)
+                    :route/to (:to route)
+                    :replacement (:after route)})))))
+    (nav/walk-locations root))))
+
+(defn rewrite-route
+  "Replaces exactly the matched block through the original migration navigator."
+  [root match options]
+  (nav/root-block
+   (nav/replace-at root (:path match) (:replacement match))))
+
+(defn analyze-source
+  "Routes compiler source and tests through the shared structural rule engine.
+   Namespace routing and builtin alias removal are canonicalizing operations;
+   :source and :before retain the complete original representation for restore.
+   Reader conditionals remain blocking and preserve the entire input."
+  ([source]
+   (analyze-source source +namespace-routes+))
+  ([source routes]
+   (let [rules
+         (rule/compile-rules
+          [{:id :foundation/lang-routes
+            :kind :function
+            :function {:match match-routes :rewrite rewrite-route}
+            :safety :safe
+            :priority 0
+            :message "Route Foundation language namespace blocks"
+            :evidence [{:source/path "src/tahto"
+                        :target/path "src/lang"}]}])
+         result (rule/analyze-source
+                 source
+                 {:source/language :clojure
+                  :target/language :hara
+                  :lang/routes routes
+                  :rules rules})]
+     (assoc result
+            :before source
+            :after (:output result)
+            :provenance {:operation :foundation/lang-structural
+                         :routes routes}))))
+
+(defn validate-definition
+  "Validates an exact before/after definition recipe without evaluating source.
+   Both sides must contain one definition with the declared name; comments
+   outside that definition are not replacement content."
+  [{:keys [name before after reason] :as recipe}]
+  (if (not (and (string? name) (not (empty? name))
+                (string? before) (string? after)
+                (string? reason) (not (empty? reason))))
+    (throw (ex :tool.migrate/definition-recipe {:recipe recipe}
+               :ex/message "Definition recipe requires name, before, after, and reason")))
+  (doseq [text [before after]]
+    (let [root (nav/block-input text)
+          locations (nav/top-level-locations root)
+          location (first locations)]
+      (if (not (and (= 1 (count locations))
+                    (nav/definition-location? location)
+                    (= name (nav/definition-name location))
+                    (= text (block/string (nav/current location)))))
+        (throw (ex :tool.migrate/definition-recipe
+                   {:name name :source text}
+                   :ex/message "Recipe must contain exactly the named definition")))))
+  recipe)
+
+(defn match-definitions
+  "Checks every recipe before returning any edits. Missing, duplicate, or drifted
+   definitions fail closed; an exact after block is already applied."
+  [root options]
+  (let [expected (:lang/namespace options)
+        actual (nav/namespace-name root)
+        recipes (mapv validate-definition (:lang/definitions options))
+        names (mapv :name recipes)
+        locations (nav/definition-locations root)]
+    (if (not (and (string? expected) (= expected actual)))
+      (throw (ex :tool.migrate/namespace
+                 {:expected expected :actual actual}
+                 :ex/message "Definition recipe namespace does not match")))
+    (if (not (= (count names) (count (set names))))
+      (throw (ex :tool.migrate/definition-conflict {:names names}
+                 :ex/message "Definition recipes must have unique names")))
+    (vec
+     (keep
+      (fn [recipe]
+        (let [selected (filter
+                        (fn [location]
+                          (= (:name recipe) (nav/definition-name location)))
+                        locations)]
+          (if (not (= 1 (count selected)))
+            (throw (ex :tool.migrate/definition-count
+                       {:name (:name recipe) :count (count selected)}
+                       :ex/message "Recipe requires exactly one source definition")))
+          (let [location (first selected)
+                source (block/string (nav/current location))]
+            (cond
+              (= source (:after recipe)) nil
+              (= source (:before recipe))
+              (merge (nav/evidence location)
+                     {:definition/name (:name recipe)
+                      :definition/reason (:reason recipe)
+                      :replacement (:after recipe)})
+              :else
+              (throw (ex :tool.migrate/definition-drift
+                         {:name (:name recipe) :expected (:before recipe)
+                          :actual source :replacement (:after recipe)}
+                         :ex/message "Source definition differs from the reviewed recipe"))))))
+      recipes))))
+
+(defn analyze-definitions
+  "Applies reviewed definition recipes through the shared std.block rule engine.
+   Only matched blocks change: no dependency cleanup or implicit namespace pass.
+   The source and each original block are retained for exact reconstruction;
+   applying the same recipes to their output is idempotent."
+  [source options]
+  (let [root (nav/block-input source)
+        rules (rule/compile-rules
+               [{:id :foundation/lang-definitions
+                 :kind :function
+                 :function {:match match-definitions :rewrite rewrite-route}
+                 :safety :safe
+                 :priority 0
+                 :message "Apply reviewed native language definition adaptation"
+                 :evidence [{:source/path "src/tahto" :target/path "src/lang"}]}])
+        conditionals (rule/reader-conditional-locations root)]
+    (if (not (empty? conditionals))
+      (throw (ex :tool.migrate/reader-conditional
+                 {:source source}
+                 :ex/message "Definition adaptation requires a selected reader branch")))
+    (let [matched (rule/matches root rules options)
+          applied (rule/apply-matches root matched rules :safe options)
+          output (nav/render (:root applied))]
+      {:source source :before source :after output :output output
+       :changed (not= source output)
+       :rules/matched matched :rules/applied (:applied applied)
+       :provenance {:operation :foundation/lang-definitions
+                    :namespace (:lang/namespace options)
+                    :definitions (:lang/definitions options)}})))
+

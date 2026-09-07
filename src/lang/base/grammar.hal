@@ -299,14 +299,14 @@
              #{}
              required))
 
-(defn nested-merge-entry
-  [current replacement]
-  (let [current (if (and (= :macro (:emit replacement))
-                         (:macro replacement)
-                         (not (key-member? replacement :lower)))
+(defn nested-merge-entry [current replacement]
+  (let [current (if (and
+                      (= :macro (:emit replacement))
+                      (:macro replacement)
+                      (not (key-member? replacement :lower)))
                   (dissoc current :lower)
                   current)]
-    (normalize-op-entry (merge current replacement))))
+    (normalize-op-entry (merge-nested current replacement))))
 
 (defn build:override
   "Overrides existing operators."
@@ -363,17 +363,19 @@
              reserved))
 
 (defn grammar-structure
-  "Returns block, definition, and function operator sets."
+  "Returns reserved symbols for block, definition, and function forms."
   [reserved]
   (reduce-kv
-   (fn [structure _ entry]
-     (let [entry-type (:type entry)]
-       (if (has? structure entry-type)
-         (assoc structure entry-type
-                (conj (get structure entry-type) (:op entry)))
-         structure)))
-   {:block #{} :def #{} :fn #{}}
-   reserved))
+    (fn [structure symbol entry]
+      (let [entry-type (:type entry)]
+        (if (has? structure entry-type)
+          (assoc
+            structure
+            entry-type
+            (conj (get structure entry-type) symbol))
+          structure)))
+    {:block #{}, :def #{}, :fn #{}}
+    reserved))
 
 (defn grammar-sections
   "Returns grammar sections."
@@ -387,27 +389,25 @@
           reserved))
 
 (defn grammar-macros
-  "Returns definition-style macro operators."
+  "Returns reserved symbols for definition-style macros."
   [reserved]
-  (reduce (fn [macros pair]
-            (let [entry (second pair)]
-              (if (= :def (:type entry))
-                (conj macros (:op entry))
-                macros)))
-          #{}
-          reserved))
+  (reduce-kv
+    (fn [macros symbol entry]
+      (if (= :def (:type entry)) (conj macros symbol) macros))
+    #{}
+    reserved))
 
 (defn grammar?
-  "Returns true for a constructed Polis grammar."
+  "Returns true for a constructed language grammar."
   [value]
   (and (map? value)
-       (= :polis/grammar (:polis/type value))))
+       (= :lang/grammar (:lang/type value))))
 
 (defn grammar
   "Constructs a grammar."
   [tag reserved template]
   (merge template
-         {:polis/type :polis/grammar
+         {:lang/type :lang/grammar
           :tag tag
           :reserved reserved
           :sections (grammar-sections reserved)

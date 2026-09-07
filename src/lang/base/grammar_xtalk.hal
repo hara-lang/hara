@@ -1,178 +1,351 @@
 (ns lang.base.grammar-xtalk
-  (:require [lang.base.grammar-spec :as spec]
-            [lang.base.preprocess-base :as preprocess-base]))
+  (:require [lang.base.preprocess-base :as preprocess-base]))
 
-(defn form [values] (spec/as-list values))
-(defn item [input index]
-  (let [values (vec input)]
-    (if (> (count values) index) (nth values index) nil)))
-(defn unary [operation input] (form [operation (item input 1)]))
-(defn binary [operation input]
-  (form [operation (item input 1) (item input 2)]))
-(defn variadic [operation input]
-  (form (concat [operation] (drop 1 input))))
+(defn tf-throw
+  "wrapper for throw transform"
+  {:added "4.0"}
+  [[_ obj]]
+  (list 'throw obj))
 
-(defn tf-throw "Wrapper for throw transform." [input] (unary 'throw input))
-(defn tf-add "Wrapper for add transform." [input] (variadic '+ input))
-(defn tf-sub "Wrapper for sub transform." [input] (variadic '- input))
-(defn tf-mul "Wrapper for multiply transform." [input] (variadic '* input))
-(defn tf-div "Wrapper for divide transform." [input] (variadic '/ input))
-(defn tf-neg "Wrapper for negation transform." [input] (unary '- input))
-(defn tf-inc "Wrapper for increment transform." [input]
-  (form ['+ (item input 1) 1]))
-(defn tf-dec "Wrapper for decrement transform." [input]
-  (form ['- (item input 1) 1]))
-(defn tf-eq "Wrapper for equality transform." [input] (binary '== input))
-(defn tf-neq "Wrapper for inequality transform." [input] (binary 'not= input))
-(defn tf-lt "Wrapper for less-than transform." [input] (binary '< input))
-(defn tf-lte "Wrapper for less-than-or-equal transform." [input] (binary '<= input))
-(defn tf-gt "Wrapper for greater-than transform." [input] (binary '> input))
-(defn tf-gte "Wrapper for greater-than-or-equal transform." [input] (binary '>= input))
-(defn tf-zero? "Wrapper for zero predicate transform." [input]
-  (form ['== (item input 1) 0]))
-(defn tf-pos? "Wrapper for positive predicate transform." [input]
-  (form ['> (item input 1) 0]))
-(defn tf-neg? "Wrapper for negative predicate transform." [input]
-  (form ['< (item input 1) 0]))
-(defn tf-even? "Wrapper for even predicate transform." [input]
-  (form ['== 0 (form ['mod (item input 1) 2])]))
-(defn tf-odd? "Wrapper for odd predicate transform." [input]
-  (form ['not (form ['== 0 (form ['mod (item input 1) 2])])]))
-(defn tf-eq-nil? "Equals nil transform." [input]
-  (form ['== nil (item input 1)]))
-(defn tf-not-nil? "Not-nil transform." [input]
-  (form ['not= nil (item input 1)]))
+(defn tf-add
+  "wrapper for add transform"
+  {:added "4.1"}
+  [[_ a b & more]]
+  (apply list '+ a b more))
+
+(defn tf-sub
+  "wrapper for sub transform"
+  {:added "4.1"}
+  [[_ a b & more]]
+  (apply list '- a b more))
+
+(defn tf-mul
+  "wrapper for mul transform"
+  {:added "4.1"}
+  [[_ a b & more]]
+  (apply list '* a b more))
+
+(defn tf-div
+  "wrapper for div transform"
+  {:added "4.1"}
+  [[_ a b & more]]
+  (apply list '/ a b more))
+
+(defn tf-neg
+  "wrapper for neg transform"
+  {:added "4.1"}
+  [[_ x]]
+  (list '- x))
+
+(defn tf-inc
+  "wrapper for inc transform"
+  {:added "4.1"}
+  [[_ x]]
+  (list '+ x 1))
+
+(defn tf-dec
+  "wrapper for dec transform"
+  {:added "4.1"}
+  [[_ x]]
+  (list '- x 1))
+
+(defn tf-eq
+  "wrapper for eq transform"
+  {:added "4.1"}
+  [[_ a b]]
+  (list '== a b))
+
+(defn tf-neq
+  "wrapper for neq transform"
+  {:added "4.1"}
+  [[_ a b]]
+  (list 'not= a b))
+
+(defn tf-lt
+  "wrapper for lt transform"
+  {:added "4.1"}
+  [[_ a b]]
+  (list '< a b))
+
+(defn tf-lte
+  "wrapper for lte transform"
+  {:added "4.1"}
+  [[_ a b]]
+  (list '<= a b))
+
+(defn tf-gt
+  "wrapper for gt transform"
+  {:added "4.1"}
+  [[_ a b]]
+  (list '> a b))
+
+(defn tf-gte
+  "wrapper for gte transform"
+  {:added "4.1"}
+  [[_ a b]]
+  (list '>= a b))
+
+(defn tf-zero?
+  "wrapper for zero? transform"
+  {:added "4.1"}
+  [[_ x]]
+  (list '== x 0))
+
+(defn tf-pos?
+  "wrapper for pos? transform"
+  {:added "4.1"}
+  [[_ x]]
+  (list '> x 0))
+
+(defn tf-neg?
+  "wrapper for neg? transform"
+  {:added "4.1"}
+  [[_ x]]
+  (list '< x 0))
+
+(defn tf-even?
+  "wrapper for even? transform"
+  {:added "4.1"}
+  [[_ x]]
+  (list '== 0 (list 'mod x 2)))
+
+(defn tf-odd?
+  "wrapper for odd? transform"
+  {:added "4.1"}
+  [[_ x]]
+  (list 'not (list '== 0 (list 'mod x 2))))
+
+(defn tf-eq-nil?
+  "equals nil transform"
+  {:added "4.0"}
+  [[_ obj]]
+  (list '== nil obj))
+
+(defn tf-not-nil?
+  "not nil transform"
+  {:added "4.0"}
+  [[_ obj]]
+  (list 'not= nil obj))
 
 (defn tf-has-key?
-  "Has-key default transform."
-  [input]
-  (let [obj (item input 1)
-        key (item input 2)
-        check (item input 3)
-        value (form ['not= (form ['x:get-key obj key]) nil])]
-    (if check (form ['== check value]) value)))
+  "has key default transform"
+  {:added "4.0"}
+  [[_ obj key check]]
+  (let [val (list 'not= (list 'x:get-key obj key) nil)]
+    (if check
+      (list '== check val)
+      val)))
 
 (defn tf-get-path
-  "Lowers x:get-path to direct chained structural access."
-  [input]
-  (let [obj (item input 1)
-        keys (item input 2)
-        default (item input 3)
-        default? (> (count input) 3)
-        target (if (symbol? obj)
-                 obj
-                 (form ['quote obj]))
-        value (form
-               (concat ['. target]
-                       (map (fn [key] [key]) keys)))]
-    (if default?
-      (form [':? (form ['x:nil? value]) default value])
-      value)))
+  "lowers x:get-path to direct chained path access
+
+   This is structural access: each path component is applied to the previous
+   value and intermediate nil or missing values are not guarded. Use
+   `xt.lang.common-data/get-in` for guarded path traversal."
+  {:added "4.0"}
+  [[_ obj ks default]]
+  (let [val (if (symbol? obj)
+              (apply list '. obj (map vector ks))
+              (apply list '. (list 'quote (list obj)) (map vector ks)))]
+    (if default
+      (list ':? (list 'x:nil? val) default val)
+      val)))
 
 (defn tf-get-key
-  "Transforms key lookup."
-  [input]
-  (let [obj (item input 1)
-        key (item input 2)
-        default (item input 3)
-        default? (> (count input) 3)
-        target (if (or (symbol? obj) (vector? obj))
-                 obj
-                 (form ['quote obj]))
-        value (form ['. target [key]])]
-    (if default?
-      (form [':? (form ['x:nil? value]) default value])
-      value)))
+  "get-key transform"
+  {:added "4.0"}
+  [[_ obj k default]]
+  (let [val (if (symbol? obj)
+              (list '. obj [k])
+              (list '. (list 'quote (list obj)) [k]))]
+    (if default
+      (list ':? (list 'x:nil? val) default val)
+      val)))
 
 (defn tf-set-key
-  "Transforms key assignment."
-  [input]
-  (form [':=
-         (form ['. (item input 1) [(item input 2)]])
-         (item input 3)]))
+  "set-key transform"
+  {:added "4.0"}
+  [[_ obj k v]]
+  (list := (list '. obj [k]) v))
 
 (defn tf-del-key
-  "Transforms key deletion."
-  [input]
-  (form ['x:del (form ['. (item input 1) [(item input 2)]])]))
+  "del-key transform"
+  {:added "4.0"}
+  [[_ obj k]]
+  (list 'x:del (list '. obj [k])))
 
 (defn tf-copy-key
-  "Transforms a key copy."
-  [input]
-  (let [destination (item input 1)
-        source (item input 2)
-        index (item input 3)
-        destination-key (if (vector? index) (first index) index)
-        source-key (if (vector? index) (second index) index)]
-    (tf-set-key
-     [nil destination destination-key
-      (tf-get-key [nil source source-key])])))
+  "copy-key transform"
+  {:added "4.0"}
+  [[_ dst src idx]]
+  (let [[dk sk] (if (vector? idx)
+                  idx
+                  [idx idx])]
+    (tf-set-key [nil dst dk (tf-get-key [nil src sk])])))
+
+;;
+;;
+;;
 
 (defn tf-grammar-offset
-  "Gets the target grammar index offset."
+  "del-key transform"
+  {:added "4.0"}
   []
-  (or (get-in (preprocess-base/macro-grammar)
-              [:default :index :offset])
-      0))
+  (let [grammar preprocess-base/*macro-grammar*]
+    (or (get-in grammar [:default :index :offset]) 0)))
 
 (defn tf-grammar-end-inclusive
-  "Gets the target grammar end-inclusive flag."
+  "gets the end inclusive flag"
+  {:added "4.0"}
   []
-  (get-in (preprocess-base/macro-grammar)
-          [:default :index :end-inclusive]))
+  (let [grammar preprocess-base/*macro-grammar*]
+    (get-in grammar [:default :index :end-inclusive])))
 
 (defn tf-offset-base
-  "Calculates a target index offset."
-  [offset value]
-  (if (nil? value)
+  "calculates the offset"
+  {:added "4.0"}
+  [offset n]
+  (if (nil? n)
     offset
-    (cond (= offset 0) value
-          (number? value) (+ value offset)
-          :else (form ['+ value offset]))))
+    (cond (zero? offset) n
 
-(defn tf-offset "Gets the forward offset." [input]
-  (tf-offset-base (tf-grammar-offset) (item input 1)))
-(defn tf-offset-rev "Gets the reverse offset." [input]
-  (tf-offset-base (- (tf-grammar-offset) 1) (item input 1)))
-(defn tf-offset-len "Gets the length offset." [input]
-  (tf-offset-base (if (tf-grammar-end-inclusive) 0 -1)
-                  (item input 1)))
-(defn tf-offset-rlen "Gets the reverse length offset." [input]
-  (tf-offset-base (if (tf-grammar-end-inclusive) -1 0)
-                  (item input 1)))
+          (integer? n)
+          (+ n offset)
 
-(defn tf-first "Gets the first indexed element." [input]
-  (form ['x:get-idx (item input 1) (form ['x:offset 0])]))
-(defn tf-second "Gets the second indexed element." [input]
-  (form ['x:get-idx (item input 1) (form ['x:offset 1])]))
-(defn tf-last "Gets the last indexed element." [input]
-  (form ['x:get-idx
-         (item input 1)
-         (form ['x:offset-len (form ['x:len (item input 1)])])]))
-(defn tf-second-last "Gets the second-last indexed element." [input]
-  (form ['x:get-idx
-         (item input 1)
-         (form ['x:offset-len
-                (form ['- (form ['x:len (item input 1)]) 1])])]))
-(defn tf-str-lt "Checks ascending string order." [input]
-  (binary 'x:str-comp input))
-(defn tf-str-gt "Checks descending string order." [input]
-  (form ['x:str-comp (item input 2) (item input 1)]))
+          :else
+          (list '+ n offset))))
 
-(defn tf-global-set "Transforms global assignment." [input]
-  (form ['x:set-key '!:G (str (item input 1)) (item input 2)]))
-(defn tf-global-has? "Transforms global membership." [input]
-  (form [(quote not=)
-         nil
-         (form [(quote x:get-key) (quote !:G) (str (item input 1))])]))
-(defn tf-global-del "Transforms global deletion." [input]
-  (form ['x:set-key '!:G (str (item input 1)) nil]))
-(defn tf-lu-eq "Transforms lookup equality." [input] (binary '== input))
-(defn tf-bit-and "Transforms bitwise and." [input] (binary 'b:& input))
-(defn tf-bit-or "Transforms bitwise or." [input] (binary 'b:| input))
-(defn tf-bit-lshift "Transforms bitwise left shift." [input] (binary 'b:<< input))
-(defn tf-bit-rshift "Transforms bitwise right shift." [input] (binary 'b:>> input))
-(defn tf-bit-xor "Transforms bitwise xor." [input] (binary 'b:xor input))
+(defn tf-offset
+  "gets the offset"
+  {:added "4.0"}
+  [[_ n]]
+  (tf-offset-base (tf-grammar-offset)
+                  n))
+
+(defn tf-offset-rev
+  "gets the reverse offset"
+  {:added "4.0"}
+  [[_ n]]
+  (tf-offset-base (- (tf-grammar-offset) 1)
+                  n))
+
+(defn tf-offset-len
+  "gets the length offset"
+  {:added "4.0"}
+  [[_ n]]
+  (tf-offset-base (if (tf-grammar-end-inclusive)
+                    0 -1) 
+                  n))
+
+(defn tf-offset-rlen
+  "gets the reverse length offset"
+  {:added "4.0"}
+  [[_ n]]
+  (tf-offset-base (if (tf-grammar-end-inclusive)
+                    -1 0) 
+                  n))
+
+(defn tf-first
+  "gets the first element of an indexed collection"
+  {:added "4.1"}
+  [[_ arr]]
+  (list 'x:get-idx arr (list 'x:offset 0)))
+
+(defn tf-second
+  "gets the second element of an indexed collection"
+  {:added "4.1"}
+  [[_ arr]]
+  (list 'x:get-idx arr (list 'x:offset 1)))
+
+(defn tf-last
+  "gets the last element of an indexed collection"
+  {:added "4.1"}
+  [[_ arr]]
+  (list 'x:get-idx arr (list 'x:offset-len (list 'x:len arr))))
+
+(defn tf-second-last
+  "gets the second last element of an indexed collection"
+  {:added "4.1"}
+  [[_ arr]]
+  (list 'x:get-idx arr (list 'x:offset-len (list '- (list 'x:len arr) 1))))
+
+(defn tf-str-lt
+  "checks if string a sorts before b"
+  {:added "4.1"}
+  [[_ a b]]
+  (list 'x:str-comp a b))
+
+(defn tf-str-gt
+  "checks if string a sorts after b"
+  {:added "4.1"}
+  [[_ a b]]
+  (list 'x:str-comp b a))
+
+;;
+;; GLOBAL
+;;
+
+(defn tf-global-set
+  "default global set transform"
+  {:added "4.0"}
+  [[_ sym val]]
+  (list 'x:set-key '!:G (str sym) val))
+
+(defn tf-global-has?
+  "default global has transform"
+  {:added "4.0"}
+  [[_ sym]]
+  (list 'not (list 'x:nil? (list 'x:get-key '!:G (str sym)))))
+
+(defn tf-global-del
+  "default global del transform"
+  {:added "4.0"}
+  [[_ sym val]]
+  (list 'x:set-key '!:G (str sym) nil))
+
+;;
+;; LU
+;;
+
+(defn tf-lu-eq
+  "lookup equals transform"
+  {:added "4.0"}
+  [[_ o1 o2]]
+  (list '== o1 o2))
+
+;;
+;; BIT
+;;
+
+(defn tf-bit-and
+  "bit and transform"
+  {:added "4.0"}
+  [[_ i1 i2]]
+  (list 'b:& i1 i2))
+
+(defn tf-bit-or
+  "bit or transform"
+  {:added "4.0"}
+  [[_ i1 i2]]
+  (list 'b:| i1 i2))
+
+(defn tf-bit-lshift
+  "bit left shift transform"
+  {:added "4.0"}
+  [[_ x n]]
+  (list 'b:<< x n))
+
+(defn tf-bit-rshift
+  "bit right shift transform"
+  {:added "4.0"}
+  [[_ x n]]
+  (list 'b:>> x n))
+
+(defn tf-bit-xor
+  "bit xor transform"
+  {:added "4.0"}
+  [[_ x n]]
+  (list 'b:xor x n))
 
 
 ;;
@@ -181,11 +354,11 @@
 
 ;; common-lib
 (def +xt-common-basic+
-  [{:op :x-del            :symbol #{'x:del}             :emit :abstract
+  [{:op :x-del            :symbol #{'x:del}             :emit :abstract  
     :op-spec    {:macro-only true
                  :arglists '([var])
                  :type [:fn [:xt/any] :xt/unknown]}}
-   {:op :x-cat            :symbol #{'x:cat}             :emit :abstract
+   {:op :x-cat            :symbol #{'x:cat}             :emit :abstract  
     :op-spec    {:variadic true
                  :arglists '([x y])
                  :type [:fn [:xt/str :xt/str] :xt/str]}}
@@ -215,16 +388,16 @@
                  :arglists '([value])}}])
 
 (def +xt-common-index+
-  [{:op :x-offset         :symbol #{'x:offset}          :macro #'tf-offset      :emit :macro :wrappable true
+  [{:op :x-offset         :symbol #{'x:offset}          :macro #'tf-offset      :emit :macro
     :op-spec {:arglists '([] [n])
               :type [:fn [:xt/int] :xt/int]}}
-   {:op :x-offset-rev     :symbol #{'x:offset-rev}      :macro #'tf-offset-rev  :emit :macro :wrappable true
+   {:op :x-offset-rev     :symbol #{'x:offset-rev}      :macro #'tf-offset-rev  :emit :macro
     :op-spec {:arglists '([] [n])
               :type [:fn [:xt/int] :xt/int]}}
-   {:op :x-offset-len     :symbol #{'x:offset-len}      :macro #'tf-offset-len  :emit :macro :wrappable true
+   {:op :x-offset-len     :symbol #{'x:offset-len}      :macro #'tf-offset-len  :emit :macro
     :op-spec {:arglists '([] [n])
               :type [:fn [:xt/int] :xt/int]}}
-   {:op :x-offset-rlen    :symbol #{'x:offset-rlen}     :macro #'tf-offset-rlen :emit :macro :wrappable true
+   {:op :x-offset-rlen    :symbol #{'x:offset-rlen}     :macro #'tf-offset-rlen :emit :macro
     :op-spec {:arglists '([] [n])
               :type [:fn [:xt/int] :xt/int]}}])
 
@@ -346,10 +519,10 @@
    {:op :x-del-key        :symbol #{'x:del-key}         :macro #'tf-del-key     :emit :macro
     :op-spec {:type [:fn [:xt/obj :xt/str] :xt/any]
               :arglists '([obj key])}}
-    {:op :x-get-key        :symbol #{'x:get-key} :wrappable true         :macro #'tf-get-key     :emit :macro
+    {:op :x-get-key        :symbol #{'x:get-key}         :macro #'tf-get-key     :emit :macro
      :op-spec {:type [:fn [:xt/obj :xt/str  :xt/any] :xt/any]
                :arglists '([obj key] [obj key default])}}
-    {:op :x-get-path       :symbol #{'x:get-path} :wrappable true        :macro #'tf-get-path    :emit :macro
+    {:op :x-get-path       :symbol #{'x:get-path}        :macro #'tf-get-path    :emit :macro
      :op-spec {:type [:fn [:xt/obj [:xt/array :xt/str] :xt/any] :xt/any]
                :arglists '([obj path] [obj path default])}}
    {:op :x-set-key        :symbol #{'x:set-key}         :macro #'tf-set-key     :emit :macro
@@ -524,7 +697,7 @@
 
 ;; common-math
 
-(def +xt-common-math+
+(def +xt-common-math+       
   [{:op :x-m-abs :symbol #{'x:m-abs} :emit :abstract
     :op-spec {:arglists '([value])
               :type [:fn [:xt/num] :xt/num]}}
@@ -654,7 +827,7 @@
     :op-spec {:type [:fn [[:xt/array :xt/any] :xt/fn] :xt/any]
               :arglists '([arr pred])}}])
 
-(def +xt-functional-iter+
+(def +xt-functional-iter+      
   [{:op :x-iter-from-obj  :symbol #{'x:iter-from-obj}   :emit :abstract
     :op-spec {:arglists '([obj])}}
    {:op :x-iter-from-arr  :symbol #{'x:iter-from-arr}   :emit :abstract

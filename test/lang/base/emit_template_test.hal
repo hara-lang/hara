@@ -1,5 +1,94 @@
 (ns lang.base.emit-template-test
-  (:require [lang.base.emit-template :as template]))
+  (:use code.test)
+  (:require [lang.base.emit-template :refer :all]
+            [lang.model.v1.spec-js :as js]))
+
+^{:refer lang.base.emit-template/entry-reserved :added "4.1"}
+(fact "gets the reserved grammar entry for a code entry"
+  (entry-reserved {:reserved {:add {:emit :macro}}}
+                  {:op :add})
+  => {:emit :macro}
+
+  (entry-reserved {:reserved {:add {:emit :macro}}}
+                  {:op :sub})
+  => nil)
+
+^{:refer lang.base.emit-template/materialize-code-entry :added "4.1"}
+(fact "returns the entry unchanged when it cannot be materialized"
+  (materialize-code-entry {:grammar {}
+                           :modules {:math {}}}
+                          {:op :add})
+  => {:op :add}
+
+  (materialize-code-entry {:grammar {:reserved {:add {:emit :macro}}}
+                           :modules nil}
+                          {:op :add})
+  => {:op :add})
+
+(def +js-entry+
+  {:op 'defn
+   :form-input '(defn foo [x] x)
+   :module 'JS.core
+   :lang :js})
+
+(def +js-modules+
+  {'JS.core {:id 'JS.core :lang :js :link '{- JS.core}}})
+
+^{:refer lang.base.emit-template/create-code-state :added "4.1"}
+(fact "hydrates and stages a code entry for the current grammar"
+  (let [reserved (get-in js/+grammar+ [:reserved 'defn])]
+    (create-code-state +js-entry+ reserved js/+grammar+ +js-modules+))
+  => (contains {:form '(defn foo [x] x)
+                :deps #{}},
+               :in-any-order)
+
+  (let [reserved (get-in js/+grammar+ [:reserved 'defn])]
+    (keys (create-code-state +js-entry+ reserved js/+grammar+ +js-modules+)))
+  => '(:hmeta :form :deps :deps-fragment :deps-native :xtalk-ops :xtalk-profiles :polyfill-modules))
+
+^{:refer lang.base.emit-template/cached-code-state :added "4.1"}
+(fact "restages a code entry using the per-entry cache"
+  (let [reserved (get-in js/+grammar+ [:reserved 'defn])
+        cache    (atom {})
+        entry    (assoc +js-entry+ :static/code.cache cache)]
+    (= (cached-code-state entry reserved js/+grammar+ +js-modules+)
+       (cached-code-state entry reserved js/+grammar+ +js-modules+)))
+  => true
+
+  (let [reserved (get-in js/+grammar+ [:reserved 'defn])
+        cache    (atom {})
+        entry    (assoc +js-entry+ :static/code.cache cache)]
+    (cached-code-state entry reserved js/+grammar+ +js-modules+)
+    (count @cache))
+  => 1)
+
+^{:refer lang.base.emit-template/cached-entry-deps :added "4.1"}
+(fact "returns the dependencies of a cached code entry"
+  (let [reserved (get-in js/+grammar+ [:reserved 'defn])
+        book     {:grammar js/+grammar+
+                  :modules +js-modules+
+                  :lang :js}]
+    (cached-entry-deps book (assoc +js-entry+ :static/code.cache (atom {}))))
+  => #{})
+
+^{:refer lang.base.emit-template/code-state-computing? :added "4.1"}
+(fact "returns true if the entry is currently being staged"
+  (code-state-computing? {:lang :js :module 'M :id 'foo})
+  => false
+
+  (let [reserved {:hydrate (fn [_ _ context]
+                             [nil (code-state-computing? (:entry context))])}]
+    (:form (create-code-state {:op 'test
+                               :form-input '(foo)
+                               :module 'M
+                               :lang :js
+                               :id 'foo}
+                              reserved
+                              js/+grammar+
+                              {})))
+  => true)
+
+
 
 (def fixture-entry
   {:lang :fixture
@@ -15,33 +104,33 @@
 
 ^{:refer lang.base.emit-template/member?}
 (Test/check [{:name "tests membership without assuming a host collection implementation"
-              :test (fn [] [(template/member? #{:a :b} :b) (template/member? #{:a} :missing)])
+              :test (fn [] [(lang.base.emit-template/member? #{:a :b} :b) (lang.base.emit-template/member? #{:a} :missing)])
               :expected [true false]}])
 
 ^{:refer lang.base.emit-template/entry-reserved}
 (Test/check [{:name "locates the reserved grammar operation for an entry"
-              :test (fn [] (template/entry-reserved fixture-grammar fixture-entry))
+              :test (fn [] (lang.base.emit-template/entry-reserved fixture-grammar fixture-entry))
               :expected {}}])
 
 ^{:refer lang.base.emit-template/code-state-computing?}
 (Test/check [{:name "reports only the active dynamic computation coordinate"
-              :test (fn [] [(template/code-state-computing? fixture-entry)
-                            (binding [template/*computing-entries* #{[:fixture 'fixture.core 'run]}]
-                              (template/code-state-computing? fixture-entry))])
+              :test (fn [] [(lang.base.emit-template/code-state-computing? fixture-entry)
+                            (binding [lang.base.emit-template/*computing-entries* #{[:fixture 'fixture.core 'run]}]
+                              (lang.base.emit-template/code-state-computing? fixture-entry))])
               :expected [false true]}])
 
 ^{:refer lang.base.emit-template/create-code-state}
 (Test/check [{:name "hydrates, stages, and restores the recursion guard after failure"
-              :test (fn [] (let [state (template/create-code-state
+              :test (fn [] (let [state (lang.base.emit-template/create-code-state
                                          fixture-entry {} fixture-grammar fixture-modules)
-                                recursive (binding [template/*computing-entries* #{[:fixture 'fixture.core 'run]}]
-                                            (try (template/create-code-state
+                                recursive (binding [lang.base.emit-template/*computing-entries* #{[:fixture 'fixture.core 'run]}]
+                                            (try (lang.base.emit-template/create-code-state
                                                   fixture-entry {} fixture-grammar fixture-modules)
                                                  false
                                                  (catch error true)))]
-                            [(select-keys state template/+code-state-keys+)
+                            [(select-keys state lang.base.emit-template/+code-state-keys+)
                              recursive
-                             (template/code-state-computing? fixture-entry)]))
+                             (lang.base.emit-template/code-state-computing? fixture-entry)]))
               :expected [{:form '(outer 1) :deps #{} :deps-fragment #{} :deps-native {}
                           :xtalk-ops #{} :xtalk-profiles #{} :polyfill-modules #{}}
                          true false]}])
@@ -53,10 +142,10 @@
                                 reserved {:hydrate (fn [form grammar context]
                                                      (swap! calls inc)
                                                      [nil form])}
-                                first-state (template/cached-code-state entry reserved fixture-grammar fixture-modules)
-                                second-state (template/cached-code-state entry reserved fixture-grammar fixture-modules)
-                                _ (template/clear-code-state-cache! entry)
-                                third-state (template/cached-code-state entry reserved fixture-grammar fixture-modules)]
+                                first-state (lang.base.emit-template/cached-code-state entry reserved fixture-grammar fixture-modules)
+                                second-state (lang.base.emit-template/cached-code-state entry reserved fixture-grammar fixture-modules)
+                                _ (lang.base.emit-template/clear-code-state-cache! entry)
+                                third-state (lang.base.emit-template/cached-code-state entry reserved fixture-grammar fixture-modules)]
                             [(= first-state second-state)
                              (= first-state third-state)
                              (deref calls)
@@ -66,10 +155,10 @@
 ^{:refer lang.base.emit-template/clear-code-state-cache!}
 (Test/check [{:name "clears a present cache idempotently and accepts entries without one"
               :test (fn [] (let [entry (assoc fixture-entry :static/code.cache (atom {:fixture :state}))]
-                            [(= entry (template/clear-code-state-cache! entry))
-                             (= entry (template/clear-code-state-cache! entry))
+                            [(= entry (lang.base.emit-template/clear-code-state-cache! entry))
+                             (= entry (lang.base.emit-template/clear-code-state-cache! entry))
                              (deref (:static/code.cache entry))
-                             (template/clear-code-state-cache! (dissoc entry :static/code.cache))]))
+                             (lang.base.emit-template/clear-code-state-cache! (dissoc entry :static/code.cache))]))
               :expected [true true {} {:lang :fixture :module 'fixture.core :id 'run
                                                          :op :plain :form-input '(outer 1)}]}])
 
@@ -80,13 +169,48 @@
                                         :grammar {:reserved {:plain {:hydrate (fn [form grammar context]
                                                                                 [{:hydrated true} form])
                                                                        :hydrate-hook (fn [value] (assoc value :hooked true))}}})]
-                        (select-keys (template/materialize-code-entry book entry)
+                        (select-keys (lang.base.emit-template/materialize-code-entry book entry)
                                      [:form :hydrated :hooked :deps :xtalk-ops])))
               :expected {:form '(outer 1) :hydrated true :hooked true :deps #{} :xtalk-ops #{}}}])
 
 ^{:refer lang.base.emit-template/cached-entry-deps}
 (Test/check [{:name "returns the cached dependency set for the book language"
-              :test (fn [] (template/cached-entry-deps
+              :test (fn [] (lang.base.emit-template/cached-entry-deps
                             fixture-book
                             (assoc fixture-entry :static/code.cache (atom {}))))
               :expected #{}}])
+
+^{:refer lang.base.emit-template/+code-state-keys+}
+(fact "preserves the ordered materialized code-state surface"
+  lang.base.emit-template/+code-state-keys+
+  => [:form :deps :deps-fragment :deps-native :xtalk-ops :xtalk-profiles :polyfill-modules])
+
+^{:refer lang.base.emit-template/*computing-entries*}
+(fact "restores the baseline computation guard after a failed scoped computation"
+  (let [before lang.base.emit-template/*computing-entries*
+        observed (try
+                   (binding [lang.base.emit-template/*computing-entries* #{[:fixture 'fixture.core 'run]}]
+                     (throw (ex :state {:probe true})))
+                   (catch error :guard-failed))]
+    [before observed lang.base.emit-template/*computing-entries*])
+  => [#{} :guard-failed #{}])
+
+^{:refer lang.base.emit-template/member?}
+(fact "distinguishes present, absent, and empty membership"
+  [(lang.base.emit-template/member? [:a :b] :b)
+   (lang.base.emit-template/member? [:a :b] :c)
+   (lang.base.emit-template/member? [] nil)]
+  => [true false false])
+
+^{:refer lang.base.emit-template/clear-code-state-cache!}
+(fact "clears the cache idempotently while retaining entry identity fields"
+  (let [cache (atom {:fixture {:form '(run 1)}})
+        entry {:id 'run :static/code.cache cache}]
+    (try
+      (let [first-entry (lang.base.emit-template/clear-code-state-cache! entry)
+            first-cache (deref cache)
+            second-entry (lang.base.emit-template/clear-code-state-cache! entry)]
+        [(:id first-entry) first-cache (:id second-entry) (deref cache)
+         (lang.base.emit-template/clear-code-state-cache! {:id 'uncached})])
+      (finally (reset! cache {}))))
+  => ['run {} 'run {} {:id 'uncached}])
