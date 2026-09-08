@@ -1,64 +1,159 @@
-(ns lang.base.preprocess-staging-test
-  (:require [lang.base.preprocess-assign :as assign]
-            [lang.base.preprocess-staging :as staging]))
+(ns lang.base.preprocess-staging-test (:use code.test) (:require [lang.base.preprocess-assign :as assign] [lang.base.preprocess-staging :as staging :refer :all] [lang.base.preprocess-base :as base] [lang.base.grammar-xtalk :as xt] [lang.base.emit-helper :as helper] [lang.base.grammar :as grammar]))
+(def +reserved+ (-> (grammar/build) (grammar/to-reserved)))
+(def +grammar+ (grammar/grammar :test +reserved+ helper/+default+))
+(fact
+  "reserved template heads expand before value-position fragments"
+  (to-staging-form
+    '(-> xs (u/filter odd?))
+    {:reserved
+     {'->
+      {:type :template,
+       :macro
+       (fn [[_ input & steps]]
+         (reduce
+           (fn [value step]
+             (if (form? step)
+               (with-meta
+                 (apply list (first step) value (rest step))
+                 (meta step))
+               (list step value)))
+           input
+           steps))}}}
+    '{L.core
+      {:fragment
+       {filter
+        {:id 'filter,
+         :module L.core,
+         :template (fn [arr pred] (list 'filter arr pred)),
+         :form '(fn [arr pred])}}}}
+    '{:module {:id L.current, :link {u L.core}}}
+    nil
+    identity)
+  =>
+  '(u/filter xs odd?))
+(fact
+  "xtalk operator heads remain in-place inside forms"
+  (first
+    (to-staging
+      '(do
+         (x:set-key obj (x:arr-first e) (x:arr-second e))
+         (return obj))
+      +grammar+
+      {}
+      '{:module
+        {:id xt.lang.common-lib, :link {- xt.lang.common-lib}}}))
+  =>
+  '(do (x:set-key obj (x:arr-first e) (x:arr-second e)) (return obj)))
+^{:refer lang.base.preprocess-staging/to-staging-form, :id native-staging-to-staging-form}
+(fact
+  "stages held controls, hard links, and fragment templates"
+  ((fn []
+     (let [held (staging/to-staging-form
+                  '(!:eval (+ 1 2))
+                  {}
+                  {}
+                  {}
+                  nil
+                  identity)
+           hard-link (staging/to-staging-form
+                       '(link input)
+                       {:reserved
+                        {'link {:emit :hard-link, :raw 'raw}}}
+                       {}
+                       {}
+                       nil
+                       identity)
+           dependencies (atom #{})
+           fragment (staging/to-staging-form
+                      '(library/piece input)
+                      {}
+                      {'library
+                       {:fragment
+                        {'piece
+                         {:id 'piece,
+                          :module 'library,
+                          :template
+                          (fn [value] (list 'expanded value))}}}}
+                      {:module {:id 'current, :link {}}}
+                      dependencies
+                      identity)]
+       [(and (atom? held) (= '(!:eval (+ 1 2)) (deref held)))
+        hard-link
+        fragment
+        (deref dependencies)])))
+  =>
+  [true '(raw input) '(expanded input) #{'library/piece}])
+^{:refer lang.base.preprocess-staging/to-staging, :id native-staging-to-staging}
+(fact
+  "stages linked code and native roots while recording dependencies"
+  ((fn []
+     (staging/to-staging
+       '(outer alias/item console)
+       {}
+       {'library {:code {'item {:id 'item, :op :defn}}}}
+       {:module
+        {:id 'current,
+         :link {'alias 'library},
+         :native-lu {'console :node}}})))
+  =>
+  ['(outer library/item console)
+   #{'library/item}
+   #{}
+   {:node #{'console}}])
+^{:refer lang.base.preprocess-staging/to-resolve, :id native-staging-to-resolve}
+(fact
+  "resolves code symbols while retaining protected grammar heads"
+  ((fn []
+     (let [output (staging/to-resolve
+                    '(if alias/item)
+                    {:reserved {'if {:emit :if}}}
+                    {'library {:code {'item {:id 'item, :op :defn}}}}
+                    {:module {:id 'current, :link {'alias 'library}}})]
+       [(assign/unwrap-protected-head (first output))
+        (second output)])))
+  =>
+  ['if 'library/item])
+^{:refer lang.base.preprocess-staging/to-staging-form :id staging-template-vars}
+(fact "invokes reserved and fragment template Vars with original arguments"
+  (let [deps (atom #{})]
+    (try
+      [(staging/to-staging-form '(plus 1 2)
+         {:reserved {'plus {:type :template :macro #'xt/tf-add}}} {} {} nil identity)
+       (staging/to-staging-form '(library/piece 1 2) {}
+         {'library {:fragment {'piece {:id 'piece :module 'library :template #'list}}}}
+         {:module {:id 'current :link {}}} deps identity)
+       (deref deps)]
+      (finally (reset! deps #{}))))
+  => ['(+ 1 2) '(1 2) #{'library/piece}])
 
-^{:refer lang.base.preprocess-staging/to-staging-form}
-(Test/check
- [{:name "stages held controls, hard links, and fragment templates"
-   :test (fn []
-           (let [held (staging/to-staging-form '(!:eval (+ 1 2)) {} {} {} nil identity)
-                 hard-link (staging/to-staging-form
-                            '(link input)
-                            {:reserved {'link {:emit :hard-link :raw 'raw}}}
-                            {}
-                            {}
-                            nil
-                            identity)
-                 dependencies (atom #{})
-                 fragment (staging/to-staging-form
-                           '(library/piece input)
-                           {}
-                           {'library {:fragment {'piece {:id 'piece
-                                                        :module 'library
-                                                        :template (fn [value]
-                                                                    (list 'expanded value))}}}}
-                           {:module {:id 'current :link {}}}
-                           dependencies
-                           identity)]
-             [(and (atom? held) (= '(!:eval (+ 1 2)) (deref held)))
-              hard-link
-              fragment
-              (deref dependencies)]))
-   :expected [true
-              '(raw input)
-              '(expanded input)
-              #{'library/piece}]}])
+^{:refer lang.base.preprocess-staging/to-staging-form :id staging-template-provenance}
+(fact "retains original macro failure fields and restores the caller binding"
+  (binding [base/*macro-opts* {:outer true}]
+    [(try
+       (staging/to-staging-form (with-meta '(broken 1) {:line 21})
+         {:reserved {'broken {:type :template
+                              :macro (fn [_] (throw (ex :host {:probe true} :ex/message "boom")))}}}
+         {} {:lang :lua :module {:id 'current :link {}}} nil identity)
+       :missing-error
+       (catch error
+         (select-keys (ex-data error)
+           [:probe :lang/phase :lang/subsystem :lang/lang :lang/line :lang/module :lang/symbol :lang/form])))
+     base/*macro-opts*])
+  => [{:probe true :lang/phase :staging/reserved-template
+       :lang/subsystem :lang/reserved-template :lang/lang :lua
+       :lang/line 21 :lang/module 'current :lang/symbol 'broken :lang/form '(broken 1)}
+      {:outer true}])
 
-^{:refer lang.base.preprocess-staging/to-staging}
-(Test/check
- [{:name "stages linked code and native roots while recording dependencies"
-   :test (fn []
-           (staging/to-staging
-            '(outer alias/item console)
-            {}
-            {'library {:code {'item {:id 'item :op :defn}}}}
-            {:module {:id 'current
-                      :link {'alias 'library}
-                      :native-lu {'console :node}}}))
-   :expected ['(outer library/item console)
-              #{'library/item}
-              #{}
-              {:node #{'console}}]}])
-
-^{:refer lang.base.preprocess-staging/to-resolve}
-(Test/check
- [{:name "resolves code symbols while retaining protected grammar heads"
-   :test (fn []
-           (let [output (staging/to-resolve
-                         '(if alias/item)
-                         {:reserved {'if {:emit :if}}}
-                         {'library {:code {'item {:id 'item :op :defn}}}}
-                         {:module {:id 'current :link {'alias 'library}}})]
-             [(assign/unwrap-protected-head (first output))
-              (second output)]))
-   :expected ['if 'library/item]}])
+^{:refer lang.base.preprocess-staging/to-staging :id staging-dependencies-and-reset}
+(fact "includes code dependencies and restores dynamic state after success and failure"
+  (binding [base/*macro-skip-deps* :outer-skip
+            base/*macro-grammar* :outer-grammar
+            base/*macro-opts* :outer-options]
+    [(staging/to-staging 7 {}
+       {'included {:code {'item {:id 'item :module 'included}}}}
+       {:module {:id 'current :includes ['included 'missing]}})
+     (try (staging/to-staging '(broken) {:reserved {'broken {:type :template
+               :macro (fn [_] (throw (ex :host {} :ex/message "failure")))}}} {} {})
+          :missing-error (catch error :caught))
+     [base/*macro-skip-deps* base/*macro-grammar* base/*macro-opts*]])
+  => [[7 #{'included/item} #{} {}] :caught [:outer-skip :outer-grammar :outer-options]])

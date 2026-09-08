@@ -20,6 +20,15 @@
 (def +str-type+     {:kind :primitive :name :xt/str})
 (def +kw-type+      {:kind :primitive :name :xt/kw})
 
+(defstruct XtSpecDef [ns name type spec-meta file line column])
+(defstruct XtArg [name type modifiers])
+(defstruct XtFnDef
+  [ns name inputs output body-meta raw-body spec file line column])
+(defstruct XtValueDef [ns name type body-meta raw-value spec file line column])
+(defstruct XtRegistryEntry [symbol spec fn macro value])
+
+(defonce ^:dynamic *type-registry* (atom {}))
+
 (declare normalize-type)
 
 (defn primitive-type
@@ -49,44 +58,236 @@
       (= 1 (count flat)) (first flat)
       :else {:kind :union :types flat})))
 
-(defn type-key
-  [ns-sym type-name]
+(defn type-key [ns-sym type-name]
   (if ns-sym
-    (symbol (str ns-sym) (name type-name))
-    (symbol (name type-name))))
+    (symbol
+      (str ns-sym)
+      (if (string? type-name) type-name (name type-name)))
+    (symbol (if (string? type-name) type-name (name type-name)))))
 
-(defn field-key
-  [field]
+(defn valid-key?
+  [key]
+  (boolean
+   (and (symbol? key)
+        (namespace key)
+        (seq (namespace key))
+        (seq (name key)))))
+
+(defn clear-registry!
+  []
+  (reset! *type-registry* {}))
+
+(defn make-registry-entry
+  [sym]
+  (->XtRegistryEntry sym nil nil nil nil))
+
+(defn get-entry [sym] (get (deref *type-registry*) sym))
+
+(defn entry-declarations
+  [entry]
+  (cond-> {}
+    (:spec entry) (assoc :spec (:spec entry))
+    (:fn entry) (assoc :fn (:fn entry))
+    (:macro entry) (assoc :macro (:macro entry))
+    (:value entry) (assoc :value (:value entry))))
+
+(defn entry-kinds
+  [entry]
+  (keys (entry-declarations entry)))
+
+(defn entry-primary
+  [entry]
+  (or (:spec entry)
+      (:fn entry)
+      (:value entry)))
+
+(defn entry-primary-kind
+  [entry]
   (cond
-    (keyword? field)
-    (if-let [field-ns (namespace field)]
-      (str (snake-case-string field-ns)
-           "/"
-           (snake-case-string (name field)))
-      (snake-case-string (name field)))
+    (:spec entry) :spec
+    (:fn entry) :fn
+    (:value entry) :value
+    :else nil))
 
-    (symbol? field)
-    (if-let [field-ns (namespace field)]
-      (str (snake-case-string field-ns)
-           "/"
-           (snake-case-string (name field)))
-      (snake-case-string (name field)))
+(defn get-declaration
+  [sym kind]
+  (get (entry-declarations (get-entry sym)) kind))
 
-    (string? field)
-    (snake-case-string field)
+(defn get-spec
+  [sym]
+  (get-declaration sym :spec))
 
-    :else
-    (throw (ex :argument {:field field} :ex/message "Invalid record field key"))))
+(defn get-function
+  [sym]
+  (get-declaration sym :fn))
 
-(def +uppercase-letters+ (set "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+(defn get-macro
+  [sym]
+  (get-declaration sym :macro))
+
+(defn get-value
+  [sym]
+  (get-declaration sym :value))
+
+(defn get-type
+  [sym]
+  (some-> sym get-entry entry-primary))
+
+(defn list-specs
+  []
+  (->> (deref *type-registry*)
+    vals
+    (mapcat (fn [migration-argument-0]
+              (vals (select-keys (entry-declarations migration-argument-0) [(keyword "spec")]))))))
+
+(defn list-functions
+  []
+  (->> (deref *type-registry*)
+    vals
+    (mapcat (fn [migration-argument-0]
+              (vals (select-keys (entry-declarations migration-argument-0) [(keyword "fn")]))))))
+
+(defn list-macros
+  []
+  (->> (deref *type-registry*)
+    vals
+    (mapcat (fn [migration-argument-0]
+              (vals (select-keys (entry-declarations migration-argument-0) [(keyword "macro")]))))))
+
+(defn list-values
+  []
+  (->> (deref *type-registry*)
+    vals
+    (mapcat (fn [migration-argument-0]
+              (vals (select-keys (entry-declarations migration-argument-0) [(keyword "value")]))))))
+
+(defn list-entries [] (vals (deref *type-registry*)))
+
+(defn register-entry! [sym key value]
+  (when (not (valid-key? sym))
+    (throw
+      ((fn [migration-message migration-data]
+         (ex :generic migration-data :ex/message migration-message))
+        "Invalid registry key. Must be a namespaced symbol."
+        {:key sym})))
+  (swap!
+    *type-registry*
+    (fn [registry]
+      (let [entry (or (get registry sym) (make-registry-entry sym))]
+        (assoc registry sym (assoc entry key value)))))
+  value)
+
+(defn register-spec!
+  [sym spec]
+  (register-entry! sym :spec spec))
+
+(defn register-function!
+  [sym fn-def]
+  (register-entry! sym :fn fn-def))
+
+(defn register-macro!
+  [sym macro-def]
+  (register-entry! sym :macro macro-def))
+
+(defn register-value!
+  [sym value-def]
+  (register-entry! sym :value value-def))
+
+(defn source-loc
+  ([form] (source-loc form (some-> form meta :file)))
+  ([form file]
+    (merge
+      {:file (or file (some-> form meta :file) "UNKNOWN")}
+      (select-keys (or (meta form) {}) [:line :column]))))
+
+(defn make-spec-def
+  ([ns-sym type-name type spec-meta loc]
+   (->XtSpecDef (some-> ns-sym str) (name type-name) type spec-meta
+                (:file loc) (:line loc) (:column loc)))
+  ([ns-sym type-name type spec-meta]
+   (make-spec-def ns-sym type-name type spec-meta (source-loc nil))))
+
+(defn make-arg
+  [name type modifiers]
+  (->XtArg name type (vec modifiers)))
+
+(defn make-fn-def
+  ([ns-sym fn-name inputs output body-meta raw-body spec loc]
+   (->XtFnDef (some-> ns-sym str) (name fn-name) (vec inputs) output body-meta (vec raw-body) spec
+              (:file loc) (:line loc) (:column loc)))
+  ([ns-sym fn-name inputs output body-meta raw-body spec]
+   (make-fn-def ns-sym fn-name inputs output body-meta raw-body spec (source-loc nil))))
+
+(defn make-value-def
+  ([ns-sym value-name type body-meta raw-value spec loc]
+   (->XtValueDef (some-> ns-sym str) (name value-name) type body-meta raw-value spec
+                 (:file loc) (:line loc) (:column loc)))
+  ([ns-sym value-name type body-meta raw-value spec]
+   (make-value-def ns-sym value-name type body-meta raw-value spec (source-loc nil))))
+
+(defn spec-def?
+  [x]
+  (instance? XtSpecDef x))
+
+(defn fn-def?
+  [x]
+  (and (instance? XtFnDef x)
+       (not (get-in x [:body-meta :macro]))))
+
+(defn macro-def?
+  [x]
+  (and (instance? XtFnDef x)
+       (true? (get-in x [:body-meta :macro]))))
+
+(defn generator-def?
+  [x]
+  (and (instance? XtFnDef x)
+       (true? (get-in x [:body-meta :generator]))))
+
+(defn value-def?
+  [x]
+  (instance? XtValueDef x))
+
+(defn declaration-kind
+  [x]
+  (cond
+    (spec-def? x) :spec
+    (fn-def? x) :fn
+    (macro-def? x) :macro
+    (value-def? x) :value
+    (instance? XtRegistryEntry x) (entry-primary-kind x)
+    :else nil))
+
+(defn field-key [field]
+  (cond
+    (keyword? field) (if-let [field-ns (namespace field)]
+                       (str
+                         (snake-case-string field-ns)
+                         "/"
+                         (snake-case-string (name field)))
+                       (snake-case-string (name field)))
+    (symbol? field) (if-let [field-ns (namespace field)]
+                      (str
+                        (snake-case-string field-ns)
+                        "/"
+                        (snake-case-string (name field)))
+                      (snake-case-string (name field)))
+    (string? field) (snake-case-string field)
+    :else (throw
+            ((fn [migration-message migration-data]
+               (ex
+                 :generic
+                 migration-data
+                 :ex/message
+                 migration-message))
+              "Invalid record field key"
+              {:field field}))))
 
 (defn likely-type-symbol?
   [sym]
   (let [name-str (name sym)]
-    (boolean
-     (or (namespace sym)
-         (and (< 0 (str/length name-str))
-              (has? +uppercase-letters+ (str/char-at name-str 0)))))))
+    (boolean (or (namespace sym)
+                 (re-find #"^[A-Z]" name-str)))))
 
 (defn resolve-type-symbol
   [sym {:keys [ns aliases]}]
@@ -114,9 +315,173 @@
 
 (defn normalize-apply-target
   [target ctx]
-  (if (symbol? target)
-    (resolve-type-symbol target ctx)
-    target))
+  (cond
+    (symbol? target) (resolve-type-symbol target ctx)
+    :else target))
+
+(defn normalize-type
+  [form ctx]
+  (cond (nil? form)
+    +nil-type+
+    (keyword? form)
+    (if (= :xt/self form)
+      (or (:self ctx) +unknown-type+)
+      (if (has? +primitive-types+ form)
+        (primitive-type form)
+        {:kind :keyword :name form}))
+    (= :std.native.Var (Base/type form))
+    {:kind :named :name (resolve-type-symbol (var-sym form) ctx)}
+    (and (list? form)
+      (= 2 (count form))
+      (= (quote var) (first form))
+      (symbol? (second form)))
+    {:kind :named :name (resolve-type-symbol (second form) ctx)}
+    (symbol? form)
+    {:kind :named :name (resolve-type-symbol form ctx)}
+    (string? form)
+    {:kind :named :name form}
+    (vector? form)
+    (let [[op & args] form args (not-empty (apply list (vec args)))]
+      (case op
+        :maybe
+        {:item (normalize-type (first args) ctx) :kind :maybe}
+        :xt/maybe
+        {:item (normalize-type (first args) ctx) :kind :maybe}
+        :or
+        {:kind  :union
+         :types (mapv (fn [migration-argument-0] (normalize-type migration-argument-0 ctx))
+                      args)}
+        :and
+        {:kind  :intersection
+         :types (mapv (fn [migration-argument-0] (normalize-type migration-argument-0 ctx))
+                      args)}
+        :tuple
+        {:kind  :tuple
+         :types (mapv (fn [migration-argument-0] (normalize-type migration-argument-0 ctx))
+                      args)}
+        :array
+        {:item (normalize-type (first args) ctx) :kind :array}
+        :xt/array
+        {:item (normalize-type (first args) ctx) :kind :array}
+        :dict
+        {:kind  :dict
+         :key   (normalize-type (first args) ctx)
+         :value (normalize-type (second args) ctx)}
+        :xt/dict
+        {:kind  :dict
+         :key   (normalize-type (first args) ctx)
+         :value (normalize-type (second args) ctx)}
+        :record
+        {:kind   :record
+         :fields (mapv (fn [migration-argument-0] (normalize-record-field migration-argument-0 ctx))
+                       args)}
+        :xt/record
+        {:kind   :record
+         :fields (mapv (fn [migration-argument-0] (normalize-record-field migration-argument-0 ctx))
+                       args)}
+        :fn
+        {:kind   :fn
+         :inputs (normalize-fn-inputs (first args) ctx)
+         :output (normalize-type (second args) ctx)}
+        :>
+        {:kind   :apply
+         :target (normalize-apply-target (first args) ctx)
+         :args   (mapv (fn [migration-argument-0] (normalize-type migration-argument-0 ctx))
+                       (rest args))}
+        :xt/or
+        {:kind  :union
+         :types (mapv (fn [migration-argument-0] (normalize-type migration-argument-0 ctx))
+                      args)}
+        :xt/and
+        {:kind  :intersection
+         :types (mapv (fn [migration-argument-0] (normalize-type migration-argument-0 ctx))
+                      args)}
+        :xt/tuple
+        {:kind  :tuple
+         :types (mapv (fn [migration-argument-0] (normalize-type migration-argument-0 ctx))
+                      args)}
+        :xt/fn
+        {:kind   :fn
+         :inputs (normalize-fn-inputs (first args) ctx)
+         :output (normalize-type (second args) ctx)}
+        :xt/apply
+        {:kind   :apply
+         :target (normalize-apply-target (first args) ctx)
+         :args   (mapv (fn [migration-argument-0] (normalize-type migration-argument-0 ctx))
+                       (rest args))}
+        {:kind  :tuple
+         :types (mapv (fn [migration-argument-0] (normalize-type migration-argument-0 ctx))
+                      form)}))
+    :else
+    (throw ((fn [migration-message migration-data]
+              (ex :generic migration-data :ex/message migration-message))  "Unsupported type form"
+             {:context ctx :form form}))))
+
+(defn normalize-return-meta
+  [ret ctx]
+  (let [body (if (and (vector? ret) (= 1 (count ret)))
+               (first ret)
+               ret)]
+    (normalize-type body ctx)))
+
+(defn fn-type
+  [fn-def]
+  {:kind :fn
+   :inputs (mapv :type (:inputs fn-def))
+   :output (:output fn-def)})
+
+(defn type->data
+  [type]
+  (cond
+    (instance? XtSpecDef type)
+    {:ns (:ns type)
+     :name (:name type)
+     :type (type->data (:type type))}
+
+    (instance? XtArg type)
+    {:name (:name type)
+     :type (type->data (:type type))}
+
+    (instance? XtFnDef type)
+    {:ns (:ns type)
+     :name (:name type)
+     :inputs (mapv type->data (:inputs type))
+     :output (type->data (:output type))}
+
+    (map? type)
+     (cond-> {:kind (:kind type)}
+       (:name type) (assoc :name (:name type))
+       (:item type) (assoc :item (type->data (:item type)))
+       (:types type) (assoc :types (mapv type->data (:types type)))
+       (:inputs type) (assoc :inputs (mapv type->data (:inputs type)))
+       (:output type) (assoc :output (type->data (:output type)))
+       (:key type) (assoc :key (type->data (:key type)))
+       (:value type) (assoc :value (type->data (:value type)))
+       (:open type) (assoc :open {:key (type->data (get-in type [:open :key]))
+                                  :value (type->data (get-in type [:open :value]))})
+       (:target type) (assoc :target (:target type))
+       (:args type) (assoc :args (mapv type->data (:args type)))
+       (:fields type) (assoc :fields (mapv (fn [{:keys [name type optional?]}]
+                                            {:name name
+                                            :type (type->data type)
+                                            :optional? optional?})
+                                         (:fields type))))
+
+    (vector? type)
+    (mapv type->data type)
+
+    :else
+    type))
+
+(defn type-string
+  [type]
+  (pr-str (type->data type)))
+
+(defn current-function-symbol
+  [fn-def]
+  (type-key (some-> fn-def :ns symbol) (:name fn-def)))
+
+(def +uppercase-letters+ (set "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
 
 (defn normalize-fn-inputs
   [input-form ctx]
@@ -138,167 +503,3 @@
                    :rest true}))
           (recur more
                  (conj output (normalize-type item ctx))))))))
-
-(defn normalize-type
-  [form ctx]
-  (cond
-    (nil? form)
-    +nil-type+
-
-    (keyword? form)
-    (if (= :xt/self form)
-      (or (:self ctx) +unknown-type+)
-      (if (has? +primitive-types+ form)
-        (primitive-type form)
-        {:kind :keyword :name form}))
-
-    (= :std.native.Var (type form))
-    {:kind :named
-     :name (resolve-type-symbol (Runtime/var-sym form) ctx)}
-
-    (and (list? form)
-         (= 2 (count form))
-         (= 'var (first form))
-         (symbol? (second form)))
-    {:kind :named
-     :name (resolve-type-symbol (second form) ctx)}
-
-    (symbol? form)
-    {:kind :named :name (resolve-type-symbol form ctx)}
-
-    (string? form)
-    {:kind :named :name form}
-
-    (vector? form)
-    (let [[op & args] form]
-      (case op
-        :maybe
-        {:kind :maybe
-         :item (normalize-type (first args) ctx)}
-
-        :xt/maybe
-        {:kind :maybe
-         :item (normalize-type (first args) ctx)}
-
-        :or
-        {:kind :union
-         :types (mapv #(normalize-type % ctx) args)}
-
-        :xt/or
-        {:kind :union
-         :types (mapv #(normalize-type % ctx) args)}
-
-        :and
-        {:kind :intersection
-         :types (mapv #(normalize-type % ctx) args)}
-
-        :xt/and
-        {:kind :intersection
-         :types (mapv #(normalize-type % ctx) args)}
-
-        :tuple
-        {:kind :tuple
-         :types (mapv #(normalize-type % ctx) args)}
-
-        :xt/tuple
-        {:kind :tuple
-         :types (mapv #(normalize-type % ctx) args)}
-
-        :array
-        {:kind :array
-         :item (normalize-type (first args) ctx)}
-
-        :xt/array
-        {:kind :array
-         :item (normalize-type (first args) ctx)}
-
-        :dict
-        {:kind :dict
-         :key (normalize-type (first args) ctx)
-         :value (normalize-type (second args) ctx)}
-
-        :xt/dict
-        {:kind :dict
-         :key (normalize-type (first args) ctx)
-         :value (normalize-type (second args) ctx)}
-
-        :record
-        {:kind :record
-         :fields (mapv #(normalize-record-field % ctx) args)}
-
-        :xt/record
-        {:kind :record
-         :fields (mapv #(normalize-record-field % ctx) args)}
-
-        :fn
-        {:kind :fn
-         :inputs (normalize-fn-inputs (first args) ctx)
-         :output (normalize-type (second args) ctx)}
-
-        :xt/fn
-        {:kind :fn
-         :inputs (normalize-fn-inputs (first args) ctx)
-         :output (normalize-type (second args) ctx)}
-
-        :>
-        {:kind :apply
-         :target (normalize-apply-target (first args) ctx)
-         :args (mapv #(normalize-type % ctx) (rest args))}
-
-        :xt/apply
-        {:kind :apply
-         :target (normalize-apply-target (first args) ctx)
-         :args (mapv #(normalize-type % ctx) (rest args))}
-
-        {:kind :tuple
-         :types (mapv #(normalize-type % ctx) form)}))
-
-    :else
-    (throw (ex :generic {:form form
-                     :context ctx} :ex/message "Unsupported type form"))))
-
-(defn normalize-return-meta
-  [ret ctx]
-  (let [body (if (and (vector? ret)
-                      (= 1 (count ret)))
-               (first ret)
-               ret)]
-    (normalize-type body ctx)))
-
-(defn make-spec-def
-  [ns-sym type-name type spec-meta]
-  {:ns (some-> ns-sym str)
-   :name (name type-name)
-   :type type
-   :spec-meta spec-meta})
-
-(defn make-arg
-  [arg-name type modifiers]
-  {:name arg-name
-   :type type
-   :modifiers (vec modifiers)})
-
-(defn make-fn-def
-  [ns-sym fn-name inputs output body-meta raw-body spec]
-  {:ns (some-> ns-sym str)
-   :name (name fn-name)
-   :inputs (vec inputs)
-   :output output
-   :body-meta body-meta
-   :raw-body (vec raw-body)
-   :spec spec})
-
-(defn make-value-def
-  [ns-sym value-name type body-meta raw-value spec]
-  {:ns (some-> ns-sym str)
-   :name (name value-name)
-   :type type
-   :body-meta body-meta
-   :raw-value raw-value
-   :spec spec})
-
-(defn fn-type
-  [fn-def]
-  {:kind :fn
-   :inputs (mapv :type (:inputs fn-def))
-   :output (:output fn-def)})

@@ -1,28 +1,128 @@
 (ns lang.base.preprocess-input-test
-  (:require [lang.base.preprocess-input :as input]))
+  (:require [lang.base.preprocess-base :as preprocess-base]
+    [lang.base.preprocess-input :refer :all]
+    [lang.base.util :as u])
+  (:use code.test)
+  (:config {:override [inc]}))
+
+(def hello 1)
+^{:refer lang.base.preprocess-input/to-input-form, :added "4.1"}
+(fact
+  "processes a form"
+  (to-input-form '(@! (+ 1 2 3)))
+  =>
+  '(!:template (+ 1 2 3))
+  (to-input-form '(-/Class$$new))
+  =>
+  (any '(static-invoke -/Class "new") nil)
+  (to-input-form '(Class$$new 1 2 3))
+  =>
+  (any '(static-invoke Class "new" 1 2 3) nil)
+  (to-input-form '@#'hello)
+  =>
+  '(!:deref #'lang.base.preprocess-input-test/hello)
+  (to-input-form '@(+ 1 2 3))
+  =>
+  '(!:eval (+ 1 2 3))
+  (to-input-form '(@.lua (do 1 2 3)))
+  =>
+  '(!:lang {:lang :lua} (do 1 2 3)))
+
+^{:refer lang.base.preprocess-input/to-input :added "4.1"}
+(fact "converts a form to input (extracting deref forms)"
+  (to-input '(do (~! [1 2 3 4])))
+  => (throws)
+
+  (binding [preprocess-base/*macro-splice* true]
+    (to-input '(do (~! [1 2 3 4]))))
+  => '(do 1 2 3 4))
+
+(def hello {:a 1})
+(def +hello+ {:b 2})
+^{:refer lang.base.preprocess-input/eval-template-forms, :added "4.1"}
+(fact
+  "eagerly resolves template forms in persisted input"
+  (eval-template-forms '(do (!:template hello) (!:template (+ 1 2 3))))
+  =>
+  '(do {:a 1} 6)
+  (eval-template-forms '(do (!:eval +hello+)))
+  =>
+  '(do {:b 2})
+  (eval-template-forms '(do (!:template (+ a b))))
+  =>
+  '(do (!:template (+ a b)))
+  (eval-template-forms '(do (!:eval (+ 1 2 3))))
+  =>
+  '(do (!:eval (+ 1 2 3))))
 
 ^{:refer lang.base.preprocess-input/to-input-form}
 (Test/check
- [{:name "rewrites archive deref input forms into explicit evaluation forms"
-   :test (fn []
-           [(input/to-input-form '(deref value))
-            (input/to-input-form '((deref !) template-value))
-            (input/to-input-form '((deref decorator) target :option))])
-   :expected ['(!:eval value)
-              '(!:template template-value)
-              '(!:decorate [decorator] target :option)]}])
+ [{:name
+   "rewrites archive deref input forms into explicit evaluation forms",
+   :test
+   (fn
+    []
+    [(lang.base.preprocess-input/to-input-form '(deref value))
+     (lang.base.preprocess-input/to-input-form
+      '((deref !) template-value))
+     (lang.base.preprocess-input/to-input-form
+      '((deref [decorator]) target :option))]),
+   :expected
+   ['(!:eval value)
+    '(!:template template-value)
+    '(!:decorate [decorator] target :option)]}])
 
 ^{:refer lang.base.preprocess-input/to-input}
 (Test/check
- [{:name "recursively extracts deref input forms while retaining ordinary data"
-   :test (fn []
-           (input/to-input '(outer [(deref value) {:kept true}])))
+ [{:name
+   "recursively extracts deref input forms while retaining ordinary data",
+   :test
+   (fn
+    []
+    (lang.base.preprocess-input/to-input
+     '(outer [(deref value) {:kept true}]))),
    :expected '(outer [(!:eval value) {:kept true}])}])
 
 ^{:refer lang.base.preprocess-input/eval-template-forms}
 (Test/check
- [{:name "eagerly resolves evaluable persisted template and eval forms"
-   :test (fn []
-           [(input/eval-template-forms '(!:template (+ 1 2)))
-            (input/eval-template-forms '(!:eval (+ 2 3)))])
+ [{:name
+   "eagerly resolves evaluable persisted template and eval forms",
+   :test
+   (fn
+    []
+    [(lang.base.preprocess-input/eval-template-forms
+      '(!:template (+ 1 2)))
+     (lang.base.preprocess-input/eval-template-forms
+      '(!:eval (+ 2 3)))]),
    :expected [3 '(!:eval (+ 2 3))]}])
+
+(def inc (fn [x] (+ x 100)))
+
+^{:refer lang.base.preprocess-input-test/inc,
+  :id caller-lookup-contracts}
+(Test/check
+ [{:name "caller aliases resolve to their canonical Var",
+   :test
+   (fn
+    []
+    (lang.base.preprocess-input/to-input-form '(deref #'u/sym-id))),
+   :expected '(!:deref #'lang.base.util/sym-id)}
+  {:name "fully qualified Vars resolve",
+   :test
+   (fn
+    []
+    (lang.base.preprocess-input/to-input-form
+     '(deref #'lang.base.util/sym-id))),
+   :expected '(!:deref #'lang.base.util/sym-id)}
+  {:name
+   "caller local definitions shadow prelude during template evaluation",
+   :test
+   (fn
+    []
+    (lang.base.preprocess-input/eval-template-forms
+     '(!:template (inc 1)))),
+   :expected 101}])
+
+
+^{:refer lang.base.preprocess-input/to-input-form :id original-decorator-input-contract}
+(Test/check [{:name "bare decorator symbols remain invalid as in Foundation" :test (fn [] (try (lang.base.preprocess-input/to-input-form '((deref decorator) target :option)) :accepted (catch error :rejected))) :expected :rejected}])

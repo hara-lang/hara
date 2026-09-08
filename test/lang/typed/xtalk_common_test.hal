@@ -1,0 +1,765 @@
+(ns lang.typed.xtalk-common-test
+  (:use code.test)
+  (:require [lang.typed.xtalk-common :refer :all]))
+
+(defn sample-spec []
+  (make-spec-def 'sample.route 'User +str-type+ {:doc "user"}
+                 {:file "sample.clj" :line 10 :column 5}))
+
+(defn sample-fn []
+  (make-fn-def 'sample.route 'find-user [(make-arg 'id +str-type+ [])] +str-type+ {} ['id] nil
+               {:file "sample.clj" :line 12 :column 5}))
+
+(defn sample-macro []
+  (make-fn-def 'sample.route 'expand [(make-arg 'x +unknown-type+ [])] +unknown-type+ {:macro true} ['x] nil
+               {:file "sample.clj" :line 14 :column 5}))
+
+(defn sample-generator []
+  (make-fn-def 'sample.route 'stream [] +unknown-type+ {:generator true} [] nil
+               {:file "sample.clj" :line 16 :column 5}))
+
+(defn sample-value []
+  (make-value-def 'sample.route 'ScopeMap +int-type+ {:def true} {:a 1} nil
+                  {:file "sample.clj" :line 18 :column 5}))
+
+(defn populate! []
+  (clear-registry!)
+  (register-spec! 'sample.route/User (sample-spec))
+  (register-function! 'sample.route/find-user (sample-fn))
+  (register-macro! 'sample.route/expand (sample-macro))
+  (register-value! 'sample.route/ScopeMap (sample-value)))
+
+^{:refer lang.typed.xtalk-common/primitive-type, :added "4.1"}
+(fact
+  "builds primitive type maps"
+  (do
+    (clear-registry!)
+    (try (primitive-type :xt/str) (finally (clear-registry!))))
+  =>
+  '{:kind :primitive, :name :xt/str})
+
+^{:refer lang.typed.xtalk-common/snake-case-string, :added "4.1"}
+(fact
+  "normalizes dash names to snake case"
+  (do
+    (clear-registry!)
+    (try (snake-case-string "route-path") (finally (clear-registry!))))
+  =>
+  "route_path")
+
+^{:refer lang.typed.xtalk-common/maybe-type, :added "4.1"}
+(fact
+  "wraps maybe types"
+  (do
+    (clear-registry!)
+    (try (maybe-type +str-type+) (finally (clear-registry!))))
+  =>
+  '{:kind :maybe, :item {:kind :primitive, :name :xt/str}})
+
+^{:refer lang.typed.xtalk-common/union-type, :added "4.1"}
+(fact
+  "dedupes union members"
+  (do
+    (clear-registry!)
+    (try
+      (union-type [+str-type+ +str-type+ +int-type+])
+      (finally (clear-registry!))))
+  =>
+  '{:kind :union,
+    :types
+    [{:kind :primitive, :name :xt/str}
+     {:kind :primitive, :name :xt/int}]})
+
+^{:refer lang.typed.xtalk-common/source-loc, :added "4.1"}
+(fact
+  "builds location maps from form metadata"
+  (do
+    (clear-registry!)
+    (try
+      [(source-loc (with-meta 'x {:line 10, :column 5}) "sample.clj")
+       (source-loc nil)]
+      (finally (clear-registry!))))
+  =>
+  '[{:file "sample.clj", :line 10, :column 5} {:file "UNKNOWN"}])
+
+^{:refer lang.typed.xtalk-common/type-key, :added "4.1"}
+(fact
+  "builds namespaced type keys"
+  (do
+    (clear-registry!)
+    (try
+      [(type-key 'sample.route 'User) (type-key nil 'User)]
+      (finally (clear-registry!))))
+  =>
+  '[sample.route/User User])
+
+^{:refer lang.typed.xtalk-common/valid-key?, :added "4.1"}
+(fact
+  "accepts only namespaced symbols as registry keys"
+  (do
+    (clear-registry!)
+    (try
+      [(valid-key? 'sample.route/User) (valid-key? 'User)]
+      (finally (clear-registry!))))
+  =>
+  [true false])
+
+^{:refer lang.typed.xtalk-common/clear-registry!, :added "4.1"}
+(fact
+  "clears registry state"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (clear-registry!) (count (list-entries)))
+      (finally (clear-registry!))))
+  =>
+  0)
+
+^{:refer lang.typed.xtalk-common/make-registry-entry, :added "4.1"}
+(fact
+  "creates blank registry entries"
+  (do
+    (clear-registry!)
+    (try
+      (into {} (make-registry-entry 'sample.route/User))
+      (finally (clear-registry!))))
+  =>
+  '{:symbol sample.route/User,
+    :spec nil,
+    :fn nil,
+    :macro nil,
+    :value nil})
+
+^{:refer lang.typed.xtalk-common/get-entry, :added "4.1"}
+(fact
+  "gets registry entries"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (not (nil? (get-entry 'sample.route/User))))
+      (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/entry-declarations, :added "4.1"}
+(fact
+  "extracts present declarations from an entry"
+  (do
+    (clear-registry!)
+    (try
+      (do
+        (populate!)
+        (keys (entry-declarations (get-entry 'sample.route/User))))
+      (finally (clear-registry!))))
+  =>
+  '(:spec))
+
+^{:refer lang.typed.xtalk-common/entry-kinds, :added "4.1"}
+(fact
+  "lists declaration kinds"
+  (do
+    (clear-registry!)
+    (try
+      (do
+        (populate!)
+        (vec (entry-kinds (get-entry 'sample.route/find-user))))
+      (finally (clear-registry!))))
+  =>
+  [:fn])
+
+^{:refer lang.typed.xtalk-common/entry-primary, :added "4.1"}
+(fact
+  "returns primary entry declaration"
+  (do
+    (clear-registry!)
+    (try
+      (do
+        (populate!)
+        (:name (entry-primary (get-entry 'sample.route/User))))
+      (finally (clear-registry!))))
+  =>
+  "User")
+
+^{:refer lang.typed.xtalk-common/entry-primary-kind, :added "4.1"}
+(fact
+  "returns primary declaration kind"
+  (do
+    (clear-registry!)
+    (try
+      (do
+        (populate!)
+        (entry-primary-kind (get-entry 'sample.route/ScopeMap)))
+      (finally (clear-registry!))))
+  =>
+  :value)
+
+^{:refer lang.typed.xtalk-common/get-declaration, :added "4.1"}
+(fact
+  "gets specific declarations by kind"
+  (do
+    (clear-registry!)
+    (try
+      (do
+        (populate!)
+        (:name (get-declaration 'sample.route/find-user :fn)))
+      (finally (clear-registry!))))
+  =>
+  "find-user")
+
+^{:refer lang.typed.xtalk-common/get-spec, :added "4.1"}
+(fact
+  "gets registered specs"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (:name (get-spec 'sample.route/User)))
+      (finally (clear-registry!))))
+  =>
+  "User")
+
+^{:refer lang.typed.xtalk-common/get-function, :added "4.1"}
+(fact
+  "gets registered functions"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (:name (get-function 'sample.route/find-user)))
+      (finally (clear-registry!))))
+  =>
+  "find-user")
+
+^{:refer lang.typed.xtalk-common/get-macro, :added "4.1"}
+(fact
+  "gets registered macros"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (:name (get-macro 'sample.route/expand)))
+      (finally (clear-registry!))))
+  =>
+  "expand")
+
+^{:refer lang.typed.xtalk-common/get-value, :added "4.1"}
+(fact
+  "gets registered values"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (:name (get-value 'sample.route/ScopeMap)))
+      (finally (clear-registry!))))
+  =>
+  "ScopeMap")
+
+^{:refer lang.typed.xtalk-common/get-type, :added "4.1"}
+(fact
+  "gets primary typed declarations"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (:name (get-type 'sample.route/find-user)))
+      (finally (clear-registry!))))
+  =>
+  "find-user")
+
+^{:refer lang.typed.xtalk-common/list-specs, :added "4.1"}
+(fact
+  "lists specs"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (count (list-specs)))
+      (finally (clear-registry!))))
+  =>
+  1)
+
+^{:refer lang.typed.xtalk-common/list-functions, :added "4.1"}
+(fact
+  "lists functions"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (count (list-functions)))
+      (finally (clear-registry!))))
+  =>
+  1)
+
+^{:refer lang.typed.xtalk-common/list-macros, :added "4.1"}
+(fact
+  "lists macros"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (count (list-macros)))
+      (finally (clear-registry!))))
+  =>
+  1)
+
+^{:refer lang.typed.xtalk-common/list-values, :added "4.1"}
+(fact
+  "lists values"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (count (list-values)))
+      (finally (clear-registry!))))
+  =>
+  1)
+
+^{:refer lang.typed.xtalk-common/list-entries, :added "4.1"}
+(fact
+  "lists registry entries"
+  (do
+    (clear-registry!)
+    (try
+      (do (populate!) (count (list-entries)))
+      (finally (clear-registry!))))
+  =>
+  4)
+
+^{:refer lang.typed.xtalk-common/register-entry!, :added "4.1"}
+(fact
+  "register-entry rejects invalid keys"
+  (do
+    (clear-registry!)
+    (try
+      (try
+        (register-entry! 'User :spec {})
+        false
+        (catch ex (= 'User (-> ex ex-data :key))))
+      (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/register-spec!, :added "4.1"}
+(fact
+  "registers specs"
+  (do
+    (clear-registry!)
+    (try
+      (do
+        (clear-registry!)
+        (register-spec! 'sample.route/User (sample-spec))
+        (not (nil? (get-spec 'sample.route/User))))
+      (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/register-function!, :added "4.1"}
+(fact
+  "registers functions"
+  (do
+    (clear-registry!)
+    (try
+      (do
+        (clear-registry!)
+        (register-function! 'sample.route/find-user (sample-fn))
+        (not (nil? (get-function 'sample.route/find-user))))
+      (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/register-macro!, :added "4.1"}
+(fact
+  "registers macros"
+  (do
+    (clear-registry!)
+    (try
+      (do
+        (clear-registry!)
+        (register-macro! 'sample.route/expand (sample-macro))
+        (not (nil? (get-macro 'sample.route/expand))))
+      (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/register-value!, :added "4.1"}
+(fact
+  "registers values"
+  (do
+    (clear-registry!)
+    (try
+      (do
+        (clear-registry!)
+        (register-value! 'sample.route/ScopeMap (sample-value))
+        (not (nil? (get-value 'sample.route/ScopeMap))))
+      (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/make-spec-def, :added "4.1"}
+(fact
+  "constructs spec defs"
+  (do
+    (clear-registry!)
+    (try (into {} (sample-spec)) (finally (clear-registry!))))
+  =>
+  '{:ns "sample.route",
+    :name "User",
+    :type {:kind :primitive, :name :xt/str},
+    :spec-meta {:doc "user"},
+    :file "sample.clj",
+    :line 10,
+    :column 5})
+
+^{:refer lang.typed.xtalk-common/make-arg, :added "4.1"}
+(fact
+  "constructs args"
+  (do
+    (clear-registry!)
+    (try
+      (into {} (make-arg 'id +str-type+ [:rest]))
+      (finally (clear-registry!))))
+  =>
+  '{:name id,
+    :type {:kind :primitive, :name :xt/str},
+    :modifiers [:rest]})
+
+^{:refer lang.typed.xtalk-common/make-fn-def, :added "4.1"}
+(fact
+  "constructs fn defs"
+  (do
+    (clear-registry!)
+    (try (:name (sample-fn)) (finally (clear-registry!))))
+  =>
+  "find-user")
+
+^{:refer lang.typed.xtalk-common/make-value-def, :added "4.1"}
+(fact
+  "constructs value defs"
+  (do
+    (clear-registry!)
+    (try (:raw-value (sample-value)) (finally (clear-registry!))))
+  =>
+  {:a 1})
+
+^{:refer lang.typed.xtalk-common/spec-def?, :added "4.1"}
+(fact
+  "detects spec defs"
+  (do
+    (clear-registry!)
+    (try (spec-def? (sample-spec)) (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/fn-def?, :added "4.1"}
+(fact
+  "detects non-macro fn defs"
+  (do
+    (clear-registry!)
+    (try (fn-def? (sample-fn)) (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/macro-def?, :added "4.1"}
+(fact
+  "detects macro defs"
+  (do
+    (clear-registry!)
+    (try (macro-def? (sample-macro)) (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/generator-def?, :added "4.1"}
+(fact
+  "detects generator defs"
+  (do
+    (clear-registry!)
+    (try
+      (generator-def? (sample-generator))
+      (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/value-def?, :added "4.1"}
+(fact
+  "detects value defs"
+  (do
+    (clear-registry!)
+    (try (value-def? (sample-value)) (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/declaration-kind, :added "4.1"}
+(fact
+  "classifies declarations"
+  (do
+    (clear-registry!)
+    (try
+      [(declaration-kind (sample-spec))
+       (declaration-kind (sample-fn))
+       (declaration-kind (sample-macro))
+       (declaration-kind (sample-value))]
+      (finally (clear-registry!))))
+  =>
+  [:spec :fn :macro :value])
+
+^{:refer lang.typed.xtalk-common/field-key, :added "4.1"}
+(fact
+  "normalizes field names"
+  (do
+    (clear-registry!)
+    (try
+      [(field-key :route-path)
+       (field-key 'event-meta)
+       (field-key "listener-id")]
+      (finally (clear-registry!))))
+  =>
+  ["route_path" "event_meta" "listener_id"])
+
+^{:refer lang.typed.xtalk-common/likely-type-symbol?, :added "4.1"}
+(fact
+  "detects likely type symbols"
+  (do
+    (clear-registry!)
+    (try
+      [(likely-type-symbol? 'User)
+       (likely-type-symbol? 'sample.route/User)
+       (likely-type-symbol? 'user)]
+      (finally (clear-registry!))))
+  =>
+  [true true false])
+
+^{:refer lang.typed.xtalk-common/resolve-type-symbol, :added "4.1"}
+(fact
+  "resolves aliased and local type symbols"
+  (do
+    (clear-registry!)
+    (try
+      [(resolve-type-symbol 'User {:ns 'sample.route, :aliases {}})
+       (resolve-type-symbol
+         'types/EventMap
+         {:ns 'sample.route,
+          :aliases '{types xt.event.base-listener}})]
+      (finally (clear-registry!))))
+  =>
+  '[sample.route/User xt.event.base-listener/EventMap])
+
+^{:refer lang.typed.xtalk-common/normalize-record-field, :added "4.1"}
+(fact
+  "normalizes record field definitions"
+  (do
+    (clear-registry!)
+    (try
+      (normalize-record-field
+        '["listener-id" [:xt/maybe :xt/str]]
+        {:ns 'sample.route, :aliases {}})
+      (finally (clear-registry!))))
+  =>
+  '{:name "listener_id",
+    :type {:kind :maybe, :item {:kind :primitive, :name :xt/str}},
+    :optional? true})
+
+^{:refer lang.typed.xtalk-common/normalize-apply-target, :added "4.1"}
+(fact
+  "normalizes apply targets"
+  (do
+    (clear-registry!)
+    (try
+      (normalize-apply-target
+        'types/EventMap
+        {:ns 'sample.route, :aliases '{types xt.event.base-listener}})
+      (finally (clear-registry!))))
+  =>
+  'xt.event.base-listener/EventMap)
+
+^{:refer lang.typed.xtalk-common/normalize-type, :added "4.1"}
+(fact
+  "normalizes xt type forms"
+  (do
+    (clear-registry!)
+    (try
+      (normalize-type
+        '[:xt/record ["id" :xt/str] ["tags" [:xt/array :xt/str]]]
+        {:ns 'sample.route, :aliases {}})
+      (finally (clear-registry!))))
+  =>
+  '{:kind :record,
+    :fields
+    [{:name "id",
+      :type {:kind :primitive, :name :xt/str},
+      :optional? false}
+     {:name "tags",
+      :type {:kind :array, :item {:kind :primitive, :name :xt/str}},
+      :optional? false}]})
+
+(fact
+  "normalizes xt self from context"
+  (do
+    (clear-registry!)
+    (try
+      (normalize-type
+        :xt/self
+        {:ns 'sample.route,
+         :aliases {},
+         :self
+         {:kind :array, :item {:kind :primitive, :name :xt/str}}})
+      (finally (clear-registry!))))
+  =>
+  '{:kind :array, :item {:kind :primitive, :name :xt/str}})
+
+^{:refer lang.typed.xtalk-common/normalize-return-meta, :added "4.1"}
+(fact
+  "normalizes wrapped return metadata"
+  (do
+    (clear-registry!)
+    (try
+      (normalize-return-meta
+        '[[:xt/maybe User]]
+        {:ns 'sample.route, :aliases {}})
+      (finally (clear-registry!))))
+  =>
+  '{:kind :maybe, :item {:kind :named, :name sample.route/User}})
+
+^{:refer lang.typed.xtalk-common/fn-type, :added "4.1"}
+(fact
+  "extracts fn types from fn defs"
+  (do
+    (clear-registry!)
+    (try
+      (fn-type
+        (make-fn-def
+          'sample.route
+          'find-user
+          [(make-arg 'id +str-type+ [])]
+          +bool-type+
+          {}
+          []
+          nil))
+      (finally (clear-registry!))))
+  =>
+  '{:kind :fn,
+    :inputs [{:kind :primitive, :name :xt/str}],
+    :output {:kind :primitive, :name :xt/bool}})
+
+^{:refer lang.typed.xtalk-common/type->data, :added "4.1"}
+(fact
+  "converts typed records to plain data"
+  (do
+    (clear-registry!)
+    (try (type->data (sample-spec)) (finally (clear-registry!))))
+  =>
+  '{:ns "sample.route",
+    :name "User",
+    :type {:kind :primitive, :name :xt/str}})
+
+^{:refer lang.typed.xtalk-common/type-string, :added "4.1"}
+(fact
+  "renders type data as strings"
+  (do
+    (clear-registry!)
+    (try
+      (boolean (re-find #":xt/str" (type-string +str-type+)))
+      (finally (clear-registry!))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-common/current-function-symbol, :added "4.1"}
+(fact
+  "returns current function symbols"
+  (do
+    (clear-registry!)
+    (try
+      (current-function-symbol (sample-fn))
+      (finally (clear-registry!))))
+  =>
+  'sample.route/find-user)
+
+
+^{:refer lang.typed.xtalk-common/+primitive-types+ :id primitive-type-inventory}
+(fact "retains the complete primitive type vocabulary"
+ +primitive-types+ => #{:xt/any :xt/unknown :xt/nil :xt/bool :xt/int :xt/num :xt/str :xt/kw :xt/fn :xt/obj})
+^{:refer lang.typed.xtalk-common/+unknown-type+ :id unknown-type-value}
+(fact "unknown is the primitive inference fallback" +unknown-type+ => {:kind :primitive :name :xt/unknown})
+^{:refer lang.typed.xtalk-common/+nil-type+ :id nil-type-value}
+(fact "nil has its own primitive descriptor" +nil-type+ => {:kind :primitive :name :xt/nil})
+^{:refer lang.typed.xtalk-common/+bool-type+ :id bool-type-value}
+(fact "boolean has its own primitive descriptor" +bool-type+ => {:kind :primitive :name :xt/bool})
+^{:refer lang.typed.xtalk-common/+int-type+ :id int-type-value}
+(fact "integer has its own primitive descriptor" +int-type+ => {:kind :primitive :name :xt/int})
+^{:refer lang.typed.xtalk-common/+num-type+ :id num-type-value}
+(fact "number has its own primitive descriptor" +num-type+ => {:kind :primitive :name :xt/num})
+^{:refer lang.typed.xtalk-common/+str-type+ :id str-type-value}
+(fact "string has its own primitive descriptor" +str-type+ => {:kind :primitive :name :xt/str})
+^{:refer lang.typed.xtalk-common/+kw-type+ :id kw-type-value}
+(fact "keyword has its own primitive descriptor" +kw-type+ => {:kind :primitive :name :xt/kw})
+^{:refer lang.typed.xtalk-common/+uppercase-letters+ :id uppercase-inventory}
+(fact "retains the native ASCII uppercase inventory"
+ [(count +uppercase-letters+) (has? +uppercase-letters+ (str/char-at "A" 0))
+  (has? +uppercase-letters+ (str/char-at "Z" 0)) (has? +uppercase-letters+ (str/char-at "a" 0))]
+ => [26 true true false])
+
+^{:refer lang.typed.xtalk-common/XtSpecDef :id spec-record-roundtrip}
+(fact "spec records preserve all declaration and location fields through reconstruction"
+ (let [value (->XtSpecDef "demo" "User" +str-type+ {:doc "user"} "demo.clj" 10 2)
+       data (into {} value)]
+  [(instance? XtSpecDef value) data (= value (map->XtSpecDef data))])
+ => [true {:ns "demo" :name "User" :type {:kind :primitive :name :xt/str}
+           :spec-meta {:doc "user"} :file "demo.clj" :line 10 :column 2} true])
+
+^{:refer lang.typed.xtalk-common/XtArg :id arg-record-roundtrip}
+(fact "argument records preserve their type and modifiers through reconstruction"
+ (let [value (->XtArg 'items +str-type+ [:rest]) data (into {} value)]
+  [(instance? XtArg value) data (= value (map->XtArg data))])
+ => [true {:name 'items :type {:kind :primitive :name :xt/str} :modifiers [:rest]} true])
+
+^{:refer lang.typed.xtalk-common/XtFnDef :id fn-record-roundtrip}
+(fact "function records preserve body specification and source coordinates"
+ (let [value (->XtFnDef "demo" "run" [] +bool-type+ {:macro false}
+                        ['x] :spec "demo.clj" 12 4)
+       data (into {} value)]
+  [(instance? XtFnDef value) data (= value (map->XtFnDef data))])
+ => [true {:ns "demo" :name "run" :inputs [] :output {:kind :primitive :name :xt/bool}
+           :body-meta {:macro false} :raw-body ['x] :spec :spec
+           :file "demo.clj" :line 12 :column 4} true])
+
+^{:refer lang.typed.xtalk-common/XtValueDef :id value-record-roundtrip}
+(fact "value records preserve the raw value independently of its declared type"
+ (let [value (->XtValueDef "demo" "Count" +int-type+ {:def true}
+                           7 :spec "demo.clj" 15 3)
+       data (into {} value)]
+  [(instance? XtValueDef value) data (= value (map->XtValueDef data))])
+ => [true {:ns "demo" :name "Count" :type {:kind :primitive :name :xt/int}
+           :body-meta {:def true} :raw-value 7 :spec :spec
+           :file "demo.clj" :line 15 :column 3} true])
+
+^{:refer lang.typed.xtalk-common/XtRegistryEntry :id entry-record-roundtrip}
+(fact "registry record association preserves its type and original value"
+ (let [initial (->XtRegistryEntry 'demo/User nil nil nil nil)
+       changed (assoc initial :spec :declaration)
+       data (into {} changed)]
+  [(instance? XtRegistryEntry changed) (:spec initial) data
+   (= changed (map->XtRegistryEntry data))])
+ => [true nil {:symbol 'demo/User :spec :declaration :fn nil :macro nil :value nil} true])
+
+^{:refer lang.typed.xtalk-common/normalize-fn-inputs :id native-rest-inputs}
+(fact "normalizes fixed and final rest inputs and rejects malformed rest placement"
+ [(normalize-fn-inputs [] {})
+  (normalize-fn-inputs [:xt/int '& :xt/str] {})
+  (try (normalize-fn-inputs ['&] {}) :accepted
+       (catch error (select-keys (ex-data error) [:ex/code :form])))
+  (try (normalize-fn-inputs ['& :xt/int :xt/str] {}) :accepted
+       (catch error (select-keys (ex-data error) [:ex/code :form])))]
+ => [[] [{:kind :primitive :name :xt/int}
+         {:kind :array :item {:kind :primitive :name :xt/str} :rest true}]
+     {:ex/code :hara/syntax :form ['&]}
+     {:ex/code :hara/syntax :form ['& :xt/int :xt/str]}])
+
+(def MigrationType :fixture)
+^{:refer lang.typed.xtalk-common/normalize-type :id native-var-and-alias-types}
+(fact "preserves native Var types quoted Var types and extended type aliases"
+ [(normalize-type (var MigrationType) {})
+  (normalize-type (list 'var 'User) {:ns 'demo})
+  (normalize-type [:xt/or :xt/int :xt/str] {})
+  (normalize-type [:xt/and :xt/int :xt/str] {})
+  (normalize-type [:xt/tuple :xt/int :xt/str] {})
+  (normalize-type [:xt/fn [:xt/int '& :xt/str] :xt/bool] {})
+  (normalize-type [:xt/apply 'User :xt/int] {:ns 'demo})]
+ => [{:kind :named :name 'lang.typed.xtalk-common-test/MigrationType}
+     {:kind :named :name 'demo/User}
+     {:kind :union :types [{:kind :primitive :name :xt/int} {:kind :primitive :name :xt/str}]}
+     {:kind :intersection :types [{:kind :primitive :name :xt/int} {:kind :primitive :name :xt/str}]}
+     {:kind :tuple :types [{:kind :primitive :name :xt/int} {:kind :primitive :name :xt/str}]}
+     {:kind :fn :inputs [{:kind :primitive :name :xt/int}
+                        {:kind :array :item {:kind :primitive :name :xt/str} :rest true}]
+      :output {:kind :primitive :name :xt/bool}}
+     {:kind :apply :target 'demo/User :args [{:kind :primitive :name :xt/int}]}])

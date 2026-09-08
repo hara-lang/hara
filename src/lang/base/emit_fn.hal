@@ -1,216 +1,259 @@
 (ns lang.base.emit-fn
-  (:require
-            [lang.base.emit-block :as block]
+  (:require [lang.base.emit-block :as block]
             [lang.base.emit-common :as common]
             [lang.base.emit-data :as data]
             [lang.base.emit-helper :as helper]))
 
-(defn emit-word [value uppercase grammar mopts]
-  (let [output (if (keyword? value)
-                 (name value)
-                 (common/*emit-fn* value grammar mopts))]
-    (if uppercase (str/upper output) output)))
-
 (defn emit-input-default
-  "creates a typed input argument string"
+  "create input arg strings"
   {:added "3.0"}
-  [argument assign grammar mopts]
-  (if (:rest argument)
-    (let [rest-emitter (get-in grammar [:default :function :args :rest])]
-      (if rest-emitter
-        (rest-emitter argument grammar mopts)
-        (throw (ex :generic {:lang (:lang mopts) :symbol (:symbol argument)} :ex/message "Rest argument emitter not configured"))))
-    (let [modifiers (or (:modifiers argument) [])
-          type-values (or (:type argument) [])
-          invoke-options (helper/get-options grammar [:default :invoke])
-          invoke-reversed (:reversed invoke-options)
-          argument-options (helper/get-options grammar [:default :function :args])
-          argument-reversed (:reversed argument-options)
-          hint (or (:hint invoke-options) "")
-          uppercase (get-in invoke-options [:type :uppercase])
-          modifier-words (reduce (fn [output value]
-                                   (if (vector? value)
-                                     output
-                                     (conj output
-                                           (emit-word value uppercase grammar mopts))))
-                                 [] modifiers)
-          type-words (reduce (fn [output value]
-                               (conj output (emit-word value uppercase grammar mopts)))
-                             [] type-values)
-          has-words (or (> (count modifier-words) 0)
-                        (> (count type-words) 0))
-          symbol-output (if (:symbol argument)
-                          (common/*emit-fn* (:symbol argument) grammar mopts)
-                          "")
-          symbol-output (if (and invoke-reversed has-words)
-                          (str symbol-output hint)
-                          symbol-output)
-          word-output (cond
-                        argument-reversed
-                        (concat (if (= "" symbol-output) [] [symbol-output])
-                                modifier-words
-                                type-words)
-
-                        invoke-reversed
-                        (concat (if (= 0 (count type-words)) modifier-words [])
-                                (if (= "" symbol-output) [] [symbol-output])
-                                type-words)
-
-                        :else
-                        (concat modifier-words type-words
-                                (if (= "" symbol-output) [] [symbol-output])))
-          index-options (helper/get-options grammar [:default :index])
-          arrays (reduce (fn [output value]
-                           (if (vector? value)
-                             (str output (:start index-options)
-                                  (if (= 0 (count value)) ""
-                                      (common/*emit-fn* (first value) grammar mopts))
-                                  (:end index-options))
-                             output))
-                         "" modifiers)]
-      (str (str/join " " word-output)
-           arrays
-           (if (or (:force argument) (not (nil? (:value argument))))
-             (str " " assign " "
-                  (common/*emit-fn* (:value argument) grammar mopts))
-             "")))))
+  [{:as arg :keys [force modifiers type symbol value rest]} assign grammar mopts]
+  (if rest
+    (if-let [emit-rest (get-in grammar [:default :function :args :rest])]
+      ((if (= :std.native.Var (type emit-rest)) (deref emit-rest) emit-rest) arg
+        grammar
+        mopts)
+      (throw (ex :generic
+               {:lang (:lang mopts) :symbol symbol}
+               :ex/message
+               "Rest argument emitter not configured")))
+    (let [{:keys [start end]}    (helper/get-options grammar [:default :index])
+          {:keys [reversed
+                  hint]
+           :as invoke}           (helper/get-options grammar [:default :invoke])
+          {kmod false vmod true} (if (:vector-last (helper/get-options grammar [:default :modifier]))
+                                   (group-by vector? modifiers)
+                                   {false modifiers})
+          {:keys [uppercase]}    (:type invoke)
+          arr-fn                 (fn [mod]
+                                   (if (keyword? mod)
+                                     (cond-> (name mod) uppercase (str/upper))
+                                     (common/*emit-fn* mod grammar mopts)))
+          tmod                   (if type (vec type) [])
+          tmodarr                (mapv arr-fn tmod)
+          kmodarr                (mapv arr-fn kmod)
+          mod-rev?               (and (or (empty tmodarr) (not-empty kmodarr)) reversed)
+          mod-has?               (or (not-empty tmodarr) (not-empty kmodarr))
+          mod-sym                (str (if symbol (common/*emit-fn* symbol grammar mopts))
+                                      (if (and mod-rev? mod-has?) hint))
+          mixarr                 (concat
+                                  (if
+                                   (not mod-rev?)
+                                   (concat kmodarr tmodarr)
+                                   (if (not= kmodarr mod-has?) kmodarr))
+                                  (filter not-empty [mod-sym])
+                                  (if mod-rev? mod-has?))
+          mixstr                 (str/join " " (filter (fn [x] (if (seq x) (not-empty x) x)) mixarr))]
+      (str mixstr
+        (if (not-empty vmod)
+          (str/join ""
+            (map (fn [arr]
+                   (str start (if-let [n (first arr)] (common/*emit-fn* n grammar mopts)) end))
+              vmod)))
+        (if (or force value)
+          (str " " assign " " (common/*emit-fn* value grammar mopts)))))))
 
 (defn emit-hint-type
-  "emits a return type hint"
+  "emits the return type"
   {:added "4.0"}
-  [type-options name-value suffix grammar mopts]
-  (let [metadata (or (meta name-value) {})
-        hints (vec (or (get metadata :-) []))
-        hints (if (and suffix (not (= "" suffix))) (conj hints suffix) hints)
-        uppercase (:uppercase type-options)]
-    (str/join
-     " "
-     (map (fn [value]
-            (let [output (cond (keyword? value) (name value)
-                               (string? value) value
-                               (and (vector? value) (= 0 (count value))) "[]"
-                               :else (common/*emit-fn* value grammar mopts))]
-              (if uppercase (str/upper output) output)))
-          hints))))
+  [type name suffix grammar mopts]
+  (let [arr (cond-> (:- (meta name)) :then vec (not-empty suffix) (conj suffix))]
+    (str/join " "
+      (map (fn [v]
+             (cond (or (keyword? v) (string? v) (and (vector? v) (empty? v)))
+               (cond-> ((fn [value]
+                          (cond (bytes? value)
+                            (str/decode-utf8 value)
+                            (keyword? value)
+                            (str/to-string value)
+                            (string? value)
+                            value
+                            :else
+                            (pr-str value)))         v)
+                 (:uppercase type)
+                 (str/upper))
+               :else
+               (common/*emit-fn* v grammar mopts)))
+        arr))))
 
 (defn emit-def-type
-  "emits a definition type hint"
+  "emits the def type"
   {:added "4.0"}
   [name suffix grammar mopts]
-  (emit-hint-type (:type (helper/get-options grammar [:default :define]))
-                  name suffix grammar mopts))
+  (let [{:keys [type]} (helper/get-options grammar [:default :define])]
+    (emit-hint-type type name suffix grammar mopts)))
 
 (defn emit-fn-type
-  "emits a function return type hint"
-  {:added "4.0"}
+  "returns the function type"
+  {:added "3.0"}
   [name suffix grammar mopts]
-  (emit-hint-type (:type (helper/get-options grammar [:default :invoke]))
-                  name suffix grammar mopts))
+  (let [{:keys [type]} (helper/get-options grammar [:default :invoke])]
+    (emit-hint-type type name suffix grammar mopts)))
 
 (defn emit-fn-block
-  "gets function block options"
+  "gets the block options for a given grammar"
   {:added "4.0"}
   [key grammar]
-  (merge-nested (get-in grammar [:default :function])
-                (get-in grammar [:function key])))
+  (letfn
+    [(merge-options
+       [left right]
+       (reduce-kv
+         (fn [out k v]
+           (assoc
+             out
+             k
+             (if (and (map? (get out k)) (map? v))
+               (merge-options (get out k) v)
+               v)))
+         (or left {})
+         (or right {})))]
+    (merge-options
+      (get-in grammar [:default :function])
+      (get-in grammar [:function key]))))
 
 (defn emit-fn-preamble-args
-  "constructs emitted function arguments"
+  "constructs the function preamble args"
   {:added "4.0"}
   [key args grammar mopts]
-  (let [arguments (helper/emit-typed-args args grammar)
-        options (merge-nested (helper/get-options grammar [:default :function :args])
-                              (get-in grammar [:function key :args]))]
-    (map (fn [argument]
-           (emit-input-default argument (:assign options) grammar mopts))
-         arguments)))
+  (let [args                (helper/emit-typed-args args grammar)
+        {:keys [sep
+                space
+                assign
+                start
+                end
+                multiline]} (letfn
+                             [(merge-options
+                               [left right]
+                               (reduce-kv
+                                (fn
+                                 [out k v]
+                                 (assoc
+                                  out
+                                  k
+                                  (if (and (map? (get out k)) (map? v)) (merge-options (get out k) v) v)))
+                                (or left {})
+                                (or right {})))]
+                             (merge-options
+                              (helper/get-options grammar [:default :function :args])
+                              (get-in grammar [:function key :args])))]
+    (map (fn [migration-argument-0]
+           (emit-input-default migration-argument-0 assign grammar mopts))
+      args)))
 
 (defn emit-fn-preamble
-  "constructs a function name and argument list"
+  "constructs the function preamble"
   {:added "4.0"}
-  [description grammar mopts]
-  (let [key (nth description 0)
-        name-value (nth description 1)
-        args (nth description 2)
-        outputs (emit-fn-preamble-args key args grammar mopts)
-        function-options (helper/get-options grammar [:default :function])
-        options (merge-nested (helper/get-options grammar [:default :function :args])
-                              (get-in grammar [:function key :args]))
-        arguments-output
-        (if (= 0 (count outputs))
-          (str (:start options) (:end options))
-          (if (:multiline options)
-            (str (:start options)
-                 (binding [common/*indent* (+ common/*indent* 2)]
-                   (str (common/newline-indent)
-                        (str/join (str (:sep options) (common/newline-indent))
-                                     outputs)))
-                 (common/newline-indent)
-                 (:end options))
-            (str (:start options)
-                 (str/join (str (:sep options) (:space options)) outputs)
-                 (:end options))))]
-    (str (if (:prefix function-options) (str (:prefix function-options) " ") "")
-         (if name-value (common/*emit-fn* name-value grammar mopts) "")
-         (:space options)
-         arguments-output)))
+  [[key name args] grammar mopts]
+  (let [iargs               (emit-fn-preamble-args key args grammar mopts)
+        {:keys [prefix]}    (helper/get-options grammar [:default :function])
+        {:keys [sep
+                space
+                assign
+                start
+                end
+                multiline]} (letfn
+                             [(merge-options
+                               [left right]
+                               (reduce-kv
+                                (fn
+                                 [out k v]
+                                 (assoc
+                                  out
+                                  k
+                                  (if (and (map? (get out k)) (map? v)) (merge-options (get out k) v) v)))
+                                (or left {})
+                                (or right {})))]
+                             (merge-options
+                              (helper/get-options grammar [:default :function :args])
+                              (get-in grammar [:function key :args])))]
+    (str (if (not-empty prefix) (str prefix " "))
+      (if name (common/*emit-fn* name grammar mopts))
+      space
+      (cond (empty? iargs)
+        (str start end)
+        multiline
+        (str start
+          (binding [common/*indent* (+ common/*indent* (or 2 2))]
+            (str (common/newline-indent) (str/join (str sep (common/newline-indent)) iargs)))
+          (common/newline-indent)
+          end)
+        :else
+        (str start (str/join (str sep space) iargs) end)))))
 
 (defn emit-fn
   "emits a function template"
   {:added "3.0"}
-  [key form grammar mopts]
-  (let [values (vec (rest form))
-        named (symbol? (first values))
-        name-value (if named (first values) nil)
-        body-values (if named (vec (rest values)) values)
-        args (first body-values)
-        body (vec (rest body-values))
-        header-only (get (or (meta name-value) {}) :header)
-        function-block (emit-fn-block key grammar)
-        type-options (helper/get-options grammar [:default :typehint])
-        enabled (:enabled type-options)
-        after (:after type-options)
-        assign (:assign type-options)
-        space (:space type-options)
-        type-output (emit-fn-type name-value
-                                  (or (:raw function-block) (name (first form)))
-                                  grammar mopts)
-        preamble (emit-fn-preamble [key name-value args] grammar mopts)
-        hint-output (cond (or (not enabled) (= "" type-output)) ""
-                          after (str assign space type-output)
-                          :else (str type-output space assign))
-        block-output (if header-only
-                       (get-in grammar [:default :common :statement])
-                       (binding [common/*compressed* (:compressed function-block)]
-                         (block/emit-block-body key function-block body grammar mopts)))]
-    (cond enabled
-          (if after
-            (str/join space
-                         (filter (fn [value] (not (= "" value)))
-                                 [preamble hint-output block-output]))
-            (str/join space
-                         (filter (fn [value] (not (= "" value)))
-                                 [hint-output preamble block-output])))
-          (not (= "" type-output))
-          (str type-output " " preamble block-output)
+  [key [tag & body] grammar mopts]
+  (let [body (not-empty (apply list (vec body)))]
+    (let [[name
+           body]              (if (symbol? (first body)) [(first body) (apply list (rest body))] [nil body])
+          [args
+           &
+           body]              body
+          body                (not-empty (apply list (vec body)))
+          header-only?        (:header (meta name))
+          {:keys [compressed]
+           :as block}         (emit-fn-block key grammar)
+          {:keys [enabled
+                  assign
+                  space
+                  after]}     (helper/get-options grammar [:default :typehint])
+          typestr             (emit-fn-type
+                               name
+                               (or
+                                (:raw block)
+                                ((fn
+                                  [value]
+                                  (cond
+                                   (bytes? value)
+                                   (str/decode-utf8 value)
+                                   (keyword? value)
+                                   (str/to-string value)
+                                   (string? value)
+                                   value
+                                   :else
+                                   (pr-str value)))
+                                 tag))
+                               grammar
+                               mopts)
+          prestr              (emit-fn-preamble [key name args] grammar mopts)
+          hintstr             (cond (or (not enabled) (empty? typestr)) ""
+                                    after                               (str assign space typestr)
+                                    :else                               (str typestr space assign))
+          blockstr            (if header-only?
+                                (get-in grammar [:default :common :statement])
+                                (binding [common/*compressed* compressed]
+                                  (block/emit-block-body key block body grammar mopts)))]
+      (cond enabled
+        (cond after
+          (str/join space (filter not-empty [prestr hintstr blockstr]))
           :else
-          (str preamble " " block-output))))
+          (str/join space (filter not-empty [hintstr prestr blockstr])))
+        (not-empty typestr)
+        (str typestr " " prestr blockstr)
+        :else
+        (str prestr " " blockstr)))))
+
+;;
+;;
+;;
 
 (defn test-fn-loop
   "add blocks, fn, var and const to emit"
   {:added "4.0"}
   [form grammar mopts]
-  (common/emit-common-loop
-   form grammar mopts
-   (assoc common/+emit-lookup+
-          :data data/emit-data
-          :block block/emit-block)
-   (fn [key form grammar mopts]
-     (if (= key :fn)
-       (emit-fn :function form grammar mopts)
-       (common/emit-op key form grammar mopts
-                       {:quote data/emit-quote
-                        :table data/emit-table})))))
+  (common/emit-common-loop form
+                           grammar
+                           mopts
+                           (assoc common/+emit-lookup+
+                                  :data data/emit-data
+                                  :block block/emit-block)
+                           (fn [key form grammar mopts]
+                             (case key
+                               :fn (emit-fn :function form grammar mopts)
+                               (common/emit-op key form grammar mopts
+                                               {:quote data/emit-quote
+                                                :table data/emit-table})))))
 
 (defn test-fn-emit
   "add blocks, fn, var and const to emit"
@@ -218,3 +261,8 @@
   [form grammar mopts]
   (binding [common/*emit-fn* test-fn-loop]
     (test-fn-loop form grammar mopts)))
+(defn emit-word [value uppercase grammar mopts]
+  (let [output (if (keyword? value)
+                 (name value)
+                 (common/*emit-fn* value grammar mopts))]
+    (if uppercase (str/upper output) output)))

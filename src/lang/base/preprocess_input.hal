@@ -1,135 +1,233 @@
 (ns lang.base.preprocess-input
   (:require [lang.base.preprocess-base :as preprocess-base]
-            [lang.base.util :as util]))
+    [lang.base.util :as ut]))
 
 (defn to-input-form
   "processes a form"
   {:added "4.0"}
-  [x]
-  (let [tag (first x)
-        input (second x)
-        more (drop 2 x)]
-    (cond
-      (list? tag)
-      (cond
-        (= 'deref (first tag))
-        (let [token (second tag)]
-          (cond
-            (= token '!)
-            (list '!:template input)
-
-            (and (symbol? token)
-                 (str/starts-with? (str token) "."))
-            (apply list
-                   '!:lang
-                   {:lang (keyword
-                           (str/slice (str token) 1))}
-                   input
-                   more)
-
-            (and (list? token)
-                 (= 'var (first token)))
-            (let [resolved (resolve (second token))]
-              (list '!:eval
-                    (apply list
-                           (list 'var
-                                 (if resolved
-                                   (std.foundation/var-sym resolved)
-                                   (throw
-                                    (ex :security {:input (second token)} :ex/message "Var not found"))))
-                           (if input
-                             (cons input more)
-                             more))))
-
-            :else
-            (apply list
-                   '!:decorate
-                   (vec (rest tag))
-                   input
-                   more)))
-
-        (= 'unquote (first tag))
-        (throw (ex :host {:input x} :ex/message "Not supported")))
-
-      (= 'deref tag)
-      (if (and (list? input)
-               (= 'var (first input)))
-        (let [resolved (resolve (second input))]
-          (list '!:deref
-                (list 'var
-                      (if resolved
-                        (std.foundation/var-sym resolved)
-                        (throw
-                         (ex :not-found {:input (second input)} :ex/message "Var not found"))))))
-        (list '!:eval input)))))
+  [[tag input & more :as x]]
+  (cond
+    (form? tag) (cond
+                  (= 'deref (first tag)) (let
+                                           [tok (second tag)]
+                                           (cond
+                                             (= tok '!)
+                                             (list '!:template input)
+                                             (and
+                                               (symbol? tok)
+                                               (str/starts-with?
+                                                 (str tok)
+                                                 "."))
+                                             (apply
+                                               list
+                                               '!:lang
+                                               {:lang
+                                                (keyword
+                                                  (subs (str tok) 1))}
+                                               input
+                                               more)
+                                             (and
+                                               (form? tok)
+                                               (= 'var (first tok)))
+                                             (list
+                                               '!:eval
+                                               (apply
+                                                 list
+                                                 (list
+                                                   'var
+                                                   (or
+                                                     (let
+                                                       [migration-resolved-var
+                                                        (let
+                                                          [migration-symbol
+                                                           (second
+                                                             tok)]
+                                                          (if
+                                                            (namespace
+                                                              migration-symbol)
+                                                            (let
+                                                              [migration-alias
+                                                               (get
+                                                                 (ns-aliases
+                                                                   (Base/current-namespace))
+                                                                 (symbol
+                                                                   (namespace
+                                                                     migration-symbol)))]
+                                                              (if
+                                                                migration-alias
+                                                                (Base/resolve
+                                                                  migration-alias
+                                                                  (symbol
+                                                                    (name
+                                                                      migration-symbol)))
+                                                                (Base/resolve
+                                                                  migration-symbol)))
+                                                            (or
+                                                              (Base/resolve
+                                                                (Base/current-namespace)
+                                                                migration-symbol)
+                                                              (Base/resolve
+                                                                (Base/namespace
+                                                                  'std.foundation)
+                                                                migration-symbol))))]
+                                                       (if
+                                                         migration-resolved-var
+                                                         (var-sym
+                                                           migration-resolved-var)
+                                                         nil))
+                                                     (throw
+                                                       (ex
+                                                         :generic
+                                                         {:input
+                                                          (second tok)}
+                                                         :ex/message
+                                                         "Var not found"))))
+                                                 (if
+                                                   input
+                                                   (cons input more)
+                                                   more)))
+                                             :else
+                                             (apply
+                                               list
+                                               '!:decorate
+                                               (apply vec (rest tag))
+                                               input
+                                               more)))
+                  (= 'unquote (first tag)) (throw
+                                             (ex
+                                               :generic
+                                               {:input x}
+                                               :ex/message
+                                               "Not supported")))
+    (= 'deref tag) (if (and (form? input) (= 'var (first input)))
+                     (list
+                       '!:deref
+                       (list
+                         'var
+                         (or
+                           (let [migration-resolved-var
+                                 (let
+                                   [migration-symbol (second input)]
+                                   (if
+                                     (namespace migration-symbol)
+                                     (let
+                                       [migration-alias
+                                        (get
+                                          (ns-aliases
+                                            (Base/current-namespace))
+                                          (symbol
+                                            (namespace
+                                              migration-symbol)))]
+                                       (if
+                                         migration-alias
+                                         (Base/resolve
+                                           migration-alias
+                                           (symbol
+                                             (name migration-symbol)))
+                                         (Base/resolve
+                                           migration-symbol)))
+                                     (or
+                                       (Base/resolve
+                                         (Base/current-namespace)
+                                         migration-symbol)
+                                       (Base/resolve
+                                         (Base/namespace
+                                           'std.foundation)
+                                         migration-symbol))))]
+                             (if migration-resolved-var
+                               (var-sym migration-resolved-var)
+                               nil))
+                           (throw
+                             (ex
+                               :generic
+                               {:input (second input)}
+                               :ex/message
+                               "Var not found")))))
+                     (list '!:eval input))))
 
 (defn to-input
   "converts a form to input (extracting deref forms)"
   {:added "4.0"}
   [raw]
-  (let [splice? (fn [child]
-                  (and (list? child)
-                       (= (first child) '(unquote !))))]
-    (std.foundation/prewalk
-     (fn [x]
-       (or
-        (cond
-          (and preprocess-base/*macro-splice*
-               (or (vector? x) (list? x))
-               (reduce (fn [found child]
-                         (or found (splice? child)))
-                       false
-                       x))
-          (let [items
-                (reduce
-                 (fn [acc child]
-                   (if (splice? child)
-                     (vec (concat acc (eval (second child))))
-                     (conj acc child)))
-                 []
-                 x)
-                rebuilt (if (list? x)
-                          (apply list items)
-                          items)]
-            (with-meta rebuilt (meta x)))
-
-          (list? x)
-          (to-input-form x))
-        x))
-     raw)))
+  (let [check-fn (fn [child]
+                   (and (form? child) (= (first child) '(unquote !))))]
+    (prewalk
+      (fn [x]
+        (or
+          (cond
+            (pointer? x) (ut/sym-full x)
+            (and
+              preprocess-base/*macro-splice*
+              (or (vector? x) (form? x))
+              (some check-fn x)) (->
+                                  (into
+                                    (empty x)
+                                    (reduce
+                                      (fn
+                                        [acc child]
+                                        (if
+                                          (check-fn child)
+                                          (apply
+                                            conj
+                                            acc
+                                            (eval (second child)))
+                                          (conj acc child)))
+                                      (empty x)
+                                      x))
+                                  (with-meta (meta x)))
+            (form? x) (to-input-form x))
+          x))
+      raw)))
 
 (defn eval-template-forms
   "eagerly resolves persisted host-evaluable forms in form-input"
   {:added "4.1"}
   [form]
-  (letfn [(template-evaluable? [expression]
-            (let [blocked (atom false)]
-              (std.foundation/prewalk
-               (fn [x]
-                 (if (and (symbol? x)
-                          (nil? (namespace x))
-                          (not (special-symbol? x))
-                          (not (resolve x)))
-                   (reset! blocked true))
-                 x)
-               expression)
-              (not (deref blocked))))
-          (persisted-eval? [x]
-            (and (list? x)
-                 (= '!:eval (first x))
-                 (not (list? (second x)))
-                 (template-evaluable? (second x))))]
-    (std.foundation/postwalk
-     (fn [x]
-       (cond
-         (and (list? x)
-              (= '!:template (first x))
-              (template-evaluable? (second x)))
-         (eval-template-forms (eval (second x)))
-
-         (persisted-eval? x)
-         (eval-template-forms (eval (second x)))
-
-         :else
-         x))
-     form)))
+  (letfn [(template-evaluable?
+           [expr]
+           (let
+            [blocked (atom false)]
+            (prewalk
+             (fn
+              [x]
+              (when
+               (and
+                (symbol? x)
+                (nil? (namespace x))
+                (not (special-symbol? x))
+                (not
+                 (let
+                  [migration-symbol x]
+                  (if
+                   (namespace migration-symbol)
+                   (let
+                    [migration-alias (get (ns-aliases (Base/current-namespace))
+                                          (symbol (namespace migration-symbol)))]
+                    (if
+                     migration-alias
+                     (Base/resolve migration-alias (symbol (name migration-symbol)))
+                     (Base/resolve migration-symbol)))
+                   (or
+                    (Base/resolve (Base/current-namespace) migration-symbol)
+                    (Base/resolve (Base/namespace (quote std.foundation)) migration-symbol))))))
+               (reset! blocked true))
+              x)
+             expr)
+            (not (deref blocked))))
+          (persisted-eval?
+           [x]
+           (and
+            (form? x)
+            (= (quote !:eval) (first x))
+            (not (form? (second x)))
+            (template-evaluable? (second x))))]
+    (postwalk (fn [x]
+                (cond (and (form? x)
+                        (= (quote !:template) (first x))
+                        (template-evaluable? (second x)))
+                  (eval-template-forms (eval (second x)))
+                  (persisted-eval? x)
+                  (eval-template-forms (eval (second x)))
+                  :else
+                  x))
+      form)))

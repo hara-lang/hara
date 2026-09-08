@@ -95,3 +95,32 @@
    (binding [*macro-skip-deps* false] *macro-skip-deps*)
    *macro-skip-deps*]
   => [nil true false nil])
+
+^{:refer lang.base.preprocess-base/with:macro-opts, :id foreign-caller-binding}
+(fact
+  "binds the owning Var from a namespace that does not import it"
+  (eval-in-ns
+    'std.foundation
+    '[(binding [lang.base.preprocess-base/*macro-opts* {:level :outer}
+                lang.base.preprocess-base/*macro-grammar* {:grammar
+                                                           :outer}]
+        [(lang.base.preprocess-base/with:macro-opts
+           [{:level :inner}]
+           [(lang.base.preprocess-base/macro-opts)
+            (lang.base.preprocess-base/with:macro-opts
+              [{:level :nested}]
+              (lang.base.preprocess-base/macro-opts))
+            (lang.base.preprocess-base/macro-opts)
+            (lang.base.preprocess-base/macro-grammar)])
+         (try
+           (lang.base.preprocess-base/with:macro-opts
+             [{:level :failed}]
+             (throw (ex :host {})))
+           (catch error :caught))
+         (lang.base.preprocess-base/macro-opts)
+         (lang.base.preprocess-base/macro-grammar)])])
+  =>
+  [[{:level :inner} {:level :nested} {:level :inner} {:grammar :outer}]
+   :caught
+   {:level :outer}
+   {:grammar :outer}])

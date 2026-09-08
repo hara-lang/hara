@@ -1,88 +1,189 @@
 (ns lang.base.util
-  (:require [lang.base.provenance :as provenance]))
+  (:require [lang.base.provenance :as provenance]
+    [std.foundation :as collection]
+    [std.lib.context.space :as space]))
+
+;;
+;; SYMBOL
+;;
 
 (defn sym-id
-  "Gets the unqualified symbol id."
-  [id]
-  (symbol (name id)))
+  "gets the symbol id"
+  {:added "3.0"}
+  ([id]
+   (symbol (name id))))
 
 (defn sym-module
-  "Gets the symbol namespace as a symbol."
-  [id]
-  (let [module (namespace id)]
-    (if module (symbol module) nil)))
+  "gets the symbol namespace"
+  {:added "3.0"}
+  ([id]
+   (if-let [s (namespace id)]
+     (symbol s))))
 
 (defn sym-pair
-  "Returns the module and unqualified id of a symbol."
-  [id]
-  [(sym-module id)
-   (symbol (name id))])
+  "gets the symbol pair
+ 
+   (sym-pair 'L.core/identity)
+   => '[L.core identity]"
+  {:added "3.0"}
+  ([id]
+   [(sym-module id)
+    (symbol (name id))]))
 
 (defn sym-full
-  "Creates a fully-qualified symbol."
-  ([entry]
-   (let [module (:module entry)
-         id (:id entry)]
-     (if (and module id)
-       (sym-full module id)
-       nil)))
+  "creates a full symbol"
+  {:added "3.0"}
+  ([{:keys [module id]}]
+   (if (and module id)
+     (sym-full module id)))
   ([module id]
    (symbol (name module) (name id))))
 
 (defn sym-default-str
-  "Converts a symbol-like value to its default target spelling."
+  "default fast symbol conversion"
+  {:added "4.0"}
   [sym]
-  (str/replace (if (string? sym) sym (name sym)) "-" "_"))
+  (str/replace
+    ((fn [value]
+       (cond
+         (bytes? value) (str/decode-utf8 value)
+         (keyword? value) (str/to-string value)
+         (string? value) value
+         :else (pr-str value)))
+      sym)
+    "-"
+    "_"))
 
 (defn sym-default-inverse-str
-  "Converts a default target spelling back to Hara spelling."
+  "inverses the symbol string"
+  {:added "4.0"}
   [sym]
-  (str/replace (if (string? sym) sym (name sym)) "_" "-"))
+  (str/replace
+    ((fn [value]
+       (cond
+         (bytes? value) (str/decode-utf8 value)
+         (keyword? value) (str/to-string value)
+         (string? value) value
+         :else (pr-str value)))
+      sym)
+    "_"
+    "-"))
 
 (defn hashvec?
-  "Returns true for a set containing exactly one vector."
-  [value]
-  (and (set? value)
-       (= 1 (count value))
-       (vector? (first value))))
+  "checks for hash vec"
+  {:added "4.0"}
+  ([x]
+   (and (set? x)
+        (= 1 (count x))
+        (vector? (first x)))))
 
 (defn doublevec?
-  "Returns true for a vector containing exactly one vector."
-  [value]
-  (and (vector? value)
-       (= 1 (count value))
-       (vector? (first value))))
+  "checks for double vec"
+  {:added "4.0"}
+  ([x]
+   (and (vector? x)
+        (= 1 (count x))
+        (vector? (first x)))))
+
+
+;;
+;; Context
+;;
 
 (defn lang-context
-  "Creates the context key for a language."
-  [lang]
-  (if lang
-    (keyword (str "lang/" (name lang)))
-    (throw (ex :generic {:input lang} :ex/message "No Lang Input"))))
+  "creates the lang context"
+  {:added "4.0"}
+  ([lang]
+    (if lang
+      (keyword "lang" (name lang))
+      (throw (ex :generic {:input lang} :ex/message "No Lang Input")))))
+
+(defn lang-rt-list
+  "lists rt in a namespace"
+  {:added "4.0"}
+  ([] (lang-rt-list (ns-name (Base/current-namespace))))
+  ([ns]
+    (let [space (space/space ns)]
+      (keep
+        (fn [k] (if (= 'lang (sym-module k)) (keyword (name k))))
+        (space/space:context-list space)))))
+
+(defn lang-rt
+  "getn the runtime contexts in a map"
+  {:added "4.0"}
+  ([] (into {}
+        (map (fn [migration-map-juxt-value]
+               [(identity migration-map-juxt-value) (lang-rt migration-map-juxt-value)])
+          (lang-rt-list))))
+  ([lang] (space/space:rt-current (lang-context lang)))
+  ([ns lang] (space/space:rt-current ns (lang-context lang))))
+
+(defn lang-rt-default
+  "gets the default runtime function"
+  {:added "4.0"}
+  [ptr]
+  (let [ns (ns-name (Base/current-namespace))
+        active (set (lang-rt-list ns))
+        {:keys [module lang]} ptr]
+    (or
+      (if (active lang) (lang-rt lang))
+      (let [rts (map (fn [lang] (lang-rt ns lang)) active)]
+        (or
+          (first
+            (filter
+              (fn [rt] (get-in rt [:module/primary module]))
+              rts))
+          (first
+            (filter
+              (fn [rt] (get-in rt [:module/internal module]))
+              rts))))
+      (space/space:rt-current ns (IPointer/ptr-context ptr)))))
+
+(defn lang-pointer
+  "creates a lang pointer"
+  {:added "4.0"}
+  ([lang] (lang-pointer lang {}))
+  ([lang {:keys [module id], :as m}]
+    (let [ctx (lang-context lang)]
+      (pointer
+        (assoc
+          m
+          :module
+          module
+          :lang
+          lang
+          :context
+          ctx
+          :context/fn
+          #'lang-rt-default)))))
 
 (defn module-id
-  "Gets the module id from a module symbol or descriptor."
+  "gets the module id from a module symbol or map"
+  {:added "4.1"}
   [module]
-  (if (map? module)
-    (:id module)
-    module))
+  (cond (map? module)
+        (:id module)
+
+        :else
+        module))
 
 (defn entry-summary
-  "Returns a concise summary for an entry."
+  "returns a concise summary for an entry"
+  {:added "4.1"}
   [entry]
-  (let [summary (select-keys entry
-                             [:lang :module :namespace :id
-                              :section :line :op :op-key])]
-    (if (and (:module entry) (:id entry))
-      (assoc summary :symbol (sym-full entry))
-      summary)))
+  (cond-> (select-keys entry [:lang :module :namespace :id :section :line :op :op-key])
+    (and (:module entry)
+         (:id entry))
+    (assoc :symbol (sym-full entry))))
 
 (defn error-with-context
-  "Wraps an exception with Polis generation context."
-  [message data throwable]
-  (provenance/error-with-provenance message data throwable))
+  "wraps an exception with tahto.core generation context"
+  {:added "4.1"}
+  [message data t]
+  (provenance/error-with-provenance message data t))
 
 (defn throw-with-context
-  "Throws an exception wrapped with Polis generation context."
-  [message data throwable]
-  (provenance/throw-with-provenance message data throwable))
+  "throws an exception wrapped with tahto.core generation context"
+  {:added "4.1"}
+  [message data t]
+  (provenance/throw-with-provenance message data t))

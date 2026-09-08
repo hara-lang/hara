@@ -1,170 +1,306 @@
 (ns lang.base.preprocess-resolve-test
-  (:require [lang.base.preprocess-resolve :as resolve]))
-
-^{:refer lang.base.preprocess-resolve/fail}
-(Test/check
- [{:name "throws archived resolution failures with supplied data"
-   :test (fn []
-           (try
-             (resolve/fail "fixture failure" {:input :fixture})
-             :missing
-             (catch error [(ex-message error) (:input (ex-data error))])))
-   :expected ["fixture failure" :fixture]}])
-
-^{:refer lang.base.preprocess-resolve/get-fragment}
-(Test/check
- [{:name "finds linked fragments and expands defrun entries into bodies"
-   :test (fn []
-           [(resolve/get-fragment 'alias/item
-                                  {'library {:fragment {'item :fragment}}}
-                                  {:module {:id 'current :link {'alias 'library}}})
-            (resolve/get-fragment 'library/run
-                                  {'library {:code {'run {:op-key :defrun
-                                                          :form '(defrun run :first :second)}}}}
-                                  {:module {:id 'current :link {}}})])
-   :expected [:fragment '(do :first :second)]}])
-
-^{:refer lang.base.preprocess-resolve/process-namespaced-resolve}
-(Test/check
- [{:name "resolves linked and local module symbols to a stable full symbol"
-   :test (fn []
-           [(resolve/process-namespaced-resolve
+  (:require [lang.base.preprocess-resolve :as resolve]
+            [lang.base.preprocess-base :as base])
+  (:use code.test))
+^{:refer lang.base.preprocess-resolve/fail, :id native-resolver-contract-1}
+(fact
+  "throws archived resolution failures with supplied data"
+  ((fn []
+     (try
+       (resolve/fail "fixture failure" {:input :fixture})
+       :missing
+       (catch error [(ex-message error) (:input (ex-data error))]))))
+  =>
+  ["fixture failure" :fixture])
+^{:refer lang.base.preprocess-resolve/get-fragment, :id native-resolver-contract-2}
+(fact
+  "finds linked fragments and expands defrun entries into bodies"
+  ((fn [] [(resolve/get-fragment
+             'alias/item
+             {'library {:fragment {'item :fragment}}}
+             {:module {:id 'current, :link {'alias 'library}}})
+           (resolve/get-fragment
+             'library/run
+             {'library
+              {:code
+               {'run
+                {:op-key :defrun,
+                 :form '(defrun run :first :second)}}}}
+             {:module {:id 'current, :link {}}})]))
+  =>
+  [:fragment '(do :first :second)])
+^{:refer lang.base.preprocess-resolve/process-namespaced-resolve, :id native-resolver-contract-3}
+(fact
+  "resolves linked and local module symbols to a stable full symbol"
+  ((fn [] [(resolve/process-namespaced-resolve
              'alias/item
              {'library {}}
-             {:module {:id 'current :link {'alias 'library}}})
-            (resolve/process-namespaced-resolve
+             {:module {:id 'current, :link {'alias 'library}}})
+           (resolve/process-namespaced-resolve
              '-/item
              {'current {}}
-             {:module {:id 'current :link {}}})])
-   :expected [['library 'item 'library/item]
-              ['current 'item 'current/item]]}])
-
-^{:refer lang.base.preprocess-resolve/resolve-module-entry}
-(Test/check
- [{:name "selects code before fragment and header entries"
-   :test (fn []
-           [(resolve/resolve-module-entry 'library 'code
-                                          {'library {:code {'code :code}
-                                                     :fragment {'code :fragment}
-                                                     :header {'code :header}}}
-                                          {})
-            (resolve/resolve-module-entry 'library 'fragment
-                                          {'library {:fragment {'fragment :fragment}
-                                                     :header {'fragment :header}}}
-                                          {})
-            (resolve/resolve-module-entry 'library 'header
-                                          {'library {:header {'header :header}}}
-                                          {})])
-   :expected [[:code :code] [:fragment :fragment] [:header :header]]}])
-
-^{:refer lang.base.preprocess-resolve/process-code-entry}
-(Test/check
- [{:name "records ordinary code dependencies and rejects suppressed module code"
-   :test (fn []
-           (let [deps (atom #{})]
-             [(resolve/process-code-entry {:op :defn} 'library/item 'library
-                                          {:suppress {}} deps)
-              (deref deps)
-              (try
-                (resolve/process-code-entry {:op :defn :id 'item} 'library/item 'library
-                                            {:suppress {'library true}} deps)
-                :missing
-                (catch error :thrown))]))
-   :expected ['library/item #{'library/item} :thrown]}])
-
-^{:refer lang.base.preprocess-resolve/fragment-template-args}
-(Test/check
- [{:name "derives standalone template arguments after archive docs and attributes"
-   :test (fn []
-           (let [template (with-meta (fn [] nil) {:arglists '([left right])})]
-             [(resolve/fragment-template-args
-               '(defn sample "docs" {:private true} [ignored]) template)
-              (resolve/fragment-template-args
-               '(defn sample [fallback]) (fn [] nil))]))
-   :expected [['left 'right] ['fallback]]}])
-
-^{:refer lang.base.preprocess-resolve/process-fragment-entry}
-(Test/check
- [{:name "returns plain fragment forms while recording fragment dependencies"
-   :test (fn []
-           (let [deps (atom #{})]
-             [(resolve/process-fragment-entry {:form '(fragment-body)}
-                                              'library/piece 'library 'library/piece deps identity)
-              (deref deps)]))
-   :expected ['(fragment-body) #{'library/piece}]}])
-
-^{:refer lang.base.preprocess-resolve/process-namespaced-symbol}
-(Test/check
- [{:name "returns a resolved code symbol and records its code dependency"
-   :test (fn []
-           (let [deps (atom #{})
-                 fragments (atom #{})]
-             [(resolve/process-namespaced-symbol
-               'alias/item
-               {'library {:code {'item {:op :defn :id 'item}}}}
-               {:module {:id 'current :link {'alias 'library}}
-                :entry {:id 'caller}}
-               deps fragments identity)
-              (deref deps)
-              (deref fragments)]))
-   :expected ['library/item #{'library/item} #{}]}])
-
-^{:refer lang.base.preprocess-resolve/process-standard-symbol}
-(Test/check
- [{:name "records native imports by local root symbol"
-   :test (fn []
-           (let [natives (atom {})]
-             [(resolve/process-standard-symbol
-               'console.log
-               {:module {:native-lu {'console :node}}}
-               natives)
-              (deref natives)]))
-   :expected ['console.log {:node #{'console}}]}])
-
-^{:refer lang.base.preprocess-resolve/find-natives}
-(Test/check
- [{:name "finds native roots used inside quoted archive forms"
-   :test (fn []
-           (resolve/find-natives
-            {:form '(quote (console.log untouched))}
-            {:module {:native-lu {'console :node}}}))
-   :expected {:node #{'console}}}])
-
-^{:refer lang.base.preprocess-resolve/fragment-template-args}
-(Test/check
- [{:name "preserves Foundation anonymous and multi-arity fn argument shapes"
-   :test (fn []
-           [(resolve/fragment-template-args
-             '(fn [x y] (list '+ x y)) (fn [x y] (list '+ x y)))
-            (resolve/fragment-template-args
-             '(fn ([x] x) ([x y] (+ x y))) nil)
-            (resolve/fragment-template-args '(fn [] :empty) nil)
-            (resolve/fragment-template-args '(fn [x & more] more) nil)
-            (resolve/fragment-template-args '(fn named [x y] (+ x y)) nil)
-            (resolve/fragment-template-args
+             {:module {:id 'current, :link {}}})]))
+  =>
+  [['library 'item 'library/item] ['current 'item 'current/item]])
+^{:refer lang.base.preprocess-resolve/resolve-module-entry, :id native-resolver-contract-4}
+(fact
+  "selects code before fragment and header entries"
+  ((fn [] [(resolve/resolve-module-entry
+             'library
+             'code
+             {'library
+              {:code {'code :code},
+               :fragment {'code :fragment},
+               :header {'code :header}}}
+             {})
+           (resolve/resolve-module-entry
+             'library
+             'fragment
+             {'library
+              {:fragment {'fragment :fragment},
+               :header {'fragment :header}}}
+             {})
+           (resolve/resolve-module-entry
+             'library
+             'header
+             {'library {:header {'header :header}}}
+             {})]))
+  =>
+  [[:code :code] [:fragment :fragment] [:header :header]])
+^{:refer lang.base.preprocess-resolve/process-code-entry, :id native-resolver-contract-5}
+(fact
+  "records ordinary code dependencies and rejects suppressed module code"
+  ((fn []
+     (let [deps (atom #{})]
+       [(resolve/process-code-entry
+          {:op :defn}
+          'library/item
+          'library
+          {:suppress {}}
+          deps)
+        (deref deps)
+        (try
+          (resolve/process-code-entry
+            {:op :defn, :id 'item}
+            'library/item
+            'library
+            {:suppress {'library true}}
+            deps)
+          :missing
+          (catch error :thrown))])))
+  =>
+  ['library/item #{'library/item} :thrown])
+^{:refer lang.base.preprocess-resolve/fragment-template-args, :id native-resolver-contract-6}
+(fact
+  "derives standalone template arguments after archive docs and attributes"
+  ((fn []
+     (let [template (with-meta
+                      (fn [] nil)
+                      {:arglists '([left right])})]
+       [(resolve/fragment-template-args
+          '(defn sample "docs" {:private true} [ignored])
+          template)
+        (resolve/fragment-template-args
+          '(defn sample [fallback])
+          (fn [] nil))])))
+  =>
+  [['left 'right] ['fallback]])
+^{:refer lang.base.preprocess-resolve/process-fragment-entry, :id native-resolver-contract-7}
+(fact
+  "returns plain fragment forms while recording fragment dependencies"
+  ((fn []
+     (let [deps (atom #{})]
+       [(resolve/process-fragment-entry
+          {:form '(fragment-body)}
+          'library/piece
+          'library
+          'library/piece
+          deps
+          identity)
+        (deref deps)])))
+  =>
+  ['(fragment-body) #{'library/piece}])
+^{:refer lang.base.preprocess-resolve/process-namespaced-symbol, :id native-resolver-contract-8}
+(fact
+  "returns a resolved code symbol and records its code dependency"
+  ((fn []
+     (let [deps (atom #{}) fragments (atom #{})]
+       [(resolve/process-namespaced-symbol
+          'alias/item
+          {'library {:code {'item {:op :defn, :id 'item}}}}
+          {:module {:id 'current, :link {'alias 'library}},
+           :entry {:id 'caller}}
+          deps
+          fragments
+          identity)
+        (deref deps)
+        (deref fragments)])))
+  =>
+  ['library/item #{'library/item} #{}])
+^{:refer lang.base.preprocess-resolve/process-standard-symbol, :id native-resolver-contract-9}
+(fact
+  "records native imports by local root symbol"
+  ((fn []
+     (let [natives (atom {})]
+       [(resolve/process-standard-symbol
+          'console.log
+          {:module {:native-lu {'console :node}}}
+          natives)
+        (deref natives)])))
+  =>
+  ['console.log {:node #{'console}}])
+^{:refer lang.base.preprocess-resolve/find-natives, :id native-resolver-contract-10}
+(fact
+  "finds native roots used inside quoted archive forms"
+  ((fn []
+     (resolve/find-natives
+       {:form ''(console.log untouched)}
+       {:module {:native-lu {'console :node}}})))
+  =>
+  {:node #{'console}})
+^{:refer lang.base.preprocess-resolve/fragment-template-args, :id native-resolver-contract-11}
+(fact
+  "preserves Foundation anonymous and multi-arity fn argument shapes"
+  ((fn [] [(resolve/fragment-template-args
+             '(fn [x y] (list '+ x y))
+             (fn [x y] (list '+ x y)))
+           (resolve/fragment-template-args
+             '(fn ([x] x) ([x y] (+ x y)))
+             nil)
+           (resolve/fragment-template-args '(fn [] :empty) nil)
+           (resolve/fragment-template-args '(fn [x & more] more) nil)
+           (resolve/fragment-template-args
+             '(fn named [x y] (+ x y))
+             nil)
+           (resolve/fragment-template-args
              '(fn [ignored] ignored)
              (with-meta (fn [] nil) {:arglists '([preferred])}))
-            (try (resolve/fragment-template-args '(fn :invalid) nil)
-                 :unexpected
-                 (catch error [(ex-message error) (:form (ex-data error))]))])
-   :expected [['x 'y] ['x] [] ['x '& 'more] ['x 'y] ['preferred]
-              ["Unable to derive standalone fragment args" '(fn :invalid)]]}])
-
-^{:refer lang.base.preprocess-resolve/process-fragment-entry}
-(Test/check
- [{:name "recreates the original standalone add fragment and records its dependency"
-   :test (fn []
-           (let [baseline #{'existing/value}
-                 dependencies (atom baseline)
-                 output
-                 (try
-                   [(resolve/process-fragment-entry
-                     {:id 'add :form '(fn [x y] (list '+ x y))
-                      :template (fn [x y] (list '+ x y)) :standalone true}
-                     'L.core/add 'L.core 'L.core/add dependencies
-                     (fn [form] [:walk form]))
-                    (deref dependencies)]
-                   (finally (reset! dependencies baseline)))]
-             [output (= baseline (deref dependencies))]))
-   :expected [[[:walk '(fn [x y] (return (+ x y)))]
-               #{'existing/value 'L.core/add}] true]}])
+           (try
+             (resolve/fragment-template-args '(fn :invalid) nil)
+             :unexpected
+             (catch
+               error
+               [(ex-message error) (:form (ex-data error))]))]))
+  =>
+  [['x 'y]
+   ['x]
+   []
+   ['x '& 'more]
+   ['x 'y]
+   ['preferred]
+   ["Unable to derive standalone fragment args" '(fn :invalid)]])
+^{:refer lang.base.preprocess-resolve/process-fragment-entry, :id native-resolver-contract-12}
+(fact
+  "recreates the original standalone add fragment and records its dependency"
+  ((fn []
+     (let [baseline #{'existing/value}
+           dependencies (atom baseline)
+           output (try
+                    [(resolve/process-fragment-entry
+                       {:id 'add,
+                        :form '(fn [x y] (list '+ x y)),
+                        :template (fn [x y] (list '+ x y)),
+                        :standalone true}
+                       'L.core/add
+                       'L.core
+                       'L.core/add
+                       dependencies
+                       (fn [form] [:walk form]))
+                     (deref dependencies)]
+                    (finally (reset! dependencies baseline)))]
+       [output (= baseline (deref dependencies))])))
+  =>
+  [[[:walk '(fn [x y] (return (+ x y)))]
+    #{'L.core/add 'existing/value}]
+   true])
+^{:refer lang.base.preprocess-resolve/process-code-entry, :id native-resolver-contract-13}
+(fact
+  "skip-deps preserves code dependencies and defrun never adds one"
+  ((fn []
+     (let [baseline #{'existing/value} deps (atom baseline)]
+       (try
+         [(binding [base/*macro-skip-deps* true]
+            (resolve/process-code-entry
+              {:op 'defn, :id 'f}
+              'core/f
+              'core
+              {}
+              deps))
+          @deps
+          (binding [base/*macro-skip-deps* false]
+            (resolve/process-code-entry
+              {:op 'defrun, :id 'r}
+              'core/r
+              'core
+              {}
+              deps))
+          @deps
+          (binding [base/*macro-skip-deps* false]
+            (resolve/process-code-entry
+              {:op 'defn, :id 'f}
+              'core/f
+              'core
+              {}
+              deps))
+          @deps]
+         (finally (reset! deps baseline))))))
+  =>
+  ['core/f
+   #{'existing/value}
+   'core/r
+   #{'existing/value}
+   'core/f
+   #{'existing/value 'core/f}])
+^{:refer lang.base.preprocess-resolve/process-fragment-entry, :id native-resolver-contract-14}
+(fact
+  "skip-deps preserves fragment dependencies without losing the form"
+  ((fn []
+     (let [baseline #{'existing/value} deps (atom baseline)]
+       (try
+         [(binding [base/*macro-skip-deps* true]
+            (resolve/process-fragment-entry
+              {:id 'f, :form '(literal :body)}
+              'core/f
+              'core
+              'u/f
+              deps
+              identity))
+          @deps
+          (binding [base/*macro-skip-deps* false]
+            (resolve/process-fragment-entry
+              {:id 'f, :form '(literal :body)}
+              'core/f
+              'core
+              'u/f
+              deps
+              identity))
+          @deps]
+         (finally (reset! deps baseline))))))
+  =>
+  ['(literal :body)
+   #{'existing/value}
+   '(literal :body)
+   #{'existing/value 'core/f}])
+^{:refer lang.base.preprocess-resolve/process-namespaced-symbol, :id native-resolver-contract-15}
+(fact
+  "skip-deps resolves a fragment symbol without expansion or collection"
+  ((fn []
+     (let [baseline #{'existing/value}
+           code (atom baseline)
+           fragments (atom baseline)]
+       (try
+         [(binding [base/*macro-skip-deps* true]
+            (resolve/process-namespaced-symbol
+              'u/f
+              {'core {:fragment {'f {:id 'f, :form '(literal :body)}}}}
+              {:module {:id 'consumer, :link {'u 'core}}}
+              code
+              fragments
+              (fn [form] [:unexpected-walk form])))
+          @code
+          @fragments]
+         (finally
+           (reset! code baseline)
+           (reset! fragments baseline))))))
+  =>
+  ['core/f #{'existing/value} #{'existing/value}])

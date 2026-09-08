@@ -95,3 +95,47 @@
     [:define :shorthand] true)
    {})
   => "var out = []")
+
+^{:refer lang.base.emit-assign/+assign-types+}
+(fact "inventories exactly the original assignment overrides"
+ assign/+assign-types+ => #{:assign/inline :assign/template :assign/fn})
+^{:refer lang.base.emit-assign/replace-form}
+(fact "retains native recursive replacement of lists vectors and map keys"
+ (assign/replace-form {'x 2 :a 1} '(x [x] {:a x}))
+ => '(2 [2] {1 2}))
+^{:refer lang.base.emit-assign/return-value}
+(fact "retains the last direct return value and absence behavior"
+ [(assign/return-value '[(return 1) (noop) (return 2)])
+  (assign/return-value '[(noop)])] => [2 nil])
+^{:refer lang.base.emit-assign/remove-return}
+(fact "removes direct returns while preserving other forms and order"
+ (assign/remove-return '[(return 1) (first-call) (return 2) (second-call)])
+ => '[(first-call) (second-call)])
+^{:refer lang.base.emit-assign/modifier-output}
+(fact "emits native keyword vector and symbol modifiers"
+ [(assign/modifier-output :int helper/+default+ {})
+  (assign/modifier-output [] helper/+default+ {})
+  (assign/modifier-output 'hello helper/+default+ {})]
+ => ["int" "" "hello"])
+^{:refer lang.base.emit-assign/emit-input-default}
+(fact "retains native typed array declarations and explicit nil assignment"
+ [(assign/emit-input-default {:symbol 'a :modifiers [:const []] :type [:int] :value 9}
+                             "=" helper/+default+ {})
+  (assign/emit-input-default {:symbol 'a :modifiers [] :type [] :value false}
+                             "=" helper/+default+ {})
+  (assign/emit-input-default {:symbol 'a :modifiers [] :type [] :value nil}
+                             "=" helper/+default+ {})
+  (assign/emit-input-default {:symbol 'a :modifiers [] :type [] :value nil :force true}
+                             "=" helper/+default+ {})]
+ => ["const int a[] = 9" "a = false" "a" "a = nil"])
+
+^{:refer lang.base.emit-assign/emit-def-assign-inline :id nil-false-bindings}
+(fact "substitutes nil and false inline arguments without retaining parameter symbols"
+ (let [book {:modules {'x.core {:id 'x.core :code
+              {'value-fn {:id 'value-fn :lang :x :module 'x.core :deps #{}
+                          :form '(defn value-fn [x] (var a := x) (return a))}}}}}]
+   [(assign/emit-def-assign-inline 'result '(x.core/value-fn nil)
+                                    helper/+default+ {:lang :x :book book})
+    (assign/emit-def-assign-inline 'result '(x.core/value-fn false)
+                                    helper/+default+ {:lang :x :book book})])
+ => '[(do* (var result := nil)) (do* (var result := false))])

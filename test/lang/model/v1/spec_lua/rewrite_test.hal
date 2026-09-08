@@ -1,0 +1,177 @@
+(ns lang.model.v1.spec-lua.rewrite-test
+ (:use code.test)
+ (:require [lang.model.v1.spec-lua.rewrite :as r]))
+^{:refer lang.model.v1.spec-lua.rewrite/lua-lambda-compatible?}
+(fact "only anonymous lambdas are Lua-inline compatible"
+ [(r/lua-lambda-compatible? '(fn [x] x) {}) (r/lua-lambda-compatible? '(fn named [x] x) {})]
+ => [true false])
+^{:refer lang.model.v1.spec-lua.rewrite/runtime-eval?}
+(fact "detects the runtime body transform flag"
+ [(r/runtime-eval? {}) (r/runtime-eval? {:mopts {:emit {:body {:transform identity}}}})]
+ => [false true])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-handler-form?}
+(fact "matches only the requested list handler"
+ [(r/lua-handler-form? 'catch '(catch e e)) (r/lua-handler-form? 'catch '(finally 1))
+  (r/lua-handler-form? 'catch ['catch 'e]) (r/lua-handler-form? 'catch nil)]
+ => [true false false false])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-find-handler}
+(fact "returns the first matching handler or nil"
+ [(r/lua-find-handler 'catch '[(finally a) (catch first a) (catch second b)])
+  (r/lua-find-handler 'catch '[(finally a)])]
+ => ['(catch first a) nil])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-catch-binding}
+(fact "selects named catch bindings and generates fresh fallback symbols"
+ (let [a (r/lua-catch-binding nil) b (r/lua-catch-binding [])]
+  [(r/lua-catch-binding 'error) (r/lua-catch-binding '[:type error])
+   (symbol? a) (str/starts-with? (name a) "lua_try_err__") (not= a b)])
+ => ['error 'error true true true])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-try-thunk}
+(fact "wraps the complete ordered body in a zero-argument thunk"
+ [(r/lua-try-thunk '[(a) (return false)]) (r/lua-try-thunk [])]
+ => ['(fn [] (a) (return false)) '(fn [])])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-mark-inline-def}
+(fact "marks only defn names inner while retaining their existing metadata"
+ (let [input (list 'defn (with-meta 'helper {:line 7}) [] '(return 1))
+       output (r/lua-mark-inline-def input)]
+  [output (meta (second output)) (meta (second input))
+   (r/lua-mark-inline-def '(fn helper [] 1))])
+ => ['(defn helper [] (return 1)) {:line 7 :inner true} {:line 7} '(fn helper [] 1)])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-mark-runtime-defs}
+(fact "marks runtime helpers in vectors and do forms without changing container metadata"
+ (let [output (r/lua-mark-runtime-defs (with-meta '[(defn helper [] 1) (helper)] {:line 9}))
+       block (r/lua-mark-runtime-defs '(do (defn helper [] 1) (helper)))]
+  [output (meta output) (:inner (meta (second (first output))))
+   (:inner (meta (second (second block)))) (last block)])
+ => ['[(defn helper [] 1) (helper)] {:line 9} true true '(helper)])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-pcall-bind}
+(fact "binds all pcall return values"
+ (r/lua-pcall-bind '[ok value] '(fn [] (return false))) => '(var '[ok value] (pcall (fn [] (return false)))))
+^{:refer lang.model.v1.spec-lua.rewrite/lua-return-if-value}
+(fact "tests nil rather than truthiness before returning a value"
+ (r/lua-return-if-value 'value) => '(when (not= nil value) (return value)))
+^{:refer lang.model.v1.spec-lua.rewrite/lua-return-or-error}
+(fact "propagates successful values and rethrows failed values"
+ (r/lua-return-or-error 'ok 'value) => '(if ok (when (not= nil value) (return value)) (error value)))
+^{:refer lang.model.v1.spec-lua.rewrite/lua-catch-guard}
+(fact "enters catch only for failed pcall"
+ (r/lua-catch-guard 'ok 'value) => '(not ok))
+^{:refer lang.model.v1.spec-lua.rewrite/lua-catch-branch}
+(fact "binds the caught value and updates the enclosing outcome"
+ (r/lua-catch-branch '{:body-ok body-ok :body-value body-value :ok ok :value value
+                       :catch-ok catch-ok :catch-value catch-value :catch-sym err :catch-body [(return err)]})
+ => '(when (not body-ok)
+       (var '[catch-ok catch-value] (pcall (fn [] (var err := body-value) (return err))))
+       (:= ok catch-ok) (:= value catch-value)))
+^{:refer lang.model.v1.spec-lua.rewrite/lua-finally-branch}
+(fact "runs finally through pcall and preserves its overriding return or error"
+ (r/lua-finally-branch '{:final-ok ok :final-value value :finally-body [(cleanup)]})
+ => '[(var '[ok value] (pcall (fn [] (cleanup))))
+      (if (not ok) (error value) (when (not= nil value) (return value)))])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-rest-arg-form?}
+(fact "recognizes only a two-element named rest argument"
+ (mapv r/lua-rest-arg-form? '[(:.. args) (:.. args extra) (:.. :not-symbol) [:.. args] x])
+ => [true false false false false])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-callable-form?}
+(fact "recognizes all original callable heads without treating vectors as forms"
+ (mapv r/lua-callable-form? '[(fn []) (fn.inner []) (defn f []) (defn- f []) (defgen f []) (call f) [fn []]])
+ => [true true true true true false false])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-lower-rest-callable}
+(fact "captures final rest arguments and preserves ordinary callables"
+ [(r/lua-lower-rest-callable '(fn [x (:.. args)] (return args)))
+  (r/lua-lower-rest-callable '(defn f [x (:.. args)] (return args)))
+  (r/lua-lower-rest-callable '(fn [x] x))]
+ => ['(fn [x (:.. args)] (var args [(:- "...")]) (return args))
+     '(defn f [x (:.. args)] (var args [(:- "...")]) (return args))
+     '(fn [x] x)]
+ (r/lua-lower-rest-callable '(fn [(:.. a) (:.. b)] a)) => (throws)
+ (r/lua-lower-rest-callable '(fn [(:.. a) b] a)) => (throws))
+^{:refer lang.model.v1.spec-lua.rewrite/lua-rewrite-stage}
+(fact "preserves original multi-value returns and named versus anonymous hoisting"
+ [(r/lua-rewrite-stage '(return nil "OK") {:grammar {}})
+  (r/lua-rewrite-stage '(fn [cb] (return nil "OK")) {:grammar {}})
+  (r/lua-rewrite-stage '(var out (hello (fn inc-fn [x] (return x)))) {:grammar {}})
+  (r/lua-rewrite-stage '(var out (hello (fn [x] (return x)))) {:grammar {}})]
+ => ['(return nil "OK") '(fn [cb] (return nil "OK"))
+     '(do* (var inc-fn (fn [x] (return x))) (var out (hello inc-fn)))
+     '(var out (hello (fn [x] (return x))))])
+
+^{:refer lang.model.v1.spec-lua.rewrite/+lua-rewriter+}
+(fact "retains the original hoist operation set and excludes C declarations"
+ [(set (keys r/+lua-rewriter+))
+  ((:rewrite-expression r/+lua-rewriter+) '(%.c (fn named [])) {})]
+ => [#{:function-form? :rewrite-expression :rewrite-statement :rewrite-statements :rewrite-stage}
+     [[] '(%.c (fn named []))]])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-rewrite-expression}
+(fact "publishes the configured expression rewriter"
+ [(r/lua-rewrite-expression '(hello (fn named [x] (return x))) {})
+  (r/lua-rewrite-expression '(hello (fn [x] (return x))) {})]
+ => [[['(var named (fn [x] (return x)))] '(hello named)]
+     [[] '(hello (fn [x] (return x)))]])
+^{:refer lang.model.v1.spec-lua.rewrite/with-form-meta}
+(fact "copies collection metadata while leaving scalar outputs unchanged"
+ [(meta (r/with-form-meta (with-meta [] {:line 4}) '(return 1)))
+  (r/with-form-meta (with-meta [] {:line 4}) 7)]
+ => [{:line 4} 7])
+^{:refer lang.model.v1.spec-lua.rewrite/*lua-grammar*}
+(fact "restores grammar binding after normal and failing staging"
+ [(binding [r/*lua-grammar* :outer]
+    [(r/lua-rewrite-stage '(return 1) {:grammar {}}) r/*lua-grammar*
+     (try (r/lua-rewrite-stage '(fn [(:.. a) b] a) {:grammar {}})
+          (catch error :caught))
+     r/*lua-grammar*])
+  r/*lua-grammar*]
+ => [['(return 1) :outer :caught :outer] nil])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-lower-try}
+(fact "lowers try catch and finally into ordered pcall outcome propagation"
+ (let [prefixes [["lua_try_body_ok__" 'body-ok] ["lua_try_body_value__" 'body-value]
+                 ["lua_try_ok__" 'ok] ["lua_try_value__" 'value]
+                 ["lua_try_catch_ok__" 'catch-ok] ["lua_try_catch_value__" 'catch-value]
+                 ["lua_try_final_ok__" 'final-ok] ["lua_try_final_value__" 'final-value]]
+       output (r/lua-lower-try
+                (with-meta '(try (work) (catch err (recover err)) (finally (cleanup))) {:line 7}))
+       normalized (postwalk (fn [value]
+                              (if (symbol? value)
+                                (or (some (fn [[prefix replacement]]
+                                            (if (str/starts-with? (name value) prefix) replacement))
+                                          prefixes)
+                                    value)
+                                value))
+                            output)]
+  [normalized (meta output)])
+ => ['(do
+        (var '[body-ok body-value] (pcall (fn [] (work))))
+        (var ok := body-ok)
+        (var value := body-value)
+        (when (not body-ok)
+          (var '[catch-ok catch-value] (pcall (fn [] (var err := body-value) (recover err))))
+          (:= ok catch-ok) (:= value catch-value))
+        (var '[final-ok final-value] (pcall (fn [] (cleanup))))
+        (if (not final-ok) (error final-value) (when (not= nil final-value) (return final-value)))
+        (if ok (when (not= nil value) (return value)) (error value)))
+     {:line 7}])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-rewrite-list}
+(fact "expands C prototypes and leaves quoted programs protected"
+ [(r/lua-rewrite-list '(%.c (fn ^{:tag :int} add [:int x])))
+  (r/lua-rewrite-list '(quote (%.c (fn add []))))
+  (r/lua-rewrite-list 42)]
+ => ["int add(int x);" '(quote (%.c (fn add []))) 42])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-rewrite-form}
+(fact "recurses through containers and preserves their metadata"
+ (let [output (r/lua-rewrite-form (with-meta {:declaration '[(%.c (fn nop []))]} {:line 3}))]
+  [output (meta output)])
+ => [{:declaration ["void nop();"]} {:line 3}])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-rewrite-statement}
+(fact "hoists named callbacks before the owning statement"
+ (r/lua-rewrite-statement '(var out (hello (fn named [x] (return x)))))
+ => '(do* (var named (fn [x] (return x))) (var out (hello named))))
+^{:refer lang.model.v1.spec-lua.rewrite/lua-rewrite-statements}
+(fact "preserves statement order and multi-value return tails"
+ [(r/lua-rewrite-statements '[(work) (return nil "OK")]) (r/lua-rewrite-statements [])]
+ => ['((work) (return nil "OK")) '()])
+^{:refer lang.model.v1.spec-lua.rewrite/lua-lower-rest-forms}
+(fact "lowers nested rest callables through maps and vectors but protects quotes"
+ (r/lua-lower-rest-forms
+  '{:callbacks [(fn [(:.. args)] (return args))]
+    :quoted (quote (fn [(:.. args)] (return args)))})
+ => '{:callbacks [(fn [(:.. args)] (var args [(:- "...")]) (return args))]
+      :quoted (quote (fn [(:.. args)] (return args)))})

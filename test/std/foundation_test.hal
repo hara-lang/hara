@@ -1987,3 +1987,39 @@
 
 ^{:refer std.foundation/dependents-ordered}
 (Test/check [])
+
+^{:refer std.foundation/delay}
+(Test/check
+ [{:name "delay defers all body forms and preserves lexical bindings"
+   :test (fn []
+           (let [calls (atom 0)
+                 captured 40
+                 value (delay (reset! calls (+ 1 (deref calls))) (+ captured 2))
+                 before [(deref calls) (IRealize/realized? value)]]
+             [before (deref value) (IRealize/realize value)
+              (deref calls) (IRealize/realized? value)]))
+   :expected [[0 false] 42 42 1 true]}
+  {:name "delay caches nil and false and accepts an empty body"
+   :test (fn []
+           (let [empty-value (delay)
+                 nil-value (delay nil)
+                 false-value (delay false)]
+             [(deref empty-value) (deref nil-value) (deref false-value)
+              (deref false-value) (IRealize/realized? empty-value)
+              (IRealize/realized? nil-value)]))
+   :expected [nil nil false false true true]}
+  {:name "delay caches the original structured failure without retrying"
+   :test (fn []
+           (let [calls (atom 0)
+                 value (delay (reset! calls (+ 1 (deref calls)))
+                              (throw (ex :argument {:reason :delayed})))
+                 first-error (try (deref value) (catch error error))
+                 next-error (try (IRealize/realize value) (catch error error))]
+             [(and (= first-error next-error) (= (ex-data first-error) (ex-data next-error))) (:ex/code (ex-data first-error))
+              (:reason (ex-data first-error)) (deref calls) (IRealize/realized? value)]))
+   :expected [true :hara/argument :delayed 1 true]}
+  {:name "delay expansion wraps the body in a zero-argument function"
+   :test (fn []
+           (let [expanded (macroexpand-1 '(delay (first-step) (last-step)))]
+             [(= (resolve (first expanded)) (resolve 'Base/delay)) (rest expanded)]))
+   :expected [true '((fn [] (first-step) (last-step)))]}])

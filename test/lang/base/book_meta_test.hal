@@ -54,12 +54,33 @@
 
 ^{:refer lang.base.book-meta/book-meta-data} (fact "returns BookMeta structures and fails closed for ordinary maps" ((fn [] [(lang.base.book-meta/book-meta-data (lang.base.book-meta/book-meta {:has-ptr :pointer})) (try (lang.base.book-meta/book-meta-data {}) false (catch _ true))])) => [(lang.base.book-meta/book-meta {:has-ptr :pointer}) true])
 
-^{:refer lang.base.book-meta/book-meta} (fact "preserves extension fields, both teardown spellings, metadata and callable lifecycle contracts" ((fn [] (let [input (with-meta {:extension {:target :js}, :teardows-module :historical, :teardown-module :native, :false-value false, :nil-value nil, :module-export (fn [module opts] (list (quote return) (:as module) (:suffix opts)))} {:origin :fixture}) value (lang.base.book-meta/book-meta input) again (lang.base.book-meta/book-meta value)] [(lang.base.book-meta/book-meta? value) (select-keys value [:extension :teardows-module :teardown-module :false-value :nil-value]) ((:module-export value) {:as (quote module)} {:suffix :done}) (:origin (meta value)) (= value again) (= (meta value) (meta again)) (lang.base.book-meta/book-meta? (assoc value :extension :changed)) (lang.base.book-meta/book-meta? (lang.base.book-meta/map->BookMeta {})) (lang.base.book-meta/book-meta? {}) (count (keys (lang.base.book-meta/book-meta {})))]))) => [true {:extension {:target :js}, :teardows-module :historical, :teardown-module :native, :false-value false, :nil-value nil} (quote (return module :done)) :fixture true true true true false 12])
+^{:refer lang.base.book-meta/book-meta} (fact "preserves extension fields, both teardown spellings, metadata and callable lifecycle contracts" ((fn [] (let [input (with-meta {:extension {:target :js}, :teardows-module :historical, :teardown-module :native, :false-value false, :nil-value nil, :module-export (fn [module opts] (list (quote return) (:as module) (:suffix opts)))} {:origin :fixture}) value (lang.base.book-meta/book-meta input) again (lang.base.book-meta/book-meta value)] [(lang.base.book-meta/book-meta? value) (select-keys value [:extension :teardows-module :teardown-module :false-value :nil-value]) ((:module-export value) {:as (quote module)} {:suffix :done}) (:origin (meta value)) (= value again) (= (meta value) (meta again)) (lang.base.book-meta/book-meta? (assoc value :extension :changed)) (lang.base.book-meta/book-meta? (lang.base.book-meta/map->BookMeta {})) (lang.base.book-meta/book-meta? {}) (count (keys (lang.base.book-meta/book-meta {})))]))) => [true {:extension {:target :js}, :teardows-module :historical, :teardown-module :native, :false-value false, :nil-value nil} (quote (return module :done)) :fixture true true true true false 10])
 
 ^{:refer lang.base.book-meta/book-meta-string} (fact "sorts configured keys and excludes false and nil display fields" ((fn [] (lang.base.book-meta/book-meta-string {:z :last, :a :first, :none nil, :off false}))) => "#book.meta  [:a :z]")
 
 ^{:refer lang.base.book-meta/BookMeta}
-(fact "preserves the legacy constructor with pinned and native field defaults"
+(fact "preserves the original constructor defaults without inventing extension fields"
  (let [value (lang.base.book-meta/map->BookMeta {:bootstrap :legacy})]
  [(lang.base.book-meta/book-meta? value) (select-keys value [:bootstrap :teardows-module :teardown-module :transforms])])
- => [true {:bootstrap :legacy :teardows-module nil :teardown-module nil :transforms nil}])
+ => [true {:bootstrap :legacy :teardows-module nil}])
+
+^{:refer lang.base.book-meta/book-meta :id record-identity}
+(fact "constructs the pinned ten-field record while preserving native extensions and metadata"
+ (let [input (with-meta {:transforms {:entry [:keep]} :teardown-module :native
+                        :teardows-module :original :extension false
+                        :module-export (fn [m opts] [(:as m) (:suffix opts)])} {:origin :fixture})
+       value (lang.base.book-meta/book-meta input)
+       again (lang.base.book-meta/book-meta value)]
+ [(instance? lang.base.book-meta/BookMeta value)
+  (count (keys (lang.base.book-meta/book-meta {})))
+  (select-keys value [:transforms :teardown-module :teardows-module :extension])
+  (meta value) (= value again) (= (meta value) (meta again))
+  ((:module-export value) {:as 'module} {:suffix :done})
+  (instance? lang.base.book-meta/BookMeta (assoc value :new :field))])
+ => [true 10 {:transforms {:entry [:keep]} :teardown-module :native :teardows-module :original :extension false}
+     {:origin :fixture} true true [(quote module) :done] true])
+^{:refer lang.base.book-meta/book-meta? :id reject-tagged-map}
+(fact "rejects forged tagged maps and accepts original record constructors"
+ [(lang.base.book-meta/book-meta? (with-meta {} {:lang.base.book-meta/book-meta true}))
+  (lang.base.book-meta/book-meta? (lang.base.book-meta/map->BookMeta {}))]
+ => [false true])

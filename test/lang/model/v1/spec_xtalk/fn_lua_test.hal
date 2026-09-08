@@ -1,73 +1,653 @@
 (ns lang.model.v1.spec-xtalk.fn-lua-test
-  (:use code.test)
-  (:require [lang.model.v1.spec-xtalk.fn-lua :as subject]))
-
+ (:use code.test)
+ (:require [lang.model.v1.spec-xtalk.fn-lua :as r]))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-del}
+(fact "deletion assigns nil to the exact target"
+ (r/lua-tf-x-del '[_ (. obj ["key"])]) => '(:= (. obj ["key"]) nil))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-cat}
+(fact "concatenation retains empty and ordered argument lists"
+ [(r/lua-tf-x-cat '[_]) (r/lua-tf-x-cat '[_ "a" value "b"])]
+ => ['(cat) '(cat "a" value "b")])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-eval}
+(fact "expression evaluation prefixes return and invokes the loaded function"
+ (r/lua-tf-x-eval '[_ source]) => '((loadstring (cat "return " source))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-apply}
+(fact "application unpacks the argument collection once"
+ (r/lua-tf-x-apply '[_ callable args]) => '(callable (unpack args)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-construct}
+(fact "construction preserves the constructor and unpacked arguments"
+ (r/lua-tf-x-construct '[_ Widget args]) => '(Widget (unpack args)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-err}
+(fact "error lowering retains message-only and structured data branches"
+ [(r/lua-tf-x-err '[_ "message"]) (r/lua-tf-x-err '[_ "message" {:code 7}])]
+ => ['(error "message" 0) '(error (cjson.encode ["message" {:code 7}]) 0)])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-ex-native?}
+(fact "native exception recognition requires table and exact discriminator"
+ (r/lua-tf-x-ex-native? '[_ err])
+ => '(and (== "table" (type err)) (== "xt.exception" (. err ["__type__"]))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-ex-new}
+(fact "exception construction retains absent and explicit false data"
+ [(r/lua-tf-x-ex-new '[_ "message"]) (r/lua-tf-x-ex-new '[_ "message" false])]
+ => [{"__type__" "xt.exception" "message" "message" "data" nil}
+     {"__type__" "xt.exception" "message" "message" "data" false}])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-ex-message}
+(fact "message lookup rejects non-native exceptions"
+ (r/lua-tf-x-ex-message '[_ err])
+ => '(:? (x:ex-native? err) (. err ["message"]) nil))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-ex-data}
+(fact "data lookup rejects non-native exceptions"
+ (r/lua-tf-x-ex-data '[_ err])
+ => '(:? (x:ex-native? err) (. err ["data"]) nil))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-hash-id}
+(fact "the original unsupported identity hash returns nil"
+ (r/lua-tf-x-hash-id '[_ object]) => '(return nil))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-has-key?}
+(fact "presence distinguishes missing check from explicit false or zero"
+ [(r/lua-tf-x-has-key? '[_ obj "key" nil])
+  (r/lua-tf-x-has-key? '[_ obj "key" false])
+  (r/lua-tf-x-has-key? '[_ obj "key" 0])]
+ => ['(not= nil (. obj ["key"])) '(== false (x:get-key obj "key" nil))
+     '(== 0 (x:get-key obj "key" nil))])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-return-wrap}
+(fact "runtime wrapping separates pcall errors from result encoding"
+ (r/lua-tf-x-return-wrap '[_ work encode])
+ => '(do (var out)
+         (var '[o-ok o-err] (pcall (fn [] (:= out (work)))))
+         (cond o-err (return (cjson.encode {:type "error" :value o-err}))
+               :else (return (encode out)))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-return-eval}
+(fact "runtime evaluation keeps loader failure and direct multi-value binding"
+ (r/lua-tf-x-return-eval '[_ source wrap])
+ => '(return (wrap (fn []
+                    (var load-fn (or loadstring load))
+                    (var '[f err] (load-fn source))
+                    (if err (error err) (return (f)))))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bytes-new}
+(fact "byte construction copies all values through unpack"
+ (r/lua-tf-x-bytes-new '[_ values]) => '[(unpack values)])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bytes-get}
+(fact "byte lookup offsets the external index exactly once"
+ (r/lua-tf-x-bytes-get '[_ bytes index]) => '(x:get-idx bytes (x:offset index)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bytes-set}
+(fact "byte mutation uses rawset with one offset"
+ (r/lua-tf-x-bytes-set '[_ bytes index value]) => '(rawset bytes (x:offset index) value))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bytes-copy}
+(fact "byte copying allocates a new array expression"
+ (r/lua-tf-x-bytes-copy '[_ bytes]) => '[(unpack bytes)])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bytes-slice}
+(fact "byte slicing preserves optional exclusive end conventions"
+ [(r/lua-tf-x-bytes-slice '[_ bytes 0]) (r/lua-tf-x-bytes-slice '[_ bytes 1 4])]
+ => ['[(unpack bytes (x:offset 0))] '[(unpack bytes (x:offset 1) 4)]])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bytes-u8}
+(fact "unsigned conversion masks to eight bits"
+ (r/lua-tf-x-bytes-u8 '[_ value]) => '(bit.band value 255))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bytes-s8}
+(fact "signed conversion preserves the 127 boundary"
+ (r/lua-tf-x-bytes-s8 '[_ value]) => '(:? (> value 127) (- value 256) value))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-socket-send}
+(fact "socket send decodes the byte sequence before dispatch"
+ (r/lua-tf-x-socket-send '[_ conn bytes]) => '(. conn (send (x:str-decode bytes))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-socket-close}
+(fact "socket close invokes the connection method"
+ (r/lua-tf-x-socket-close '[_ conn]) => '(. conn (close)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-global-has?}
+(fact "global presence converts the provided name to a symbol"
+ (r/lua-tf-x-global-has? '[_ "answer"]) => '(not= answer nil))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-global-set}
+(fact "global assignment retains false"
+ (r/lua-tf-x-global-set '[_ "answer" false]) => '(:= answer false))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-global-del}
+(fact "global deletion assigns nil"
+ (r/lua-tf-x-global-del '[_ "answer"]) => '(:= answer nil))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-m-mod}
+(fact "modulo preserves operand order and sign"
+ (r/lua-tf-x-m-mod '[_ -10 3]) => '(mod -10 3))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-m-quot}
+(fact "quotient retains floor division"
+ (r/lua-tf-x-m-quot '[_ -10 3]) => '(math.floor (/ -10 3)))
 ^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-string?}
-(fact "lowers the Lua string predicate"
-  (subject/lua-tf-x-is-string? '(x:is-string? value))
-  => '(== "string" (type value)))
-
+(fact "string recognition compares the native type"
+ (r/lua-tf-x-is-string? '[_ value]) => '(== "string" (type value)))
 ^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-number?}
-(fact "lowers the Lua number predicate"
-  (subject/lua-tf-x-is-number? '(x:is-number? value))
-  => '(== "number" (type value)))
-
+(fact "number recognition compares the native type"
+ (r/lua-tf-x-is-number? '[_ value]) => '(== "number" (type value)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-integer?}
+(fact "integer recognition checks remainder modulo one"
+ (r/lua-tf-x-is-integer? '[_ value]) => '(== 0 (mod value 1)))
 ^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-boolean?}
-(fact "lowers the Lua boolean predicate"
-  (subject/lua-tf-x-is-boolean? '(x:is-boolean? value))
-  => '(== "boolean" (type value)))
-
+(fact "boolean recognition compares the native type"
+ (r/lua-tf-x-is-boolean? '[_ value]) => '(== "boolean" (type value)))
 ^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-function?}
-(fact "lowers the Lua function predicate"
-  (subject/lua-tf-x-is-function? '(x:is-function? value))
-  => '(== "function" (type value)))
-
+(fact "function recognition compares the native type"
+ (r/lua-tf-x-is-function? '[_ value]) => '(== "function" (type value)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-lu-create}
+(fact "lookup creation installs weak keys on a fresh table"
+ (r/lua-tf-x-lu-create '[_]) => '(setmetatable {} {"__mode" "k"}))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-lu-get}
+(fact "lookup keys use the object's string identity"
+ (r/lua-tf-x-lu-get '[_ lookup object]) => '(. lookup [(tostring object)]))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-lu-set}
+(fact "lookup assignment retains the supplied identifier"
+ (r/lua-tf-x-lu-set '[_ lookup object identifier])
+ => '(:= (. lookup [(tostring object)]) identifier))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-lu-del}
+(fact "lookup deletion uses the same identity key"
+ (r/lua-tf-x-lu-del '[_ lookup object]) => '(:= (. lookup [(tostring object)]) nil))
 ^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bit-and}
-(fact "lowers Lua bitwise and through the portable bit loop"
-  (let [form (subject/lua-tf-x-bit-and '(x:bit-and left right))]
-    [(first (first form)) (nth form 1) (nth form 2)])
-  => ['fn 'left 'right])
-
+(fact "bitwise and uses the original bit library"
+ (r/lua-tf-x-bit-and '[_ left right]) => '(bit.band left right))
 ^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bit-or}
-(fact "lowers Lua bitwise or through the portable bit loop"
-  (let [form (subject/lua-tf-x-bit-or '(x:bit-or left right))]
-    [(first (first form)) (nth form 1) (nth form 2)])
-  => ['fn 'left 'right])
-
+(fact "bitwise or uses the original bit library"
+ (r/lua-tf-x-bit-or '[_ left right]) => '(bit.bor left right))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bit-lshift}
+(fact "left shift retains the shift distance"
+ (r/lua-tf-x-bit-lshift '[_ value distance]) => '(bit.lshift value distance))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bit-rshift}
+(fact "right shift retains the shift distance"
+ (r/lua-tf-x-bit-rshift '[_ value distance]) => '(bit.rshift value distance))
 ^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bit-xor}
-(fact "lowers Lua bitwise xor through the portable bit loop"
-  (let [form (subject/lua-tf-x-bit-xor '(x:bit-xor left right))]
-    [(first (first form)) (nth form 1) (nth form 2)])
-  => ['fn 'left 'right])
-
+(fact "bitwise xor uses the original bit library"
+ (r/lua-tf-x-bit-xor '[_ left right]) => '(bit.bxor left right))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-arr-clone}
+(fact "array cloning unpacks into a new vector expression"
+ (r/lua-tf-x-arr-clone '[_ array]) => '[(unpack array)])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-arr-slice}
+(fact "array slicing offsets start and preserves the upper bound"
+ (r/lua-tf-x-arr-slice '[_ array 0 4]) => '[(unpack array (x:offset 0) 4)])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-arr-remove}
+(fact "array removal offsets the external index"
+ (r/lua-tf-x-arr-remove '[_ array index]) => '(table.remove array (x:offset index)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-arr-push-first}
+(fact "array prepend inserts at Lua index one"
+ (r/lua-tf-x-arr-push-first '[_ array item]) => '(table.insert array 1 item))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-arr-pop-first}
+(fact "array shift removes Lua index one"
+ (r/lua-tf-x-arr-pop-first '[_ array]) => '(table.remove array 1))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-arr-insert}
+(fact "the original insertion leaves its supplied index unchanged"
+ (r/lua-tf-x-arr-insert '[_ array index item]) => '(table.insert array index item))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-arr-sort}
+(fact "preserves the pinned sort form including its extra empty-list argument"
+ (r/lua-tf-x-arr-sort '[_ array key-fn compare-fn])
+ => '(table.sort () array (fn [a b] (return (compare-fn (key-fn a) (key-fn b))))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-join}
+(fact "string joining puts the collection before its separator"
+ (r/lua-tf-x-str-join '[_ separator array]) => '(table.concat array separator))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-index-of}
+(fact "string search retains minus-one fallback"
+ (r/lua-tf-x-str-index-of '[_ text token]) => '(or (string.find text token) -1))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-to-fixed}
+(fact "fixed precision builds the exact Lua format string"
+ (r/lua-tf-x-str-to-fixed '[_ number digits]) => '(string.format (cat "%." digits "f") number))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-replace}
+(fact "string replacement preserves all three operands"
+ (r/lua-tf-x-str-replace '[_ text token replacement]) => '(string.gsub text token replacement))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-trim}
+(fact "trim preserves the anchored whitespace pattern and capture"
+ (r/lua-tf-x-str-trim '[_ text]) => '(string.gsub text "^%s*(.-)%s*$" "%1"))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-trim-left}
+(fact "left trim uses only the initial whitespace pattern"
+ (r/lua-tf-x-str-trim-left '[_ text]) => '(string.gsub text "^%s*" ""))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-trim-right}
+(fact "right trim preserves initial whitespace through the capture"
+ (r/lua-tf-x-str-trim-right '[_ text]) => '(string.gsub text "^(%s*.-)%s*$" "%1"))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-decode}
+(fact "string decoding unpacks byte arguments into string.char"
+ (r/lua-tf-x-str-decode '[_ bytes]) => '(string.char (x:unpack bytes)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bit-not}
+(fact "bitwise negation uses bit.bnot"
+ (r/lua-tf-x-bit-not '[_ value]) => '(bit.bnot value))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-iter-from-obj}
+(fact "object iteration yields key-value pairs from a coroutine"
+ (r/lua-tf-x-iter-from-obj '[_ object])
+ => '(coroutine.wrap (fn [] (for [k v :in (pairs object)] (coroutine.yield [k v])))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-iter-from-arr}
+(fact "array iteration yields values in ipairs order"
+ (r/lua-tf-x-iter-from-arr '[_ array])
+ => '(coroutine.wrap (fn [] (for [_ v :in (ipairs array)] (coroutine.yield v)))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-iter-from}
+(fact "preserves the original iterator body even though it yields a different symbol"
+ (r/lua-tf-x-iter-from '[_ object])
+ => '(coroutine.wrap (fn [] (for [e :in (. object ["iterator"])] (coroutine.yield v)))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-iter-eq}
+(fact "iterator equality stops on mismatch and checks right-side exhaustion"
+ (r/lua-tf-x-iter-eq '[_ left right equal])
+ => '(do (for [x0 :in left]
+           (var x1 (right))
+           (when (not (equal x0 x1)) (return false)))
+         (return (== nil (right)))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-iter-next}
+(fact "iterator next invokes the supplied iterator"
+ (r/lua-tf-x-iter-next '[_ iterator]) => '(iterator))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-iter-has?}
+(fact "iterator support requires a table with a function-valued iterator field"
+ (r/lua-tf-x-iter-has? '[_ object])
+ => '(and (== "table" (type object)) (== "function" (. '(object) ["iterator"]))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-iter-native?}
+(fact "native Lua iterators are functions"
+ (r/lua-tf-x-iter-native? '[_ iterator]) => '(== "function" (type iterator)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-async-run}
+(fact "async run creates and resumes the supplied coroutine"
+ (r/lua-tf-x-async-run '[_ thunk]) => '(coroutine.resume (coroutine.create thunk)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-with-delay}
+(fact "delayed execution converts milliseconds to seconds before invoking thunk"
+ (r/lua-tf-x-with-delay '[_ milliseconds thunk])
+ => '(do (var socket (require "socket"))
+         (socket.sleep (/ milliseconds 1000.0))
+         (return (thunk))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-pwd}
+(fact "working directory reads the original PWD environment variable"
+ (r/lua-tf-x-pwd '[_]) => '(os.getenv "PWD"))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-file-resolve}
+(fact "path resolution preserves nil-root and absolute-path branches"
+ (r/lua-tf-x-file-resolve '[_ root path])
+ => '(:? (or (== nil root) (== "/" (string.sub path 1 1))) path (cat root "/" path)))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-type-native}
+(fact "native type classification preserves metatable and first-index array detection"
+ (r/lua-tf-x-type-native '[_ value])
+ => '(do (var t := (type value))
+         (if (== t "table")
+           (if (or (and (not= nil cjson)
+                        (not= nil (. cjson ["array_mt"]))
+                        (== (getmetatable value) (. cjson ["array_mt"])))
+                   (not= nil (. '(value) [1])))
+             (return "array") (return "object"))
+           (return t))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-object?}
+(fact "object classification excludes marked arrays and nonempty indexed tables"
+ (r/lua-tf-x-is-object? '[_ value])
+ => '(or (and (== "table" (type value))
+              (or (== nil cjson)
+                  (== nil (. cjson ["array_mt"]))
+                  (not= (getmetatable value) (. cjson ["array_mt"])))
+              (== nil (. '(value) [1])))
+         (== "object" (type value))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-array?}
+(fact "array classification accepts marked or nonempty indexed tables"
+ (r/lua-tf-x-is-array? '[_ value])
+ => '(or (and (== "table" (type value))
+              (or (and (not= nil cjson)
+                       (not= nil (. cjson ["array_mt"]))
+                       (== (getmetatable value) (. cjson ["array_mt"])))
+                  (not= nil (. '(value) [1]))))
+         (== "array" (type value))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-split}
+(fact "string splitting retains the quoted immediate lambda and pattern"
+ (r/lua-tf-x-str-split '[_ text separator])
+ => '('((fn [s tok]
+           (var out := {})
+           (string.gsub s (string.format "([^%s]+)" tok)
+                        (fn [c] (table.insert out c)))
+           (return out)))
+       text separator))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-str-encode}
+(fact "string encoding preserves ordered byte extraction through gsub"
+ (r/lua-tf-x-str-encode '[_ text])
+ => '('((fn [s]
+           (var out := {})
+           (string.gsub s "." (fn [c] (table.insert out (string.byte c))))
+           (return out)))
+       text))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-file-read}
+(fact "file reading checks open failure closes the handle and returns encoded bytes"
+ (r/lua-tf-x-file-read '[_ filename])
+ => '(x:promise (fn []
+                  (var '[handle err] (io.open filename "rb"))
+                  (when err (x:err err))
+                  (var out (handle:read "*a"))
+                  (handle:close)
+                  (return (x:str-encode out)))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-file-write}
+(fact "file writing closes before reporting write failure and returns nil"
+ (r/lua-tf-x-file-write '[_ filename bytes])
+ => '(x:promise (fn []
+                  (var '[handle err] (io.open filename "wb"))
+                  (when err (x:err err))
+                  (var '[out write-err] (handle:write (x:str-decode bytes)))
+                  (handle:close)
+                  (when write-err (x:err write-err))
+                  (return nil))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-shell}
+(fact "shell execution preserves literal root and both process failure branches"
+ (r/lua-tf-x-shell '[_ command directory callback])
+ => '(do* (var command (:? root (cat "cd " root " && " command) command))
+          (var '[ok handle] (pcall (fn [] (return (io.popen command)))))
+          (if (not ok)
+            (return (callback handle nil))
+            (do* (var res (handle:read "*a"))
+                 (var '[closed reason code] (handle:close))
+                 (if closed
+                   (return (callback nil res))
+                   (return (callback {:err reason :code code :out res} nil)))))))
 ^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-socket-connect}
-(fact "builds the Lua socket connection form"
-  (let [form (subject/lua-tf-x-socket-connect
-              '(x:socket-connect host port opts cb))]
+(fact "socket connection preserves docker resolution and callback outcome ordering"
+ (r/lua-tf-x-socket-connect '[_ hostname port options callback])
+ => '(do* (when (== hostname "host.docker.internal")
+            (var handle (io.popen
+                         (cat "ping host.docker.internal -c 1 -q 2>&1"
+                              " | " "grep -Po \"(\\d{1,3}\\.){3}\\d{1,3}\"")))
+            (:= hostname (handle:read "*a"))
+            (:= hostname (string.sub hostname 1 (- (len hostname) 1)))
+            (handle:close))
+          (var socket (require "socket"))
+          (var '[conn err] (socket.connect hostname port))
+          (if err (return (callback err nil)) (return (callback nil conn)))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-return-encode}
+(fact "return encoding preserves nil tagging recursive filtering and raw fallback"
+ (r/lua-tf-x-return-encode '[_ result request-id request-key])
+ => '(do
+       (var ret nil)
+       (var type-fn
+            (fn [obj]
+              (var t (type obj))
+              (if (== t "table")
+                (if (== nil (. '(obj) [1])) (return "object") (return "array"))
+                (return t))))
+       (var json-filter
+            (fn [obj]
+              (var t (type obj))
+              (if (== t "table")
+                (do (var mt (getmetatable obj))
+                    (if (or (and (not= nil mt)
+                                 (not= nil (. cjson ["array_mt"]))
+                                 (== mt (. cjson ["array_mt"])))
+                            (not= nil (. '(obj) [1])))
+                      (do (var out {})
+                          (var max 0)
+                          (for:object [[k v] obj]
+                            (when (== "number" (type k))
+                              (when (> k max) (:= max k))))
+                          (for:index [i [1 max]]
+                            (var v (. obj [i]))
+                            (if (== nil v)
+                              (:= (. out [i]) (. cjson ["null"]))
+                              (if (== "function" (type v))
+                                (:= (. out [i]) (. cjson ["null"]))
+                                (:= (. out [i]) (json-filter v)))))
+                          (setmetatable out mt)
+                          (return out))
+                      (do (var out {})
+                          (for:object [[k v] obj]
+                            (when (not= "function" (type v))
+                              (:= (. out [k]) (json-filter v))))
+                          (return out))))
+                (if (== t "function") (return (. cjson ["null"])) (return obj)))))
+       (var '[r-ok r-err]
+            (pcall (fn []
+                     (cond (== nil result)
+                           (:= ret (cjson.encode {:id request-id :key request-key
+                                                  :return "nil" :type "data"
+                                                  :value (. cjson ["null"])}))
+                           :else
+                           (:= ret (cjson.encode {:id request-id :key request-key
+                                                  :return (type-fn result) :type "data"
+                                                  :value (json-filter result)}))))))
+       (cond r-err
+             (return (cjson.encode {:id request-id :key request-key :type "raw"
+                                    :return (type-fn result) :error (tostring r-err)
+                                    :value (tostring result)}))
+             :else (return ret))))
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-core+}
+(fact "core operators retain original alias symbols macro Vars and wall-clock source"
+ r/+lua-core+
+ => {:x-del {:macro (var r/lua-tf-x-del) :emit :macro}
+     :x-cat {:macro (var r/lua-tf-x-cat) :emit :macro}
+     :x-len {:emit :alias :raw 'len}
+     :x-err {:macro (var r/lua-tf-x-err) :emit :macro}
+     :x-ex-native? {:macro (var r/lua-tf-x-ex-native?) :emit :macro}
+     :x-ex-new {:macro (var r/lua-tf-x-ex-new) :emit :macro}
+     :x-ex-message {:macro (var r/lua-tf-x-ex-message) :emit :macro}
+     :x-ex-data {:macro (var r/lua-tf-x-ex-data) :emit :macro}
+     :x-eval {:macro (var r/lua-tf-x-eval) :emit :macro}
+     :x-apply {:macro (var r/lua-tf-x-apply) :emit :macro}
+     :x-construct {:macro (var r/lua-tf-x-construct) :emit :macro}
+     :x-unpack {:emit :alias :raw 'unpack}
+     :x-print {:emit :alias :raw 'print}
+     :x-random {:emit :alias :raw 'math.random}
+     :x-now-ms {:default '(math.floor (* 1000 (os.time))) :emit :unit}
+     :x-type-native {:macro (var r/lua-tf-x-type-native) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-global+}
+(fact "global operators point to all three original transformations"
+ r/+lua-global+
+ => {:x-global-has? {:macro (var r/lua-tf-x-global-has?) :emit :macro}
+     :x-global-set {:macro (var r/lua-tf-x-global-set) :emit :macro}
+     :x-global-del {:macro (var r/lua-tf-x-global-del) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-custom+}
+(fact "the custom group owns only checked key presence"
+ r/+lua-custom+
+ => {:x-has-key? {:macro (var r/lua-tf-x-has-key?) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-math+}
+(fact "math aliases and quotient/modulo macro ownership remain exact"
+ r/+lua-math+
+ => {:x-m-abs {:emit :alias :raw 'math.abs}
+     :x-m-acos {:emit :alias :raw 'math.acos}
+     :x-m-asin {:emit :alias :raw 'math.asin}
+     :x-m-atan {:emit :alias :raw 'math.atan}
+     :x-m-ceil {:emit :alias :raw 'math.ceil}
+     :x-m-cos {:emit :alias :raw 'math.cos}
+     :x-m-cosh {:emit :alias :raw 'math.cosh}
+     :x-m-exp {:emit :alias :raw 'math.exp}
+     :x-m-floor {:emit :alias :raw 'math.floor}
+     :x-m-loge {:emit :alias :raw 'math.log}
+     :x-m-log10 {:emit :alias :raw 'math.log10}
+     :x-m-max {:emit :alias :raw 'math.max}
+     :x-m-min {:emit :alias :raw 'math.min}
+     :x-m-mod {:macro (var r/lua-tf-x-m-mod) :emit :macro}
+     :x-m-pow {:emit :alias :raw 'math.pow}
+     :x-m-quot {:macro (var r/lua-tf-x-m-quot) :emit :macro}
+     :x-m-sin {:emit :alias :raw 'math.sin}
+     :x-m-sinh {:emit :alias :raw 'math.sinh}
+     :x-m-sqrt {:emit :alias :raw 'math.sqrt}
+     :x-m-tan {:emit :alias :raw 'math.tan}
+     :x-m-tanh {:emit :alias :raw 'math.tanh}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-type+}
+(fact "type conversion aliases and all seven predicates retain ownership"
+ r/+lua-type+
+ => {:x-to-string {:emit :alias :raw 'tostring}
+     :x-to-number {:emit :alias :raw 'tonumber}
+     :x-is-string? {:macro (var r/lua-tf-x-is-string?) :emit :macro}
+     :x-is-number? {:macro (var r/lua-tf-x-is-number?) :emit :macro}
+     :x-is-integer? {:macro (var r/lua-tf-x-is-integer?) :emit :macro}
+     :x-is-boolean? {:macro (var r/lua-tf-x-is-boolean?) :emit :macro}
+     :x-is-function? {:macro (var r/lua-tf-x-is-function?) :emit :macro}
+     :x-is-object? {:macro (var r/lua-tf-x-is-object?) :emit :macro}
+     :x-is-array? {:macro (var r/lua-tf-x-is-array?) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-lu+}
+(fact "lookup lifecycle operators retain original constructors"
+ r/+lua-lu+
+ => {:x-lu-create {:macro (var r/lua-tf-x-lu-create) :emit :macro}
+     :x-lu-get {:macro (var r/lua-tf-x-lu-get) :emit :macro}
+     :x-lu-set {:macro (var r/lua-tf-x-lu-set) :emit :macro}
+     :x-lu-del {:macro (var r/lua-tf-x-lu-del) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-bit+}
+(fact "the bit group includes five original bit-library transformations"
+ r/+lua-bit+
+ => {:x-bit-and {:macro (var r/lua-tf-x-bit-and) :emit :macro}
+     :x-bit-or {:macro (var r/lua-tf-x-bit-or) :emit :macro}
+     :x-bit-lshift {:macro (var r/lua-tf-x-bit-lshift) :emit :macro}
+     :x-bit-rshift {:macro (var r/lua-tf-x-bit-rshift) :emit :macro}
+     :x-bit-xor {:macro (var r/lua-tf-x-bit-xor) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-obj+}
+(fact "the original object group is intentionally empty" r/+lua-obj+ => {})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-arr+}
+(fact "array entries preserve template annotations discarded sort and original find mapping"
+ r/+lua-arr+
+ => {:x-arr-clone {:macro (var r/lua-tf-x-arr-clone) :emit :macro :type :template}
+     :x-arr-slice {:macro (var r/lua-tf-x-arr-slice) :emit :macro :type :template}
+     :x-arr-push {:emit :alias :raw 'table.insert}
+     :x-arr-pop {:emit :alias :raw 'table.remove}
+     :x-arr-remove {:macro (var r/lua-tf-x-arr-remove) :emit :macro :type :template}
+     :x-arr-find {:macro (var r/lua-tf-x-arr-remove) :emit :macro :type :template}
+     :x-arr-push-first {:macro (var r/lua-tf-x-arr-push-first) :emit :macro}
+     :x-arr-pop-first {:macro (var r/lua-tf-x-arr-pop-first) :emit :macro}
+     :x-arr-insert {:macro (var r/lua-tf-x-arr-insert) :emit :macro}
+     :x-str-comp {:emit :alias :raw '<}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-str+}
+(fact "string operators preserve aliases and every transformation"
+ r/+lua-str+
+ => {:x-str-char {:emit :alias :raw 'string.byte}
+     :x-str-split {:macro (var r/lua-tf-x-str-split) :emit :macro}
+     :x-str-join {:macro (var r/lua-tf-x-str-join) :emit :macro}
+     :x-str-index-of {:macro (var r/lua-tf-x-str-index-of) :emit :macro}
+     :x-str-substring {:emit :alias :raw 'string.sub}
+     :x-str-to-upper {:emit :alias :raw 'string.upper}
+     :x-str-to-lower {:emit :alias :raw 'string.lower}
+     :x-str-to-fixed {:macro (var r/lua-tf-x-str-to-fixed) :emit :macro}
+     :x-str-replace {:macro (var r/lua-tf-x-str-replace) :emit :macro}
+     :x-str-trim {:macro (var r/lua-tf-x-str-trim) :emit :macro}
+     :x-str-trim-left {:macro (var r/lua-tf-x-str-trim-left) :emit :macro}
+     :x-str-trim-right {:macro (var r/lua-tf-x-str-trim-right) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-bytes+}
+(fact "byte operators retain copying templates and scalar transformations"
+ r/+lua-bytes+
+ => {:x-bytes-new {:macro (var r/lua-tf-x-bytes-new) :emit :macro :type :template}
+     :x-bytes-get {:macro (var r/lua-tf-x-bytes-get) :emit :macro}
+     :x-bytes-set {:macro (var r/lua-tf-x-bytes-set) :emit :macro}
+     :x-bytes-copy {:macro (var r/lua-tf-x-bytes-copy) :emit :macro :type :template}
+     :x-bytes-slice {:macro (var r/lua-tf-x-bytes-slice) :emit :macro :type :template}
+     :x-bytes-u8 {:macro (var r/lua-tf-x-bytes-u8) :emit :macro}
+     :x-bytes-s8 {:macro (var r/lua-tf-x-bytes-s8) :emit :macro}
+     :x-str-encode {:macro (var r/lua-tf-x-str-encode) :emit :macro}
+     :x-str-decode {:macro (var r/lua-tf-x-str-decode) :emit :macro}
+     :x-bit-not {:macro (var r/lua-tf-x-bit-not) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-js+}
+(fact "JSON aliases use the original cjson functions"
+ r/+lua-js+
+ => {:x-json-encode {:emit :alias :raw 'cjson.encode}
+     :x-json-decode {:emit :alias :raw 'cjson.decode}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-return+}
+(fact "runtime return operators point to encoder wrapper and evaluator"
+ r/+lua-return+
+ => {:x-return-encode {:macro (var r/lua-tf-x-return-encode) :emit :macro}
+     :x-return-wrap {:macro (var r/lua-tf-x-return-wrap) :emit :macro}
+     :x-return-eval {:macro (var r/lua-tf-x-return-eval) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-socket+}
+(fact "only socket connection enables block-valued expansion"
+ r/+lua-socket+
+ => {:x-socket-connect {:macro (var r/lua-tf-x-socket-connect) :emit :macro
+                        :op-spec {:allow-blocks true}}
+     :x-socket-send {:macro (var r/lua-tf-x-socket-send) :emit :macro}
+     :x-socket-close {:macro (var r/lua-tf-x-socket-close) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-iter+}
+(fact "iterator operators preserve the empty coroutine and equality block capability"
+ r/+lua-iter+
+ => {:x-iter-from-obj {:macro (var r/lua-tf-x-iter-from-obj) :emit :macro}
+     :x-iter-from-arr {:macro (var r/lua-tf-x-iter-from-arr) :emit :macro}
+     :x-iter-from {:macro (var r/lua-tf-x-iter-from) :emit :macro}
+     :x-iter-eq {:macro (var r/lua-tf-x-iter-eq) :emit :macro :op-spec {:allow-blocks true}}
+     :x-iter-null {:default '(coroutine.wrap (fn [])) :emit :unit}
+     :x-iter-next {:macro (var r/lua-tf-x-iter-next) :emit :macro}
+     :x-iter-has? {:macro (var r/lua-tf-x-iter-has?) :emit :macro}
+     :x-iter-native? {:macro (var r/lua-tf-x-iter-native?) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-promise+}
+(fact "promise group retains the hard link instead of activating the local delay macro"
+ r/+lua-promise+
+ => {:x-async-run {:macro (var r/lua-tf-x-async-run) :emit :macro}
+     :x-with-delay {:emit :hard-link :raw 'xt.lang.common-promise/with-delay}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-shell+}
+(fact "shell group preserves block-valued command execution"
+ r/+lua-shell+
+ => {:x-pwd {:macro (var r/lua-tf-x-pwd) :emit :macro}
+     :x-shell {:macro (var r/lua-tf-x-shell) :emit :macro :op-spec {:allow-blocks true}}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-file+}
+(fact "file group retains original read and write names"
+ r/+lua-file+
+ => {:x-file-resolve {:macro (var r/lua-tf-x-file-resolve) :emit :macro}
+     :x-file-read {:macro (var r/lua-tf-x-file-read) :emit :macro}
+     :x-file-write {:macro (var r/lua-tf-x-file-write) :emit :macro}})
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua+}
+(fact "the final operator table is the original ordered merge of independently checked groups"
+ r/+lua+
+ => (merge r/+lua-core+ r/+lua-global+ r/+lua-custom+ r/+lua-math+
+           r/+lua-type+ r/+lua-bit+ r/+lua-lu+ r/+lua-obj+ r/+lua-arr+
+           r/+lua-str+ r/+lua-bytes+ r/+lua-js+ r/+lua-return+ r/+lua-socket+
+           r/+lua-iter+ r/+lua-promise+ r/+lua-file+ r/+lua-shell+))
+
+(do)
+
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-string?, :id native-regression-lua-tf-x-is-string?}
+(fact
+  "lowers the Lua string predicate"
+  (r/lua-tf-x-is-string? '(x:is-string? value))
+  =>
+  '(== "string" (type value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-number?, :id native-regression-lua-tf-x-is-number?}
+(fact
+  "lowers the Lua number predicate"
+  (r/lua-tf-x-is-number? '(x:is-number? value))
+  =>
+  '(== "number" (type value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-boolean?, :id native-regression-lua-tf-x-is-boolean?}
+(fact
+  "lowers the Lua boolean predicate"
+  (r/lua-tf-x-is-boolean? '(x:is-boolean? value))
+  =>
+  '(== "boolean" (type value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-is-function?, :id native-regression-lua-tf-x-is-function?}
+(fact
+  "lowers the Lua function predicate"
+  (r/lua-tf-x-is-function? '(x:is-function? value))
+  =>
+  '(== "function" (type value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bit-and, :id native-regression-lua-tf-x-bit-and}
+(fact
+  "restores pinned lua-tf-x-bit-and bit-library expansion"
+  (r/lua-tf-x-bit-and '[_ left right])
+  =>
+  '(bit.band left right))
+
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bit-or, :id native-regression-lua-tf-x-bit-or}
+(fact
+  "restores pinned lua-tf-x-bit-or bit-library expansion"
+  (r/lua-tf-x-bit-or '[_ left right])
+  =>
+  '(bit.bor left right))
+
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-bit-xor, :id native-regression-lua-tf-x-bit-xor}
+(fact
+  "restores pinned lua-tf-x-bit-xor bit-library expansion"
+  (r/lua-tf-x-bit-xor '[_ left right])
+  =>
+  '(bit.bxor left right))
+
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-socket-connect, :id native-regression-lua-tf-x-socket-connect}
+(fact
+  "builds the Lua socket connection form"
+  (let [form (r/lua-tf-x-socket-connect
+               '(x:socket-connect host port opts cb))]
     [(first form)
      (first (nth form 1))
      (first (nth form 2))
      (first (nth form 3))
      (first (nth form 4))])
-  => ['do* 'when 'var 'var 'if])
+  =>
+  ['do* 'when 'var 'var 'if])
 
-^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-socket-send}
-(fact "builds the Lua socket send form"
-  (let [form (subject/lua-tf-x-socket-send
-              '(x:socket-send conn bytes))]
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-socket-send, :id native-regression-lua-tf-x-socket-send}
+(fact
+  "builds the Lua socket send form"
+  (let [form (r/lua-tf-x-socket-send '(x:socket-send conn bytes))]
     [(first form) (nth form 1) (first (nth form 2))])
-  => ['. 'conn 'send])
+  =>
+  ['. 'conn 'send])
 
-^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-socket-close}
-(fact "builds the Lua socket close form"
-  (let [form (subject/lua-tf-x-socket-close
-              '(x:socket-close conn))]
+^{:refer lang.model.v1.spec-xtalk.fn-lua/lua-tf-x-socket-close, :id native-regression-lua-tf-x-socket-close}
+(fact
+  "builds the Lua socket close form"
+  (let [form (r/lua-tf-x-socket-close '(x:socket-close conn))]
     [(first form) (nth form 1) (first (nth form 2))])
-  => ['. 'conn 'close])
+  =>
+  ['. 'conn 'close])
 
-^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-socket+}
-(fact "registers all Lua socket operators"
-  [(count subject/+lua-socket+)
-   (get-in subject/+lua-socket+ [:x-socket-connect :emit])
-   (get-in subject/+lua-socket+ [:x-socket-connect :op-spec :allow-blocks])]
-  => [3 :macro true])
+^{:refer lang.model.v1.spec-xtalk.fn-lua/+lua-socket+, :id native-regression-+lua-socket+}
+(fact
+  "registers all Lua socket operators"
+  [(count r/+lua-socket+)
+   (get-in r/+lua-socket+ [:x-socket-connect :emit])
+   (get-in r/+lua-socket+ [:x-socket-connect :op-spec :allow-blocks])]
+  =>
+  [3 :macro true])

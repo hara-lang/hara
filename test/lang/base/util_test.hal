@@ -1,101 +1,455 @@
 (ns lang.base.util-test
-  (:require [lang.base.util :as util]))
+  (:require [lang.base.provenance :as provenance]
+            [lang.base.util :refer :all])
+  (:use code.test)
+  (:require [std.lib.context.registry ] [std.lib.context.space ]))
+
+^{:refer lang.base.util/sym-id :added "3.0"}
+(fact "gets the symbol id"
+
+  (sym-id 'L.core/identity)
+  => 'identity)
+
+^{:refer lang.base.util/sym-module :added "3.0"}
+(fact "gets the symbol namespace"
+
+  (sym-module 'L.core/identity)
+  => 'L.core)
+
+^{:refer lang.base.util/sym-pair :added "3.0"}
+(fact "gets the symbol pair"
+
+  (sym-pair 'L.core/identity)
+  => '[L.core identity])
+
+^{:refer lang.base.util/sym-full :added "3.0"}
+(fact "creates a full symbol"
+
+  (sym-full 'L.core 'identity)
+  => 'L.core/identity)
+
+^{:refer lang.base.util/sym-default-str :added "4.0"}
+(fact "default fast symbol conversion"
+
+  (sym-default-str :helloWorld)
+  => "helloWorld"
+
+  (sym-default-str :hello-World)
+  => "hello_World")
+
+^{:refer lang.base.util/sym-default-inverse-str :added "4.0"}
+(fact "inverses the symbol string"
+
+  (sym-default-inverse-str "hello_world")
+  => "hello-world")
+
+^{:refer lang.base.util/hashvec? :added "4.0"}
+(fact "checks for hash vec"
+
+  (hashvec? #{[1 2 3]})
+  => true)
+
+^{:refer lang.base.util/doublevec? :added "4.0"}
+(fact "checks for double vec"
+
+  (doublevec? [[1 2 3]])
+  => true)
+
+^{:refer lang.base.util/lang-context :added "4.0"}
+(fact "creates the lang context"
+
+  (lang-context :lua)
+  => :lang/lua)
+
+^{:refer lang.base.util/lang-rt-list, :added "4.0"}
+(fact
+  "lists rt in a namespace"
+  (coll?
+    (binding [std.lib.context.space/*spaces* (atom {})
+              std.lib.context.registry/*registry* (atom {})]
+      (try
+        (std.lib.context.registry/registry-install
+          :lang/lua
+          {:scratch {:marker :lua}})
+        (lang-rt-list)
+        (finally
+          (std.lib.context.space/reset-spaces!)
+          (std.lib.context.registry/reset-registry!)))))
+  =>
+  true)
+
+^{:refer lang.base.util/lang-rt, :added "4.0"}
+(fact
+  "getn the runtime contexts in a map"
+  (map?
+    (binding [std.lib.context.space/*spaces* (atom {})
+              std.lib.context.registry/*registry* (atom {})]
+      (try
+        (std.lib.context.registry/registry-install
+          :lang/lua
+          {:scratch {:marker :lua}})
+        (lang-rt)
+        (finally
+          (std.lib.context.space/reset-spaces!)
+          (std.lib.context.registry/reset-registry!)))))
+  =>
+  true)
+
+^{:refer lang.base.util/lang-rt-default, :added "4.0"}
+(fact
+  "gets the default runtime function"
+  (binding [std.lib.context.space/*spaces* (atom {})
+            std.lib.context.registry/*registry* (atom {})]
+    (try
+      (std.lib.context.registry/registry-install
+        :lang/lua
+        {:scratch {:marker :lua}})
+      (lang-rt-default (lang-pointer :lua {:module 'L.core}))
+      (finally
+        (std.lib.context.space/reset-spaces!)
+        (std.lib.context.registry/reset-registry!))))
+  =>
+  {:marker :lua})
+
+^{:refer lang.base.util/lang-pointer, :added "4.0"}
+(fact
+  "creates a lang pointer"
+  (let [p (lang-pointer :lua {:module 'L.core})]
+    (assoc (into {} p) :context (IPointer/ptr-context p)))
+  =>
+  {:context :lang/lua,
+   :module 'L.core,
+   :lang :lua,
+   :context/fn #'lang.base.util/lang-rt-default})
+
+^{:refer lang.base.util/module-id :added "4.1"}
+(fact "gets the module id from a module symbol or map"
+  (module-id {:id 'L.core})
+  => 'L.core
+
+  (module-id 'L.core)
+  => 'L.core)
+
+^{:refer lang.base.util/entry-summary :added "4.1"}
+(fact "returns a concise entry summary"
+  (entry-summary {:lang :lua
+                  :module 'L.core
+                  :namespace 'L.core
+                  :id 'add
+                  :section :fragment
+                  :line 10
+                  :op 'def$
+                  :op-key :def$})
+  => '{:op-key :def$
+       :symbol L.core/add
+       :section :fragment
+       :op def$
+       :module L.core
+       :lang :lua
+        :line 10
+        :id add
+        :namespace L.core})
+
+^{:refer lang.base.provenance/provenance, :added "4.1"}
+(fact
+  "normalises provenance fields"
+  (let [form (with-meta '(boom-op 1 2 3) {:line 17})]
+    (provenance/provenance
+      {:lang/module {:id 'L.core},
+       :lang/namespace (ns-current),
+       :lang/form form,
+       :lang/subsystem :test/direct}))
+  =>
+  '{:lang/module L.core,
+    :lang/namespace lang.base.util-test,
+    :lang/line 17,
+    :lang/form (boom-op 1 2 3),
+    :lang/subsystem :test/direct})
+
+^{:refer lang.base.provenance/with-provenance, :added "4.1"}
+(fact
+  "threads provenance through mopts"
+  (-> {:lang :lua}
+   (provenance/with-provenance
+     {:lang/phase :emit/direct}
+     {:lang/module 'L.core})
+   :lang/provenance)
+  =>
+  '{:lang/phase :emit/direct, :lang/module L.core})
+
+^{:refer lang.base.util/error-with-context, :added "4.1"}
+(fact
+  "wraps exceptions with tahto.core context"
+  (try
+    (throw ((fn [migration-message migration-data] (ex :generic migration-data :ex/message migration-message)) "inner" {:inner true}))
+    (catch
+      t
+      (let [wrapped (error-with-context "wrap" {:outer true} t)]
+        [(ex-message wrapped)
+         (update (ex-data wrapped) :ex/cause ex-data)])))
+  =>
+  '["wrap: inner"
+    {:ex/message "wrap: inner",
+     :ex/code :hara/generic,
+     :lang/cause-data
+     {:ex/code :hara/generic,
+      :ex/class :ex.class/internal,
+      :ex/message "inner",
+      :inner true},
+     :ex/class :ex.class/internal,
+     :lang/cause-message "inner",
+     :lang/wrapped true,
+     :inner true,
+     :lang/cause-class :ex.class/internal,
+     :ex/cause
+     {:ex/code :hara/generic,
+      :ex/class :ex.class/internal,
+      :ex/message "inner",
+      :inner true},
+     :outer true}])
+
+(fact
+  "wrapped tahto.core errors keep merged provenance"
+  (let [form (with-meta '(boom-op 1 2 3) {:line 33})]
+    (try
+      (throw
+        ((fn [migration-message migration-data] (ex :generic migration-data :ex/message migration-message)) "inner" {:probe true :lang/provenance {:lang/form form :lang/phase :emit/form :lang/subsystem :inner/op}}))
+      (catch
+        t
+        (let [data (ex-data
+                     (error-with-context
+                       "wrap"
+                       {:lang/phase :emit/direct,
+                        :lang/subsystem :outer/direct,
+                        :lang/module 'L.core}
+                       t))]
+          {:probe (:probe data),
+           :phase (:lang/phase data),
+           :subsystem (:lang/subsystem data),
+           :module (:lang/module data),
+           :line (:lang/line data),
+           :stack
+           (mapv
+             (juxt :lang/phase :lang/subsystem)
+             (:lang/provenance-stack data))}))))
+  =>
+  '{:probe true,
+    :phase :emit/form,
+    :subsystem :inner/op,
+    :module L.core,
+    :line 33,
+    :stack [[:emit/form :inner/op] [:emit/direct :outer/direct]]})
+
+^{:refer lang.base.util/throw-with-context, :added "4.1"}
+(fact
+  "throws wrapped exceptions with tahto.core context"
+  (try
+    (throw ((fn [migration-message migration-data] (ex :generic migration-data :ex/message migration-message)) "inner" {:inner true}))
+    (catch
+      t
+      (try
+        (throw-with-context "wrap" {:outer true} t)
+        (catch
+          wrapped
+          [(ex-message wrapped)
+           (update (ex-data wrapped) :ex/cause ex-data)]))))
+  =>
+  '["wrap: inner"
+    {:ex/message "wrap: inner",
+     :ex/code :hara/generic,
+     :lang/cause-data
+     {:ex/code :hara/generic,
+      :ex/class :ex.class/internal,
+      :ex/message "inner",
+      :inner true},
+     :ex/class :ex.class/internal,
+     :lang/cause-message "inner",
+     :lang/wrapped true,
+     :inner true,
+     :lang/cause-class :ex.class/internal,
+     :ex/cause
+     {:ex/code :hara/generic,
+      :ex/class :ex.class/internal,
+      :ex/message "inner",
+      :inner true},
+     :outer true}])
 
 ^{:refer lang.base.util/sym-id}
 (Test/check
- [{:name "returns the unqualified identifier portion of a symbol"
-   :test (fn [] [(util/sym-id 'module/item) (util/sym-id 'item)])
+ [{:name "returns the unqualified identifier portion of a symbol",
+   :test
+   (fn
+    []
+    [(lang.base.util/sym-id 'module/item)
+     (lang.base.util/sym-id 'item)]),
    :expected ['item 'item]}])
 
 ^{:refer lang.base.util/sym-module}
 (Test/check
- [{:name "returns a symbol module only for qualified identifiers"
-   :test (fn [] [(util/sym-module 'module.item/value) (util/sym-module 'value)])
+ [{:name "returns a symbol module only for qualified identifiers",
+   :test
+   (fn
+    []
+    [(lang.base.util/sym-module 'module.item/value)
+     (lang.base.util/sym-module 'value)]),
    :expected ['module.item nil]}])
 
 ^{:refer lang.base.util/sym-pair}
 (Test/check
- [{:name "splits a qualified symbol into module and unqualified id"
-   :test (fn [] (util/sym-pair 'module/item))
+ [{:name "splits a qualified symbol into module and unqualified id",
+   :test (fn [] (lang.base.util/sym-pair 'module/item)),
    :expected ['module 'item]}])
 
 ^{:refer lang.base.util/sym-full}
 (Test/check
- [{:name "constructs fully qualified symbols from modules and entry descriptors"
-   :test (fn [] [(util/sym-full 'module 'item)
-                 (util/sym-full {:module 'module :id 'item})
-                 (util/sym-full {:module 'module})])
+ [{:name
+   "constructs fully qualified symbols from modules and entry descriptors",
+   :test
+   (fn
+    []
+    [(lang.base.util/sym-full 'module 'item)
+     (lang.base.util/sym-full {:module 'module, :id 'item})
+     (lang.base.util/sym-full {:module 'module})]),
    :expected ['module/item 'module/item nil]}])
 
 ^{:refer lang.base.util/sym-default-str}
 (Test/check
- [{:name "uses underscore target spelling for symbol-like values"
-   :test (fn [] [(util/sym-default-str 'item-name)
-                 (util/sym-default-str "item-name")])
+ [{:name "uses underscore target spelling for symbol-like values",
+   :test
+   (fn
+    []
+    [(lang.base.util/sym-default-str 'item-name)
+     (lang.base.util/sym-default-str "item-name")]),
    :expected ["item_name" "item_name"]}])
 
 ^{:refer lang.base.util/sym-default-inverse-str}
 (Test/check
- [{:name "restores hyphen Hara spelling from default target strings"
-   :test (fn [] [(util/sym-default-inverse-str 'item_name)
-                 (util/sym-default-inverse-str "item_name")])
+ [{:name "restores hyphen Hara spelling from default target strings",
+   :test
+   (fn
+    []
+    [(lang.base.util/sym-default-inverse-str 'item_name)
+     (lang.base.util/sym-default-inverse-str "item_name")]),
    :expected ["item-name" "item-name"]}])
 
 ^{:refer lang.base.util/hashvec?}
 (Test/check
- [{:name "recognizes the archive hash-vector grammar shape only"
-   :test (fn [] [(util/hashvec? #{[1 2]})
-                 (util/hashvec? #{[1] [2]})
-                 (util/hashvec? [[1]])])
+ [{:name "recognizes the archive hash-vector grammar shape only",
+   :test
+   (fn
+    []
+    [(lang.base.util/hashvec? #{[1 2]})
+     (lang.base.util/hashvec? #{[2] [1]})
+     (lang.base.util/hashvec? [[1]])]),
    :expected [true false false]}])
 
 ^{:refer lang.base.util/doublevec?}
 (Test/check
- [{:name "recognizes the archive double-vector grammar shape only"
-   :test (fn [] [(util/doublevec? [[1 2]])
-                 (util/doublevec? [[1] [2]])
-                 (util/doublevec? #{[1]})])
+ [{:name "recognizes the archive double-vector grammar shape only",
+   :test
+   (fn
+    []
+    [(lang.base.util/doublevec? [[1 2]])
+     (lang.base.util/doublevec? [[1] [2]])
+     (lang.base.util/doublevec? #{[1]})]),
    :expected [true false false]}])
 
 ^{:refer lang.base.util/lang-context}
 (Test/check
- [{:name "builds canonical language context keys and rejects absent languages"
-   :test (fn []
-           [(util/lang-context :fixture)
-            (try (util/lang-context nil) :missing (catch error :thrown))])
+ [{:name
+   "builds canonical language context keys and rejects absent languages",
+   :test
+   (fn
+    []
+    [(lang.base.util/lang-context :fixture)
+     (try
+      (lang.base.util/lang-context nil)
+      :missing
+      (catch error :thrown))]),
    :expected [:lang/fixture :thrown]}])
 
 ^{:refer lang.base.util/module-id}
 (Test/check
- [{:name "reduces module descriptors to ids without changing module symbols"
-   :test (fn [] [(util/module-id {:id 'module}) (util/module-id 'module)])
+ [{:name
+   "reduces module descriptors to ids without changing module symbols",
+   :test
+   (fn
+    []
+    [(lang.base.util/module-id {:id 'module})
+     (lang.base.util/module-id 'module)]),
    :expected ['module 'module]}])
 
 ^{:refer lang.base.util/entry-summary}
 (Test/check
- [{:name "summarizes archive entry identity and adds a symbol when complete"
-   :test (fn []
-           [(util/entry-summary {:module 'module :id 'item :section :code :extra :ignored})
-            (util/entry-summary {:id 'item :line 4 :extra :ignored})])
-   :expected [{:module 'module :id 'item :section :code :symbol 'module/item}
-              {:id 'item :line 4}]}])
+ [{:name
+   "summarizes archive entry identity and adds a symbol when complete",
+   :test
+   (fn
+    []
+    [(lang.base.util/entry-summary
+      {:module 'module, :id 'item, :section :code, :extra :ignored})
+     (lang.base.util/entry-summary
+      {:id 'item, :line 4, :extra :ignored})]),
+   :expected
+   [{:module 'module, :id 'item, :section :code, :symbol 'module/item}
+    {:id 'item, :line 4}]}])
 
 ^{:refer lang.base.util/error-with-context}
 (Test/check
- [{:name "delegates context errors to the canonical provenance wrapper"
-   :test (fn []
-           (let [error (util/error-with-context "compile" {:lang/module :fixture}
-                                                (ex :generic {} :ex/message "inner"))]
-             [(ex-message error) (:lang/module (ex-data error))]))
+ [{:name
+   "delegates context errors to the canonical provenance wrapper",
+   :test
+   (fn
+    []
+    (let
+     [error
+      (lang.base.util/error-with-context
+       "compile"
+       {:lang/module :fixture}
+       (ex :generic {} :ex/message "inner"))]
+     [(ex-message error) (:lang/module (ex-data error))])),
    :expected ["compile: inner" :fixture]}])
 
 ^{:refer lang.base.util/throw-with-context}
 (Test/check
- [{:name "throws delegated canonical provenance wrappers"
-   :test (fn []
-           (try
-             (util/throw-with-context "compile" {:lang/module :fixture}
-                                      (ex :generic {} :ex/message "inner"))
-             :missing
-             (catch error [(ex-message error) (:lang/module (ex-data error))])))
+ [{:name "throws delegated canonical provenance wrappers",
+   :test
+   (fn
+    []
+    (try
+     (lang.base.util/throw-with-context
+      "compile"
+      {:lang/module :fixture}
+      (ex :generic {} :ex/message "inner"))
+     :missing
+     (catch
+      error
+      [(ex-message error) (:lang/module (ex-data error))]))),
    :expected ["compile: inner" :fixture]}])
+
+
+^{:refer lang.base.lang.base.util/lang-rt-default :id native-runtime-selection}
+(Test/check
+ [{:name "selects direct language, primary owner, internal owner, then context fallback"
+   :test (fn []
+     (mapv
+      (fn [fixture]
+       (binding [std.lib.context.space/*spaces* (atom {})
+                 std.lib.context.registry/*registry* (atom {})]
+        (try
+         (std.lib.context.registry/registry-install :lang/lua {:scratch {:marker :fallback}})
+         (doseq [entry fixture]
+          (let [context (first entry) runtime (second entry)]
+           (std.lib.context.registry/registry-install context {:scratch runtime})
+           (std.lib.context.space/space:context-set
+            (ns-name (Base/current-namespace)) context :default {})))
+         (:marker (lang.base.util/lang-rt-default (lang.base.util/lang-pointer :lua {:module 'L.core})))
+         (finally (std.lib.context.space/reset-spaces!)
+                  (std.lib.context.registry/reset-registry!)))))
+      [[[:lang/lua {:marker :direct}]
+        [:lang/python {:marker :primary :module/primary {'L.core true}}]]
+       [[:lang/python {:marker :primary :module/primary {'L.core true}
+                       :module/internal {'L.core true}}]]
+       [[:lang/python {:marker :internal :module/internal {'L.core true}}]]
+       [[:lang/python {:marker :unrelated}]]]))
+   :expected [:direct :primary :internal :fallback]}])

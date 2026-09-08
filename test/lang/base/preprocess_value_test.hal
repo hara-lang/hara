@@ -1,72 +1,456 @@
-(ns lang.base.preprocess-value-test
-  (:require [lang.base.preprocess-value :as value]))
-
-^{:refer lang.base.preprocess-value/value-block-entry}
-(Test/check
- [{:name "recognizes macro grammar entries explicitly allowed in value blocks"
-   :test (fn []
-           (select-keys
-            (value/value-block-entry
-             '(block input)
-             {:reserved {'block {:emit :macro
-                                 :macro (fn [form] form)
-                                 :op-spec {:allow-blocks true}}}})
-            [:emit :op-spec]))
-   :expected {:emit :macro :op-spec {:allow-blocks true}}}])
-
-^{:refer lang.base.preprocess-value/expand-value-block}
-(Test/check
- [{:name "expands an allowed value block with its grammar macro"
-   :test (fn []
-           (value/expand-value-block
-            '(block input)
-            {:reserved {'block {:emit :macro
-                                :macro (fn [form] (list 'expanded (second form)))
-                                :op-spec {:allow-blocks true}}}}
-            {}))
-   :expected '(expanded input)}])
-
-^{:refer lang.base.preprocess-value/resolve-block-form}
-(Test/check
- [{:name "retains direct blocks and resolves linked fragment templates recursively"
-   :test (fn []
-           (let [grammar {:reserved {'block {:emit :macro
-                                             :macro (fn [form] form)
-                                             :op-spec {:allow-blocks true}}}}
-                 modules {'library {:fragment {'piece {:template (fn [item] (list 'block item))}}}}
-                 options {:module {:id 'current :link {}}}]
-             [(value/resolve-block-form '(block input) grammar options)
-              (value/resolve-block-form '(library/piece input) grammar modules options)]))
-   :expected ['(block input) '(block input)]}])
-
-^{:refer lang.base.preprocess-value/value-template-args}
-(Test/check
- [{:name "uses explicit argument lists or removes the receiver from template metadata"
-   :test (fn []
-           (let [template (with-meta (fn [] nil) {:arglists '([self value])})]
-             [(value/value-template-args '([first second]) template)
-              (value/value-template-args template)]))
-   :expected [['first 'second] ['value]]}])
-
-^{:refer lang.base.preprocess-value/value-standalone}
-(Test/check
- [{:name "returns declared standalone value forms without synthesizing a replacement"
-   :test (fn []
-           (value/value-standalone
+(ns lang.base.preprocess-value-test (:use code.test) (:require [lang.base.preprocess-value :as value :refer :all] [lang.base.preprocess-base :as base] [lang.base.grammar :as grammar] [lang.base.grammar-xtalk :as xt]))
+(fact
+  "namespaced standalone macros with block-valued targets are lowered in return position"
+  (let [grammar {:reserved
+                 {'x:notify-http
+                  {:emit :macro,
+                   :macro
+                   (fn [[_ host port value id key opts]]
+                     (list
+                       'try
+                       (list 'fetch host port value id key opts)
+                       (list 'return ["async"])
+                       (list
+                         'catch
+                         'e
+                         (list 'return ["unable to connect"])))),
+                   :op-spec {:allow-blocks true}}}}
+        template-fn (fn [host port value id key opts]
+                      (list
+                        'x:notify-http
+                        host
+                        port
+                        value
+                        id
+                        key
+                        opts))
+        modules {'U.notify
+                 {:fragment
+                  {'notify-http
+                   {:template template-fn,
+                    :standalone true,
+                    :form '(fn [host port value id key opts])}}}}
+        mopts '{:module {:id JS.core, :link {u U.notify}}}]
+    (process-value-form
+      '(return
+         (u/notify-http
+           "127.0.0.1"
+           18130
+           "hello"
+           "oneshot/abc"
+           nil
+           {}))
+      grammar
+      modules
+      mopts))
+  =>
+  '(try
+     (fetch "127.0.0.1" 18130 "hello" "oneshot/abc" nil {})
+     (return ["async"])
+     (catch e (return ["unable to connect"]))))
+^{:refer lang.base.preprocess-value/value-block-entry, :added "4.1"}
+(fact
+  "returns the reserved entry for block-valued macro calls"
+  (let [macro (with-meta (fn [_] nil) nil)
+        grammar {:reserved
+                 {'x:block
+                  {:emit :macro,
+                   :macro macro,
+                   :op-spec {:allow-blocks true}}}}]
+    [(=
+       (value-block-entry '(x:block 1 2) grammar)
+       {:emit :macro, :macro macro, :op-spec {:allow-blocks true}})
+     (=
+       (value-block-entry
+         '(x:block 1 2)
+         {:reserved
+          {'x:block {:emit :macro, :macro macro, :op-spec {}}}})
+       nil)
+     (= (value-block-entry 'x:block grammar) nil)])
+  =>
+  [true true true])
+^{:refer lang.base.preprocess-value/expand-value-block, :added "4.1"}
+(fact
+  "expands block-valued macro calls"
+  (let [macro (fn [[_ & body]] (apply list '+ body))
+        grammar {:reserved
+                 {'x:block
+                  {:emit :macro,
+                   :macro macro,
+                   :op-spec {:allow-blocks true}}}}]
+    [(=
+       (expand-value-block '(x:block 1 2 3) grammar nil {})
+       '(+ 1 2 3))
+     (= (expand-value-block '(foo 1 2) {} nil {}) nil)])
+  =>
+  [true true])
+^{:refer lang.base.preprocess-value/resolve-block-form, :added "4.1"}
+(fact
+  "resolves block-valued forms and namespaced fragment wrappers"
+  (let [macro (fn [_] nil)
+        grammar {:reserved
+                 {'x:block
+                  {:emit :macro,
+                   :macro macro,
+                   :op-spec {:allow-blocks true}}}}
+        modules {'U.test
+                 {:fragment
+                  {'my-op {:template (fn
+                                       [a b]
+                                       (list 'x:block a b))}}}}
+        mopts '{:module {:id JS.core, :link {u U.test}}}]
+    [(= (resolve-block-form '(x:block 1) grammar nil {}) '(x:block 1))
+     (= (resolve-block-form '(foo 1) grammar nil {}) nil)
+     (=
+       (resolve-block-form '(u/my-op 1 2) grammar modules mopts)
+       '(x:block 1 2))])
+  =>
+  [true true true])
+^{:refer lang.base.preprocess-value/value-template-args, :added "4.1"}
+(fact
+  "derives template value args from arglists metadata"
+  (value-template-args
+    (with-meta
+      (fn [_ sym value] [sym value])
+      {:arglists '([ctx sym value])}))
+  =>
+  '[sym value]
+  (value-template-args
+    (with-meta
+      (fn [_ [sym value]] [sym value])
+      {:arglists '(([ctx sym value]))}))
+  =>
+  '[sym value]
+  (value-template-args
+    '([x y])
+    (with-meta
+      (fn [_ a b & more] [a b more])
+      {:arglists '([ctx a b & more])}))
+  =>
+  '[x y])
+^{:refer lang.base.preprocess-value/value-block-entry, :id native-value-value-block-entry}
+(fact
+  "recognizes macro grammar entries explicitly allowed in value blocks"
+  ((fn []
+     (select-keys
+       (value/value-block-entry
+         '(block input)
+         {:reserved
+          {'block
+           {:emit :macro,
+            :macro (fn [form] form),
+            :op-spec {:allow-blocks true}}}})
+       [:emit :op-spec])))
+  =>
+  {:emit :macro, :op-spec {:allow-blocks true}})
+^{:refer lang.base.preprocess-value/expand-value-block, :id native-value-expand-value-block}
+(fact
+  "expands an allowed value block with its grammar macro"
+  ((fn []
+     (value/expand-value-block
+       '(block input)
+       {:reserved
+        {'block
+         {:emit :macro,
+          :macro (fn [form] (list 'expanded (second form))),
+          :op-spec {:allow-blocks true}}}}
+       {})))
+  =>
+  '(expanded input))
+^{:refer lang.base.preprocess-value/resolve-block-form, :id native-value-resolve-block-form}
+(fact
+  "retains direct blocks and resolves linked fragment templates recursively"
+  ((fn []
+     (let [grammar {:reserved
+                    {'block
+                     {:emit :macro,
+                      :macro (fn [form] form),
+                      :op-spec {:allow-blocks true}}}}
+           modules {'library
+                    {:fragment
+                     {'piece
+                      {:template (fn [item] (list 'block item))}}}}
+           options {:module {:id 'current, :link {}}}]
+       [(value/resolve-block-form '(block input) grammar options)
+        (value/resolve-block-form
+          '(library/piece input)
+          grammar
+          modules
+          options)])))
+  =>
+  ['(block input) '(block input)])
+^{:refer lang.base.preprocess-value/value-template-args, :id native-value-value-template-args}
+(fact
+  "uses explicit argument lists or removes the receiver from template metadata"
+  ((fn []
+     (let [template (with-meta
+                      (fn [] nil)
+                      {:arglists '([self value])})]
+       [(value/value-template-args '([first second]) template)
+        (value/value-template-args template)])))
+  =>
+  [['first 'second] ['value]])
+^{:refer lang.base.preprocess-value/value-standalone, :id native-value-value-standalone}
+(fact
+  "returns declared standalone value forms without synthesizing a replacement"
+  ((fn []
+     (value/value-standalone
+       'block
+       {:reserved
+        {'block
+         {:emit :macro,
+          :value/standalone 'library/value,
+          :op-spec {:allow-blocks true}}}})))
+  =>
+  'library/value)
+^{:refer lang.base.preprocess-value/process-value-form, :id native-value-process-value-form}
+(fact
+  "expands return blocks and lifts nested blocks through standalone functions"
+  ((fn []
+     (let [grammar {:reserved
+                    {'block
+                     {:emit :macro,
+                      :macro
+                      (fn [form] (list 'expanded (second form))),
+                      :value/standalone 'block-value,
+                      :op-spec {:allow-blocks true}}}}]
+       [(value/process-value-form '(return (block input)) grammar {})
+        (value/process-value-form
+          '(outer (block input))
+          grammar
+          {})])))
+  =>
+  ['(expanded input) '(outer (block-value input))])
+^{:refer lang.base.preprocess-value/value-block-entry, :id value-entry-boundaries}
+(fact
+  "entries retain every field and reject ineligible forms"
+  (let [entry {:emit :macro,
+               :macro #'xt/tf-add,
+               :op-spec {:allow-blocks true},
+               :custom 42}
+        g {:reserved {'block entry}}]
+    [(= entry (value/value-block-entry '(block 1) g))
+     (value/value-block-entry nil g)
+     (value/value-block-entry 'block g)
+     (value/value-block-entry '(unknown 1) g)
+     (value/value-block-entry
+       '(block 1)
+       {:reserved {'block (assoc entry :emit :free)}})
+     (value/value-block-entry
+       '(block 1)
+       {:reserved {'block (dissoc entry :macro)}})
+     (value/value-block-entry
+       '(block 1)
+       {:reserved
+        {'block (assoc entry :op-spec {:allow-blocks false})}})])
+  =>
+  [true nil nil nil nil nil nil])
+^{:refer lang.base.preprocess-value/expand-value-block, :id value-expansion-bindings}
+(fact
+  "expansion observes scoped bindings and merges metadata with expansion precedence"
+  (binding [base/*macro-form* :outer-form
+            base/*macro-grammar* :outer-grammar
+            base/*macro-opts* :outer-opts]
+    (let [form (with-meta '(block 7) {:origin :input, :winner :input})
+          g {:marker :grammar,
+             :reserved
+             {'block
+              {:emit :macro,
+               :op-spec {:allow-blocks true},
+               :macro
+               (fn [input]
+                 (with-meta
+                   (list
+                     'expanded
+                     (second input)
+                     (= input base/*macro-form*)
+                     (:marker base/*macro-grammar*)
+                     (:mode base/*macro-opts*))
+                   {:winner :expanded}))}}}
+          result (value/expand-value-block form g {:mode :test})
+          failure (try
+                    (value/expand-value-block
+                      '(block 7)
+                      {:reserved
+                       {'block
+                        {:emit :macro,
+                         :op-spec {:allow-blocks true},
+                         :macro (fn [input] (throw (ex :test {})))}}}
+                      {})
+                    (catch e :thrown))]
+      [result
+       (meta result)
+       failure
+       [base/*macro-form* base/*macro-grammar* base/*macro-opts*]
+       (value/expand-value-block '(missing) g {})]))
+  =>
+  ['(expanded 7 true :grammar :test)
+   {:origin :input, :winner :expanded}
+   :thrown
+   [:outer-form :outer-grammar :outer-opts]
+   nil])
+^{:refer lang.base.preprocess-value/resolve-block-form, :id value-fragment-chain}
+(fact
+  "fragment chains retain metadata and unchanged or missing fragments terminate"
+  (let [g {:reserved
+           {'block
+            {:emit :macro,
+             :macro #'xt/tf-add,
+             :op-spec {:allow-blocks true}}}}
+        modules {'library
+                 {:fragment
+                  {'start
+                   {:template
+                    (fn [x]
+                      (with-meta
+                        (list 'library/next x)
+                        {:stage 1, :winner :first}))},
+                   'next
+                   {:template
+                    (fn [x]
+                      (with-meta
+                        (list 'block x)
+                        {:stage 2, :winner :last}))},
+                   'stuck {:template (fn
+                                       [x]
+                                       (list 'library/stuck x))},
+                   'empty {}}}}
+        opts {:module {:id 'current, :link {}}}
+        result (value/resolve-block-form
+                 (with-meta
+                   '(library/start 9)
+                   {:origin true, :winner :input})
+                 g
+                 modules
+                 opts)]
+    [result
+     (meta result)
+     (value/resolve-block-form '(library/stuck 9) g modules opts)
+     (value/resolve-block-form '(library/empty 9) g modules opts)
+     (value/resolve-block-form '(library/missing 9) g modules opts)
+     (value/resolve-block-form '(plain 9) g modules opts)
+     (value/resolve-block-form '(7 9) g modules opts)])
+  =>
+  ['(block 9)
+   {:origin true, :stage 2, :winner :last}
+   nil
+   nil
+   nil
+   nil
+   nil])
+^{:refer lang.base.preprocess-value/value-template-args, :id value-argument-boundaries}
+(fact
+  "explicit arguments retain receivers while metadata arguments remove them"
+  (let [template (with-meta (fn [x] x) {:arglists '([receiver x y])})
+        nested (with-meta (fn [x] x) {:arglists '(([receiver x y]))})]
+    [(value/value-template-args '([receiver x]) template)
+     (value/value-template-args '(([receiver x])) template)
+     (value/value-template-args template)
+     (value/value-template-args nested)
+     (value/value-template-args '([]) template)
+     (value/value-template-args nil (fn [x] x))])
+  =>
+  [['receiver 'x] ['receiver 'x] ['x 'y] ['x 'y] [] []])
+^{:refer lang.base.preprocess-value/value-standalone, :id value-standalone-branches}
+(fact
+  "standalone forms distinguish expression block and self-return contracts"
+  (let [template (fn [[_ x]] (list 'expanded x))
+        macro (fn [[_ x]] (list 'fallback x))
+        entry {:emit :macro,
+               :macro macro,
+               :value/template template,
+               :value/standalone true,
+               :op-spec {:arglists '([x])}}
+        g {:reserved
+           {'expression entry,
             'block
-            {:reserved {'block {:emit :macro
-                                :value/standalone 'library/value
-                                :op-spec {:allow-blocks true}}}}))
-   :expected 'library/value}])
-
-^{:refer lang.base.preprocess-value/process-value-form}
-(Test/check
- [{:name "expands return blocks and lifts nested blocks through standalone functions"
-   :test (fn []
-           (let [grammar {:reserved {'block {:emit :macro
-                                             :macro (fn [form] (list 'expanded (second form)))
-                                             :value/standalone 'block-value
-                                             :op-spec {:allow-blocks true}}}}]
-              [(value/process-value-form '(return (block input)) grammar {})
-              (value/process-value-form '(outer (block input)) grammar {})]))
-   :expected ['(expanded input) '(outer (block-value input))]}])
+            (assoc
+              entry
+              :op-spec
+              {:arglists '([x]), :allow-blocks true}),
+            'self
+            (assoc
+              entry
+              :op-spec
+              {:arglists '([x]), :type [:fn [:any] :xt/self]}),
+            'symbol (assoc entry :value/standalone 'library/value),
+            'form (assoc entry :value/standalone '(fn [x] x)),
+            'absent {:value/standalone true}}}]
+    [(value/value-standalone 'expression g)
+     (value/value-standalone 'block g)
+     (value/value-standalone 'self g)
+     (value/value-standalone 'symbol g)
+     (value/value-standalone 'form g)
+     (value/value-standalone 'absent g)
+     (value/value-standalone 'unknown g)])
+  =>
+  ['(fn [x] (return (expanded x)))
+   '(fn [x] (expanded x))
+   '(fn [x] (expanded x) (return x))
+   'library/value
+   '(fn [x] x)
+   nil
+   nil])
+^{:refer lang.base.preprocess-value/process-value-form, :id value-position-metadata}
+(fact
+  "argument lifting retains neighbors and metadata and unchanged inputs return nil"
+  (let [g {:reserved
+           {'block
+            {:emit :macro,
+             :macro (fn [form] (list 'expanded (second form))),
+             :value/standalone 'block-value,
+             :op-spec {:allow-blocks true}}}}
+        arg (with-meta '(block 9) {:argument :kept})
+        input (with-meta (list 'outer 1 arg 3) {:outer :kept})
+        output (value/process-value-form input g {})]
+    [output
+     (meta output)
+     (meta (nth output 2))
+     (value/process-value-form '(return (block 9)) g {})
+     (value/process-value-form '(outer 1 2) g {})
+     (value/process-value-form '(return (block 9) 3) g {})])
+  =>
+  ['(outer 1 (block-value 9) 3)
+   {:outer :kept}
+   {:argument :kept}
+   '(expanded 9)
+   nil
+   '(return (block-value 9) 3)])
+^{:refer lang.base.preprocess-value/value-standalone, :id value-var-value-standalone}
+(fact
+  "standalone template Var retains the original addition form"
+  ((fn []
+     (value/value-standalone
+       'x:add
+       {:reserved (grammar/to-reserved (grammar/build))})))
+  =>
+  '(fn [x y] (return (+ x y))))
+^{:refer lang.base.preprocess-value/expand-value-block, :id value-var-expand-value-block}
+(fact
+  "block macro Var is invoked without mutating its entry"
+  ((fn []
+     (value/expand-value-block
+       '(block 1 2)
+       {:reserved
+        {'block
+         {:emit :macro,
+          :macro #'xt/tf-add,
+          :op-spec {:allow-blocks true}}}}
+       {})))
+  =>
+  '(+ 1 2))
+^{:refer lang.base.preprocess-value/resolve-block-form, :id value-var-resolve-block-form}
+(fact
+  "fragment template Var resolves to a reserved block"
+  ((fn []
+     (value/resolve-block-form
+       '(library/wrapper (ignored 1 2))
+       {:reserved
+        {'+
+         {:emit :macro,
+          :macro #'xt/tf-add,
+          :op-spec {:allow-blocks true}}}}
+       {'library {:fragment {'wrapper {:template #'xt/tf-add}}}}
+       {:module {:id 'current, :link {}}})))
+  =>
+  '(+ 1 2))

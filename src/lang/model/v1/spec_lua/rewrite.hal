@@ -1,0 +1,271 @@
+(ns lang.model.v1.spec-lua.rewrite
+  (:config {:role :internal})
+  (:require [lang.core.rewrite.hoist :as hoist]
+            [lang.core.rewrite.fn :as fnrw]
+            [lang.core.rewrite.walk :as walk]
+            [lang.model.v1.spec-lua.c-ffi :as c-ffi]))
+
+(defn lua-lambda-compatible? [form _grammar]
+  (let [[name] (fnrw/fn-parts form)] (nil? name)))
+
+(def +lua-rewriter+
+ (hoist/create-rewriter
+   {:symbol-prefix "lua_callback__",
+    :lambda-compatible? lua-lambda-compatible?,
+    :skip-form? c-ffi/c-ffi-form?}))
+
+(def lua-rewrite-expression
+  (:rewrite-expression +lua-rewriter+))
+
+(def with-form-meta walk/with-form-meta)
+
+(def ^:dynamic *lua-grammar* nil)
+
+(defn runtime-eval? [{:keys [mopts]}]
+  (boolean (get-in mopts [:emit :body :transform])))
+
+(do)
+(do)
+(do)
+
+(defn lua-handler-form? [tag form]
+  (and (form? form) (= tag (first form))))
+
+(defn lua-find-handler
+  [tag handlers]
+  (first (filter (fn [migration-argument-0] (lua-handler-form? tag migration-argument-0))
+           handlers)))
+
+(defn lua-catch-binding [binding]
+  (cond
+    (symbol? binding) binding
+    (and (vector? binding) (symbol? (last binding))) (last binding)
+    :else (gensym "lua_try_err__")))
+
+(defn lua-try-thunk [body] (apply list 'fn [] body))
+
+(defn lua-mark-inline-def [form]
+  (if (and (form? form) (= 'defn (first form)) (symbol? (second form)))
+    (apply
+      list
+      'defn
+      (with-meta
+        (second form)
+        (assoc (or (meta (second form)) {}) :inner true))
+      (drop 2 form))
+    form))
+
+(defn lua-mark-runtime-defs [form]
+  (cond
+    (vector? form) (with-form-meta
+                     form
+                     (mapv lua-mark-inline-def form))
+    (and (form? form) (#{'do 'do*} (first form))) (with-form-meta
+                                                    form
+                                                    (apply
+                                                      list
+                                                      (first form)
+                                                      (map
+                                                        lua-mark-inline-def
+                                                        (rest form))))
+    :else (lua-mark-inline-def form)))
+
+(defn lua-pcall-bind [bindings thunk]
+  (list 'var (list 'quote bindings) (list 'pcall thunk)))
+
+(defn lua-return-if-value [value]
+  (list 'when (list 'not= nil value) (list 'return value)))
+
+(defn lua-return-or-error [ok value]
+  (list 'if ok (lua-return-if-value value) (list 'error value)))
+
+(defn lua-catch-guard [body-ok body-value] (list 'not body-ok))
+
+(defn lua-catch-branch [{:keys
+                         [body-ok
+                          body-value
+                          ok
+                          value
+                          catch-ok
+                          catch-value
+                          catch-sym
+                          catch-body]}]
+  (let [catch-thunk (lua-try-thunk
+                      (concat
+                        [(list 'var catch-sym ':= body-value)]
+                        catch-body))]
+    (list
+      'when
+      (lua-catch-guard body-ok body-value)
+      (lua-pcall-bind [catch-ok catch-value] catch-thunk)
+      (list ':= ok catch-ok)
+      (list ':= value catch-value))))
+
+(defn lua-finally-branch [{:keys [final-ok final-value finally-body]}]
+  (let [final-thunk (lua-try-thunk finally-body)]
+    [(lua-pcall-bind [final-ok final-value] final-thunk)
+     (list
+       'if
+       (list 'not final-ok)
+       (list 'error final-value)
+       (lua-return-if-value final-value))]))
+
+(defn lua-lower-try [form]
+  (let [[_ & items] form
+        [body handlers] (split-with
+                          (fn [x]
+                            (not
+                              (or
+                                (lua-handler-form? 'catch x)
+                                (lua-handler-form? 'finally x))))
+                          items)
+        catch-form (lua-find-handler 'catch handlers)
+        finally-form (lua-find-handler 'finally handlers)
+        body (lua-rewrite-statements body)
+        catch-sym (when catch-form
+                    (lua-catch-binding (second catch-form)))
+        catch-body (when catch-form
+                     (lua-rewrite-statements (drop 2 catch-form)))
+        finally-body (when finally-form
+                       (lua-rewrite-statements (rest finally-form)))
+        body-ok (gensym "lua_try_body_ok__")
+        body-value (gensym "lua_try_body_value__")
+        ok (gensym "lua_try_ok__")
+        value (gensym "lua_try_value__")
+        catch-ok (gensym "lua_try_catch_ok__")
+        catch-value (gensym "lua_try_catch_value__")
+        final-ok (gensym "lua_try_final_ok__")
+        final-value (gensym "lua_try_final_value__")
+        body-thunk (lua-try-thunk body)
+        catch-branch (when catch-form
+                       (lua-catch-branch
+                         {:body-ok body-ok,
+                          :body-value body-value,
+                          :ok ok,
+                          :value value,
+                          :catch-ok catch-ok,
+                          :catch-value catch-value,
+                          :catch-sym catch-sym,
+                          :catch-body catch-body}))
+        finally-forms (when finally-form
+                        (lua-finally-branch
+                          {:final-ok final-ok,
+                           :final-value final-value,
+                           :finally-body finally-body}))]
+    (with-form-meta
+      form
+      (apply
+        list
+        'do
+        (concat
+          [(lua-pcall-bind [body-ok body-value] body-thunk)
+           (list 'var ok ':= body-ok)
+           (list 'var value ':= body-value)]
+          (if catch-branch [catch-branch] [])
+          (or finally-forms [])
+          [(lua-return-or-error ok value)])))))
+
+(defn lua-rewrite-list [form]
+  (cond
+    (not (form? form)) form
+    (= 'quote (first form)) form
+    (= 'try (first form)) (lua-lower-try form)
+    (c-ffi/c-ffi-form? form) (let [body
+                                   (cond
+                                     (= '%.c (first form)) (rest form)
+                                     (= '!:lang (first form))
+                                     (drop 2 form)
+                                     :else (rest form))]
+                               (c-ffi/c-ffi-body->string body))
+    :else (with-form-meta
+            form
+            (apply list (map lua-rewrite-form form)))))
+
+(defn lua-rewrite-form
+  [form]
+  (walk/rewrite-form form lua-rewrite-list lua-rewrite-form))
+
+(defn lua-rewrite-statement
+  [form]
+  (lua-rewrite-form ((:rewrite-statement +lua-rewriter+) form *lua-grammar*)))
+
+(defn lua-rewrite-statements
+  [forms]
+  (map lua-rewrite-statement forms))
+
+(defn lua-rest-arg-form? [form]
+  (and
+    (form? form)
+    (= 2 (count form))
+    (= :.. (first form))
+    (symbol? (second form))))
+
+(defn lua-callable-form?
+  [form]
+  (and (form? form) (has? (quote #{fn.inner fn defn defgen defn-}) (first form))))
+
+(defn lua-lower-rest-callable
+  [form]
+  (let [[tag
+         head
+         &
+         migration-lua-tail] form
+        tail                 (seq migration-lua-tail)
+        [name
+         args
+         body]               (if (symbol? head) [head (first tail) (rest tail)] [nil head tail])
+        rest-args            (filterv lua-rest-arg-form? args)]
+    (cond (empty? rest-args)
+      form
+      (< 1 (count rest-args))
+      (throw ((fn [migration-message migration-data]
+                (ex :generic migration-data :ex/message migration-message))  "Only one rest argument is allowed"
+               {:args args :form form}))
+      (not= (last args) (first rest-args))
+      (throw ((fn [migration-message migration-data]
+                (ex :generic migration-data :ex/message migration-message))  "Rest argument must be final"
+               {:args args :form form}))
+      :else
+      (let [rest-sym (second (first rest-args))
+            body     (cons (list (quote var) rest-sym [(list (quote :-) "...")]) (seq body))
+            out      (if name (apply list tag name args body) (apply list tag args body))]
+        (with-form-meta form out)))))
+
+(defn lua-lower-rest-forms [form]
+  (cond
+    (and (form? form) (= 'quote (first form))) form
+    (lua-callable-form? form) (let [form
+                                    (lua-lower-rest-callable form)]
+                                (with-form-meta
+                                  form
+                                  (apply
+                                    list
+                                    (map lua-lower-rest-forms form))))
+    (form? form) (with-form-meta
+                   form
+                   (apply list (map lua-lower-rest-forms form)))
+    (vector? form) (with-form-meta
+                     form
+                     (mapv lua-lower-rest-forms form))
+    (set? form) (with-form-meta
+                  form
+                  (set (map lua-lower-rest-forms form)))
+    (map? form) (with-form-meta
+                  form
+                  (into
+                    (empty form)
+                    (map
+                      (fn [[k v]] [(lua-lower-rest-forms k)
+                                   (lua-lower-rest-forms v)])
+                      form)))
+    :else form))
+
+(defn lua-rewrite-stage
+  [form {:keys [grammar] :as opts}]
+  (binding [*lua-grammar* grammar]
+    (let [form ((:rewrite-stage +lua-rewriter+) form opts)
+          form (lua-lower-rest-forms form)
+          form (lua-rewrite-form form)]
+      (if (runtime-eval? opts)
+        (lua-mark-runtime-defs form)
+        form))))

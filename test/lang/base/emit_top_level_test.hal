@@ -1,70 +1,199 @@
 (ns lang.base.emit-top-level-test
   (:require [lang.base.emit-common :as common]
             [lang.base.emit-helper :as helper]
-            [lang.base.emit-top-level :as top]))
+            [lang.base.emit-top-level :refer :all]
+            [lang.base.grammar :as grammar])
+  (:use code.test))
 
-^{:refer lang.base.emit-top-level/member?}
-(Test/check
- [{:name "recognizes a member in an archive option collection"
-   :test (fn [] [(top/member? [:def :fn] :fn) (top/member? [:def] :fn)])
-   :expected [true false]}])
+(def +reserved+
+  (-> (grammar/build-min [:macro-case])
+      (grammar/to-reserved)))
 
-^{:refer lang.base.emit-top-level/transform-defclass-inner}
-(Test/check
- [{:name "transforms class members to inner forms"
-   :test (fn [] (top/transform-defclass-inner '[(fn a []) (var b 1) other]))
-   :expected '[(fn.inner a []) (var.inner b 1) other]}])
+(def +grammar+
+  (grammar/grammar :test +reserved+ helper/+default+))
 
-^{:refer lang.base.emit-top-level/emit-def}
-(Test/check
- [{:name "emits a configured definition"
-   :test (fn [] (binding [common/*emit-fn* common/emit-common]
-                   (top/emit-def :def '(def hello (table 1 2 3)) helper/+default+ {})))
-   :expected "def hello = table(1,2,3);"}])
+^{:refer lang.base.emit-top-level/transform-defclass-inner :added "4.0"}
+(fact "transforms the body to be fn.inner and var.inner"
 
-^{:refer lang.base.emit-top-level/emit-declare}
-(Test/check
- [{:name "emits top-level declarations"
-   :test (fn [] (binding [common/*emit-fn* common/emit-common]
-                   (top/emit-declare :def '(declare a b c) helper/+default+ {})))
-   :expected "def a,b,c"}])
+  (transform-defclass-inner '[(fn a [])
+                              (fn b [])
+                              (fn c [])])
+  => '((fn.inner a []) (fn.inner b []) (fn.inner c [])))
 
-^{:refer lang.base.emit-top-level/emit-form}
-(Test/check
- [{:name "dispatches a custom top-level emitter"
-   :test (fn [] (top/emit-form :custom '(custom 1 2 3)
-                              {:reserved {'custom {:emit (fn [form grammar mopts] 'CUSTOM)}}}
-                              {}))
-   :expected 'CUSTOM}
-  {:name "wraps emitter failures with the portable catch binding"
-   :test (fn []
-           (try
-             (top/emit-form :missing '(missing)
-                            {:reserved {'missing {}}}
-                            {})
-             :missing-error
-             (catch error
-               (:lang/subsystem (ex-data error)))))
-   :expected :lang.base.emit-top-level/emit-form}])
+^{:refer lang.base.emit-top-level/emit-def :added "3.0"  }
+(fact "creates the def string"
 
-^{:refer lang.base.emit-top-level/emit-top-level}
-(Test/check
- [{:name "qualifies top-level definitions only when a full module layout exists"
-   :test (fn [] (binding [common/*emit-fn*
-                          (fn [form grammar mopts]
-                            (if (symbol? form)
-                              (common/emit-symbol form grammar mopts)
-                              (common/emit-common form grammar mopts)))]
-                   [(top/emit-top-level :def '(def value 1) helper/+default+
-                                        {:layout :full :module {:id 'demo.core}})
-                    (try
-                      (top/emit-top-level :def '(def value 1) helper/+default+ {:layout :full})
-                      :not-rejected
-                      (catch _ :rejected))]))
-   :expected ["def demo_core____value = 1;" :rejected]}])
+  (binding [common/*emit-fn* common/emit-common]
+    (emit-def :def
+              '(def hello (table 1 2 3))
+              +grammar+
+              {}))
+  => "def hello = table(1,2,3);"
 
-^{:refer lang.base.emit-top-level/+emit-lookup+}
-(Test/check
- [{:name "exports the archive top-level dispatch table"
-   :test (fn [] (sort-by str (keys top/+emit-lookup+)))
-   :expected [:block :data :invoke :macro :token]}])
+  (binding [common/*emit-fn* common/emit-common]
+    (emit-def :defglobal
+              '(defglobal hello (table 1 2 3))
+              +grammar+
+              {}))
+  => "global hello = table(1,2,3);")
+
+^{:refer lang.base.emit-top-level/emit-declare :added "4.0"  }
+(fact "emits declared "
+
+  (emit-declare :def
+                '(declare a b c)
+                +grammar+
+                {})
+  => "def a,b,c")
+
+^{:refer lang.base.emit-top-level/emit-top-level :added "3.0" }
+(fact "generic define form"
+
+  (binding [common/*emit-fn* common/emit-common]
+    (emit-top-level :defn
+                    '(defn abc [a := 0]
+                       (+ 1 2 3))
+                    +grammar+
+                    {}))
+  => "function abc(a = 0){\n  1 + 2 + 3;\n}")
+
+^{:refer lang.base.emit-top-level/emit-form :added "4.0"}
+(fact "creates a customisable emit and integrating both top-level and statements"
+  ^:hiddn
+
+  (emit-form :custom
+             '(custom 1 2 3)
+             (assoc-in +grammar+
+                       [:reserved 'custom]
+                       {:emit  (fn [_ _ _]
+                                 'CUSTOM)})
+             [])
+  => 'CUSTOM)
+
+^{:refer lang.base.emit-top-level/member?, :id native-top-0-0}
+(fact
+  "native: recognizes a member in an archive option collection"
+  ((fn [] [(lang.base.emit-top-level/member? [:def :fn] :fn)
+           (lang.base.emit-top-level/member? [:def] :fn)]))
+  =>
+  [true false])
+^{:refer lang.base.emit-top-level/transform-defclass-inner, :id native-top-1-0}
+(fact
+  "native: transforms class members to inner forms"
+  ((fn []
+     (lang.base.emit-top-level/transform-defclass-inner
+       '[(fn a []) (var b 1) other])))
+  =>
+  '[(fn.inner a []) (var.inner b 1) other])
+^{:refer lang.base.emit-top-level/emit-def, :id native-top-2-0}
+(fact
+  "native: emits a configured definition"
+  ((fn []
+     (binding [common/*emit-fn* common/emit-common]
+       (lang.base.emit-top-level/emit-def
+         :def
+         '(def hello (table 1 2 3))
+         helper/+default+
+         {}))))
+  =>
+  "def hello = table(1,2,3);")
+^{:refer lang.base.emit-top-level/emit-declare, :id native-top-3-0}
+(fact
+  "native: emits top-level declarations"
+  ((fn []
+     (binding [common/*emit-fn* common/emit-common]
+       (lang.base.emit-top-level/emit-declare
+         :def
+         '(declare a b c)
+         helper/+default+
+         {}))))
+  =>
+  "def a,b,c")
+^{:refer lang.base.emit-top-level/emit-form, :id native-top-4-0}
+(fact
+  "native: dispatches a custom top-level emitter"
+  ((fn []
+     (lang.base.emit-top-level/emit-form
+       :custom
+       '(custom 1 2 3)
+       {:reserved {'custom {:emit (fn [form grammar mopts] 'CUSTOM)}}}
+       {})))
+  =>
+  'CUSTOM)
+^{:refer lang.base.emit-top-level/emit-form, :id native-top-4-1}
+(fact
+  "native: wraps emitter failures with the portable catch binding"
+  ((fn []
+     (try
+       (lang.base.emit-top-level/emit-form
+         :missing
+         '(missing)
+         {:reserved {'missing {}}}
+         {})
+       :missing-error
+       (catch error (:lang/subsystem (ex-data error))))))
+  =>
+  :lang.base.emit-top-level/emit-form)
+^{:refer lang.base.emit-top-level/emit-top-level, :id native-top-5-0}
+(fact
+  "native: qualifies top-level definitions only when a full module layout exists"
+  ((fn []
+     (binding [common/*emit-fn* (fn
+                                  [form grammar mopts]
+                                  (if
+                                    (symbol? form)
+                                    (common/emit-symbol
+                                      form
+                                      grammar
+                                      mopts)
+                                    (common/emit-common
+                                      form
+                                      grammar
+                                      mopts)))]
+       [(lang.base.emit-top-level/emit-top-level
+          :def
+          '(def value 1)
+          helper/+default+
+          {:layout :full, :module {:id 'demo.core}})
+        (try
+          (lang.base.emit-top-level/emit-top-level
+            :def
+            '(def value 1)
+            helper/+default+
+            {:layout :full})
+          :not-rejected
+          (catch _ :rejected))])))
+  =>
+  ["def demo_core____value = 1;" :rejected])
+^{:refer lang.base.emit-top-level/+emit-lookup+, :id native-top-6-0}
+(fact
+  "native: exports the archive top-level dispatch table"
+  ((fn [] (sort-by str (keys lang.base.emit-top-level/+emit-lookup+))))
+  =>
+  [:block :data :invoke :macro :token])
+
+(def migration-custom-emitter (fn [form grammar mopts] [:custom form (:marker mopts)]))
+^{:refer lang.base.emit-top-level/emit-form :id stored-var-dispatch}
+(fact "dispatches stored Vars and keyword modes despite the local type binding"
+ [(emit-form :custom '(custom 1 2)
+             {:reserved {'custom {:emit (var migration-custom-emitter) :type :def}}}
+             {:marker :native})
+  (emit-form :quote ''(1 2)
+             (assoc helper/+default+ :reserved {'quote {:emit :quote :op :quote}})
+             {})]
+ => [[:custom '(custom 1 2) :native] "(1,2)"])
+^{:refer lang.base.emit-top-level/emit-form :id provenance-lines}
+(fact "preserves form lines and gives inherited provenance lines precedence"
+ (let [collect-failure (fn [options]
+                 (try
+                   (emit-form :missing (with-meta '(missing) {:line 23})
+                              {:reserved {'missing {}}} options)
+                   :no-error
+                   (catch error
+                     (select-keys (ex-data error)
+                                  [:lang/line :lang/subsystem :lang/symbol :lang/form]))))]
+   [(collect-failure {}) (collect-failure {:lang/provenance {:lang/line 11}})])
+ => [{:lang/line 23 :lang/subsystem :lang.base.emit-top-level/emit-form
+      :lang/symbol 'missing :lang/form '(missing)}
+     {:lang/line 11 :lang/subsystem :lang.base.emit-top-level/emit-form
+      :lang/symbol 'missing :lang/form '(missing)}])

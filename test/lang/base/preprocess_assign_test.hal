@@ -1,91 +1,299 @@
-(ns lang.base.preprocess-assign-test
-  (:require [lang.base.preprocess-assign :as assign]))
-
-^{:refer lang.base.preprocess-assign/protected-head?}
-(Test/check
- [{:name "recognizes protected reserved grammar heads"
-   :test (fn []
-           (assign/protected-head?
-            (first (assign/protect-reserved-head '(if condition body)))))
-   :expected true}])
-
-^{:refer lang.base.preprocess-assign/unwrap-protected-head}
-(Test/check
- [{:name "unwraps a protected head back to its original symbol"
-   :test (fn []
-           (assign/unwrap-protected-head
-            (first (assign/protect-reserved-head '(if condition body)))))
-   :expected 'if}])
-
-^{:refer lang.base.preprocess-assign/fail}
-(Test/check
- [{:name "throws archive assignment failures with supplied context"
-   :test (fn []
-           (try
-             (assign/fail "fixture failure" {:input :fixture})
-             :missing
-             (catch error [(ex-message error) (:input (ex-data error))])))
-   :expected ["fixture failure" :fixture]}])
-
-^{:refer lang.base.preprocess-assign/process-inline-assignment}
-(Test/check
- [{:name "resolves an inline linked assignment to a protected full symbol"
-   :test (fn []
-           (let [output (assign/process-inline-assignment
-                         '(def local (alias/item input) :inline)
-                         {'library {:code {'item {:id 'item}}}}
-                         {:module {:id 'current :link {'alias 'library}}})]
-             [(vec (take 2 output))
-              (assign/unwrap-protected-head (first (nth output 2)))
-              (second (nth output 2))]))
-   :expected [['def 'local] 'library/item 'input]}])
-
-^{:refer lang.base.preprocess-assign/rebuild-form}
-(Test/check
- [{:name "rebuilds an archive form with a supplied head and body"
-   :test (fn [] (assign/rebuild-form '(if original) 'when ['condition 'body]))
-   :expected '(when condition body)}])
-
-^{:refer lang.base.preprocess-assign/rewrite-tail-return}
-(Test/check
- [{:name "rewrites scalar, return, and conditional tail positions to assignment"
-   :test (fn []
-           [(assign/rewrite-tail-return :value 'target)
-            (assign/rewrite-tail-return '(return output) 'target)
-            (assign/rewrite-tail-return '(if test left right) 'target)])
-   :expected ['(:= target :value)
-              '(:= target output)
-              '(if test (:= target left) (:= target right))]}])
-
-^{:refer lang.base.preprocess-assign/assignment-target}
-(Test/check
- [{:name "derives an assignment target from an archive assignment operation"
-   :test (fn []
-           (assign/assignment-target
-            '(:= target value)
-            {:reserved {:= {:emit :assign}}}))
-   :expected {:declare? false :target 'target :value 'value}}])
-
-^{:refer lang.base.preprocess-assign/process-template-assignment}
-(Test/check
- [{:name "expands a value macro and rewrites it to its assignment target"
-   :test (fn []
-           (let [output (assign/process-template-assignment
-             '(:= target (block input))
-                         {:reserved {:= {:emit :assign}
-                                     'block {:emit :macro
-                                             :macro (fn [form] (second form))
-                                             :op-spec {:allow-blocks true}}}}
-                         {})]
-             [(pr-str output) (:assign/template-default (meta output))]))
-   :expected ["(:= target input)" true]}])
-
-^{:refer lang.base.preprocess-assign/protect-reserved-head}
-(Test/check
- [{:name "protects only the head while retaining form arguments"
-   :test (fn []
-           (let [output (assign/protect-reserved-head '(when condition body))]
-             [(assign/protected-head? (first output))
-              (assign/unwrap-protected-head (first output))
-              (vec (rest output))]))
-   :expected [true 'when ['condition 'body]]}])
+(ns lang.base.preprocess-assign-test (:use code.test) (:require [lang.base.preprocess-assign :as assign :refer :all]))
+(fact
+  "ignores non-assignment macros that stage to a symbol"
+  (let [grammar {:reserved
+                 {':= {:emit :assign},
+                  'x:offset
+                  {:emit :macro,
+                   :macro (fn [[_ n]] n),
+                   :op-spec {:allow-blocks true}}}}]
+    [(process-template-assignment '(x:offset i) grammar nil)
+     (process-template-assignment '(:= a (x:offset i)) grammar nil)])
+  =>
+  '[nil (:= a i)])
+^{:refer lang.base.preprocess-assign/protect-reserved-head, :added "4.1"}
+(fact
+  "protects reserved heads by wrapping them in a volatile"
+  (let [out (protect-reserved-head
+              (with-meta '(return value) {:line 10}))]
+    [(atom? (first out)) @(first out) (rest out) (meta out)])
+  =>
+  '[true return (value) {:line 10}])
+^{:refer lang.base.preprocess-assign/protected-head?, :id native-assignment-protected-head?}
+(fact
+  "recognizes protected reserved grammar heads"
+  ((fn []
+     (assign/protected-head?
+       (first (assign/protect-reserved-head '(if condition body))))))
+  =>
+  true)
+^{:refer lang.base.preprocess-assign/unwrap-protected-head, :id native-assignment-unwrap-protected-head}
+(fact
+  "unwraps a protected head back to its original symbol"
+  ((fn []
+     (assign/unwrap-protected-head
+       (first (assign/protect-reserved-head '(if condition body))))))
+  =>
+  'if)
+^{:refer lang.base.preprocess-assign/fail, :id native-assignment-fail}
+(fact
+  "throws archive assignment failures with supplied context"
+  ((fn []
+     (try
+       (assign/fail "fixture failure" {:input :fixture})
+       :missing
+       (catch error [(ex-message error) (:input (ex-data error))]))))
+  =>
+  ["fixture failure" :fixture])
+^{:refer lang.base.preprocess-assign/process-inline-assignment, :id native-assignment-process-inline-assignment}
+(fact
+  "resolves an inline linked assignment to a protected full symbol"
+  ((fn []
+     (let [output (assign/process-inline-assignment
+                    '(def local (alias/item input) :inline)
+                    {'library {:code {'item {:id 'item}}}}
+                    {:module {:id 'current, :link {'alias 'library}}})]
+       [(vec (take 2 output))
+        (assign/unwrap-protected-head (first (nth output 2)))
+        (second (nth output 2))])))
+  =>
+  [['def 'local] 'library/item 'input])
+^{:refer lang.base.preprocess-assign/rebuild-form, :id native-assignment-rebuild-form}
+(fact
+  "rebuilds an archive form with a supplied head and body"
+  ((fn []
+     (assign/rebuild-form '(if original) 'when ['condition 'body])))
+  =>
+  '(when condition body))
+^{:refer lang.base.preprocess-assign/rewrite-tail-return, :id native-assignment-rewrite-tail-return}
+(fact
+  "rewrites scalar, return, and conditional tail positions to assignment"
+  ((fn [] [(assign/rewrite-tail-return :value 'target)
+           (assign/rewrite-tail-return '(return output) 'target)
+           (assign/rewrite-tail-return
+             '(if test left right)
+             'target)]))
+  =>
+  ['(:= target :value)
+   '(:= target output)
+   '(if test (:= target left) (:= target right))])
+^{:refer lang.base.preprocess-assign/assignment-target, :id native-assignment-assignment-target}
+(fact
+  "derives an assignment target from an archive assignment operation"
+  ((fn []
+     (assign/assignment-target
+       '(:= target value)
+       {:reserved {:= {:emit :assign}}})))
+  =>
+  {:declare? false, :target 'target, :value 'value})
+^{:refer lang.base.preprocess-assign/process-template-assignment, :id native-assignment-process-template-assignment}
+(fact
+  "expands a value macro and rewrites it to its assignment target"
+  ((fn []
+     (let [output (assign/process-template-assignment
+                    '(:= target (block input))
+                    {:reserved
+                     {:= {:emit :assign},
+                      'block
+                      {:emit :macro,
+                       :macro (fn [form] (second form)),
+                       :op-spec {:allow-blocks true}}}}
+                    {})]
+       [(pr-str output) (:assign/template-default (meta output))])))
+  =>
+  ["(:= target input)" true])
+^{:refer lang.base.preprocess-assign/protect-reserved-head, :id native-assignment-protect-reserved-head}
+(fact
+  "protects only the head while retaining form arguments"
+  ((fn []
+     (let [output (assign/protect-reserved-head
+                    '(when condition body))]
+       [(assign/protected-head? (first output))
+        (assign/unwrap-protected-head (first output))
+        (vec (rest output))])))
+  =>
+  [true 'when ['condition 'body]])
+^{:refer lang.base.preprocess-assign/rewrite-tail-return, :id assignment-contract-1}
+(fact
+  "conditional and exception tails retain original branches"
+  ((fn []
+     (assign/rewrite-tail-return
+       '(cond
+          p (return 1)
+          :else (try
+                  (work)
+                  (return 2)
+                  (catch e (return 3))
+                  (finally (cleanup))))
+       'out)))
+  =>
+  '(cond
+     p (:= out 1)
+     :else (try
+             (work)
+             (:= out 2)
+             (catch e (:= out 3))
+             (finally (cleanup)))))
+^{:refer lang.base.preprocess-assign/process-inline-assignment, :id assignment-contract-2}
+(fact
+ "inline assignments resolve aliases and retain metadata"
+ ((fn
+   []
+   (let
+    [result
+     (assign/process-inline-assignment
+      '(var a ^{:inline true} (u/f 1))
+      {'library {:code {'f {}}}}
+      {:module {:link {'u 'library}}}
+      true)]
+    [result
+     (select-keys (meta (last result)) [:inline :assign/inline])])))
+ =>
+ ['(var a (library/f 1)) {:inline true, :assign/inline true}])
+^{:refer lang.base.preprocess-assign/protect-reserved-head, :id assignment-contract-3}
+(fact
+  "reserved head boxing follows native atom semantics"
+  ((fn []
+     (let [result (assign/protect-reserved-head
+                    (with-meta '(return value) {:line 10}))]
+       [(atom? (first result))
+        (deref (first result))
+        (vec (rest result))
+        (meta result)])))
+  =>
+  [true 'return ['value] {:line 10}])
+^{:refer lang.base.preprocess-assign/process-template-assignment, :id assignment-contract-4}
+(fact
+  "assignment rewriting preserves outer metadata"
+  ((fn []
+     (let [result (assign/process-template-assignment
+                    (with-meta '(:= a (block 7)) {:line 8})
+                    {:reserved
+                     {:= {:emit :assign},
+                      'block
+                      {:emit :macro,
+                       :macro
+                       (fn [form]
+                         (list 'do (list 'return (second form)))),
+                       :op-spec {:allow-blocks true}}}}
+                    {})]
+       [result (meta result)])))
+  =>
+  ['(do (:= a 7)) {:line 8, :assign/template-default true}])
+^{:refer lang.base.preprocess-assign/process-template-assignment, :id assignment-contract-5}
+(fact
+  "non-assignment macros remain untouched"
+  ((fn []
+     (assign/process-template-assignment
+       '(offset i)
+       {:reserved
+        {'offset
+         {:emit :macro,
+          :macro (fn [[_ n]] n),
+          :op-spec {:allow-blocks true}}}}
+       nil)))
+  =>
+  nil)
+^{:refer lang.base.preprocess-assign/ProtectedHead, :id assignment-legacy-constructor}
+(fact
+  "existing wrapper construction retains its original value"
+  (let [head (assign/ProtectedHead 'return)]
+    [(:value head)
+     (= head (assign/ProtectedHead 'return))
+     (assign/protected-head? head)
+     (assign/unwrap-protected-head head)])
+  =>
+  ['return true true 'return])
+^{:refer lang.base.preprocess-assign/protected-head?, :id assignment-box-recognition}
+(fact
+  "existing recognition handles original box semantics without admitting plain data"
+  [(assign/protected-head? (atom 'if))
+   (assign/protected-head? (assign/ProtectedHead 'if))
+   (assign/protected-head? 'if)
+   (assign/protected-head? {:value 'if})
+   (assign/protected-head? nil)]
+  =>
+  [true true false false false])
+^{:refer lang.base.preprocess-assign/unwrap-protected-head, :id assignment-box-reset}
+(fact
+  "unwrapping follows box updates and retains existing map extraction behavior"
+  (let [box (atom 'if)]
+    (try
+      [(assign/unwrap-protected-head box)
+       (do (reset! box 'when) (assign/unwrap-protected-head box))
+       (do (reset! box 'when) (assign/unwrap-protected-head box))
+       (assign/unwrap-protected-head (assign/ProtectedHead 'return))
+       (assign/unwrap-protected-head {:value :existing})
+       (assign/unwrap-protected-head nil)]
+      (finally (reset! box 'if))))
+  =>
+  ['if 'when 'when 'return :existing nil])
+^{:refer lang.base.preprocess-assign/+tail-block-heads+, :id assignment-tail-head-inventory}
+(fact
+  "tail block inventory remains the pinned set"
+  assign/+tail-block-heads+
+  =>
+  '#{let do:> do when-not when let* do*})
+^{:refer lang.base.preprocess-assign/rewrite-tail-return, :id assignment-block-tail-boundaries}
+(fact
+  "block binding and conditional tails preserve non-tail work"
+  [(assign/rewrite-tail-return '(let [x 1] (work) (return x)) 'out)
+   (assign/rewrite-tail-return '(let* [x 1] (work) (return x)) 'out)
+   (assign/rewrite-tail-return '(when p (work) (return x)) 'out)
+   (assign/rewrite-tail-return '(when-not p (return x)) 'out)
+   (assign/rewrite-tail-return '(do* (work) (return x)) 'out)
+   (assign/rewrite-tail-return '(do:> (return x)) 'out)
+   (assign/rewrite-tail-return '(if-not p (return x)) 'out)]
+  =>
+  '[(let [x 1] (work) (:= out x))
+    (let* [x 1] (work) (:= out x))
+    (when p (work) (:= out x))
+    (when-not p (:= out x))
+    (do* (work) (:= out x))
+    (do:> (:= out x))
+    (if-not p (:= out x) (:= out nil))])
+^{:refer lang.base.preprocess-assign/assignment-target, :id assignment-target-truthiness}
+(fact
+  "target detection retains the original truthiness boundary"
+  (let [g {:reserved {:= {:emit :assign}}}]
+    [(assign/assignment-target '(:= a 0) g)
+     (assign/assignment-target '(:= a false) g)
+     (assign/assignment-target '(:= a nil) g)
+     (assign/assignment-target '(:= a) g)
+     (assign/assignment-target '(other a 1) g)])
+  =>
+  [{:declare? false, :target 'a, :value 0} nil nil nil nil])
+^{:refer lang.base.preprocess-assign/process-inline-assignment, :id assignment-inline-errors}
+(fact
+  "inline failures retain original messages and input context"
+  (mapv
+    (fn [args]
+      (try
+        (apply assign/process-inline-assignment args)
+        (catch
+          error
+          [(ex-message error)
+           (select-keys (ex-data error) [:input])])))
+    [['(var a 1) {} {} true]
+     ['(var a (u/f 1) :inline)
+      {}
+      {:module {:id 'current, :link {}}}
+      true]
+     ['(var a (u/f 1) :inline)
+      {'library {:code {}}}
+      {:module {:link {'u 'library}}}
+      true]])
+  =>
+  [["Not a valid inline assignment form." {}]
+   ["Cannot resolve Module." {:input 'u/f}]
+   ["Code entry not found:" {:input 'u/f}]])
+^{:refer lang.base.preprocess-assign/process-template-assignment, :id assignment-var-macro-fallback}
+(fact
+  "a var macro returning a non-assignment falls back without inventing an assignment"
+  (assign/process-template-assignment
+    '(var-probe a)
+    {:reserved
+     {'var-probe {:emit :macro, :op :var-probe, :macro #'identity}}}
+    {})
+  =>
+  nil)
