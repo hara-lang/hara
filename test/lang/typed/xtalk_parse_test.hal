@@ -1,66 +1,686 @@
 (ns lang.typed.xtalk-parse-test
-  (:require [lang.core.script :as script]
-            [lang.typed.xtalk-parse :as subject]))
+  (:use code.test)
+  (:require [lang.typed.xtalk-common :as types]
+            [lang.typed.xtalk-parse :refer :all])
+  (:require [std.fs :as fs]))
 
-^{:refer lang.typed.xtalk-parse/parse-decl-preamble}
-(Test/check
- [{:name "retains a scalar declaration value after inspecting its preamble"
-   :test (fn [] (let [preamble (subject/parse-decl-preamble [20] 'DEFAULT_PAGE_SIZE)]
-                  [(vec (:items preamble)) (:binding-meta preamble)]))
-   :expected [[20] {}]}])
+(def +ctx+ {:ns 'sample.route :aliases '{types xt.event.base-listener}})
 
-^{:refer lang.typed.xtalk-parse/parse-defvalue}
-(Test/check
-  [{:name
-    "parses a schema-annotated scalar value instead of treating it as schema-only",
-    :test
-    (fn []
-      (let [value (subject/parse-defvalue
-                    (list
-                      'def
-                      (with-meta 'DEFAULT_PAGE_SIZE {:schema :xt/int})
-                      20)
-                    'play.fixture
-                    {})
-            spec (:spec value)]
-        [(assoc
-           (select-keys value [:name :raw-value :type :spec])
-           :spec
-           (into {} spec))
-         (instance? lang.typed.xtalk-common/XtSpecDef spec)])),
-    :expected
-    [{:name "DEFAULT_PAGE_SIZE",
-      :raw-value 20,
-      :type {:kind :primitive, :name :xt/int},
-      :spec
-      {:ns "play.fixture",
-       :name "DEFAULT_PAGE_SIZE",
-       :type {:kind :primitive, :name :xt/int},
-       :spec-meta {:schema :xt/int},
-       :file "UNKNOWN",
-       :line nil,
-       :column nil}}
-     true]}])
+(fact "parses multi-arity defmacro.xt forms"
+  (let [macro-def (parse-defmacro
+                   '(defmacro.xt ^{:standalone true}
+                      x:get-idx
+                      ([arr idx]
+                       (list (quote x:get-idx) arr idx))
+                      ([arr idx default]
+                       (list (quote x:get-idx) arr idx default)))
+                   'sample.route
+                   {}
+                   "sample.clj")]
+    {:name (:name macro-def)
+     :inputs (mapv :name (:inputs macro-def))
+     :standalone (get-in macro-def [:body-meta :standalone])
+     :raw-body (:raw-body macro-def)})
+  => '{:name "x:get-idx"
+       :inputs [arr idx]
+       :standalone true
+       :raw-body [([arr idx]
+                   (list (quote x:get-idx) arr idx))
+                  ([arr idx default]
+                   (list (quote x:get-idx) arr idx default))]})
 
-^{:refer lang.typed.xtalk-parse/analyze-module-raw}
-(Test/check
- [{:name "reads the XTalk source module from Library instead of the legacy flat index"
-   :test (fn []
-           (let [snapshot (script/script-snapshot)]
-             (try
-               (script/register-library-module!
-                :xtalk {:id 'fixture.xtalk
-                        :lang :xtalk
-                        :code {}
-                        :fragment {}
-                        :schema {}})
-               (select-keys (subject/analyze-module-raw 'fixture.xtalk)
-                            [:ns :aliases :specs :functions :macros :values])
-               (finally
-                 (script/script-restore! snapshot)))))
-   :expected {:ns 'fixture.xtalk
-              :aliases {}
-              :specs []
-              :functions []
-              :macros []
-              :values []}}])
+^{:refer lang.typed.xtalk-parse/read-forms, :added "4.1"}
+(fact
+  "reads forms from files"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (pos?
+        (count
+          (read-forms
+            "test/tahto/model/spec_xtalk_typed_fixture.hal")))
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  true)
+
+(fact
+  "attaches file and source position metadata to read forms"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (let [forms (read-forms
+                    "test/tahto/model/spec_xtalk_typed_fixture.hal")
+            first-form (first forms)]
+        [(some-> first-form meta :file string?)
+         (integer? (some-> first-form meta :line))
+         (integer? (some-> first-form meta :column))])
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  [true true true])
+
+^{:refer lang.typed.xtalk-parse/ns-form? :added "4.1"}
+(fact "detects ns forms"
+  [(ns-form? '(ns sample.core))
+   (ns-form? '(def x 1))]
+  => [true false])
+
+^{:refer lang.typed.xtalk-parse/defspec? :added "4.1"}
+(fact "detects defspec.xt forms"
+  [(defspec? '(defspec.xt User :xt/str))
+   (defspec? '(defn.xt user []))]
+  => [true false])
+
+^{:refer lang.typed.xtalk-parse/defn? :added "4.1"}
+(fact "detects xt and clojure defn forms"
+  [(defn? '(defn.xt f []))
+   (defn? '(defgen.xt f []))
+   (defn? '(defmacro.xt f []))]
+  => ["defn.xt" "defgen.xt" nil])
+
+^{:refer lang.typed.xtalk-parse/defmacro? :added "4.1"}
+(fact "detects defmacro.xt forms"
+  [(defmacro? '(defmacro.xt f []))
+   (defmacro? '(defn.xt f []))]
+  => [true false])
+
+^{:refer lang.typed.xtalk-parse/defvalue? :added "4.1"}
+(fact "detects def.xt forms"
+  [(defvalue? '(def.xt Value 1))
+   (defvalue? '(defn.xt f []))]
+  => [true false])
+
+^{:refer lang.typed.xtalk-parse/parse-ns-name :added "4.1"}
+(fact "extracts namespace names from form streams"
+  (parse-ns-name '[(comment x) (ns sample.core) (def x 1)])
+  => 'sample.core)
+
+^{:refer lang.typed.xtalk-parse/extract-aliases :added "4.1"}
+(fact "extracts aliases from require vectors"
+  (extract-aliases '[[xt.lang.common-lib :as k]
+                     [xt.event.base-listener :as event-common]])
+  => '{k xt.lang.common-lib
+       event-common xt.event.base-listener})
+
+^{:refer lang.typed.xtalk-parse/extract-ns-aliases :added "4.1"}
+(fact "extracts aliases from ns forms"
+  (extract-ns-aliases '(ns sample.core (:require [xt.lang.common-lib :as k])))
+  => '{k xt.lang.common-lib})
+
+^{:refer lang.typed.xtalk-parse/script-form? :added "4.1"}
+(fact "detects script forms"
+  [(script-form? '(script :xtalk {:require []}))
+   (script-form? '(ns sample.core))]
+  => [true false])
+
+^{:refer lang.typed.xtalk-parse/extract-script-aliases :added "4.1"}
+(fact "extracts aliases from script forms"
+  (extract-script-aliases '[(script :xtalk {:require [[xt.lang.common-lib :as k]]})])
+  => '{k xt.lang.common-lib})
+
+^{:refer lang.typed.xtalk-parse/arg-from-inline-form, :added "4.1"}
+(fact
+  "builds args from inline type forms"
+  (into {} (arg-from-inline-form '(:xt/int id) +ctx+))
+  =>
+  '{:name id, :type {:kind :primitive, :name :xt/int}, :modifiers []})
+
+^{:refer lang.typed.xtalk-parse/arg-declared-type :added "4.1"}
+(fact "reads declared arg metadata"
+  (arg-declared-type (with-meta 'id {:- :xt/str}) +ctx+)
+  => '{:kind :primitive :name :xt/str})
+
+^{:refer lang.typed.xtalk-parse/binding-symbols :added "4.1"}
+(fact "extracts symbols from destructuring forms"
+  (vec (binding-symbols '[user {:keys [id]} & [opts]]))
+  => '[user id opts])
+
+^{:refer lang.typed.xtalk-parse/parse-fn-inputs :added "4.1"}
+(fact "parses typed and destructured fn args"
+  (mapv :name (parse-fn-inputs '[UserMap users :xt/int id & [opts]] +ctx+))
+  => '[users id opts])
+
+^{:refer lang.typed.xtalk-parse/parse-spec-decl :added "4.1"}
+(fact "parses spec declarations"
+  (-> (parse-spec-decl 'sample.route 'User '[:xt/record ["id" :xt/str]] {:docstring "user"} {} "sample.clj") :type types/type->data)
+  => '{:kind :record :fields [{:name "id" :type {:kind :primitive :name :xt/str} :optional? false}]})
+
+^{:refer lang.typed.xtalk-parse/parse-decl-preamble :added "4.1"}
+(fact "splits docstrings attr maps and remaining items"
+  (parse-decl-preamble '("doc" {:added "4.1"} [x] (+ x 1)) 'f)
+  => '{:docstring "doc"
+       :attr-map {:added "4.1"}
+       :items ([x] (+ x 1))
+       :meta {:added "4.1" :docstring "doc"}})
+
+^{:refer lang.typed.xtalk-parse/parse-defspec :added "4.1"}
+(fact "parses defspec forms"
+  (:name (parse-defspec '(defspec.xt User :xt/str) 'sample.route {} "sample.clj"))
+  => "User")
+
+^{:refer lang.typed.xtalk-parse/parse-callable-items :added "4.1"}
+(fact "parses callable arg/body sections"
+  [(parse-callable-items '([x] (+ x 1)))
+   (parse-callable-items '((([x] (+ x 1)))))]
+  => '[[[x] ((+ x 1))]
+       [(([x] (+ x 1))) ()]])
+
+^{:refer lang.typed.xtalk-parse/multi-callable-items? :added "4.1"}
+(fact "detects multi-arity callable item lists"
+  [(multi-callable-items? '(([a] 1) ([a b] 2)))
+   (multi-callable-items? '([a] 1))]
+  => [true false])
+
+^{:refer lang.typed.xtalk-parse/parse-defn :added "4.1"}
+(fact "parses defn.xt forms"
+  (let [fn-def (parse-defn '(defn.xt ^{:- [:xt/maybe User]} find-user [UserMap users :xt/str id] (return id)) 'sample.route {} "sample.clj")]
+    [(mapv :name (:inputs fn-def))
+     (types/type->data (:output fn-def))])
+  => '[[users id]
+       {:kind :maybe :item {:kind :named :name sample.route/User}}])
+
+^{:refer lang.typed.xtalk-parse/parse-defmacro :added "4.1"}
+(fact "parses defmacro.xt forms"
+  (get-in (parse-defmacro '(defmacro.xt add [a b] (list '+ a b)) 'sample.route {} "sample.clj") [:body-meta :macro])
+  => true)
+
+^{:refer lang.typed.xtalk-parse/parse-defvalue :added "4.1"}
+(fact "parses def.xt forms"
+  (types/type->data (:type (parse-defvalue '(def.xt ^{:- [:xt/dict :xt/str :xt/num]} ScopeMap {:a 1}) 'sample.route {} "sample.clj")))
+  => '{:kind :dict
+       :key {:kind :primitive :name :xt/str}
+       :value {:kind :primitive :name :xt/num}})
+
+^{:refer lang.typed.xtalk-parse/merge-spec-inputs :added "4.1"}
+(fact "fills unknown arg types from spec inputs"
+  (mapv (comp types/type->data :type)
+        (merge-spec-inputs [(types/make-arg 'id types/+unknown-type+ [])]
+                           [types/+str-type+]))
+  => '[{:kind :primitive :name :xt/str}])
+
+^{:refer lang.typed.xtalk-parse/attach-function-spec :added "4.1"}
+(fact "attaches callable specs to fn defs"
+  (let [fn-def (types/make-fn-def 'sample.route 'find-user [(types/make-arg 'id types/+unknown-type+ [])] types/+unknown-type+ {} ['id] nil)
+        spec (parse-spec-decl 'sample.route 'find-user '[:fn [:xt/str] :xt/bool] {} {} "sample.clj")]
+    (types/type->data (:output (attach-function-spec fn-def spec))))
+  => '{:kind :primitive :name :xt/bool})
+
+^{:refer lang.typed.xtalk-parse/attach-value-spec :added "4.1"}
+(fact "attaches value specs to value defs"
+  (let [value-def (types/make-value-def 'sample.route 'ScopeMap types/+unknown-type+ {} {:a 1} nil)
+        spec (parse-spec-decl 'sample.route 'ScopeMap '[:xt/dict :xt/str :xt/int] {} {} "sample.clj")]
+    (types/type->data (:type (attach-value-spec value-def spec))))
+  => '{:kind :dict
+       :key {:kind :primitive :name :xt/str}
+       :value {:kind :primitive :name :xt/int}})
+
+^{:refer lang.typed.xtalk-parse/spec-map-by-kind :added "4.1"}
+(fact "indexes filtered specs by type key"
+  (keys (spec-map-by-kind [(parse-spec-decl 'sample.route 'find-user '[:fn [:xt/str] :xt/bool] {} {} "sample.clj")]
+                          (fn [migration-argument-0] (= (keyword "fn") (get-in migration-argument-0 [(keyword "type") (keyword "kind")])))))
+  => '(sample.route/find-user))
+
+^{:refer lang.typed.xtalk-parse/attach-specs, :added "4.1"}
+(fact
+  "attaches specs across analysis outputs"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (let [analysis (analyze-namespace
+                       'tahto.model.spec-xtalk-typed-fixture)]
+        [(not (nil? (:spec (first (:functions analysis)))))
+         (= 3 (count (:specs analysis)))])
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  '[true true])
+
+^{:refer lang.typed.xtalk-parse/analyze-file-raw, :added "4.1"}
+(fact
+  "returns raw parsed map without spec attachment"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (let [result (analyze-file-raw
+                     "test/tahto/model/spec_xtalk_typed_fixture.hal")]
+        [(map? result)
+         (:ns result)
+         (has? result :specs)
+         (has? result :functions)])
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  [true 'tahto.model.spec-xtalk-typed-fixture true true])
+
+^{:refer lang.typed.xtalk-parse/analyze-file, :added "4.1"}
+(fact
+  "analyzes files into typed declarations"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (:ns
+        (analyze-file "test/tahto/model/spec_xtalk_typed_fixture.hal"))
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  'tahto.model.spec-xtalk-typed-fixture)
+
+^{:refer lang.typed.xtalk-parse/register-types!, :added "4.1"}
+(fact
+  "registers parsed declarations"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (do
+        (types/clear-registry!)
+        (register-types!
+          (analyze-namespace 'tahto.model.spec-xtalk-typed-fixture))
+        (not
+          (nil?
+            (types/get-function
+              'tahto.model.spec-xtalk-typed-fixture/find-user))))
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  true)
+
+^{:refer lang.typed.xtalk-parse/analyze-namespace-raw, :added "4.1"}
+(fact
+  "looks up namespace source file and returns raw analysis"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (let [result (analyze-namespace-raw
+                     'tahto.model.spec-xtalk-typed-fixture)]
+        [(map? result) (:ns result)])
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  [true 'tahto.model.spec-xtalk-typed-fixture])
+
+(fact
+  "falls back to a classpath source resource"
+  (first
+    (second
+      (let [files (assoc
+                    {"project.edn"
+                     "{:hara/type :project, :project/source-paths [\"src\"], :project/main migration.package-parser, :project/version \"1.0.0\", :project/capabilities #{:file :kernel}, :project/test-paths [], :hara/version \"1.0.0\", :project/id migration/parser-fallback, :project/extension-paths []}",
+                     "src/lang/typed/xtalk_parse.hal"
+                     "(ns lang.typed.xtalk-parse\n  (:config {:override [read-forms]})\n  (:require [code.project :as project]\n            [lang.typed.xtalk-common :as types]))\n\n(defn existing-file-path [paths]\n  (some\n    (fn [path]\n      (let [path-str (some-> path str)]\n        (when (and path-str (deref (File/exists? path-str)))\n          path-str)))\n    paths))\n\n(defn file-path-candidates\n  [file-path]\n  (let [annex-path (str/replace file-path \"model_annex/\" \"model/annex/\")]\n    (distinct [file-path annex-path])))\n\n(defn resolve-file-path\n  [file-path]\n  (or (existing-file-path (file-path-candidates file-path))\n      (str file-path)))\n\n(defn read-forms [file-path]\n  (let [resource? (map? file-path)\n        source (if resource? file-path (resolve-file-path file-path))\n        text (String/decode-utf8\n               (if resource?\n                 (Package/read (:package source) (:resource source))\n                 (deref (File/read source))))\n        file-str (if resource?\n                   (str\n                     \"package:\"\n                     (get-in source [:package :package/coordinate])\n                     \"/\"\n                     (:resource source))\n                   (str source))]\n    (mapv\n      (fn [node]\n        (let [form (:form node)]\n          (with-meta\n            form\n            (merge\n              (meta form)\n              (select-keys (:start node) [:line :column])\n              {:file file-str}))))\n      (read-forms-spanned text))))\n\n(defn ns-form? [form] (and (form? form) (= 'ns (first form))))\n\n(defn defspec? [form]\n  (and (form? form) (= \"defspec.xt\" (name (first form)))))\n\n(defn defn? [form]\n  (and\n    (form? form)\n    (#{\"defn\" \"defn.xt\" \"defgen.xt\" \"defn-\"} (name (first form)))))\n\n(defn defmacro? [form]\n  (and (form? form) (= \"defmacro.xt\" (name (first form)))))\n\n(defn defvalue? [form]\n  (and (form? form) (= \"def.xt\" (name (first form)))))\n\n(defn parse-ns-name\n  [forms]\n  (some (fn [form]\n          (when (ns-form? form)\n            (second form)))\n        forms))\n\n(defn extract-aliases\n  [require-forms]\n  (->> require-forms\n       (reduce (fn [acc form]\n                 (if (vector? form)\n                   (let [ns-sym (first form)\n                         pairs (partition 2 (rest form))\n                         alias (some (fn [[k v]]\n                                       (when (= :as k)\n                                         v))\n                                     pairs)]\n                     (cond-> acc\n                       alias (assoc alias ns-sym)))\n                   acc))\n               {})))\n\n(defn extract-ns-aliases\n  [ns-form]\n  (->> (rest ns-form)\n    (filter form?)\n    (filter (fn [migration-argument-0] (= (keyword \"require\") (first migration-argument-0))))\n    (mapcat rest)\n    extract-aliases))\n\n(defn script-form? [form]\n  (and (form? form) (= \"script\" (name (first form)))))\n\n(defn extract-script-aliases\n  [forms]\n  (->> forms\n    (filter script-form?)\n    (map (fn [migration-argument-0] (get migration-argument-0 2 nil)))\n    (filter map?)\n    (mapcat :require)\n    extract-aliases))\n\n(defn rest-arg-form? [form]\n  (and\n    (form? form)\n    (= 2 (count form))\n    (= :.. (first form))\n    (symbol? (second form))))\n\n(defn rest-arg-type\n  []\n  {:kind :array\n   :item types/+unknown-type+\n   :rest true})\n\n(defn arg-from-inline-form [form ctx]\n  (when (and\n          (not (rest-arg-form? form))\n          (form? form)\n          (= 2 (count form))\n          (symbol? (second form)))\n    (let [[type-form sym] form]\n      (when (or\n              (keyword? type-form)\n              (vector? type-form)\n              (and\n                (symbol? type-form)\n                (types/likely-type-symbol? type-form)))\n        (types/make-arg sym (types/normalize-type type-form ctx) [])))))\n\n(defn arg-declared-type\n  [sym ctx]\n  (when-let [ret (get (meta sym) :-)]\n    (types/normalize-return-meta ret ctx)))\n\n(defn binding-symbols [form]\n  (cond\n    (symbol? form) (if (#{'& 'as} form) [] [form])\n    (vector? form) (mapcat binding-symbols form)\n    (map? form) (mapcat\n                  binding-symbols\n                  (concat (keys form) (vals form)))\n    (form? form) (mapcat binding-symbols form)\n    :else []))\n\n(defn parse-fn-inputs\n  [args-form ctx]\n  (loop [out [] pending nil remaining (seq args-form)]\n    (let [item (first remaining) more (seq (rest remaining))]\n      (cond (nil? item)\n        (if pending\n          (throw (ex :generic\n                   {:args args-form :pending pending}\n                   :ex/message\n                   \"Dangling type token in function args\"))\n          out)\n        pending\n        (if (symbol? item)\n          (recur (conj out (types/make-arg item pending [])) nil more)\n          (throw (ex :generic\n                   {:args args-form :item item :pending pending}\n                   :ex/message\n                   \"Expected symbol after typed arg token\")))\n        (rest-arg-form? item)\n        (if (seq more)\n          (throw (ex :generic\n                   {:args args-form :item item}\n                   :ex/message\n                   \"Rest argument must be final\"))\n          (recur (conj out (types/make-arg (second item) (rest-arg-type) [:rest]))\n            nil\n            nil))\n        (= (quote &) item)\n        (let [rest-target (first more) syms (binding-symbols rest-target)]\n          (recur (into out\n                   (map (fn [migration-argument-0]\n                          (types/make-arg migration-argument-0 types/+unknown-type+ []))\n                     syms))\n            nil\n            nil))\n        (arg-from-inline-form item ctx)\n        (recur (conj out (arg-from-inline-form item ctx)) nil more)\n        (symbol? item)\n        (let [declared (arg-declared-type item ctx)]\n          (if (and more (types/likely-type-symbol? item) (symbol? (first more)))\n            (recur out (types/normalize-type item ctx) more)\n            (recur (conj out (types/make-arg item (or declared types/+unknown-type+) []))\n              nil\n              more)))\n        (or (keyword? item) (and (vector? item) (symbol? (first more))))\n        (recur out (types/normalize-type item ctx) more)\n        (or (vector? item) (map? item))\n        (recur (into out\n                 (map (fn [migration-argument-0]\n                        (types/make-arg migration-argument-0 types/+unknown-type+ []))\n                   (binding-symbols item)))\n          nil\n          more)\n        :else\n        (throw (ex :generic\n                 {:args args-form :item item}\n                 :ex/message\n                 \"Unsupported function arg form\"))))))\n\n(defn parse-spec-decl [ns-sym spec-sym type-form spec-meta aliases loc]\n  (let [ctx {:ns ns-sym, :aliases aliases}]\n    (types/make-spec-def\n      ns-sym\n      spec-sym\n      (types/normalize-type type-form ctx)\n      spec-meta\n      (if (map? loc) loc {}))))\n\n(defn parse-decl-preamble [items form-sym]\n  (let [[docstring items] (if (string? (first items))\n                            [(first items) (rest items)]\n                            [nil items])\n        [attr-map items] (if (and\n                               (map? (first items))\n                               (seq (rest items)))\n                           [(first items) (rest items)]\n                           [nil items])]\n    {:docstring docstring,\n     :attr-map attr-map,\n     :items items,\n     :meta\n     (cond->\n       (merge attr-map (meta form-sym))\n       docstring\n       (assoc :docstring docstring))}))\n\n(defn parse-defspec [form ns-sym aliases file]\n  (let [[_ spec-sym & more] form\n        {:keys [meta items]} (parse-decl-preamble (vec more) spec-sym)\n        type-form (first items)]\n    (parse-spec-decl\n      ns-sym\n      spec-sym\n      type-form\n      meta\n      aliases\n      (types/source-loc form file))))\n\n(defn parse-callable-items [items]\n  (cond\n    (vector? (first items)) [(first items) (or (rest items) '())]\n    (and (form? (first items)) (vector? (ffirst items))) [(ffirst\n                                                            items)\n                                                          (or\n                                                            (rest\n                                                              (first\n                                                                items))\n                                                            '())]\n    :else [(first items) (or (rest items) '())]))\n\n(defn multi-callable-items? [items]\n  (and\n    (seq (rest items))\n    (every?\n      (fn [item] (and (form? item) (vector? (first item))))\n      items)))\n\n(defn parse-defn [form ns-sym aliases file]\n  (let [[def-op fn-sym & more] form\n        {:keys [meta items]} (parse-decl-preamble (vec more) fn-sym)\n        [args-form body] (parse-callable-items items)\n        ctx {:ns ns-sym, :aliases aliases}\n        output (if-let [ret (get meta :-)]\n                 (types/normalize-return-meta ret ctx)\n                 types/+unknown-type+)]\n    (types/make-fn-def\n      ns-sym\n      fn-sym\n      (parse-fn-inputs args-form ctx)\n      output\n      (assoc\n        meta\n        :aliases\n        aliases\n        :generator\n        (= \"defgen.xt\" (name def-op)))\n      body\n      nil\n      (types/source-loc form file))))\n\n(defn parse-defmacro [form ns-sym aliases file]\n  (let [[_ macro-sym & more] form\n        {:keys [meta items]} (parse-decl-preamble (vec more) macro-sym)\n        [args-form body] (parse-callable-items items)\n        raw-body (if (multi-callable-items? items) items body)\n        ctx {:ns ns-sym, :aliases aliases}]\n    (types/make-fn-def\n      ns-sym\n      macro-sym\n      (parse-fn-inputs args-form ctx)\n      types/+unknown-type+\n      (assoc meta :aliases aliases :macro true)\n      raw-body\n      nil\n      (types/source-loc form file))))\n\n(defn parse-defvalue [form ns-sym aliases file]\n  (let [[_ value-sym & more] form\n        {:keys [meta items]} (parse-decl-preamble (vec more) value-sym)\n        ctx {:ns ns-sym, :aliases aliases}]\n    (types/make-value-def\n      ns-sym\n      value-sym\n      (if-let [ret (get meta :-)]\n        (types/normalize-return-meta ret ctx)\n        types/+unknown-type+)\n      (assoc meta :aliases aliases :def true)\n      (first items)\n      nil\n      (types/source-loc form file))))\n\n(defn merge-spec-inputs\n  [inputs spec-inputs]\n  (if (= (count inputs) (count spec-inputs))\n    (mapv (fn [arg spec-type]\n            (if (= (:type arg) types/+unknown-type+)\n              (assoc arg :type spec-type)\n              arg))\n          inputs spec-inputs)\n    inputs))\n\n(defn attach-function-spec\n  [fn-def spec]\n  (if (and spec\n           (= :fn (get-in spec [:type :kind])))\n    (let [spec-type (:type spec)]\n      (assoc fn-def\n             :inputs (merge-spec-inputs (:inputs fn-def)\n                                        (:inputs spec-type))\n             :output (if (= (:output fn-def) types/+unknown-type+)\n                       (:output spec-type)\n                       (:output fn-def))\n              :spec spec))\n    fn-def))\n\n(defn attach-value-spec\n  [value-def spec]\n  (if (and spec\n           (not= :fn (get-in spec [:type :kind])))\n    (assoc value-def\n           :type (if (= (:type value-def) types/+unknown-type+)\n                   (:type spec)\n                   (:type value-def))\n           :spec spec)\n    value-def))\n\n(defn spec-map-by-kind [specs pred]\n  (into\n    {}\n    (keep\n      (fn [spec]\n        (when (pred spec)\n          [(types/type-key (some-> spec :ns symbol) (:name spec))\n           spec]))\n      specs)))\n\n(defn attach-specs\n  [{:as analysis :keys [specs functions macros values]}]\n  (let [fn-specs    (spec-map-by-kind\n                     specs\n                     (fn\n                      [migration-argument-0]\n                      (=\n                       (keyword \"fn\")\n                       (get-in migration-argument-0 [(keyword \"type\") (keyword \"kind\")]))))\n        value-specs (spec-map-by-kind\n                     specs\n                     (fn\n                      [migration-argument-0]\n                      (not=\n                       (keyword \"fn\")\n                       (get-in migration-argument-0 [(keyword \"type\") (keyword \"kind\")]))))]\n    (assoc analysis\n      :functions\n      (mapv (fn [fn-def]\n              (attach-function-spec fn-def\n                (get fn-specs (types/type-key (some-> fn-def :ns symbol) (:name fn-def)))))\n        functions)\n      :macros\n      (mapv (fn [macro-def]\n              (attach-function-spec macro-def\n                (get fn-specs (types/type-key (some-> macro-def :ns symbol) (:name macro-def)))))\n        macros)\n      :values\n      (mapv (fn [value-def]\n              (attach-value-spec value-def\n                (get value-specs\n                  (types/type-key (some-> value-def :ns symbol) (:name value-def)))))\n        values))))\n\n(defn analyze-file-raw\n  [file-path]\n  (let [forms   (lang.typed.xtalk-parse/read-forms file-path)\n        ns-sym  (parse-ns-name forms)\n        aliases (merge\n                 (or\n                  (some->>\n                   forms\n                   (some\n                    (fn\n                     [migration-argument-0]\n                     (when (ns-form? migration-argument-0) migration-argument-0)))\n                   extract-ns-aliases)\n                  {})\n                 (extract-script-aliases forms))]\n    (-> (reduce (fn [acc form]\n                  (cond (defspec? form)\n                    (update acc :specs conj (parse-defspec form ns-sym aliases file-path))\n                    (defn? form)\n                    (update acc :functions conj (parse-defn form ns-sym aliases file-path))\n                    (defmacro? form)\n                    (update acc :macros conj (parse-defmacro form ns-sym aliases file-path))\n                    (defvalue? form)\n                    (update acc :values conj (parse-defvalue form ns-sym aliases file-path))\n                    :else\n                    acc))\n          {:aliases aliases :functions [] :macros [] :ns ns-sym :specs [] :values []}\n          forms))))\n\n(defn analyze-file\n  [file-path]\n  (-> file-path\n      analyze-file-raw\n      attach-specs))\n\n(defn register-types!\n  [{:keys [specs functions macros values] :as analysis}]\n  (doseq [spec specs]\n    (types/register-spec! (types/type-key (some-> spec :ns symbol)\n                                          (:name spec))\n                          spec))\n  (doseq [fn-def functions]\n    (types/register-function! (types/type-key (some-> fn-def :ns symbol)\n                                              (:name fn-def))\n                              fn-def))\n  (doseq [macro-def macros]\n    (types/register-macro! (types/type-key (some-> macro-def :ns symbol)\n                                           (:name macro-def))\n                           macro-def))\n  (doseq [value-def values]\n    (types/register-value! (types/type-key (some-> value-def :ns symbol)\n                                           (:name value-def))\n                           value-def))\n  analysis)\n\n(defn analyze-namespace-raw [ns-sym]\n  (let [project-map (project/discover (OS/cwd))\n        source-roots (vec\n                       (concat\n                         (:source-paths project-map)\n                         (:test-paths project-map)))\n        resource-base (-> (str ns-sym)\n                       (str/replace \"-\" \"_\")\n                       (str/replace \".\" \"/\"))\n        local-path (existing-file-path\n                     (map\n                       (fn [root]\n                         (File/join\n                           (File/join (:root project-map) root)\n                           (str resource-base \".hal\")))\n                       source-roots))]\n    (if local-path\n      (analyze-file-raw local-path)\n      (let [package (Package/find ns-sym)\n            manifest (when package\n                       (Edn/read\n                         (String/decode-utf8\n                           (Package/read package \"package.edn\"))))\n            resource (get (:resources manifest) (str ns-sym))]\n        (if resource\n          (analyze-file-raw {:package package, :resource resource})\n          (throw\n            (ex\n              :generic\n              {:ns ns-sym,\n               :searched source-roots,\n               :resource resource-base}\n              :ex/message\n              \"Namespace source file not found\")))))))\n\n(defn analyze-namespace\n  [ns-sym]\n  (-> ns-sym\n      analyze-namespace-raw\n      attach-specs))\n",
+                     "src/migration/package_parser.hal"
+                     "(ns migration.package-parser\n (:require [lang.typed.xtalk-parse :as subject]))\n(defn main [argv]\n (let [before (Runtime/namespace 'xt.lang.common-data)\n       local? (deref (File/exists? \"src/xt/lang/common_data.hal\"))\n       analysis (subject/analyze-namespace-raw 'xt.lang.common-data)\n       after (Runtime/namespace 'xt.lang.common-data)\n       result [(:ns analysis) before after local?]]\n  (if (= result '[xt.lang.common-data nil nil false])\n   [:package-fallback-pass result]\n   (throw (ex :generic {:actual result} :ex/message \"Package parser fallback mismatch\")))))\n",
+                     "content/common_data.clj"
+                     "(ns xt.lang.common-data\n  (:require [tahto.core :as l :refer [defspec.xt]])\n  (:refer-clojure :exclude [first second nth last get-in]))\n\n(l/script :xtalk\n  {:require [[xt.lang.spec-base :as xt]]})\n\n;;\n;; EMPTY\n;;\n\n(defn.xt is-empty?\n  \"checks that array is not empty\"\n  {:added \"4.0\"}\n  [res]\n  (cond (xt/x:nil? res) (return true)\n        (xt/x:is-string? res) (return (== 0 (xt/x:str-len res)))\n        (xt/x:is-array? res)  (return (== 0 (xt/x:len res)))\n        (xt/x:is-object? res)\n        (do (xt/for:object [[i v] res]\n              (return false))\n            (return true))\n        \n        :else\n        (do (xt/x:err (xt/x:cat \"Invalid type - \"\n                                (xt/x:to-string res))))))\n\n(defn.xt not-empty?\n  \"checks that array is not empty\"\n  {:added \"4.0\"}\n  [res]\n  (cond (xt/x:nil? res) (return false)\n        (xt/x:is-string? res) (return (< 0 (xt/x:str-len res)))\n        (xt/x:is-array? res) (return (< 0 (xt/x:len res)))\n        (xt/x:is-object? res)\n        (do (xt/for:object [[i v] res]\n              (return true))\n            (return false))\n        \n        :else\n        (do (xt/x:err (xt/x:cat \"Invalid type - \"\n                                (xt/x:to-string res))))))\n\n;;\n;; LOOKUP\n;;\n\n(defn.xt lu-create\n  ([]\n   (return (xt/x:lu-create))))\n\n(defn.xt lu-del\n  ([lu key]\n   (xt/x:lu-del lu key)\n   (return lu)))\n\n(defn.xt lu-get\n  ([lu key]\n   (return (xt/x:lu-get lu key))))\n\n(defn.xt lu-set\n  ([lu key value]\n   (xt/x:lu-set lu key value)\n   (return lu)))\n\n(defn.xt lu-eq\n  ([x y]\n   (return (xt/x:lu-eq x y))))\n\n;;\n;; ARRAY INDEX\n;;\n\n(defn.xt first\n  ([arr]\n   (return (xt/x:first arr))))\n\n(defn.xt second\n  \"gets the second item\"\n  {:added \"4.0\"}\n  ([arr]\n   (return (xt/x:second arr))))\n\n(defn.xt nth\n  \"gets the nth item (index 0)\"\n  {:added \"4.0\"}\n  ([arr i]\n   (return (xt/x:get-idx arr (xt/x:offset i)))))\n\n(defn.xt last\n  \"gets the last item\"\n  {:added \"4.0\"}\n  ([arr]\n   (return (xt/x:last arr))))\n\n(defn.xt second-last\n  \"gets the second-last item\"\n  {:added \"4.0\"}\n  ([arr]\n   (return (xt/x:second-last arr))))\n\n;;\n;; ARRAY CONTAINER\n;;\n\n(defn.xt arr-empty?\n  \"checks that arrect is empty\"\n  {:added \"4.0\"}\n  [arr]\n  (if (xt/x:nil? arr)\n    (return true)\n    (return (== 0 (xt/x:len arr)))))\n\n(defn.xt arr-not-empty?\n  \"checks that arrect is not empty\"\n  {:added \"4.0\"}\n  [arr]\n  (if (xt/x:nil? arr)\n    (return false)\n    (return (not= 0 (xt/x:len arr)))))\n\n(defn.xt arrayify\n  \"makes something into an array\"\n  {:added \"4.1\"}\n  [x]\n  (when (xt/x:is-array? x)\n    (return x))\n  (when (xt/x:nil? x)\n    (return []))\n  (return [x]))\n\n(defn.xt arr-lookup\n  \"constructs a lookup given keys\"\n  {:added \"4.0\"}\n  [arr]\n  (var out {})\n  (xt/for:array [k arr]\n    (xt/x:set-key out k true))\n  (return out))\n\n(defn.xt arr-omit\n  \"emits index from new array\"\n  {:added \"4.0\"}\n  ([arr i]\n   (var out [])\n   (xt/for:array [[j e] arr]\n     (when (not= (xt/x:offset i) j)\n       (xt/x:arr-push out e)))\n   (return out)))\n\n(defn.xt arr-reverse\n  \"reverses the array\"\n  {:added \"4.0\"}\n  [arr]\n  (var out [])\n  (xt/for:index [i [(xt/x:len arr)\n                    (xt/x:offset)\n                    -1]]\n    (xt/x:arr-push out (xt/x:get-idx arr (xt/x:offset-rev i))))\n  (return out))\n\n(defn.xt arr-zip\n  \"zips two arrays together into a map\"\n  {:added \"4.0\"}\n  [ks vs]\n  (var out {})\n  (xt/for:array [[i k] ks]\n    (xt/x:copy-key out vs [k i]))\n  (return out))\n\n(defn.xt arr-clone\n  \"clones an array\"\n  {:added \"4.0\"}\n  ([arr]\n   (var out [])\n   (xt/for:array [e arr]\n     (xt/x:arr-push out e))\n   (return out)))\n\n(defn.xt arr-assign\n  \"others to the end of an array\"\n  {:added \"4.0\"}\n  ([arr other]\n   (xt/for:array [e other]\n     (xt/x:arr-push arr e))\n   (return arr)))\n\n(defn.xt arr-concat\n  \"others to the end of an array\"\n  {:added \"4.0\"}\n  ([arr other]\n   (var out [])\n   (xt/for:array [e arr]\n     (xt/x:arr-push out e))\n   (xt/for:array [e other]\n     (xt/x:arr-push out e))\n   (return out)))\n\n(defn.xt arr-slice\n  \"slices an array\"\n  {:added \"4.0\"}\n  ([arr start finish]\n   (var out [])\n   (var finish-idx nil)\n   (if (xt/x:is-number? finish)\n     (:= finish-idx finish)\n     (:= finish-idx (xt/x:len arr)))\n   (xt/for:index [i [(xt/x:offset start)\n                     finish-idx]]\n     (xt/x:arr-push out (xt/x:get-idx arr i)))\n   (return out)))\n\n(defn.xt arr-rslice\n  \"gets the reverse of a slice\"\n  {:added \"4.0\"}\n  ([arr start finish]\n   (var out [])\n   (xt/for:index [i [(xt/x:offset start)\n                     finish]]\n     (xt/x:arr-push-first out (xt/x:get-idx arr i)))\n   (return out)))\n\n(defn.xt arr-tail\n  \"gets the tail of the array\"\n  {:added \"4.0\"}\n  ([arr n]\n   (var t  (xt/x:len arr))\n   (return (-/arr-rslice arr (xt/x:m-max (- t n) 0) t))))\n\n(defn.xt arr-range\n  \"creates a range array\"\n  {:added \"4.0\"}\n  [x]\n  (var arr [x])\n  (when (xt/x:is-array? x)\n    (:= arr x))\n  (var arrlen (xt/x:len arr))\n  (var start 0)\n  (when (< 1 arrlen)\n    (:= start (xt/x:first arr)))\n  (var finish (xt/x:first arr))\n  (when (< 1 arrlen)\n    (:= finish (xt/x:second arr)))\n  (var step 1)\n  (when (< 2 arrlen)\n    (:= step (xt/x:get-idx arr (xt/x:offset 2))))\n  (var out [start])\n  (var i (+ step start))\n  (cond (and (< 0 step)\n             (< start finish))\n        (while (< i finish)\n          (xt/x:arr-push out i)\n          (:= i (+ i step)))\n        \n        (and (> 0 step)\n             (< finish start))\n        (while (> i finish)\n          (xt/x:arr-push out i)\n          (:= i (+ i step)))\n        \n        :else (return []))\n  (return out))\n\n(defn.xt arr-intersection\n  \"gets the intersection of two arrays\"\n  {:added \"4.0\"}\n  [arr other]\n  (var lu  ^:inline (-/arr-lookup arr))\n  (var out [])\n  (xt/for:array [e other]\n    (if (xt/x:has-key? lu e)\n      (xt/x:arr-push out e)))\n  (return out))\n\n(defn.xt arr-difference\n  \"gets the difference of two arrays\"\n  {:added \"4.0\"}\n  [arr other]\n  (var lu  ^:inline (-/arr-lookup arr))\n  (var out [])\n  (xt/for:array [e other]\n    (if (not (xt/x:has-key? lu e))\n      (xt/x:arr-push out e)))\n  (return out))\n\n(defn.xt arr-union\n  \"gets the union of two arrays\"\n  {:added \"4.0\"}\n  [arr other]\n  (var lu {})\n  (xt/for:array [e arr]\n    (xt/x:set-key lu e e))\n  (xt/for:array [e other]\n    (xt/x:set-key lu e e))\n  \n  (var out [])\n  (xt/for:object [[_ v] lu]\n    (xt/x:arr-push out v))\n  (return out))\n\n(defn.xt arr-shuffle\n  \"shuffles the array\"\n  {:added \"4.0\"}\n  [arr]\n  (var tmp-val nil)\n  (var tmp-idx nil)\n  (var total (xt/x:len arr))\n  (xt/for:index [i [(xt/x:offset) total]]\n    (:= tmp-idx (+ (xt/x:offset) (xt/x:m-floor (* (xt/x:random) total))))\n    (:= tmp-val (xt/x:get-idx arr tmp-idx))\n    (xt/x:set-idx arr tmp-idx (xt/x:get-idx arr i))\n    (xt/x:set-idx arr i tmp-val))\n  (return arr))\n\n(defn.xt arr-pushl\n  \"pushs an element into array\"\n  {:added \"4.0\"}\n  [arr v n]\n  (xt/x:arr-push arr v)\n  (when (> (xt/x:len arr) n)\n    (xt/x:arr-pop-first arr))\n  (return arr))\n\n(defn.xt arr-pushr\n  \"pushs an element into array\"\n  {:added \"4.0\"}\n  [arr v n]\n  (xt/x:arr-push-first arr v)\n  (when (> (xt/x:len arr) n)\n    (xt/x:arr-pop arr))\n  (return arr))\n\n(defn.xt arr-interpose\n  \"puts element between array\"\n  {:added \"4.0\"}\n  [arr elem]\n  (var out [])\n  (xt/for:array [e arr]\n    (xt/x:arr-push out e)\n    (xt/x:arr-push out elem))\n  (xt/x:arr-pop out)\n  (return out))\n\n(defn.xt arr-random\n  \"gets a random element from array\"\n  {:added \"4.0\"}\n  [arr]\n  (var idx (xt/x:m-floor (* (xt/x:len arr) (xt/x:random))))\n  (return (xt/x:get-idx arr (xt/x:offset idx))))\n\n(defn.xt arr-sample\n  \"samples array according to probability\"\n  {:added \"4.0\"}\n  [arr dist]\n  (var q (xt/x:random))\n  (xt/for:array [[i p] dist]\n    (:= q (- q p))\n    (when (< q 0)\n      (return (. arr [i])))))\n\n;;\n;; OBJECT\n;;\n\n(defn.xt obj-empty?\n  \"checks that object is empty\"\n  {:added \"4.0\"}\n  [obj]\n  (xt/for:object [[k _] obj]\n    (return false))\n  (return true))\n\n(defn.xt obj-not-empty?\n  \"checks that object is not empty\"\n  {:added \"4.0\"}\n  [obj]\n  (xt/for:object [[k _] obj]\n    (return true))\n  (return false))\n\n(defn.xt obj-first-key\n  \"gets the first key\"\n  {:added \"4.0\"}\n  [obj]\n  (xt/for:object [[k _] obj]\n    (return k))\n  (return nil))\n\n(defn.xt obj-first-val\n  \"gets the first val\"\n  {:added \"4.0\"}\n  [obj]\n  (xt/for:object [[_ v] obj]\n    (return v))\n  (return nil))\n\n(defn.xt obj-keys\n  \"gets keys of an object\"\n  {:added \"4.0\"}\n  [obj]\n  (var out [])\n  (when (xt/x:not-nil? obj)\n    (xt/for:object [[k _] obj]\n      (xt/x:arr-push out k)))\n  (return out))\n\n(defn.xt obj-vals\n  \"gets vals of an object\"\n  {:added \"4.0\"}\n  [obj]\n  (var out [])\n  (when (xt/x:not-nil? obj)\n    (xt/for:object [[_ v] obj]\n      (xt/x:arr-push out v)))\n  (return out))\n\n(defn.xt obj-pairs\n  \"creates entry pairs from object\"\n  {:added \"4.0\"}\n  ([obj]\n   (var out [])\n   (when (xt/x:not-nil? obj)\n     (xt/for:object [[k v] obj]\n       (xt/x:arr-push out [k v])))\n   (return out)))\n\n(defn.xt obj-clone\n  \"clones an object\"\n  {:added \"4.0\"}\n  [obj]\n  (var out {})\n  (when (xt/x:not-nil? obj)\n    (xt/for:object [[k v] obj]\n      (xt/x:set-key out k v)))\n  (return out))\n\n(defn.xt obj-assign\n  \"merges key value pairs from into another\"\n  {:added \"4.0\"}\n  [obj m]\n  (when (xt/x:nil? obj)\n    (:= obj {}))\n  (if (xt/x:not-nil? m)\n    (xt/for:object [[k v] m]\n      (xt/x:set-key obj k v)))\n  (return obj))\n\n(defn.xt obj-assign-nested\n  \"merges objects at a nesting level\"\n  {:added \"4.0\"}\n  ([obj m]\n   (when (xt/x:nil? obj)\n     (:= obj {}))\n   (when (xt/x:not-nil? m)\n     (xt/for:object [[k mv] m]\n       (var v nil)\n       (when (xt/x:has-key? obj k)\n         (:= v (. obj [k])))\n       (cond (and (xt/x:is-object? mv)\n                  (xt/x:is-object? v))\n             (xt/x:set-key obj k (-/obj-assign-nested v mv))\n             \n             :else\n             (xt/x:set-key obj k mv))))\n   (return obj)))\n\n(defn.xt obj-assign-with\n  \"merges second into first given a function\"\n  {:added \"4.0\"}\n  [obj m f]\n  (when (xt/x:not-nil? m)\n    (var input {})\n    (when (xt/x:is-object? m)\n      (:= input m))\n    (xt/for:object [[k mv] input]\n      (var merged mv)\n      (when (xt/x:has-key? obj k)\n        (:= merged (f (. obj [k])\n                      mv)))\n      (xt/x:set-key obj k merged)))\n  (return obj))\n\n(defn.xt obj-from-pairs\n  \"creates an object from pairs\"\n  {:added \"4.0\"}\n  ([pairs]\n   (var out {})\n   (xt/for:array [pair pairs]\n     (xt/x:set-key out\n                   (xt/x:first pair)\n                   (xt/x:second pair)))\n   (return out)))\n\n(defn.xt obj-del\n  \"deletes multiple keys\"\n  {:added \"4.0\"}\n  [obj ks]\n  (xt/for:array [k ks]\n    (xt/x:del-key obj k))\n  (return obj))\n\n(defn.xt ^{:static/template true}\n  obj-del-all\n  \"deletes all keys\"\n  {:added \"4.0\"}\n  [obj]\n  (xt/for:array [k (xt/x:obj-keys obj)]\n    (xt/x:del-key obj k))\n  (return obj))\n\n(defn.xt obj-pick\n  \"select keys in object\"\n  {:added \"4.0\"}\n  [obj ks]\n  (var out {})\n  (when (xt/x:nil? obj)\n    (return out))\n  (xt/for:array [k ks]\n    (var v (. obj [k]))\n    (if (xt/x:not-nil? v)\n      (xt/x:set-key out k v)))\n  (return out))\n\n(defn.xt obj-omit\n  \"new object with missing keys\"\n  {:added \"4.0\"}\n  [obj ks]\n  (var out {})\n  (var lu {})\n  (xt/for:array [k ks]\n    (xt/x:set-key lu k true))\n  (xt/for:object [[k v] obj]\n    (if (not (xt/x:has-key? lu k))\n      (xt/x:set-key out k v)))\n  (return out))\n\n(defn.xt obj-transpose\n  \"obj-transposes a map\"\n  {:added \"4.0\"}\n  [obj]\n  (var out {})\n  (when (xt/x:not-nil? obj)\n    (xt/for:object [[k v] obj]\n      (xt/x:set-key out v k)))\n  (return out))\n\n(defn.xt obj-nest\n  \"creates a nested object\"\n  {:added \"4.0\"}\n  [arr v]\n  (var idx (xt/x:len arr))\n  (var out v)\n  (while true\n    (if (== idx 0)\n      (return out))\n    (var nested {})\n    (var k (xt/x:get-idx arr (xt/x:offset-rev idx)))\n    (xt/x:set-key nested k out)\n    (:= out nested)\n    (:= idx (- idx 1))))\n\n(defn.xt get-in\n  \"gets a value through a guarded path traversal\n\n   A nil or empty path returns the object. A nil object, missing or nil\n   intermediate branch, non-object branch, or non-numeric array key returns\n   nil.\"\n  {:added \"4.1\"}\n  [obj arr]\n  (cond (xt/x:nil? obj)\n        (return nil)\n\n        (xt/x:nil? arr)\n        (return obj)\n\n        (== 0 (xt/x:len arr))\n        (return obj)\n\n        (== 1 (xt/x:len arr))\n        (do (var k (xt/x:first arr))\n            (cond (xt/x:is-array? obj)\n                  (return (:? (xt/x:is-number? k)\n                              (xt/x:get-idx obj (xt/x:offset k))\n                              nil))\n\n                  (xt/x:is-object? obj)\n                  (return (. obj [k]))\n\n                  :else\n                  (return nil))))\n\n  (var total (xt/x:len arr))\n  (var i 0)\n  (var curr obj)\n  (while (< i total)\n    (when (xt/x:nil? curr)\n      (return nil))\n    (var k (xt/x:get-idx arr (xt/x:offset i)))\n    (cond (xt/x:is-array? curr)\n          (if (xt/x:is-number? k)\n            (:= curr (xt/x:get-idx curr (xt/x:offset k)))\n            (return nil))\n\n          (xt/x:is-object? curr)\n          (:= curr (. curr [k]))\n\n          :else\n          (return nil))\n    (if (xt/x:nil? curr)\n      (return nil)\n      (:= i (+ i 1))))\n  (return curr))\n\n(defn.xt set-in\n  \"sets item in object\"\n  {:added \"4.1\"}\n  [obj arr v]\n  (when (xt/x:nil? arr)\n    (:= arr []))\n  (when (== 0 (xt/x:len arr))\n    (return obj))\n\n  ;; If the current branch does not exist yet, build the remaining path.\n  (when (not (xt/x:is-object? obj))\n    (var idx (xt/x:len arr))\n    (var out v)\n    (while true\n      (if (== idx 0)\n        (return out))\n      (var nested {})\n      (var k (xt/x:get-idx arr (xt/x:offset-rev idx)))\n      (xt/x:set-key nested k out)\n      (:= out nested)\n      (:= idx (- idx 1))))\n  \n  (var k (xt/x:first arr))\n  (var narr (-/arr-slice arr 1 nil))\n  (var child (. obj [k]))\n  (if (== 0 (xt/x:len narr))\n    (xt/x:set-key obj k v)\n    (xt/x:set-key obj k (-/set-in child narr v)))\n  (return obj))\n\n\n(defn.xt obj-intersection\n  \"finds the intersection between map lookups\"\n  {:added \"4.0\"}\n  [obj other]\n  (var out [])\n  (xt/for:object [[k _] other]\n    (if (xt/x:has-key? obj k)\n      (xt/x:arr-push out k)))\n  (return out))\n\n(defn.xt obj-difference\n  \"finds the difference between two map lookups\"\n  {:added \"4.0\"}\n  [obj other]\n  (var out [])\n  (xt/for:object [[k _] other]\n    (if (not (xt/x:has-key? obj k))\n      (xt/x:arr-push out k)))\n  (return out))\n\n(defn.xt obj-keys-nested\n  \"gets nested keys\"\n  {:added \"4.0\"}\n  [m path]\n  (var out [])\n  (xt/for:object [[k v] m]\n    (var npath [(xt/x:unpack path)])\n    (xt/x:arr-push npath k)\n    \n    (cond (xt/x:is-object? v)\n          (do (xt/for:array [e (-/obj-keys-nested v npath)]\n                (xt/x:arr-push out e)))\n          \n          :else\n          (xt/x:arr-push out [npath v])))\n  (return out))\n\n(defn.xt obj-difference\n  \"finds the difference between two map lookups\"\n  {:added \"4.1\"}\n  [obj other]\n  (var out [])\n  (xt/for:object [[k _] other]\n    (if (not (xt/x:has-key? obj k))\n      (xt/x:arr-push out k)))\n  (return out))\n\n(defn.xt swap-key\n  \"swaps a value in the key with a function\"\n  {:added \"4.0\"}\n  ([obj k f args]\n   (var inputs (xt/x:arr-clone args))\n   (xt/x:arr-push-first inputs (. obj [k]))\n   (xt/x:set-key obj k (xt/x:apply f inputs))\n   (return obj)))\n\n;;\n;; FLAT\n;;\n\n(defn.xt to-flat\n  \"flattens pairs of object into array\"\n  {:added \"4.0\"}\n  ([obj]\n   (var out [])\n   (cond (xt/x:is-object? obj)\n         (xt/for:object [[k v] obj]\n           (xt/x:arr-push out k)\n           (xt/x:arr-push out v))\n         \n         (xt/x:is-array? obj)\n         (xt/for:array [e obj]\n           (xt/x:arr-push out (xt/x:first e))\n           (xt/x:arr-push out (xt/x:second e))))\n   (return out)))\n\n(defn.xt set-pair-step\n  \"sets a pair into an object and returns it\"\n  {:added \"4.1\"}\n  [out k v]\n  (xt/x:set-key out k v)\n  (return out))\n\n(defn.xt from-flat\n  \"creates object from flattened pair array\"\n  {:added \"4.0\"}\n  ([arr f init]\n   (var out init)\n   (var k nil)\n   (xt/for:array [[i e] arr]\n     (if (xt/x:even? (xt/x:offset i))\n       (:= k e)\n       (:= out (f out k e))))\n   (return out)))\n\n\n;;\n;; ARRAY FUNCTIONAL\n;;\n\n(defn.xt arr-every\n  \"checks that every element fulfills thet predicate\"\n  {:added \"4.0\"}\n  [arr pred]\n  (xt/for:array [[i v] arr]\n    (if (not (pred v))\n      (return false)))\n  (return true))\n\n(defn.xt arr-some\n  \"checks that the array contains an element\"\n  {:added \"4.0\"}\n  [arr pred]\n  (xt/for:array [[i v] arr]\n    (if (pred v)\n      (return true)))\n  (return false))\n\n(defn.xt arr-each\n  \"performs a function call for each element\"\n  {:added \"4.0\"}\n  ([arr f]\n   (xt/for:array [e arr] (f e))\n   (return true)))\n\n(defn.xt arr-find\n  \"finds first index matching predicate\"\n  {:added \"4.0\"}\n  [arr pred]\n  (xt/for:array [[i v] arr]\n    (when (pred v)\n      (return (- i (xt/x:offset)))))\n  (return -1))\n\n(defn.xt arr-map\n  \"maps a function across an array\"\n  {:added \"4.0\"}\n  ([arr f]\n   (var out [])\n   (xt/for:array [e arr]\n     (xt/x:arr-push out (f e)))\n   (return out)))\n\n(defn.xt arr-mapcat\n  \"maps an array function, concatenting results\"\n  {:added \"4.0\"}\n  [arr f]\n  (var out [])\n  (xt/for:array [e arr]\n    (var res (f e))\n    (if (xt/x:not-nil? res)\n      (xt/for:array [v res]\n        (xt/x:arr-push out v))))\n  (return out))\n\n(defn.xt arr-partition\n  \"partitions an array into arrays of length n\"\n  {:added \"4.0\"}\n  [arr n]\n  (var out [])\n  (var i 0)\n  (var sarr [])\n  (xt/for:array [e arr]\n    (when (== i n)\n      (xt/x:arr-push out sarr)\n      (:= i 0)\n      (:= sarr []))\n    (xt/x:arr-push sarr e)\n    (:= i (+ i 1)))\n  (when (< 0 (xt/x:len sarr))\n    (xt/x:arr-push out sarr))\n  (return out))\n\n(defn.xt arr-filter\n  \"applies a filter across an array\"\n  {:added \"4.0\"}\n  ([arr pred]\n   (var out [])\n   (xt/for:array [e arr]\n     (if (pred e)\n       (xt/x:arr-push out e)))\n   (return out)))\n\n(defn.xt arr-keep\n  \"keeps items in an array if output is not nil\"\n  {:added \"4.0\"}\n  [arr f]\n  (var out [])\n  (xt/for:array [e arr]\n    (var v (f e))\n    (if (xt/x:not-nil? v)\n      (xt/x:arr-push out v)))\n  (return out))\n\n(defn.xt arr-keepf\n  \"keeps items in an array with transform if predicate holds\"\n  {:added \"4.0\"}\n  [arr pred f]\n  (var out [])\n  (xt/for:array [e arr]\n    (if (pred e)\n      (xt/x:arr-push out (f e))))\n  (return out))\n\n(defn.xt arr-juxt\n  \"constructs a map given a array of pairs\"\n  {:added \"4.0\"}\n  [arr key-fn val-fn]\n  (var out {})\n  (when (xt/x:not-nil? arr)\n    (xt/for:array [e arr]\n      (xt/x:set-key out (key-fn e)\n                    (val-fn e))))\n  (return out))\n\n(defn.xt arr-foldl\n  \"performs reduce on an array\"\n  {:added \"4.0\"}\n  [arr f init]\n  (var out init)\n  (xt/for:array [e arr]\n    (:= out (f out e)))\n  (return out))\n\n(defn.xt arr-foldr\n  \"performs right reduce\"\n  {:added \"4.0\"}\n  [arr f init]\n  (var out init)\n  (xt/for:index [i [(xt/x:len arr)\n                    (xt/x:offset)\n                    -1]]\n    (:= out (f out (xt/x:get-idx arr (xt/x:offset-rev i)))))\n  (return out))\n\n(defn.xt arr-pipel\n  \"thrushes an input through a function pipeline\"\n  {:added \"4.0\"}\n  [arr e]\n  (return (xt/x:arr-foldl arr\n                          (fn [x f]\n                            (return (f x)))\n                          e)))\n\n(defn.xt arr-piper\n  \"thrushes an input through a function pipeline from reverse\"\n  {:added \"4.0\"}\n  [arr e]\n  (return (xt/x:arr-foldr arr (fn [x f]\n                                (return (f x)))\n                          \n                          e)))\n\n(defn.xt arr-group-by\n  \"groups elements by key and view functions\"\n  {:added \"4.0\"}\n  ([arr key-fn view-fn]\n   (var out {})\n   (when (xt/x:not-nil? arr)\n     (xt/for:array [e arr]\n       (var g (key-fn e))\n       (var garr (xt/x:get-key out g []))\n       (xt/x:set-key out g [])\n       (xt/x:arr-push garr (view-fn e))\n       (xt/x:set-key out g garr)))\n   (return out)))\n\n(defn.xt arr-repeat\n  \"repeat function or value n times\"\n  {:added \"4.0\"}\n  [x n]\n  (var out [])\n  (xt/for:index [i [0 (- n (xt/x:offset))]]\n    (var item x)\n    (when (xt/x:is-function? x)\n      (:= item (x)))\n    (xt/x:arr-push out item))\n  (return out))\n\n(defn.xt arr-normalise\n  \"normalises array elements to 1\"\n  {:added \"4.0\"}\n  [arr]\n  (var total (xt/x:arr-foldl arr (fn [x y]\n                                   (return (+ x y)))\n                             0))\n  (return (xt/x:arr-map arr (fn [x] (return (/ x total))))))\n\n(defn.xt arr-sort\n  \"arr-sort using key function and comparator\"\n  {:added \"4.0\"}\n  [arr key-fn comp-fn]\n  (var tmp nil)\n  (var total (xt/x:len arr))\n  (xt/for:index [i [(xt/x:offset) (- total 1)]]\n    (xt/for:index [j [(+ i 1) total]]\n      (var left (xt/x:get-idx arr i))\n      (var right (xt/x:get-idx arr j))\n      (when (comp-fn (key-fn right)\n                     (key-fn left))\n        (:= tmp left)\n        (xt/x:set-idx arr i right)\n        (xt/x:set-idx arr j tmp))))\n  (return arr))\n\n(defn.xt arr-sorted-merge\n  \"performs a merge on two sorted arrays\"\n  {:added \"4.0\"}\n  [arr brr comp-fn]\n  (:= arr (or arr []))\n  (:= brr (or brr []))\n  (var alen (xt/x:len arr))\n  (var blen (xt/x:len brr))\n  (var i 0)\n  (var j 0)\n  (var k 0)\n  (var out [])\n  (while (and (< i alen)\n              (< j blen))\n    (var aitem (xt/x:get-idx arr (xt/x:offset i)))\n    (var bitem (xt/x:get-idx brr (xt/x:offset j)))\n    (cond (comp-fn aitem bitem)\n          (do (:= i (+ i 1)) \n              (xt/x:arr-push out aitem))\n\n          :else\n          (do (:= j (+ j 1))\n              (xt/x:arr-push out bitem))))\n\n  (while (< i alen)\n    (var aitem (xt/x:get-idx arr (xt/x:offset i)))\n    (:= i (+ i 1))\n    (xt/x:arr-push out aitem))\n\n  (while (< j blen)\n    (var bitem (xt/x:get-idx brr (xt/x:offset j)))\n    (:= j (+ j 1))\n    (xt/x:arr-push out bitem))\n  (return out))\n\n\n;;\n;; OBJECT FUNCTIONAL\n;;\n\n(defn.xt obj-map\n  \"maps a function across the values of an object\"\n  {:added \"4.0\"}\n  [obj f]\n  (var out {})\n  (when (xt/x:not-nil? obj)\n    (xt/for:object [[k v] obj]\n      (xt/x:set-key out k (f v))))\n  (return out))\n\n(defn.xt obj-filter\n  \"applies a filter across the values of an object\"\n  {:added \"4.0\"}\n  [obj pred]\n  (var out {})\n  (when (xt/x:not-nil? obj)\n    (xt/for:object [[k v] obj]\n      (if (pred v)\n        (xt/x:set-key out k v))))\n  (return out))\n\n(defn.xt obj-keep\n  \"applies a transform across the values of an object, keeping non-nil values\"\n  {:added \"4.0\"}\n  [obj f]\n  (var out {})\n  (when (xt/x:not-nil? obj)\n    (xt/for:object [[k e] obj]\n      (var v (f e))\n      (if (xt/x:not-nil? v)\n        (xt/x:set-key out k v))))\n  (return out))\n\n(defn.xt obj-keepf\n  \"applies a transform and filter across the values of an object\"\n  {:added \"4.0\"}\n  [obj pred f]\n  (var out {})\n  (when (xt/x:not-nil? obj)\n    (xt/for:object [[k e] obj]\n      (if (pred e)\n        (xt/x:set-key out k (f e)))))\n  (return out))\n\n;;\n;; CLONE\n;;\n\n(defn.xt clone-shallow\n  \"shallow clones an object or array\"\n  {:added \"4.0\"}\n  [x]\n  (cond (xt/x:nil? x) (return x)\n        (xt/x:is-object? x)  (return (xt/x:arr-clone x))\n        (xt/x:is-array?  x)  (return (xt/x:obj-clone x))\n        :else (return x)))\n\n(defn.xt clone-nested-loop\n  \"clone nested objects loop\"\n  {:added \"4.0\"}\n  [x lu]\n  (when (xt/x:nil? x)\n    (return x))\n  \n  (var  cached (xt/x:lu-get lu x))\n  (cond (xt/x:not-nil? cached)\n        (return cached)\n        \n        (xt/x:is-object? x)\n        (do (var out {})\n            (xt/x:lu-set lu x out)\n            (xt/for:object [[k v] x]\n              (xt/x:set-key out k (-/clone-nested-loop v lu)))\n            (return out))\n        \n        (xt/x:is-array? x)\n        (do (var out [])\n            (xt/x:lu-set lu x out)\n            (xt/for:array [e x]\n              (xt/x:arr-push out (-/clone-nested-loop e lu)))\n            (return out))\n\n        :else\n        (return x)))\n\n(defn.xt clone-nested\n  \"cloning nested xects\"\n  {:added \"4.0\"}\n  [x]\n  (cond (not (or (xt/x:is-object? x)\n                 (xt/x:is-array? x)))\n        (return x)\n\n        :else\n        (return (-/clone-nested-loop x (xt/x:lu-create)))))\n\n;;\n;; MEMOIZE\n;;\n\n(defn.xt memoize-key-step\n  \"computes and caches a memoized value\"\n  {:added \"4.1\"}\n  [f key cache]\n  (var value (f key))\n  (xt/x:set-key cache key value)\n  (return value))\n\n(defn.xt memoize-key\n  \"memoize for functions of single argument\"\n  {:added \"4.0\"}\n  [f]\n  (var cache {})\n  (var cache-fn (fn [key]\n                  (return (-/memoize-key-step f key cache))))\n  (return (fn [key]\n            (return (or (. cache [key])\n                        (cache-fn key))))))\n\n(defn.xt id-fn\n  \"gets the id for an object\"\n  {:added \"4.1\"}\n  ([x]\n   (return (. x [\"id\"]))))\n\n(defn.xt key-fn\n  \"creates a key access function\"\n  {:added \"4.1\"}\n  ([k]\n   (return (fn [x] (return (. x [k]))))))\n\n(defn.xt template-entry\n  \"gets data from a structure using template\"\n  {:added \"4.1\"}\n  [obj template props]\n  (cond (xt/x:is-function? template)\n        (return (template obj props))\n\n        (xt/x:nil? template)\n        (return obj)\n\n        (xt/x:is-array? template)\n        (return (-/get-in obj template))\n\n        :else\n        (return template)))\n\n(defn.xt template-fn\n  \"creates a template entry function\"\n  {:added \"4.1\"}\n  [template]\n  (return (fn [obj props] (return (-/template-entry obj template props)))))\n"}
+                    "src/lang/typed/xtalk_parse.hal"
+                    (String/decode-utf8
+                      (deref
+                        (File/read "src/lang/typed/xtalk_parse.hal"))))
+            copies ["src/std/foundation.hal"
+                    "src/std/foundation/bytes.hal"
+                    "src/std/foundation/coroutine.hal"
+                    "src/std/foundation/pretty.hal"
+                    "src/std/foundation/promise.hal"
+                    "src/std/foundation/string.hal"
+                    "src/lang/typed/xtalk_common.hal"
+                    "src/code/project.hal"]
+            resources {"migration.package-parser"
+                       "src/migration/package_parser.hal",
+                       "std.foundation" "src/std/foundation.hal",
+                       "code.project" "src/code/project.hal",
+                       "lang.typed.xtalk-common"
+                       "src/lang/typed/xtalk_common.hal",
+                       "std.foundation.string"
+                       "src/std/foundation/string.hal",
+                       "lang.typed.xtalk-parse"
+                       "src/lang/typed/xtalk_parse.hal",
+                       "xt.lang.common-data" "content/common_data.clj",
+                       "std.foundation.bytes"
+                       "src/std/foundation/bytes.hal",
+                       "std.foundation.promise"
+                       "src/std/foundation/promise.hal",
+                       "std.foundation.coroutine"
+                       "src/std/foundation/coroutine.hal",
+                       "std.foundation.pretty"
+                       "src/std/foundation/pretty.hal"}]
+        (let [root (deref
+                     (File/temp-directory
+                       "target"
+                       {:prefix "migration-parser-check-"}))
+              host-root (str (OS/cwd) root)
+              archive (File/join root "parser.harp")
+              executable (or
+                           (OS/getenv "HARA_NATIVE_TEST_EXECUTABLE")
+                           (str
+                             (OS/cwd)
+                             "/../hara-native/core/rust/target/release/hara-native"))
+              run-child (fn [args cwd]
+                          (let [process
+                                (Process/spawn
+                                  args
+                                  {:cwd cwd,
+                                   :env
+                                   {"HARA_DIST_HOME"
+                                    (str host-root "/dist")}})]
+                            (try
+                              (Process/close-input process)
+                              (let [result
+                                    (Result/synchronize
+                                      (Promise/all
+                                        [(Process/wait process)
+                                         (Process/stdout process)
+                                         (Process/stderr process)])
+                                      {:timeout 30000})]
+                                (if
+                                  (Result/success? result)
+                                  (let
+                                    [values (Result/data result)
+                                     output
+                                     [(first values)
+                                      (String/decode-utf8
+                                        (second values))
+                                      (String/decode-utf8
+                                        (nth values 2))]]
+                                    (if
+                                      (= 0 (first output))
+                                      output
+                                      (throw
+                                        (ex
+                                          :generic
+                                          {:output output}
+                                          :ex/message
+                                          "Package subprocess failed"))))
+                                  (throw (Result/error-value result))))
+                              (finally
+                                (when
+                                  (Process/alive? process)
+                                  (Process/kill process))))))]
+          (try
+            (let [entries (vec
+                            (concat
+                              (map
+                                (fn
+                                  [[path text]]
+                                  {:path path,
+                                   :bytes (String/encode-utf8 text)})
+                                (seq files))
+                              (map
+                                (fn
+                                  [path]
+                                  {:path path,
+                                   :bytes (deref (File/read path))})
+                                copies)))]
+              (Package/build
+                {:identity "hara:migration/parser-fallback",
+                 :version "1.0.0",
+                 :output archive,
+                 :files entries,
+                 :resources resources})
+              (let [host-archive (str host-root "/parser.harp")
+                    installed (run-child
+                                [executable
+                                 "bundle"
+                                 "install"
+                                 host-archive]
+                                (OS/cwd))
+                    installed-root (str/replace
+                                     (last
+                                       (str/split-lines
+                                         (str/trim
+                                           (second installed))))
+                                     "installed "
+                                     "")
+                    executed (run-child
+                               [executable
+                                "bundle"
+                                "exec"
+                                host-archive
+                                "--entry"
+                                "migration.package-parser/main"]
+                               installed-root)]
+                (Edn/read
+                  (last
+                    (str/split-lines (str/trim (second executed)))))))
+            (finally
+              (fs/delete
+                root
+                {:recursive? true, :missing-ok? true})))))))
+  =>
+  'xt.lang.common-data)
+
+^{:refer lang.typed.xtalk-parse/analyze-namespace, :added "4.1"}
+(fact
+  "finds source files for namespaces"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (count
+        (:functions
+          (analyze-namespace 'tahto.model.spec-xtalk-typed-fixture)))
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  3)
+
+
+^{:refer lang.typed.xtalk-parse/existing-file-path, :added "4.1"}
+(fact
+  "returns the first existing path or nil"
+  [(existing-file-path ["src/lang/typed/xtalk_common.hal" "missing"])
+   (existing-file-path ["missing-1" "missing-2"])]
+  =>
+  ["src/lang/typed/xtalk_common.hal" nil])
+
+^{:refer lang.typed.xtalk-parse/file-path-candidates :added "4.1"}
+(fact "returns candidate paths for a file path"
+  (file-path-candidates "src/tahto/model_annex/foo.clj")
+  => ["src/tahto/model_annex/foo.clj"
+      "src/tahto/model/annex/foo.clj"])
+
+^{:refer lang.typed.xtalk-parse/resolve-file-path, :added "4.1"}
+(fact
+  "resolves a file path via candidates"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (resolve-file-path
+        "test/tahto/model/spec_xtalk_typed_fixture.hal")
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  "test/tahto/model/spec_xtalk_typed_fixture.hal")
+
+^{:refer lang.typed.xtalk-parse/rest-arg-form? :added "4.1"}
+(fact "recognizes canonical list rest arguments only"
+  [(rest-arg-form? '(:.. args))
+   (rest-arg-form? '[:.. args])
+   (rest-arg-form? '(:.. "args"))
+   (rest-arg-form? '(:.. args extra))]
+  => [true false false false])
+
+^{:refer lang.typed.xtalk-parse/rest-arg-type :added "4.1"}
+(fact "creates an unknown-item variadic array type"
+  (rest-arg-type)
+  => {:kind :array
+      :item {:kind :primitive :name :xt/unknown}
+      :rest true})

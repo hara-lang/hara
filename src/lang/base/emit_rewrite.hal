@@ -1,125 +1,92 @@
-(ns lang.base.emit-rewrite)
+(ns lang.base.emit-rewrite
+  (:config {:role :internal})
+  (:require [lang.typed.xtalk-analysis :as xtalk-analysis]
+    [lang.typed.xtalk-infer :as xtalk-infer]
+    [lang.typed.xtalk-lower :as xtalk-lower]))
 
 (defn stage-transforms
-  "Returns rewrite transforms for a compile stage."
+  "returns rewrite transforms for a compile stage"
+  {:added "4.1"}
   [grammar stage]
-  (vec (or (get-in grammar [:rewrite stage]) [])))
+  (vec (get-in grammar [:rewrite stage])))
 
-(defn xtalk-context
-  [mopts]
+(defn xtalk-context [mopts]
   (let [module (:module mopts)
         entry (:entry mopts)
-        namespace-value (or (:ns mopts)
-                            (:namespace entry)
-                            (:namespace module)
-                            (:id module))
-        aliases (or (:aliases mopts)
-                    (:aliases entry)
-                    (:alias module))]
-    (if (or namespace-value (> (count (or aliases {})) 0))
-      {:ns namespace-value
-       :aliases (or aliases {})
-       :env {}
-       :preserve-unknown true}
-      nil)))
+        ns-sym (or
+                 (:ns mopts)
+                 (:namespace entry)
+                 (:namespace module)
+                 (:id module))
+        aliases (or (:aliases mopts) (:aliases entry) (:alias module))]
+    (when (or ns-sym (seq aliases))
+      {:ns ns-sym,
+       :aliases (or aliases {}),
+       :infer xtalk-infer/infer-type,
+       :env {},
+       :preserve-unknown true})))
 
-(defn infer-environment
-  [form context]
-  (let [infer (:infer context)]
-    (if infer
-      (try
-        (let [result (infer form context)
-              environment (:env result)]
-          (if environment
-            (assoc context :env (merge (:env context) environment))
-            context))
-        (catch error context))
-      context)))
+(defn infer-environment [form ctx]
+  (try
+    (if-let [env (:env (xtalk-infer/infer-type form ctx))]
+      (update ctx :env merge env)
+      ctx)
+    (catch _ ctx)))
 
-(defn contains-dot?
-  [form]
+(defn contains-dot? [form]
   (cond
-    (list? form)
-    (or (= '. (first form))
-        (reduce (fn [found value] (or found (contains-dot? value))) false form))
-
-    (vector? form)
-    (reduce (fn [found value] (or found (contains-dot? value))) false form)
-
-    (map? form)
-    (reduce-kv (fn [found key value]
-                 (or found (contains-dot? key) (contains-dot? value)))
-               false form)
-
+    (form? form) (or (= '. (first form)) (some contains-dot? form))
+    (vector? form) (some contains-dot? form)
+    (map? form) (some contains-dot? (mapcat identity (seq form)))
     :else false))
 
-(defn rewrite-symbol-value
-  [value aliases]
-  (if (and (symbol? value) (namespace value))
-    (let [target (get aliases (symbol (namespace value)))]
-      (if target
-        (symbol (str target) (name value))
-        value))
-    value))
-
-(defn array-target?
-  [target environment]
-  (= :array (get-in environment [target :kind])))
-
-(defn canonical-lower
-  [value aliases environment]
-  (cond
-    (symbol? value) (rewrite-symbol-value value aliases)
-    (vector? value) (vec (map (fn [item] (canonical-lower item aliases environment)) value))
-    (map? value) (reduce-kv
-                  (fn [output key item]
-                    (assoc output
-                           (canonical-lower key aliases environment)
-                           (canonical-lower item aliases environment)))
-                  {} value)
-    (list? value)
-    (let [items (vec value)]
-      (if (and (= '. (first items))
-               (= 3 (count items))
-               (vector? (nth items 2))
-               (= 1 (count (nth items 2))))
-        (let [target (canonical-lower (second items) aliases environment)
-              key (canonical-lower (first (nth items 2)) aliases environment)]
-          (cond (string? key) (list 'x:get-key target key)
-                (or (number? key) (array-target? target environment))
-                (list 'x:get-idx target key)
-                :else (apply list (map (fn [item]
-                                         (canonical-lower item aliases environment))
-                                       items))))
-        (apply list (map (fn [item] (canonical-lower item aliases environment)) items))))
-    :else value))
-
 (defn canonical-stage
-  "Rewrites canonical XTalk access forms when type or module context is available."
-  [form context]
-  (let [mopts (:mopts context)
-        explicit (:lang/xtalk-context mopts)
-        module (:module mopts)
-        inferred-context (or explicit (xtalk-context mopts))
-        inferred-context (if (and inferred-context (contains-dot? form))
-                           (infer-environment form inferred-context)
-                           inferred-context)
-        aliases (or (:aliases inferred-context) (:aliases mopts) (:alias module) {})
-        environment (or (:env inferred-context) {})
-        enabled (or inferred-context (:id module) (:namespace module) (> (count aliases) 0))]
-    (if enabled
-      (canonical-lower form aliases environment)
+  "rewrites canonical XTalk forms for XTalk entries"
+  {:added "4.1"}
+  [form {:keys [mopts]}]
+  (let [source-entry (:entry mopts)
+        entry (when (= :xtalk (get-in mopts [:entry :lang]))
+                (:entry mopts))
+        ctx (or (:tahto/xtalk-context mopts)
+                (when (nil? source-entry)
+                  (xtalk-context (assoc mopts :entry entry))))
+        fn-ref (when (and (:module entry) (:id entry))
+                 (symbol (str (:module entry)) (name (:id entry))))
+        fn-def (when fn-ref
+                 (xtalk-analysis/resolve-function-def fn-ref))
+        inferred-ctx (when fn-def
+                       (merge (or ctx {})
+                              {:infer xtalk-infer/infer-type
+                               :env (zipmap (map :name (:inputs fn-def))
+                                            (map :type (:inputs fn-def)))
+                               :preserve-unknown true}))
+        ctx (or inferred-ctx ctx)]
+    (cond
+      ctx
+      (xtalk-lower/lower-form form
+                              (if (contains-dot? form)
+                                (infer-environment form ctx)
+                                ctx))
+
+      entry
+      (xtalk-lower/lower-form form (or inferred-ctx
+                                        {:preserve-unknown true}))
+
+      :else
       form)))
 
 (defn rewrite-stage
-  "Applies language rewrite transforms for a compile stage."
+  "applies language rewrite transforms for a compile stage"
+  {:added "4.1"}
   [stage form grammar mopts]
-  (let [canonical (if (= stage :canonical)
+  (let [canonical (if (= :canonical stage)
                     form
                     (canonical-stage form {:stage :canonical
                                            :grammar grammar
                                            :mopts mopts}))]
-    (reduce (fn [output transform]
-              (transform output {:stage stage :grammar grammar :mopts mopts}))
+    (reduce (fn [acc transform]
+              (transform acc {:stage stage
+                              :grammar grammar
+                              :mopts mopts}))
             canonical
             (stage-transforms grammar stage))))

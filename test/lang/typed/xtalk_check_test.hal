@@ -1,0 +1,98 @@
+(ns lang.typed.xtalk-check-test
+  (:use code.test)
+  (:require [lang.typed.xtalk-check :refer :all]
+            [lang.typed.xtalk-common :as types]
+            [lang.typed.xtalk-parse :as parse]))
+
+(defn fixture-analysis []
+  (parse/analyze-namespace 'tahto.model.spec-xtalk-typed-fixture))
+
+(defn fixture-function [name]
+  (some (fn [migration-argument-0] (when (= name ((keyword "name") migration-argument-0)) migration-argument-0)) (:functions (fixture-analysis))))
+
+^{:refer lang.typed.xtalk-check/function-env :added "4.1"}
+(fact "builds function arg environments"
+  (function-env
+   (types/make-fn-def 'sample.route 'greet
+                      [(types/make-arg 'user-id types/+str-type+ [])
+                       (types/make-arg 'active? types/+bool-type+ [])]
+                      types/+str-type+ {} ['user-id] nil))
+  => '{user-id {:kind :primitive :name :xt/str}
+       active? {:kind :primitive :name :xt/bool}})
+
+^{:refer lang.typed.xtalk-check/check-fn-def, :added "4.1"}
+(fact
+  "checks function definitions against inferred returns"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      [(-> (check-fn-def (fixture-function "find-user")) :errors)
+       (-> (check-fn-def (fixture-function "wrong-user-name"))
+        :errors
+        first
+        :tag)]
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  '[[] :return-type-mismatch])
+
+^{:refer lang.typed.xtalk-check/check-function, :added "4.1"}
+(fact
+  "checks fn defs or symbols when registered"
+  (let [path "test/tahto/model/spec_xtalk_typed_fixture.hal"
+        parent-existed (deref (File/exists? "test/tahto"))
+        model-existed (deref (File/exists? "test/tahto/model"))
+        baseline (deref types/*type-registry*)]
+    (when (deref (File/exists? path))
+      (throw
+        (ex
+          :conflict
+          {:path path}
+          :ex/message
+          "Refusing to overwrite fixture source")))
+    (try
+      (deref
+        (File/write
+          path
+          (String/encode-utf8
+            "(ns tahto.model.spec-xtalk-typed-fixture\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.common-lib :as k]]})\n\n(defspec.xt User\n  [:xt/record\n   [\"id\" :xt/str]\n   [\"name\" :xt/str]])\n\n(defspec.xt UserMap\n  [:xt/dict :xt/str User])\n\n(defspec.xt find-user\n  [:fn [UserMap :xt/str] [:xt/maybe User]])\n\n(defn.xt find-user\n  [users id]\n  (return (xt/x:get-key users id)))\n\n(defn.xt ^{:- [User]}\n  wrong-user-name\n  [user]\n  (return \"not-a-user\"))\n\n(defn.xt ^{:- [[:xt/maybe User]]}\n  find-user-wrong-key\n  [UserMap users\n   :xt/int id]\n  (return (-/find-user users id)))\n")
+          {:mode :create, :parents? true}))
+      (do
+        (types/clear-registry!)
+        (parse/register-types! (fixture-analysis))
+        [(-> (check-function (fixture-function "find-user")) :function)
+         (-> (check-function
+               'tahto.model.spec-xtalk-typed-fixture/find-user)
+          :function)
+         (nil? (check-function 'sample.route/missing))])
+      (finally
+        (reset! types/*type-registry* baseline)
+        (deref (File/delete path {:missing-ok? true}))
+        (when (not model-existed)
+          (deref (File/delete "test/tahto/model" {:missing-ok? true})))
+        (when (not parent-existed)
+          (deref (File/delete "test/tahto" {:missing-ok? true}))))))
+  =>
+  '[tahto.model.spec-xtalk-typed-fixture/find-user
+    tahto.model.spec-xtalk-typed-fixture/find-user
+    true])

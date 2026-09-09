@@ -1,21 +1,14 @@
 (ns lang.core.impl-entry-test
   (:use code.test)
   (:require [lang.base.book :as book]
+            [lang.base.book-entry :as record]
             [lang.core.impl-entry :as entry]
             [lang.core.script :as script]))
 
 (def +snapshot+ (atom nil))
 (def +book+ (atom nil))
 
-(fact:global
- {:setup [(reset! +snapshot+ (script/script-snapshot))
-          (script/script-reset!)
-          (script/setup :js 'demo.color
-                        '{:require [[xt.lang.common-color :as color]]}
-                        true
-                        'lang.core.impl-entry-test)
-          (reset! +book+ (script/selected-book :js))]
-  :teardown [(script/script-restore! (deref +snapshot+))]})
+(do)
 
 ^{:refer lang.core.impl-entry/entry-symbol}
 (fact "qualifies an entry with its source module"
@@ -30,17 +23,33 @@
   => "// demo.color/main [7] ")
 
 ^{:refer lang.core.impl-entry/emit-entry-raw}
-(fact "emits a materialized color declaration through the selected JavaScript grammar"
-  (let [book-value (deref +book+)
-        color-entry (book/get-code-entry book-value 'xt.lang.common-color/hex->rgb)]
-    (str/includes?
-     (entry/emit-entry-raw (:grammar book-value) color-entry
-                           {:book book-value
-                            :modules (:modules book-value)
-                            :lang :js
-                            :module (get-in book-value [:modules 'demo.color])})
-     "function hex__gtrgb"))
-  => true)
+(fact
+  "emits a materialized color declaration through the selected JavaScript grammar"
+  (let [snapshot (script/script-snapshot)]
+    (try
+      (script/script-reset!)
+      (script/setup
+        :js
+        'demo.color
+        '{:require [[xt.lang.common-color :as color]]}
+        true
+        'lang.core.impl-entry-test)
+      (let [book-value (script/selected-book :js)
+            color-entry (book/get-code-entry
+                          book-value
+                          'xt.lang.common-color/hex->rgb)]
+        (str/includes?
+          (entry/emit-entry-raw
+            (:grammar book-value)
+            color-entry
+            {:book book-value,
+             :modules (:modules book-value),
+             :lang :js,
+             :module (get-in book-value [:modules 'demo.color])})
+          "function hex__gtrgb"))
+      (finally (script/script-restore! snapshot))))
+  =>
+  true)
 
 ^{:refer lang.core.impl-entry/emit-entry}
 (fact "honours entry suppression before materializing or emitting target code"
@@ -56,3 +65,88 @@
    {:module 'demo.color :id 'main :line 7 :form 'BODY}
    {:emit {:label true}})
   => "// demo.color/main [7] \nBODY")
+
+^{:refer lang.core.impl-entry/create-common :id constructor-qualified-metadata}
+(fact "retains only the original qualified metadata families"
+ (entry/create-common {:lang :lua :namespace 'demo :line 4 :time 9 :static/x 1 :rt/x 2 :api/x 3 :other/x 4})
+ => '{:lang :lua :namespace demo :module demo :line 4 :time 9 :static/x 1 :rt/x 2 :api/x 3})
+^{:refer lang.core.impl-entry/prepare-code-entry :id constructor-record-cache}
+(fact "preserves record identity and existing cache while merging dynamic extras"
+ (let [cache (atom {:saved 1})
+       original (record/book-entry {:lang :lua :id 'f :module 'demo :section :code :static/code.cache cache})
+       before entry/*extra*
+       prepared (binding [entry/*extra* {:probe/value 7}] (entry/prepare-code-entry original))]
+  [(record/book-entry? prepared) (= cache (:static/code.cache prepared))
+   (deref (:static/code.cache prepared)) (:probe/value prepared)
+   (:probe/value original) (= before entry/*extra*)])
+ => [true true {:saved 1} 7 nil true])
+^{:refer lang.core.impl-entry/create-fragment :id fragment-contract}
+(fact "creates a fragment with its original metadata and value"
+ (let [value (entry/create-fragment '(def$ G 7) {:lang :lua :namespace 'demo :- 'number :rt/x 1})]
+  [(record/book-entry? value) (select-keys value [:op :id :form :section :static/return :module :rt/x])])
+ => [true '{:op def$ :id G :form 7 :section :fragment :static/return number :module demo :rt/x 1}])
+^{:refer lang.core.impl-entry/create-macro :id macro-contract}
+(fact "creates an executable macro template with its standalone form"
+ (let [value (entry/create-macro '(defmacro mul [a b] (list '* a b)) {:lang :lua :namespace 'demo :standalone '(fn [a b] (* a b))})]
+  [(record/book-entry? value) ((:template value) 2 3) (:standalone value) (:section value)])
+ => [true '(* 2 3) '(fn [a b] (* a b)) :fragment])
+^{:refer lang.core.impl-entry/hydrate-form :id hydrate-hook-contract}
+(fact "preserves raw input or executes the reserved hydrate hook"
+ [(entry/hydrate-form '(do raw) {} {})
+  (entry/hydrate-form '(do raw) {:hydrate (fn [form grammar options] [{:seen [form grammar options]} '(do hydrated)])} {:tag :lua} {:module 'demo})]
+ => '[[nil (do raw)] [{:seen [(do raw) {:tag :lua} {:module demo}]} (do hydrated)]])
+^{:refer lang.core.impl-entry/create-code-raw :id raw-format-hook}
+(fact "retains formatter metadata and invokes the raw entry hook"
+ (let [seen (atom [])
+       [metadata value] (entry/create-code-raw '(plain f 7)
+          {:op :plain :priority 2 :format (fn [form] [{:doc "formatted"} form])
+           :format-hook (fn [value] (reset! seen [(:id value) (:form-input value)]))}
+          {:lang :js :namespace 'demo})]
+  [metadata (record/book-entry? value) (select-keys value [:id :op :op-key :section :priority :doc]) (deref seen)])
+ => [{:doc "formatted"} true '{:id f :op plain :op-key :plain :section :code :priority 2 :doc "formatted"} '[f (plain f 7)]])
+^{:refer lang.core.impl-entry/create-code-base :id raw-base-record}
+(fact "uses the grammar reserved entry to construct an unhydrated record"
+ (let [value (entry/create-code-base '(plain f 7) {:lang :js :namespace 'demo}
+              {:reserved {'plain {:op :plain :priority 3}}})]
+  [(record/book-entry? value) (:form-input value) (:priority value) (:form value)])
+ => [true '(plain f 7) 3 nil])
+^{:refer lang.core.impl-entry/create-code-hydrate :id hydrated-record-hook}
+(fact "merges hydration metadata and extras without losing record identity"
+ (let [raw (record/book-entry {:lang :js :module 'demo :id 'f :op 'plain :form-input 7})
+       value (binding [entry/*extra* {:probe/extra 3}]
+               (entry/create-code-hydrate raw
+                 {:hydrate (fn [form grammar options] [{:doc "hydrated"} (+ form 1)])
+                  :hydrate-hook (fn [value] (assoc value :probe/hook (:form value)))}
+                 {:reserved {}} {'demo {:id 'demo :lang :js :code {}}} {:lang :js}))]
+  [(record/book-entry? value) (:form value) (:doc value) (:probe/extra value) (:probe/hook value)
+   (:deps value) (deref (:static/code.cache value)) (:form raw)])
+ => [true 8 "hydrated" 3 8 #{} {} nil])
+^{:refer lang.core.impl-entry/create-code :id create-code-arities}
+(fact "constructs and hydrates through every original arity"
+ (let [grammar {:reserved {'plain {:op :plain :hydrate (fn [form grammar options] [nil 9])}}}
+       modules {'demo {:id 'demo :lang :js :code {}}}
+       book {:lang :js :grammar grammar :modules modules}
+       metadata {:lang :js :namespace 'demo :module 'demo}
+       values [(entry/create-code '(plain f 7) metadata book)
+               (entry/create-code '(plain f 7) metadata book {})
+               (entry/create-code '(plain f 7) metadata grammar modules {})]]
+  [(mapv record/book-entry? values) (mapv :form values) (mapv :form-input values) (mapv :module values)])
+ => [[true true true] [9 9 9] '[(plain f 7) (plain f 7) (plain f 7)] '[demo demo demo]])
+^{:refer lang.core.impl-entry/create-fragment-hydrate :id fragment-hydration-branches}
+(fact "hydrates literal fragments and preserves template fragments"
+ (let [literal (entry/create-fragment '(def$ G 7) {:lang :js :namespace 'demo})
+       templated (assoc literal :template (fn [x] x))
+       grammar {:reserved {}}
+       options {:lang :js :module {:id 'demo :lang :js :native {} :link {}}}
+       values [(entry/create-fragment-hydrate literal grammar {} options)
+               (entry/create-fragment-hydrate templated grammar {} options)]]
+  [(mapv record/book-entry? values) (mapv :form values) (mapv :deps values) (mapv :deps-fragment values)])
+ => [[true true] [7 7] [#{} #{}] [#{} #{}]])
+^{:refer lang.core.impl-entry/*extra* :id dynamic-extra-boundary}
+(fact "starts with no extras and restores dynamic bindings on exceptional exits"
+ (let [before entry/*extra*
+       during (binding [entry/*extra* {:probe/value 7}] entry/*extra*)
+       caught (try (binding [entry/*extra* {:probe/value 9}] (throw (ex :state {})))
+                   (catch error true))]
+  [before during caught (= before entry/*extra*)])
+ => [{} {:probe/value 7} true true])

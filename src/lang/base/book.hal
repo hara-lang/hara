@@ -2,407 +2,869 @@
   (:require [lang.base.book-module :as module]
             [lang.base.book-entry :as entry]
             [lang.base.book-meta :as meta]
-            [lang.base.emit-template :as template]))
+            [lang.base.emit-template :as impl-template]
+            [lang.base.util :as ut]))
 
-(defstruct Book [id version lang grammar grammar-coordinate coordinate selection compiler
-                 modules meta parent merged referenced revision file])
+(intern-in
+  [book-module module/book-module]
+  [book-module? module/book-module?]
+  [book-entry entry/book-entry]
+  [book-entry? entry/book-entry?]
+  [book-meta meta/book-meta]
+  [book-meta? meta/book-meta?])
+
+(def ^:dynamic *skip-check* false)
+
+(def ^:dynamic *dep-types* :code)
+
+(defn get-base-entry
+  "gets an entry in the book"
+  {:added "4.0"}
+  [{:as book :keys [modules]} module-id id section]
+  (get-in modules [module-id section id]))
+
+(defn get-code-entry
+  "gets a code entry in the book"
+  {:added "4.0"}
+  [{:as book :keys [modules]} id]
+  (let [[mid sid] (ut/sym-pair id)]
+    (or (get-base-entry book mid sid :code)
+      (get-base-entry book mid sid :header)
+      ((fn [message & [data]] (throw (ex :generic (or data {}) :ex/message message))) "ENTRY NOT FOUND"
+        {:module mid :symbol sid}))))
+
+(defn get-fragment-entry
+  "gets a code entry in the book"
+  {:added "4.0"}
+  [{:as book :keys [modules]} id]
+  (let [[mid sid] (ut/sym-pair id)]
+    (or (get-base-entry book mid sid :fragment)
+      ((fn [message & [data]] (throw (ex :generic (or data {}) :ex/message message))) "ENTRY NOT FOUND"
+        {:module mid :symbol sid}))))
+
+(defn get-entry
+  "gets either the module or code entry"
+  {:added "4.0"}
+  [{:as book :keys [modules]} id]
+  (if (namespace id) (get-code-entry book id) (get modules id)))
+
+(defn get-module
+  "gets the module"
+  {:added "4.0"}
+  [{:as book :keys [modules]} id]
+  (get modules id))
+
+(defn get-code-deps
+  "gets code dependencies via the per-language restaging cache"
+  {:added "4.0"}
+  [book id]
+  (let [entry (get-code-entry book id)]
+    (impl-template/cached-entry-deps book entry)))
+
+(defn get-code-entry-view
+  "gets a code entry materialized for the current book language"
+  {:added "4.1"}
+  [book id]
+  (impl-template/materialize-code-entry book (get-code-entry book id)))
+
+(defn get-deps
+  "get dependencies for a given id"
+  {:added "4.0"}
+  [{:as book :keys [modules]} id]
+  (if (namespace id)
+    (get-code-deps book id)
+    (module/module-deps-all book (get modules id))))
+
+(defn get-deps-native
+  "get dependencies for a given id"
+  {:added "4.0"}
+  [{:as book :keys [modules]} id]
+  (if (namespace id)
+    (:deps-native (get-code-entry-view book id))
+    (module/module-deps-native book (get modules id))))
+
+(defn list-entries
+  "lists entries for a given symbol"
+  {:added "4.0"}
+  ([book] (list-entries book *dep-types*))
+  ([{:keys [modules]} dep-types]
+    (case
+      dep-types
+      :module
+      (seq (keys modules))
+      :code
+      (mapcat
+        (fn [[ns {:keys [code]}]]
+          (map (partial ut/sym-full ns) (keys code)))
+        (seq modules))
+      (throw
+        (ex
+          :argument
+          {:dep-types dep-types}
+          :ex/message
+          (str "No matching clause: " dep-types))))))
+
+(defn book-string
+  "shows the book string"
+  {:added "4.0"}
+  [{:keys [lang meta grammar modules parent scope]}]
+  (str "#book "
+    [lang]
+    " {"
+    (str/join ", "
+      (map (fn [[module-id module]]
+             (str module-id
+               " {"
+               (str/join ", "
+                 (map (fn [[section entries]] (str section " " (count entries)))
+                   (seq (select-keys module [:code :fragment]))))
+               "}"))
+        (seq modules)))
+    "}"))
+
+(do
+  (defstruct
+    ^{:open true} Book
+    [lang meta grammar modules parent referenced])
+  (extend-type
+    Book
+    IDeps
+    (dep-get [book id] (get-entry book id))
+    (dep-keys [book] (list-entries book :code))
+    (dep-entries [book id] (get-deps book id))))
 
 (defn book?
-  [value]
-  (instance? lang.base.book/Book value))
+  "checks that object is a book"
+  {:added "4.0"}
+  [obj]
+  (instance? Book obj))
 
 (defn book
-  [value]
-  (if (nil? (:lang value))
-    (throw (ex :dependency {:book value} :ex/message "Book requires :lang")))
-  (if (nil? (:grammar value))
-    (throw (ex :dependency {:book value} :ex/message "Book requires :grammar")))
-  (map->Book
-   (merge {:id :default
-           :version 1
-           :modules {}
-           :meta (meta/book-meta {})
-           :parent nil
-           :merged #{(:lang value)}
-           :referenced #{}
-           :revision 0}
-          value
-          {:grammar-coordinate (or (:grammar-coordinate value)
-                                   (:coordinate value))
-           :merged (conj (set (or (:merged value) #{})) (:lang value))})))
+  "creates a book"
+  {:added "4.0"}
+  [{:as m :keys [lang meta grammar modules parent merged]}]
+  (if (not (not-empty meta))
+    (throw (ex :argument {} :ex/message "Meta required")))
+  (if (not (not-empty grammar))
+    (throw (ex :argument {} :ex/message "Grammer required")))
+  (map->Book (merge {:modules {} :parent nil} m {:merged (conj (set merged) lang)})))
+
+(defn book-merge
+  "merges a book with it's parent"
+  {:added "4.0"}
+  [book parent]
+  (let [_ (or
+            (= (:parent book) (:lang parent))
+            ((fn [message & [data]]
+               (throw (ex :generic (or data {}) :ex/message message)))
+              "Not mergable"
+              {:book (select-keys book [:lang :parent :merged]),
+               :parent (select-keys parent [:lang :parent :merged])}))]
+    (-> book
+     (update :merged conj (:lang parent))
+     (update
+       :modules
+       (fn [m]
+         (reduce-kv
+           (fn [m k module]
+             (let [native (get m k)
+                   module (if native
+                            (assoc
+                              native
+                              :code
+                              (merge (:code module) (:code native))
+                              :fragment
+                              (merge
+                                (:fragment module)
+                                (:fragment native)))
+                            module)]
+               (assoc m k module)))
+           m
+           (:modules parent))))
+     (assoc :parent (:parent parent)))))
+
+(defn book-from
+  "returns the merged book given snapshot"
+  {:added "4.0"}
+  [snapshot lang]
+  (loop [{:keys [parent] :as book} (get-in snapshot [lang :book])]
+    (if parent
+      (recur (book-merge book (get-in snapshot [parent :book])))
+      book)))
+
+(defn check-compatible-lang
+  "checks if the lang is compatible with the book"
+  {:added "4.0"}
+  [book lang]
+  (boolean (or (=  (:lang book) lang)
+               (get (:merged book) lang))))
+
+(defn assert-compatible-lang
+  "asserts that the lang is compatible"
+  {:added "4.0"}
+  [book lang]
+  (or
+    (check-compatible-lang book lang)
+    ((fn [message & [data]]
+       (throw (ex :generic (or data {}) :ex/message message)))
+      "Not compatible"
+      {:book (select-keys book [:lang :parent :merged]), :lang lang})))
+
+(defn set-module
+  "adds an addional module to the book"
+  {:added "4.0"}
+  [book module]
+  (let [_ (assert-compatible-lang book (:lang module))
+        {:keys [id]} module]
+    ((fn [migration-book migration-paths]
+       (let [[path value] (first migration-paths)]
+         [[[path (get-in migration-book path) value]]
+          (assoc-in migration-book path value)]))
+      book
+      [[[:modules id] module]])))
+
+(defn put-module
+  "adds or updates a module"
+  {:added "4.0"}
+  [book module]
+  (let [_ (assert-compatible-lang book (:lang module))
+        {:keys [id]} module]
+    ((fn [migration-current migration-path migration-values]
+       (let [migration-before (get-in migration-current migration-path)
+             migration-after (let [migration-merge
+                                   (fn
+                                     [migration-self
+                                      migration-left
+                                      migration-right]
+                                     (if
+                                       (nil? migration-right)
+                                       migration-left
+                                       (reduce-kv
+                                         (fn
+                                           [migration-output
+                                            migration-key
+                                            migration-value]
+                                           (if
+                                             (has?
+                                               migration-output
+                                               migration-key)
+                                             (let
+                                               [migration-old
+                                                (get
+                                                  migration-output
+                                                  migration-key)]
+                                               (assoc
+                                                 migration-output
+                                                 migration-key
+                                                 (if
+                                                   (and
+                                                     (or
+                                                       (map?
+                                                         migration-old)
+                                                       (nil?
+                                                         migration-old))
+                                                     (or
+                                                       (map?
+                                                         migration-value)
+                                                       (nil?
+                                                         migration-value)))
+                                                   (migration-self
+                                                     migration-self
+                                                     migration-old
+                                                     migration-value)
+                                                   migration-value)))
+                                             (assoc
+                                               migration-output
+                                               migration-key
+                                               migration-value)))
+                                         (or migration-left {})
+                                         migration-right)))]
+                               (migration-merge
+                                 migration-merge
+                                 migration-before
+                                 migration-values))]
+         [[migration-before migration-after]
+          (if (empty? migration-path)
+            migration-after
+            (assoc-in
+              migration-current
+              migration-path
+              migration-after))]))
+      book
+      [:modules id]
+      (reduce-kv
+        (fn [output key value]
+          (if value (assoc output key value) output))
+        {}
+        module))))
+
+(defn delete-module
+  "deletes a module given a book"
+  {:added "4.0"}
+  [book module-id]
+  ((fn [migration-book migration-paths]
+     (let [path (first migration-paths)
+           parent-path (vec (butlast path))
+           key (last path)
+           parent (get-in migration-book parent-path)
+           after (if (nil? parent) nil (dissoc parent key))]
+       [[[path (get parent key)]]
+        (assoc-in migration-book parent-path after)]))
+    book
+    [[:modules module-id]]))
+
+(defn delete-modules
+  "deletes all modules"
+  {:added "4.0"}
+  [book module-ids]
+  ((fn [migration-book commands]
+     (reduce
+       (fn [[changes current] [operation path]]
+         (let [parent-path (vec (butlast path))
+               key (last path)
+               parent (get-in current parent-path)
+               after (if (nil? parent) nil (dissoc parent key))]
+           [(conj changes [path (get parent key) nil])
+            (assoc-in current parent-path after)]))
+       [[] migration-book]
+       commands))
+    book
+    (mapv (fn [module-id] [:delete [:modules module-id]]) module-ids)))
+
+(defn has-module?
+  "checks that a books has a given module"
+  {:added "4.0"}
+  [book module-id]
+  (boolean (get-in book [:modules module-id])))
+
+(defn assert-module
+  "asserts that module exists"
+  {:added "4.0"}
+  [book module-id]
+  (or
+    (has-module? book module-id)
+    ((fn [message & [data]]
+       (throw (ex :generic (or data {}) :ex/message message)))
+      "No module found."
+      {:available (set (list-entries book :module)),
+       :module module-id})))
+
+(defn set-entry
+  "sets entry in the book"
+  {:added "4.0"}
+  [book entry]
+  (let [_ (assert-compatible-lang book (:lang entry))
+        _ (assert-module book (:module entry))
+        {:keys [id module section]} entry]
+    ((fn [migration-book migration-paths]
+       (let [[path value] (first migration-paths)]
+         [[[path (get-in migration-book path) value]]
+          (assoc-in migration-book path value)]))
+      book
+      [[[:modules module section id] entry]])))
+
+(defn put-entry
+  "updates entry value in the book"
+  {:added "4.0"}
+  [book entry]
+  (let [_ (assert-compatible-lang book (:lang entry))
+        _ (assert-module book (:module entry))
+        {:keys [id module section]} entry]
+    ((fn [migration-current migration-path migration-values]
+       (let [migration-before (get-in migration-current migration-path)
+             migration-after (let [migration-merge
+                                   (fn
+                                     [migration-self
+                                      migration-left
+                                      migration-right]
+                                     (if
+                                       (nil? migration-right)
+                                       migration-left
+                                       (reduce-kv
+                                         (fn
+                                           [migration-output
+                                            migration-key
+                                            migration-value]
+                                           (if
+                                             (has?
+                                               migration-output
+                                               migration-key)
+                                             (let
+                                               [migration-old
+                                                (get
+                                                  migration-output
+                                                  migration-key)]
+                                               (assoc
+                                                 migration-output
+                                                 migration-key
+                                                 (if
+                                                   (and
+                                                     (or
+                                                       (map?
+                                                         migration-old)
+                                                       (nil?
+                                                         migration-old))
+                                                     (or
+                                                       (map?
+                                                         migration-value)
+                                                       (nil?
+                                                         migration-value)))
+                                                   (migration-self
+                                                     migration-self
+                                                     migration-old
+                                                     migration-value)
+                                                   migration-value)))
+                                             (assoc
+                                               migration-output
+                                               migration-key
+                                               migration-value)))
+                                         (or migration-left {})
+                                         migration-right)))]
+                               (migration-merge
+                                 migration-merge
+                                 migration-before
+                                 migration-values))]
+         [[migration-before migration-after]
+          (if (empty? migration-path)
+            migration-after
+            (assoc-in
+              migration-current
+              migration-path
+              migration-after))]))
+      book
+      [:modules module section id]
+      (reduce-kv
+        (fn [output key value]
+          (if value (assoc output key value) output))
+        {}
+        entry))))
+
+(defn has-entry?
+  "checks that book has an entry"
+  {:added "4.0"}
+  [book module-id section symbol-id]
+  (boolean (get-in book [:modules module-id  section symbol-id])))
+
+(defn assert-entry
+  "asserts that module exists"
+  {:added "4.0"}
+  [book module-id section symbol-id]
+  (or
+    (has-entry? book module-id section symbol-id)
+    (and
+      (assert-module book module-id)
+      ((fn [message & [data]]
+         (throw (ex :generic (or data {}) :ex/message message)))
+        "No entry found."
+        {:available
+         (set (keys (get (get-entry book module-id) section))),
+         :section section,
+         :module module-id}))))
+
+(defn delete-entry
+  "deletes an entry"
+  {:added "4.0"}
+  [book module-id section symbol-id]
+  ((fn [migration-book migration-paths]
+     (let [path (first migration-paths)
+           parent-path (vec (butlast path))
+           key (last path)
+           parent (get-in migration-book parent-path)
+           after (if (nil? parent) nil (dissoc parent key))]
+       [[[path (get parent key)]]
+        (assoc-in migration-book parent-path after)]))
+    book
+    [[:modules module-id section symbol-id]]))
+
+
+(defn module-create-filename
+  "creates a filename for module"
+  {:added "4.0"}
+  [book module-id]
+  (let [suffix (or
+                 (get-in book [:file :suffix])
+                 (name (get-in book [:grammar :tag])))]
+    (str (last (str/split (name module-id) #"\.")) "." suffix)))
+
+(defn module-create-check
+  "checks that bundles are available"
+  {:added "4.0"}
+  [{:keys [modules], :as book} module-id link]
+  (let [missing (difference
+                  (set (vals link))
+                  (set (conj (keys modules) module-id)))]
+    (if (not-empty missing)
+      ((fn [message & [data]]
+         (throw (ex :generic (or data {}) :ex/message message)))
+        "Missing namespaces"
+        {:ns missing, :link link, :all (keys modules)})
+      true)))
+
+(defn module-create-requires
+  "creates a map for the requires"
+  {:added "4.0"}
+  [require]
+  ((fn [[migration-key-fn migration-value-fn] migration-entries]
+     (into {}
+       (map (fn [migration-entry]
+              [(migration-key-fn migration-entry) (migration-value-fn migration-entry)])
+         migration-entries)))                                                             [first
+                                                                                          (fn [migration-argument-0]
+                                                                                            (apply hash-map (cons (keyword "id") migration-argument-0)))]
+    require))
+
+(do)
+
+(defn module-normalize-implements
+  "normalizes module contracts into a vector of symbols"
+  {:added "4.1"}
+  [implements]
+  (cond
+    (nil? implements)
+    []
+
+    (symbol? implements)
+    [implements]
+
+    (sequential? implements)
+    (vec implements)
+
+    (set? implements)
+    (vec (sort implements))
+
+    :else
+    [implements]))
+
+(defn module-export-requires
+  "reconstructs module requires from stored link metadata"
+  {:added "4.1"}
+  [module]
+  (->>
+    (seq (:link module))
+    (remove (fn [[alias _]] (= alias '-)))
+    (mapv
+      (fn [[alias dep]]
+        (cond->
+          [dep :as alias]
+          ((or (:includes module #{}) dep) dep)
+          (conj :include true))))
+    (sort-by first)))
+
+(defn module-export-imports
+  "reconstructs native imports from stored module metadata"
+  {:added "4.1"}
+  [module]
+  (->>
+    (seq (:native module))
+    (mapv
+      (fn [[name opts]]
+        (let [{:keys [bundle], :as opts} opts
+              bundle (some->>
+                       (seq bundle)
+                       (mapv
+                         (fn [[bundle-name bundle-opts]]
+                           (vec
+                             (concat
+                               [bundle-name]
+                               (mapcat identity (seq bundle-opts))))))
+                       not-empty)]
+          (vec
+            (concat
+              [name]
+              (mapcat
+                identity
+                (seq
+                  (concat
+                    (seq (dissoc opts :bundle))
+                    (if bundle [[:bundle bundle]] [])))))))))
+    (sort-by first)))
+
+(defn module-specialize-symbol
+  "rewrites self references from one module to another"
+  {:added "4.1"}
+  [source-id target-id sym]
+  (if (and (symbol? sym)
+           (= (namespace sym) (str source-id)))
+    (symbol (str target-id)
+            (name sym))
+    sym))
+
+(defn module-specialize-form
+  "rewrites self references inside an entry form"
+  {:added "4.1"}
+  [source-id target-id form]
+  (postwalk
+    (fn [x] (module-specialize-symbol source-id target-id x))
+    form))
+
+(defn module-specialize-entry
+  "clones an entry into a new module"
+  {:added "4.1"}
+  [source-id target-id entry]
+  (let [rewrite-form (fn [form]
+                       (if (nil? form) nil (module-specialize-form source-id target-id form)))
+        rewrite-deps (fn [deps]
+                       (when deps
+                         (->> deps
+                           (map (fn [migration-argument-0]
+                                  (module-specialize-symbol source-id target-id migration-argument-0)))
+                           set)))]
+    (cond-> (-> entry
+              (assoc :module target-id)
+              (dissoc :static/code.cache :static/template.cache))
+      true
+      (update :form rewrite-form)
+      (:form-input entry)
+      (update :form-input rewrite-form)
+      (:standalone entry)
+      (update :standalone rewrite-form)
+      (:deps entry)
+      (assoc :deps (rewrite-deps (:deps entry)))
+      (:deps-fragment entry)
+      (assoc :deps-fragment (rewrite-deps (:deps-fragment entry))))))
+
+(defn module-specialize-bindings
+  "normalizes specialization bindings keyed by alias or module id"
+  {:added "4.1"}
+  [module bindings]
+  (reduce-kv
+    (fn [out k v]
+      (cond
+        (has? (or (:internal module) {}) k) (assoc out k v)
+        (has? (or (:link module) {}) k) (assoc
+                                          out
+                                          (get (:link module) k)
+                                          v)
+        :else (assoc out k v)))
+    {}
+    (or bindings {})))
+
+(defn module-specialize
+  "clones a module under a new module id with rewritten link metadata"
+  {:added "4.1"}
+  [{:keys [lang], :as book}
+   source-id
+   target-id
+   &
+   [{:keys [bindings], :as _opts}]]
+  (let [source (or
+                 (get-module book source-id)
+                 ((fn [message & [data]]
+                    (throw
+                      (ex :generic (or data {}) :ex/message message)))
+                   "Source module not found"
+                   {:lang lang,
+                    :source source-id,
+                    :available (keys (:modules book))}))
+        bindings (module-specialize-bindings source bindings)
+        require (->>
+                  (module-export-requires source)
+                  (mapv
+                    (fn [[dep & args]]
+                      (vec (concat [(get bindings dep dep)] args)))))
+        base (module-create
+               book
+               target-id
+               {:require require,
+                :require-impl (:require-impl source),
+                :import (module-export-imports source),
+                :export
+                (module-specialize-form
+                  source-id
+                  target-id
+                  (:export source)),
+                :static (:static source)})
+        code (map-vals
+               (fn [entry]
+                 (module-specialize-entry source-id target-id entry))
+               (:code source))
+        fragment (map-vals
+                   (fn [entry]
+                     (module-specialize-entry
+                       source-id
+                       target-id
+                       entry))
+                   (:fragment source))]
+    (reduce-kv
+      assoc
+      base
+      (merge
+        (select-keys source [:display :implements :specialize])
+        {:code code, :fragment fragment}))))
+
+(defn module-create
+  "creates a module given book and options"
+  {:added "4.0"}
+  [{:as book :keys [lang]} module-id options]
+  (let [_                    (or
+                              book
+                              ((fn [message & [data]] (throw (ex :generic (or data {}) :ex/message message)))
+                               "Book is required."
+                               {:lang lang :module module-id}))
+        _                    (or
+                              module-id
+                              ((fn [message & [data]] (throw (ex :generic (or data {}) :ex/message message)))
+                               "Module id is required."
+                               {:book book :lang lang :module module-id}))
+        {:keys [require
+                require-impl
+                implements
+                specialize
+                import
+                alias
+                export
+                file
+                static]}     options
+        requires             (module-create-requires require)
+        implements           (module-normalize-implements implements)
+        internal             (->
+                              ((fn
+                                [migration-function migration-map]
+                                (into {} (map migration-function migration-map)))
+                               (fn [[id {:keys [as]}]] [id (or as id)])
+                               requires)
+                              (assoc module-id (quote -)))
+        link                 (->
+                              ((fn
+                                [migration-function migration-map]
+                                (into {} (map migration-function migration-map)))
+                               (fn [[id {:keys [as]}]] [(if (vector? as) (last as) (or as id)) id])
+                               requires)
+                              (assoc (quote -) module-id))
+        internal             (transpose link)
+        native               ((fn
+                               [[migration-key-fn migration-value-fn] migration-entries]
+                               (into
+                                {}
+                                (map
+                                 (fn
+                                  [migration-entry]
+                                  [(migration-key-fn migration-entry) (migration-value-fn migration-entry)])
+                                 migration-entries)))
+                              [first
+                               (fn [[_ & args]]
+                                 (let [{:as opts :keys [bundle]} (apply hash-map args)
+                                       bundle                    (if bundle
+                                                                   ((fn [[migration-key-fn migration-value-fn] migration-entries]
+                                                                      (into {}
+                                                                        (map (fn [migration-entry]
+                                                                               [(migration-key-fn migration-entry) (migration-value-fn migration-entry)])
+                                                                          migration-entries)))                                                             [first (fn [migration-argument-0] (apply hash-map (rest migration-argument-0)))]
+                                                                     bundle))]
+                                   (cond-> opts bundle (assoc :bundle bundle))))]
+                              import)
+        native-lu            (->>
+                              native
+                              (mapcat
+                               (fn
+                                [[import {:keys [as]}]]
+                                (->>
+                                 (disj
+                                  (set
+                                   ((fn
+                                     [migration-input]
+                                     (loop
+                                      [migration-pending (if (sequential? migration-input) (seq migration-input) nil)
+                                       migration-output  []]
+                                      (if
+                                       (seq migration-pending)
+                                       (let
+                                        [migration-value (first migration-pending)]
+                                        (if
+                                         (sequential? migration-value)
+                                         (recur (concat migration-value (rest migration-pending)) migration-output)
+                                         (recur (rest migration-pending) (conj migration-output migration-value))))
+                                       migration-output)))
+                                    (seq
+                                     ((fn
+                                       [migration-value]
+                                       (if (coll? migration-value) migration-value [migration-value]))
+                                      as))))
+                                  (quote *))
+                                 (filter symbol?)
+                                 (map (fn [sym] [sym import])))))
+                              (into {}))
+        alias                (merge
+                              ((fn
+                                [[migration-key-fn migration-value-fn] migration-entries]
+                                (into
+                                 {}
+                                 (map
+                                  (fn
+                                   [migration-entry]
+                                   [(migration-key-fn migration-entry) (migration-value-fn migration-entry)])
+                                  migration-entries)))
+                               [(fn [migration-argument-0] (nth migration-argument-0 2)) first]
+                               alias)
+                              (->>
+                               (vals native)
+                               (map :as)
+                               (keep (fn [x] (if (vector? x) (last x) x)))
+                               ((fn
+                                 [[migration-key-fn migration-value-fn] migration-entries]
+                                 (into
+                                  {}
+                                  (map
+                                   (fn
+                                    [migration-entry]
+                                    [(migration-key-fn migration-entry) (migration-value-fn migration-entry)])
+                                   migration-entries)))
+                                [identity identity])))
+        includes             (->> (seq requires) (keep (fn [[k v]] (if (:include v) k))) (set))
+        _                    (if (not *skip-check*) (module-create-check book module-id link))]
+    (module/book-module {:require-impl require-impl
+                         :static       static
+                         :native-lu    native-lu
+                         :includes     includes
+                         :internal     internal
+                         :lang         lang
+                         :alias        alias
+                         :native       native
+                         :link         link
+                         :id           module-id
+                         :implements   implements
+                         :specialize   (or specialize {})})))
+
+
+
+
+(comment
+
+  (dissoc (tahto.core/get-module
+           (tahto.core/default-library)
+           :js
+           'js.lib.puck)
+          :fragment)
+
+  (dissoc (tahto.core/get-module
+           (tahto.core/default-library)
+           :js
+           'js.core)
+          #_:fragment
+          :code))
 
 (defn book-coordinate
   [book]
   [:book (:lang book) (:id book) (:version book)])
-
-(defn get-base-entry
-  [book module-id id section]
-  (get-in book [:modules module-id section id]))
-
 (defn qualified-pair
   [id]
   (let [namespace-value (namespace id)]
     (if namespace-value
       [(symbol namespace-value) (symbol (name id))]
       [nil id])))
-
-(defn get-code-entry
-  [book id]
-  (let [pair (qualified-pair id)
-        module-id (first pair)
-        entry-id (second pair)
-        value (or (get-base-entry book module-id entry-id :code)
-                  (get-base-entry book module-id entry-id :header))]
-    (if value
-      value
-      (throw (ex :not-found {:book (book-coordinate book)
-                       :module module-id
-                       :entry entry-id} :ex/message "Book code entry not found")))))
-
-(defn get-fragment-entry
-  [book id]
-  (let [pair (qualified-pair id)
-        module-id (first pair)
-        entry-id (second pair)
-        value (get-base-entry book module-id entry-id :fragment)]
-    (if value
-      value
-      (throw (ex :not-found {:book (book-coordinate book)
-                       :module module-id
-                       :entry entry-id} :ex/message "Book fragment entry not found")))))
-
-(defn get-module
-  [book id]
-  (get-in book [:modules id]))
-
-(defn get-code-deps
-  "Returns restaged dependencies for a code entry when grammar metadata exists."
-  [book id]
-  (let [value (get-code-entry book id)]
-    (if (and (:grammar book)
-             (get-in (:grammar book) [:reserved (:op value)]))
-      (template/cached-entry-deps book value)
-      (set (or (:deps value) #{})))))
-
-(defn get-code-entry-view
-  [book id]
-  (template/materialize-code-entry book (get-code-entry book id)))
-
-(defn get-entry
-  [book id]
-  (if (namespace id)
-    (get-code-entry book id)
-    (get-module book id)))
-
-(defn list-entries
-  ([book]
-   (list-entries book :code))
-  ([book entry-type]
-   (cond (= entry-type :module)
-         (keys (:modules book))
-
-         :else
-         (mapcat
-          (fn [module-id]
-            (let [module-value (get (:modules book) module-id)]
-              (map (fn [entry-id]
-                     (symbol (str module-id) (name entry-id)))
-                   (keys (or (get module-value entry-type) {})))))
-          (keys (:modules book))))))
-
-(defn get-deps
-  [book id]
-  (if (namespace id)
-    (let [entry-value (get-code-entry book id)]
-      (set (or (:deps entry-value)
-               (get-in entry-value [:dependencies :code])
-               #{})))
-    (let [module-value (get-module book id)]
-      (if module-value
-        (module/module-deps-all book module-value)
-        #{}))))
-
-(defn get-deps-native
-  [book id]
-  (if (namespace id)
-    (let [entry-value (get-code-entry book id)]
-      (or (:deps-native entry-value)
-          (get-in entry-value [:dependencies :native])
-          {}))
-    (let [module-value (get-module book id)]
-      (if module-value
-        (module/module-deps-native book module-value)
-        {}))))
-
 (defn compatible-lang?
   [book lang]
   (if (or (= (:lang book) lang)
           (has? (:merged book) lang))
     true
     false))
-
-(def check-compatible-lang compatible-lang?)
-
-(defn book-string
-  [book]
-  (str "#book " [(:lang book)] " {"
-       (str/join
-        ", "
-        (map (fn [module-id]
-               (let [module-value (get (:modules book) module-id)]
-                 (str module-id
-                      " {:code " (count (:code module-value))
-                      ", :fragment " (count (:fragment module-value)) "}")))
-             (sort-by str (keys (:modules book)))))
-       "}"))
-
-(defn assert-compatible-lang
-  [book lang]
-  (if (not (compatible-lang? book lang))
-    (throw (ex :generic {:book (book-coordinate book)
-                     :language lang
-                     :merged (:merged book)} :ex/message "Book language is not compatible")))
-  book)
-
-(defn assert-module
-  [book module-id]
-  (if (nil? (get-module book module-id))
-    (throw (ex :not-found {:book (book-coordinate book)
-                     :module module-id
-                     :available (set (keys (:modules book)))} :ex/message "Book module not found")))
-  book)
-
 (defn next-revision
   [book]
   (update book :revision inc))
-
-(defn set-module
-  [book module-value]
-  (assert-compatible-lang book (:lang module-value))
-  (next-revision
-   (assoc-in book [:modules (:id module-value)] module-value)))
-
-(defn put-module
-  [book module-value]
-  (assert-compatible-lang book (:lang module-value))
-  (let [existing (get-module book (:id module-value))
-        merged
-        (if existing
-          (let [with-scalars
-                (reduce (fn [output field]
-                          (let [value (get module-value field)]
-                            (if (nil? value) output (assoc output field value))))
-                        existing
-                        [:lang :id :implements :includes :require :require-impl
-                         :export :file :application :schema :source :display])]
-            (reduce (fn [output field]
-                      (assoc output field
-                             (merge (or (get existing field) {})
-                                    (or (get module-value field) {}))))
-                    with-scalars
-                    [:alias :link :native :native-lu :internal
-                     :specialize :fragment :code :static]))
-          module-value)]
-    (next-revision
-     (assoc-in book [:modules (:id module-value)] merged))))
-
-(defn delete-module
-  [book module-id]
-  (next-revision
-   (update book :modules dissoc module-id)))
-
-(defn delete-modules
-  [book module-ids]
-  (reduce delete-module book module-ids))
-
-(defn has-module?
-  [book module-id]
-  (not (nil? (get-module book module-id))))
-
-(defn set-entry
-  [book entry-value]
-  (assert-compatible-lang book (:lang entry-value))
-  (assert-module book (:module entry-value))
-  (next-revision
-   (assoc-in book
-             [:modules (:module entry-value) (:section entry-value) (:id entry-value)]
-             entry-value)))
-
-(defn put-entry
-  [book entry-value]
-  (assert-compatible-lang book (:lang entry-value))
-  (assert-module book (:module entry-value))
-  (let [path [:modules (:module entry-value) (:section entry-value) (:id entry-value)]
-        existing (get-in book path)
-        fields [:lang :id :module :section :declared :form :form-input :deps
-                :deps-fragment :deps-native :xtalk-ops :xtalk-profiles
-                :polyfill-modules :namespace :template :standalone :line
-                :time :priority :display :static/schema :static/code.cache
-                :static/template.cache]
-        updates
-        (reduce (fn [output key]
-                  (let [value (get entry-value key)]
-                    (if (nil? value) output (assoc output key value))))
-                {}
-                fields)]
-    (next-revision
-     (assoc-in book path
-               (if existing
-                 (reduce (fn [output key]
-                           (assoc output key (get updates key)))
-                         existing
-                         (keys updates))
-                 entry-value)))))
-
-(defn delete-entry
-  [book module-id section entry-id]
-  (assert-module book module-id)
-  (next-revision
-   (update-in book [:modules module-id section] dissoc entry-id)))
-
-(defn has-entry?
-  [book module-id section entry-id]
-  (not (nil? (get-base-entry book module-id entry-id section))))
-
-(defn assert-entry
-  [book module-id section entry-id]
-  (if (not (has-entry? book module-id section entry-id))
-    (throw (ex :not-found {:module module-id
-                     :section section
-                     :entry entry-id
-                     :available (keys (or (get-in book [:modules module-id section]) {}))} :ex/message "Book entry not found")))
-  book)
-
-(defn module-create-filename
-  [book module-id]
-  (let [parts (str/split (name module-id) ".")
-        suffix (or (get-in book [:file :suffix])
-                   (name (get-in book [:grammar :tag])))]
-    (str (last parts) "." suffix)))
-
-(defn module-create-check
-  [book module-id link]
-  (let [available (conj (set (keys (:modules book))) module-id)
-        missing (set (filter (fn [dependency]
-                               (not (has? available dependency)))
-                             (vals link)))]
-    (if (not (empty? missing))
-      (throw (ex :not-found {:ns missing :link link} :ex/message "Missing namespaces")))
-    true))
-
-(defn module-create-requires
-  [requirements]
-  (reduce (fn [output requirement]
-            (let [id (first requirement)
-                  options (apply hash-map (rest requirement))]
-              (assoc output id (assoc options :id id))))
-          {}
-          (or requirements [])))
-
-(defn module-normalize-implements
-  [implements]
-  (cond (nil? implements) []
-        (symbol? implements) [implements]
-        (set? implements) (vec (sort-by str implements))
-        (sequential? implements) (vec implements)
-        :else [implements]))
-
 (defn ordered-map-options
   [options]
   (mapcat (fn [key] [key (get options key)])
           (sort-by str (keys options))))
-
-(defn module-export-requires
-  "Reconstructs portable require vectors from module link metadata."
-  [module-value]
-  (vec
-   (map (fn [alias]
-          (let [dependency (get (:link module-value) alias)
-                base [dependency :as alias]]
-            (if (has? (or (:includes module-value) #{}) dependency)
-              (conj base :include true)
-              base)))
-        (sort-by str
-                 (filter (fn [alias] (not= '- alias))
-                         (keys (:link module-value)))))))
-
-(defn module-export-imports
-  "Reconstructs portable native import vectors from module metadata."
-  [module-value]
-  (vec
-   (map
-    (fn [import-name]
-      (let [options (get (:native module-value) import-name)
-            bundle (:bundle options)
-            bundle-value
-            (if bundle
-              (vec
-               (map (fn [bundle-name]
-                      (vec (concat [bundle-name]
-                                   (ordered-map-options (get bundle bundle-name)))))
-                    (sort-by str (keys bundle))))
-              nil)
-            base-options (dissoc options :bundle)
-            output (vec (concat [import-name]
-                                (ordered-map-options base-options)))]
-        (if bundle-value
-          (conj output :bundle bundle-value)
-          output)))
-    (sort-by str (keys (:native module-value))))))
-
-(defn module-specialize-symbol
-  [source-id target-id value]
-  (if (and (symbol? value) (= (namespace value) (str source-id)))
-    (symbol (str target-id) (name value))
-    value))
-
-(defn module-specialize-form
-  [source-id target-id form]
-  (letfn [(rewrite [value]
-            (cond (map? value)
-                  (reduce-kv (fn [output key item]
-                               (assoc output (rewrite key) (rewrite item)))
-                             {} value)
-                  (vector? value) (vec (map rewrite value))
-                  (set? value) (set (map rewrite value))
-                  (list? value) (apply list (map rewrite value))
-                  :else (module-specialize-symbol source-id target-id value)))]
-    (rewrite form)))
-
-(defn module-specialize-entry
-  [source-id target-id entry-value]
-  (let [rewrite (fn [value]
-                  (if value
-                    (module-specialize-form source-id target-id value)
-                    nil))
-        rewrite-deps (fn [values]
-                       (if values
-                         (set (map (fn [value]
-                                     (module-specialize-symbol
-                                      source-id target-id value))
-                                   values))
-                         nil))]
-    (-> entry-value
-        (assoc :module target-id)
-        (dissoc :static/code.cache :static/template.cache)
-        (assoc :form (rewrite (:form entry-value)))
-        (assoc :form-input (rewrite (:form-input entry-value)))
-        (assoc :standalone (rewrite (:standalone entry-value)))
-        (assoc :deps (rewrite-deps (:deps entry-value)))
-        (assoc :deps-fragment (rewrite-deps (:deps-fragment entry-value))))))
-
-(defn module-specialize-bindings
-  [module-value bindings]
-  (reduce-kv
-   (fn [output key value]
-     (cond (has? (or (:internal module-value) {}) key)
-           (assoc output key value)
-           (has? (or (:link module-value) {}) key)
-           (assoc output (get (:link module-value) key) value)
-           :else (assoc output key value)))
-   {}
-   (or bindings {})))
-
 (defn import-options
   [import-value]
   (let [options (apply hash-map (rest import-value))
@@ -419,136 +881,3 @@
     (if bundle-map
       (assoc options :bundle bundle-map)
       options)))
-
-(defn module-create
-  "Creates one provider-independent immutable module from portable options."
-  [book module-id options]
-  (if (nil? book)
-    (throw (ex :dependency {:module module-id} :ex/message "Book is required")))
-  (if (nil? module-id)
-    (throw (ex :dependency {:book (book-coordinate book)} :ex/message "Module id is required")))
-  (let [requires (module-create-requires (:require options))
-        link
-        (reduce-kv
-         (fn [output dependency requirement]
-           (let [alias (:as requirement)
-                 alias (if (vector? alias) (last alias) (or alias dependency))]
-             (assoc output alias dependency)))
-         {'- module-id}
-         requires)
-        internal
-        (reduce-kv (fn [output alias dependency]
-                     (assoc output dependency alias))
-                   {}
-                   link)
-        native
-        (reduce (fn [output import-value]
-                  (assoc output (first import-value)
-                         (import-options import-value)))
-                {}
-                (or (:import options) []))
-        aliases
-        (reduce (fn [output alias-value]
-                  (assoc output (nth alias-value 2) (first alias-value)))
-                {}
-                (or (:alias options) []))
-        includes
-        (set (keep (fn [pair]
-                     (if (:include (val pair)) (key pair) nil))
-                   requires))]
-    (module-create-check book module-id link)
-    (module/book-module
-     {:lang (:lang book)
-      :id module-id
-      :alias aliases
-      :link link
-      :internal internal
-      :native native
-      :native-lu {}
-      :require-impl (:require-impl options)
-      :implements (module-normalize-implements (:implements options))
-      :specialize (or (:specialize options) {})
-      :includes includes
-      :static (:static options)
-      :export (:export options)
-      :file (:file options)})))
-
-(defn module-specialize
-  ([book source-id target-id]
-   (module-specialize book source-id target-id {}))
-  ([book source-id target-id options]
-   (let [source (get-module book source-id)]
-     (if (nil? source)
-       (throw (ex :not-found {:source source-id :available (keys (:modules book))} :ex/message "Source module not found")))
-     (let [bindings (module-specialize-bindings source (:bindings options))
-           requires
-           (vec
-            (map (fn [require-value]
-                   (assoc require-value 0
-                          (get bindings (first require-value)
-                               (first require-value))))
-                 (module-export-requires source)))
-           base (module-create
-                 book target-id
-                 {:require requires
-                  :require-impl (:require-impl source)
-                  :import (module-export-imports source)
-                  :static (:static source)})
-           code (reduce-kv
-                 (fn [output id value]
-                   (assoc output id
-                          (module-specialize-entry source-id target-id value)))
-                 {}
-                 (:code source))
-           fragment (reduce-kv
-                     (fn [output id value]
-                       (assoc output id
-                              (module-specialize-entry source-id target-id value)))
-                     {}
-                     (:fragment source))]
-       (assoc base
-              :display (:display source)
-              :implements (:implements source)
-              :specialize (:specialize source)
-              :code code
-              :fragment fragment)))))
-
-(defn book-merge
-  [book parent]
-  (if (not= (:parent book) (:lang parent))
-    (throw (ex :generic {:book (book-coordinate book)
-                     :parent (book-coordinate parent)} :ex/message "Books are not mergeable")))
-  (let [modules
-        (reduce-kv
-         (fn [output module-id parent-module]
-           (let [child-module (get output module-id)]
-             (assoc output module-id
-                    (if child-module
-                      (assoc child-module
-                             :code (merge (:code parent-module) (:code child-module))
-                             :fragment (merge (:fragment parent-module)
-                                              (:fragment child-module)))
-                      parent-module))))
-         (:modules book)
-         (:modules parent))]
-    (next-revision
-     (assoc book
-            :modules modules
-            :parent (:parent parent)
-            :merged (conj (:merged book) (:lang parent))))))
-
-(defn book-from
-  [snapshot lang]
-  (loop [current (get-in snapshot [lang :book])]
-    (if (:parent current)
-      (recur (book-merge current
-                         (get-in snapshot [(:parent current) :book])))
-      current)))
-
-(extend-type Book IDeps
-  (dep-get [book id]
-    (get-entry book id))
-  (dep-entries [book id]
-    (get-deps book id))
-  (dep-keys [book]
-    (list-entries book :code)))

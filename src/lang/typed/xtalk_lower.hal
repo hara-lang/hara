@@ -1,0 +1,177 @@
+(ns lang.typed.xtalk-lower
+  (:require [lang.typed.xtalk-intrinsic :as intrinsic]
+    [lang.typed.xtalk-compat :as compat]
+    [lang.typed.xtalk-common :as types]
+    [lang.typed.xtalk-ops :as ops]))
+
+(defn intrinsic-sym
+  [name]
+  (intrinsic/intrinsic-sym name))
+
+(defn resolve-op
+  [op {:keys [ns aliases]}]
+  (cond
+    (not (symbol? op))
+    op
+
+    (= "-" (namespace op))
+    (symbol (str ns) (name op))
+
+    (namespace op)
+    (if-let [alias-ns (get aliases (symbol (namespace op)))]
+      (symbol (str alias-ns) (name op))
+      op)
+
+    :else
+    op))
+
+(defn access-kind
+  "returns the canonical access kind for a receiver type"
+  {:added "4.1"}
+  [type ctx]
+  (let [type (if (and (map? type) (has? type :kind)) type (types/normalize-type type ctx))
+        type (compat/resolve-type type ctx)]
+    (case (:kind type)
+      :array
+      :idx
+      :tuple
+      :idx
+      :record
+      :key
+      :dict
+      :key
+      :maybe
+      (access-kind (:item type) ctx)
+      :union
+      (let [kinds (->> (:types type)
+                       (map (fn [migration-argument-0] (access-kind migration-argument-0 ctx)))
+                       distinct)]
+        (when (= 1 (count kinds)) (first kinds)))
+      nil)))
+
+(defn receiver-access-kind [obj ctx]
+  (or
+    (when-let [infer (:infer ctx)]
+      (access-kind (:type (infer obj ctx)) ctx))
+    (when (symbol? obj)
+      (when-let [declared (or
+                            (get (meta obj) :-)
+                            (get (meta obj) :tahto/type))]
+        (access-kind declared ctx)))))
+
+(defn lower-dot
+  "lowers dot access using the receiver's XTalk type when available\n\n   List-shaped path parts are native method calls and are preserved for the\n   target emitter. Vector-shaped path parts are structural key/index access.\n   Single-segment access becomes x:get-key or x:get-idx. Multi-segment access\n   becomes x:get-path, which is direct chained path access; it is not the\n   guarded traversal provided by xt.lang.common-data/get-in."
+  {:added "4.1"}
+  ([form] (lower-dot form nil))
+  ([[_ obj & path-parts] ctx]
+    (let [path-parts (vec path-parts)]
+      (let [path (mapv
+                   (fn [part]
+                     (if (and (vector? part) (= 1 (count part)))
+                       (first part)
+                       part))
+                   path-parts)]
+        (if (:assignment-target ctx)
+          (apply list (concat ['. obj] path-parts))
+          (if (some form? path-parts)
+            (apply list (concat ['. obj] path-parts))
+            (if (= 1 (count path))
+              (case
+                (receiver-access-kind obj ctx)
+                :idx
+                (list 'x:get-idx obj (first path))
+                :key
+                (list 'x:get-key obj (first path))
+                (if (:preserve-unknown ctx)
+                  (apply list (concat ['. obj] path-parts))
+                  (list 'x:get-key obj (first path))))
+              (if (:preserve-unknown ctx)
+                (apply list (concat ['. obj] path-parts))
+                (list 'x:get-path obj path nil)))))))))
+
+(defn lower-fn-shorthand [[_ & args]]
+  (let [args (vec args)]
+    (cond
+      (empty? args) (list (intrinsic-sym "const-fn") nil)
+      (vector? (first args)) (apply
+                               list
+                               (concat ['fn (first args)] (rest args)))
+      :else (list (intrinsic-sym "const-fn") (first args)))))
+
+(do)
+
+(def +wrapper-targets+
+  {'xt.lang.common-lib/nil? 'x:nil?
+    'xt.lang.common-lib/cat 'x:cat
+    'xt.lang.common-lib/json-decode 'x:json-decode
+    'xt.lang.common-lib/json-encode 'x:json-encode
+    'xt.lang.common-lib/split 'x:str-split
+    'xt.lang.common-lib/fn? 'x:is-function?
+    'xt.lang.common-lib/arr? 'x:is-array?
+    'xt.lang.common-lib/obj? 'x:is-object?})
+
+(defn lower-defaulted-target [target args]
+  (list target (first args) (second args) (get args 2 nil)))
+
+(defn lower-offset-index
+  [args offset]
+  (if (zero? offset)
+    (list 'x:get-idx (first args) '(x:offset))
+    (list 'x:get-idx (first args) (list 'x:offset offset))))
+
+(defn lower-list
+  [form ctx]
+  (let [[op
+         &
+         args]          form
+        args            (vec args)
+        op'             (resolve-op op ctx)
+        canonical-entry (when (and (symbol? op') (namespace op')) (ops/canonical-entry op'))
+        canonical-op    (if (and (= :hard-link (:emit canonical-entry)) (not= "x" (namespace op')))
+                          op'
+                          (or (:canonical-symbol canonical-entry) op'))
+        args'           (vec
+                         (if
+                          (= op' :=)
+                          (apply
+                           list
+                           (concat
+                            [(with-meta (lower-form (first args) (assoc ctx :assignment-target true))
+                               (assoc (or (meta (first args)) {}) :tahto/xtalk-assignment true))]
+                            (seq
+                             (map
+                              (fn [migration-argument-0] (lower-form migration-argument-0 ctx))
+                              (rest args)))))
+                          (map (fn [migration-argument-0] (lower-form migration-argument-0 ctx)) args)))
+        lowered         (apply list (concat [canonical-op] (seq args')))]
+    (cond (= op' (quote .))
+      (lower-dot (apply list (concat [op'] (seq args'))) ctx)
+      (= op' (quote fn:>))
+      (lower-fn-shorthand (apply list (concat [op'] (seq args'))))
+      (= canonical-op (quote x:get-key))
+      (lower-defaulted-target (quote x:get-key) args')
+      (or (= op' (quote xt.lang.common-lib/get-in))
+        (= canonical-op (quote x:get-path)))
+      (lower-defaulted-target (quote x:get-path) args')
+      (= op' (quote xt.lang.common-lib/arr-join))
+      (list (quote x:str-join) (second args') (first args'))
+      (or (= op' (quote xt.lang.common-lib/first)) (= canonical-op (quote x:first)))
+      (lower-offset-index args' 0)
+      (or (= op' (quote xt.lang.common-lib/second)) (= canonical-op (quote x:second)))
+      (lower-offset-index args' 1)
+      (has? +wrapper-targets+ op')
+      (apply list (concat [(get +wrapper-targets+ op')] (seq args')))
+      :else
+      lowered)))
+
+(defn lower-form
+  [form ctx]
+  (cond (form? form)
+    (lower-list form ctx)
+    (vector? form)
+    (mapv (fn [migration-argument-0] (lower-form migration-argument-0 ctx)) form)
+    (map? form)
+    (into (empty form)
+      (map (fn [[k v]] [(lower-form k ctx) (lower-form v ctx)]) form))
+    :else
+    form))

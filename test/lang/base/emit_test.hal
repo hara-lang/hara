@@ -1,113 +1,287 @@
-(ns lang.base.emit-test
-  (:require [lang.base.emit :as emit]
-            [lang.base.grammar-api :as grammar]
-            [lang.base.registry :as registry]
-            [lang.model.v1.spec-js :as js]
-            [lang.protocol.compiler :as compiler]))
+(ns lang.base.emit-test (:require [lang.base.emit :as emit] [lang.base.emit-common :as common] [lang.base.emit-helper :as helper] [lang.base.emit-preprocess :as preprocess] [lang.base.emit-rewrite :as rewrite] [lang.base.grammar :as grammar]) (:use code.test))
 
-(def template
-  (grammar/emit-template
-   {:template/id :js-default :template/version 1
-    :template/value {:token {:nil "null"}}}))
+(def +reserved+
+  (-> (grammar/build)
+      (grammar/to-reserved)))
 
-(defn grammar-definition [version raw]
-  (grammar/definition
-   {:grammar/id :js :grammar/version version :grammar/release (str "v" version)
-    :grammar/emit-template {:template/id :js-default :template/version 1}
-    :operators {:define {:add {:op :add :symbol #{'+}
-                              :type :operator :emit :infix :raw raw}}}}))
+(def +grammar+
+  (grammar/grammar :test +reserved+ helper/+default+))
 
-(def catalog
-  (registry/install
-   (registry/install
-    (registry/install (registry/registry) template)
-    (grammar-definition 1 "+"))
-   (grammar-definition 2 "plus")))
+^{:refer lang.base.emit/default-grammar, :added "4.0"}
+(fact
+  "returns the default grammar"
+  (emit/default-grammar)
+  =>
+  (satisfies map?))
 
-(def selected-v1 (registry/resolve catalog {:grammar/id :js :grammar/version 1}))
-(def selected-v2 (registry/resolve catalog {:grammar/id :js :grammar/version 2}))
+^{:refer lang.base.emit/emit-main-loop :added "4.0"}
+(fact "creates the raw emit"
 
+  (emit/emit-main-loop '(not (+ 1 2 3))
+                      +grammar+
+                      {})
+  => "!((+ 1 2 3))")
+
+^{:refer lang.base.emit/emit-main :added "4.0"}
+(fact "creates the raw emit with loop"
+
+  (emit/emit-main '(not (+ 1 2 3))
+                  +grammar+
+                  {})
+  => "!(1 + 2 + 3)")
+
+^{:refer lang.base.emit/emit, :added "4.0"}
+(fact
+  "emits form to output string"
+  (emit/emit '(+ 1 2 3) @emit/+test-grammar+ nil {})
+  =>
+  "1 + 2 + 3")
+
+^{:refer lang.base.emit/with:emit :added "4.0"}
+(fact "binds the top-level emit function to common/*emit-fn*"
+
+  (emit/with:emit
+   (common/*emit-fn* '(not (+ 1 2 3))
+                     +grammar+
+                     {}))
+  => "!(1 + 2 + 3)")
+
+^{:refer lang.base.emit/prep-options, :added "4.0"}
+(fact
+  "prepares the options for processing"
+  (emit/prep-options {})
+  =>
+  (satisfies vector?))
+
+^{:refer lang.base.emit/prep-form, :added "4.0"}
+(fact
+  "prepares the form"
+  (emit/prep-form :raw '(+ 1 2 3) nil nil {})
+  =>
+  '[(+ 1 2 3)]
+  (emit/prep-form :input '(+ @1 2 3) nil nil {})
+  =>
+  '[(+ (!:eval 1) 2 3)]
+  (emit/prep-form :staging '(+ @1 2 3) nil nil {})
+  =>
+  '[(+ (!:eval 1) 2 3) #{} #{} {}])
+
+^{:refer lang.base.emit/prep-form, :added "4.1", :id test-prep-form-staging-rewrites}
+(do
+ (intern-var
+  'lang.base.emit-test
+  'migration-original-input
+  #'preprocess/to-input)
+ (intern-var
+  'lang.base.emit-test
+  'migration-original-staging
+  #'preprocess/to-staging)
+ (intern-var
+  'lang.base.emit-test
+  'migration-original-rewrite
+  #'rewrite/rewrite-stage)
+ (def migration-mock-input (fn [_] 'input-form))
+ (def
+  migration-mock-staging
+  (fn
+   [form _ _ _]
+   (if
+    (= form 'input-form)
+    ['staged-form #{:dep} #{:fragment} {:native :dep}]
+    (throw
+     (ex
+      :generic
+      {:form form}
+      :ex/message
+      "Unexpected pre-staging form")))))
+ (def
+  migration-mock-rewrite
+  (fn
+   [stage form _ _]
+   (if
+    (and (= :staging stage) (= form 'staged-form))
+    'rewritten-form
+    (throw
+     (ex
+      :generic
+      {:stage stage, :form form}
+      :ex/message
+      "Rewrite saw wrong form")))))
+ ^{:refer lang.base.emit/prep-form,
+   :added "4.1",
+   :id test-prep-form-staging-rewrites}
+ (fact
+  "runs staging rewrites after to-staging"
+  (try
+   (intern-var
+    'lang.base.emit-preprocess
+    'to-input
+    #'migration-mock-input)
+   (intern-var
+    'lang.base.emit-preprocess
+    'to-staging
+    #'migration-mock-staging)
+   (intern-var
+    'lang.base.emit-rewrite
+    'rewrite-stage
+    #'migration-mock-rewrite)
+   (emit/prep-form :staging '(ignored) nil {:modules {}} {})
+   (finally
+    (intern-var
+     'lang.base.emit-preprocess
+     'to-input
+     #'migration-original-input)
+    (intern-var
+     'lang.base.emit-preprocess
+     'to-staging
+     #'migration-original-staging)
+    (intern-var
+     'lang.base.emit-rewrite
+     'rewrite-stage
+     #'migration-original-rewrite)))
+  =>
+  '[rewritten-form #{:dep} #{:fragment} {:native :dep}]))
+
+^{:refer lang.base.emit/prep-form :id staging-mocks-restored}
+(fact "historical staging mocks restore original Var values and metadata"
+ [(= (deref #'preprocess/to-input) (deref #'migration-original-input))
+  (= (meta #'preprocess/to-input) (meta #'migration-original-input))
+  (= (deref #'preprocess/to-staging) (deref #'migration-original-staging))
+  (= (meta #'preprocess/to-staging) (meta #'migration-original-staging))
+  (= (deref #'rewrite/rewrite-stage) (deref #'migration-original-rewrite))
+  (= (meta #'rewrite/rewrite-stage) (meta #'migration-original-rewrite))]
+ => [true true true true true true])
+
+(def migration-test-grammar-initially-realized? (IRealize/realized? emit/+test-grammar+))
+^{:refer lang.base.emit/+test-grammar+}
+(fact "the default test grammar is deferred before any test requests it" migration-test-grammar-initially-realized? => false)
 ^{:refer lang.base.emit/default-grammar}
-(Test/check
- [{:name "returns the archive default grammar with canonical rewrite support"
-   :test (fn [] [(get-in (emit/default-grammar) [:token :nil])
-                 (count (get-in (emit/default-grammar) [:rewrite :canonical]))])
-   :expected [nil 1]}])
-
-^{:refer lang.base.emit/emit-main-loop}
-(Test/check
- [{:name "emits one nested form through the common and top-level pipeline"
-   :test (fn [] (emit/emit-main-loop '(+ 1 (+ 2 3))
-                                      (emit/default-grammar (:grammar selected-v1)) {}))
-   :expected "1 + (2 + 3)"}])
-
+(fact
+  "default grammar retains canonical stage ownership and caller overrides"
+  (let [base (emit/default-grammar)
+        changed (emit/default-grammar {:token {:nil {:as "NONE"}}})]
+    [(= helper/+default+ (dissoc base :rewrite))
+     (mapv var-sym (get-in base [:rewrite :canonical]))
+     (get-in changed [:token :nil :as])
+     (=
+       (get-in base [:default :common])
+       (get-in changed [:default :common]))])
+  =>
+  [true '[lang.base.emit-rewrite/canonical-stage] "NONE" true])
+^{:refer lang.base.emit/+option-keys+}
+(fact
+  "only the original option categories are retained"
+  emit/+option-keys+
+  =>
+  [:lang
+   :entry
+   :module
+   :book
+   :snapshot
+   :layout
+   :emit
+   :lang/xtalk-context
+   :lang/provenance])
 ^{:refer lang.base.emit/emit-main}
-(Test/check
- [{:name "installs recursive top-level emission"
-   :test (fn [] (emit/emit-main '(+ 1 (+ 2 3))
-                                 (emit/default-grammar (:grammar selected-v1)) {}))
-   :expected "1 + (2 + 3)"}])
-
-^{:refer lang.base.emit/emit-token}
-(Test/check
- [{:name "emits numeric literals as target literals rather than host constructor forms"
-   :test (fn [] (emit/emit-token 0.06 {} {}))
-   :expected "0.06"}])
-
-^{:refer lang.base.emit/emit-node}
-(Test/check
- [{:name "emits Hara double literal forms as target numeric literals"
-   :test (fn [] (emit/emit-node (list 'double 0.06) {} {}))
-   :expected "0.06"}])
-
-^{:refer lang.base.emit/emit}
-(Test/check
-[{:name "selects grammar versions and rejects legacy option aliases by ignoring them"
-   :test (fn [] [(emit/emit '(+ 1 2) selected-v1)
-                 (emit/emit '(+ 1 2) selected-v2)
-                 (emit/emit nil selected-v1)
-                 (emit/emit 'value {:emit (fn [form mopts] (keys mopts))} nil
-                            {:lang :js :tahto/module :legacy})])
-   :expected ["1 + 2" "1 plus 2" "null" [:lang]]}])
-
-^{:refer lang.base.emit/emit}
-(Test/check
- [{:name "emits a return containing a target vector through the complete JavaScript grammar"
-   :test (fn [] (emit/emit '(return [r]) (:grammar js/+selection+) {:layout :flat}))
-   :expected "return [r]"}])
-
+(fact
+  "main emission uses original common recursion without stripping wrappers"
+  (emit/emit-main '(not (+ 1 2 3)) (deref emit/+test-grammar+) {})
+  =>
+  "!(1 + 2 + 3)")
 ^{:refer lang.base.emit/with:emit}
-(Test/check
- [{:name "binds the top-level recursive emitter"
-   :test (fn [] (emit/with:emit
-                 (emit/*emit-fn* '(+ 1 (+ 2 3))
-                                (emit/default-grammar (:grammar selected-v1)) {})))
-   :expected "1 + (2 + 3)"}])
-
+(fact
+  "emitter binding is restored on both normal and exceptional exits"
+  (let [outer (fn [form grammar options] "outer")]
+    (binding [common/*emit-fn* outer]
+      [(emit/with:emit
+         (common/*emit-fn*
+           '(not (+ 1 2 3))
+           (deref emit/+test-grammar+)
+           {}))
+       (common/*emit-fn* nil nil nil)
+       (try
+         (emit/with:emit (throw (ex :argument {})))
+         (catch error :caught))
+       (common/*emit-fn* nil nil nil)]))
+  =>
+  ["!(1 + 2 + 3)" "outer" :caught "outer"])
 ^{:refer lang.base.emit/prep-options}
-(Test/check
- [{:name "prepares canonical pipeline options and resolves explicitly loaded values"
-   :test (fn [] (let [[step grammar book namespace mopts]
-                      (emit/prep-options {})]
-                  [step (map? grammar) book namespace mopts]))
-   :expected [:input true nil 'lang.base.emit {}]}])
-
+(fact
+  "preparation uses original test grammar and strips unrelated options"
+  (let [[step grammar book namespace options] (emit/prep-options
+                                                {:namespace 'chosen,
+                                                 :noise true})]
+    [step (:tag grammar) book namespace options])
+  =>
+  [:input :test nil 'chosen {}])
 ^{:refer lang.base.emit/prep-form}
-(Test/check
- [{:name "prepares raw and input pipeline forms"
-   :test (fn [] [(emit/prep-form :raw '(+ 1 2 3) nil nil {})
-                 (emit/prep-form :input '(+ (deref 1) 2 3) nil nil {})])
-   :expected ['[(+ 1 2 3)] '[(+ (!:eval 1) 2 3)]]}])
-
-^{:refer lang.base.emit/Emitter}
-(Test/check
- [{:name "creates the protocol-backed archive emitter value"
-   :test (fn [] (compiler/emit-form (emit/emitter) '(+ 1 (+ 2 3)) selected-v1 {}))
-   :expected "1 + (2 + 3)"}])
-
-^{:refer lang.base.emit/emitter}
-(Test/check
- [{:name "constructs an Emitter for every invocation"
-   :test (fn [] (and (not (nil? (emit/emitter)))
-                      (not (nil? (emit/emitter)))))
-   :expected true}])
+(fact
+  "raw and input preparation preserve the original historical assertions"
+  [(emit/prep-form :raw '(+ 1 2 3) nil nil {})
+   (emit/prep-form :input '(+ (deref 1) 2 3) nil nil {})]
+  =>
+  ['[(+ 1 2 3)] '[(+ (!:eval 1) 2 3)]])
+^{:refer lang.base.emit/+steps+}
+(fact
+  "pipeline stages retain original order"
+  emit/+steps+
+  =>
+  [[:raw] [:input] [:staging]])
+^{:refer lang.base.emit/emit-main-loop}
+(fact
+  "raw emission preserves the original unexpanded nested operand"
+  (emit/emit-main-loop '(not (+ 1 2 3)) (deref emit/+test-grammar+) {})
+  =>
+  "!((+ 1 2 3))")
+^{:refer lang.base.emit/emit, :id scoped-emission}
+(fact
+  "emission retains captured values while selecting and restoring namespace scope"
+  (let [captured (atom 42)
+        before (ns-current)
+        custom {:emit
+                (fn [form options] [form
+                                    (deref captured)
+                                    (ns-current)
+                                    options])}
+        result (emit/emit
+                 '(+ 1 2)
+                 custom
+                 'lang.base.emit-common
+                 {:lang :lua, :noise true})]
+    [result
+     (= before (ns-current))
+     (eval-in-ns
+       'lang.base.grammar
+       (fn [] (emit/emit :nested custom nil {})))
+     (= before (ns-current))])
+  =>
+  [['(+ 1 2) 42 'lang.base.emit-common {:lang :lua}]
+   true
+   [:nested 42 'lang.base.grammar {}]
+   true])
+^{:refer lang.base.emit/emit, :id scoped-emission-failure}
+(fact
+  "emission restores namespace after a captured emitter throws"
+  (let [before (ns-current)
+        result (try
+                 (emit/emit
+                   :bad
+                   {:emit
+                    (fn [form options]
+                      (throw (ex :argument {:form form})))}
+                   'lang.base.grammar
+                   {})
+                 (catch error :caught))]
+    [result (= before (ns-current))])
+  =>
+  [:caught true])
+^{:refer lang.base.emit/emit, :id scoped-emission-default}
+(fact
+  "the original default emitter renders recursively inside namespace scope"
+  (emit/emit
+    '(not (+ 1 2 3))
+    (deref emit/+test-grammar+)
+    'lang.base.grammar
+    {})
+  =>
+  "!(1 + 2 + 3)")

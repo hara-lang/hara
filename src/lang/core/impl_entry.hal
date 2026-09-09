@@ -1,12 +1,264 @@
-;; ============================================================================
-;; lang.core.impl-entry — direct emission for one materialized Book entry.
-;; ============================================================================
 (ns lang.core.impl-entry
   (:config {:role :internal})
-  (:require [lang.base.compiler :as compiler]
+  (:require [lang.base.book :as book]
+            [lang.base.emit-template :as impl-template]
+            [lang.base.emit-preprocess :as preprocess]
+            [lang.base.grammar-xtalk-system :as xtalk-system]
+            [lang.base.compiler :as compiler]
             [lang.base.emit :as emit]
             [lang.base.emit-template :as template]
             [lang.protocol.compiler :as protocol]))
+
+;;;;
+;;
+;; CREATE ENTRY
+;;
+
+(def ^:dynamic *extra* {})
+
+(defn create-common
+  "create entry common keys from metadata"
+  {:added "4.0"}
+  [{:keys [lang namespace module line time],
+    :or {namespace (ns-current)},
+    :as meta}]
+  (merge
+    {:lang lang,
+     :namespace namespace,
+     :module (or module namespace),
+     :line line,
+     :time time}
+    (qualified-keys meta [:static :rt :api])))
+
+(defn create-code-raw
+  "creates a raw entry compatible with submit"
+  {:added "4.0"}
+  [[op sym & body :as form-raw] reserved meta]
+  (let [{:keys [section
+                priority
+                format
+                format-hook]
+         :or {priority 5}}   reserved
+        modifiers            (:- (std.foundation/meta sym))
+        sym                  (if (some symbol? modifiers)
+                               (with-meta sym
+                                 (assoc (std.foundation/meta sym)
+                                   :-
+                                   (mapv (fn [migration-argument-0]
+                                           (if (symbol? migration-argument-0)
+                                             (if-let [v (resolve migration-argument-0)] (var-sym v) migration-argument-0)
+                                             migration-argument-0))
+                                     modifiers)))
+                               sym)
+        form-raw             (if (some symbol? modifiers) (apply list op sym body) form-raw)
+        [tmeta
+         form]               (if format
+                               ((if (= :std.native.Var (Base/type format)) (deref format) format) form-raw)
+                               [nil form-raw])
+        form-input           (-> form preprocess/to-input preprocess/eval-template-forms)
+        entry                (book/book-entry
+                              (merge
+                               {:op         op
+                                :op-key     (:op reserved)
+                                :id         (cond (vector? sym) (first (filter symbol? sym)) :else sym)
+                                :form-input form-input
+                                :section    (or section :code)
+                                :priority   priority}
+                               tmeta
+                               (create-common meta)))]
+    (if format-hook
+      ((if (= :std.native.Var (Base/type format-hook)) (deref format-hook) format-hook) entry))
+    [tmeta entry]))
+
+(defn create-code-base
+  "creates the base code entry"
+  {:added "4.0"}
+  [[op sym & body :as form] meta grammar]
+  (let [reserved (get-in grammar [:reserved op])]
+    (second (create-code-raw form reserved meta))))
+
+(defn hydrate-form
+  "hydrates a raw input form using the reserved hydrate hook"
+  {:added "4.1"}
+  [form-input reserved grammar & [mopts]]
+  (let [{:keys [hydrate]} reserved]
+    (if hydrate
+      (hydrate form-input grammar mopts)
+      [nil form-input])))
+
+(defn create-code-hydrate
+  "hydrates the forms"
+  {:added "4.0"}
+  [entry reserved grammar modules & [mopts]]
+  (let [{:keys [hydrate-hook]}     reserved
+        {:keys [hmeta
+                form
+                deps
+                deps-fragment
+                deps-native
+                xtalk-ops
+                xtalk-profiles
+                polyfill-modules]} (impl-template/create-code-state entry reserved grammar modules mopts)
+        entry                      (reduce-kv
+                                    assoc
+                                    (assoc
+                                     entry
+                                     :form
+                                     form
+                                     :deps
+                                     deps
+                                     :deps-fragment
+                                     deps-fragment
+                                     :deps-native
+                                     deps-native
+                                     :xtalk-ops
+                                     xtalk-ops
+                                     :xtalk-profiles
+                                     xtalk-profiles
+                                     :polyfill-modules
+                                     polyfill-modules)
+                                    (merge hmeta *extra*))
+        entry                      (cond-> entry
+                                     (not (:static/code.cache entry)) (assoc :static/code.cache (atom {})))
+        entry                      (if hydrate-hook (or (hydrate-hook entry) entry) entry)]
+    entry))
+
+(defn prepare-code-entry
+  "prepares a raw code entry for storage without eager hydration"
+  {:added "4.1"}
+  [entry]
+  (let [entry (reduce-kv assoc entry (merge *extra*))]
+    (cond->
+      entry
+      (not (:static/code.cache entry))
+      (assoc :static/code.cache (atom {})))))
+
+(defn create-code
+  "creates the code entry"
+  {:added "4.0"}
+  ([form meta book]
+   (create-code form meta book {}))
+  ([form meta book mopts]
+   (let [{:keys [modules]} book]
+     (create-code form meta
+                  (:grammar book)
+                  (:modules book)
+                  (merge {:module (-> modules
+                                      (get (:module meta))
+                                      (assoc :display :brief))}
+                         mopts))))
+  ([[op sym & body :as form] meta grammar modules mopts]
+   (let [reserved (get-in grammar [:reserved op])]
+     (-> form
+         (create-code-raw reserved meta)
+         second
+         (create-code-hydrate reserved grammar modules mopts)))))
+
+(defn create-fragment
+  "creates a fragment"
+  {:added "4.0"}
+  [[_ sym value] {return :-, :as meta}]
+  (book/book-entry
+    (merge
+      {:op 'def$,
+       :id sym,
+       :form value,
+       :section :fragment,
+       :static/return return}
+      (create-common meta)
+      (qualified-keys meta :rt))))
+
+(defn create-fragment-hydrate
+  "hydrates the forms"
+  {:added "4.0"}
+  [entry grammar modules mopts]
+  (if (:template entry)
+    (let [deps-native (preprocess/find-natives entry mopts)]
+      (assoc entry :deps #{} :deps-fragment #{} :deps-native deps-native))
+    (let [{:keys [form]}             entry
+          [_
+           deps
+           deps-fragment
+           deps-native]              (preprocess/to-staging form grammar modules mopts)
+          {:keys [ops
+                  profiles
+                  polyfill-modules]} (xtalk-system/scan-xtalk form grammar)]
+      (assoc entry
+        :deps
+        #{}
+        :deps-fragment
+        deps-fragment
+        :deps-native
+        deps-native
+        :xtalk-ops
+        ops
+        :xtalk-profiles
+        profiles
+        :polyfill-modules
+        polyfill-modules))))
+
+(defn create-macro
+  "creates a macro"
+  {:added "4.0"}
+  [[_ sym & body] {return :-, :keys [standalone], :as meta}]
+  (let [form (apply list 'fn body) template (eval form)]
+    (book/book-entry
+      (merge
+        {:op 'defmacro,
+         :id sym,
+         :form form,
+         :template template,
+         :section :fragment,
+         :standalone standalone,
+         :static/return return}
+        (create-common meta)
+        (qualified-keys meta :rt)))))
+
+
+;;;;
+;;
+;; EMIT ENTRY
+;;
+;; This is the major workhorse function for
+;; most of the library and optimisations should
+;; start from here because it's used everywhere
+;;
+;; Methods for generation of code from entries
+;; - single entry (for use in modules)
+;; - entry and all dependencies (with native imports and declarations at the top)
+;;    - layout can be specified
+;;
+
+(do)
+
+(do)
+
+(do)
+
+(do)
+
+(do)
+
+(do)
+
+(do)
+
+(do)
+
+(do)
+
+(do)
+
+(comment
+  (-> (tahto.core/get-snapshot
+       (tahto.core/default-library))
+      :js
+      :book
+      :meta)
+
+  (:meta (tahto.core/grammar :js))
+
+  )
 
 (defn entry-symbol
   "Returns the fully qualified Book coordinate for one code entry."

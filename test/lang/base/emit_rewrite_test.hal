@@ -1,68 +1,141 @@
 (ns lang.base.emit-rewrite-test
-  (:require [lang.base.emit-rewrite :as rewrite]))
+  (:use code.test)
+  (:require [lang.base.emit :as emit]
+            [lang.base.emit-rewrite :refer :all]
+            [lang.typed.xtalk-analysis :as analysis]
+            [lang.typed.xtalk-infer :as infer]))
 
-^{:refer lang.base.emit-rewrite/stage-transforms}
-(Test/check [{:name "returns a stable vector for configured and absent rewrite stages"
-              :test (fn [] [(rewrite/stage-transforms {:rewrite {:staging [identity]}} :staging)
-                            (rewrite/stage-transforms {} :missing)])
-              :expected [[identity] []]}])
+^{:refer lang.base.emit-rewrite/stage-transforms :added "4.1"}
+(fact "returns the transforms registered for a stage"
+  (stage-transforms {:rewrite {:staging [inc]
+                               :emit    [dec]}}
+                     :staging)
+  => [inc]
+
+  (stage-transforms {:rewrite {:emit [dec]}}
+                     :staging)
+  => [])
+
+^{:refer lang.base.emit-rewrite/canonical-stage :added "4.1"}
+(fact "only applies typed canonical lowering when requested"
+  [(canonical-stage '(. arr [i])
+                    {:mopts {:tahto/xtalk-context
+                             {:infer infer/infer-type
+                              :env '{arr {:kind :array
+                                          :item {:kind :primitive :name :xt/int}}}}}})
+   (canonical-stage '(. arr [i]) {:mopts {}})]
+  => ['(x:get-idx arr i)
+      '(. arr [i])])
+
+^{:refer lang.base.emit-rewrite/canonical-stage, :id canonical-stage-module-context, :added "4.1"}
+(fact
+  "infers local bindings before lowering module forms"
+  (let [route-path "test/migration_emit_rewrite_route.hal"
+        listener-path "test/migration_emit_rewrite_listener.hal"
+        baseline (deref lang.typed.xtalk-common/*type-registry*)]
+    (when (or
+            (deref (File/exists? route-path))
+            (deref (File/exists? listener-path)))
+      (throw
+        (ex
+          :conflict
+          {}
+          :ex/message
+          "Refusing to overwrite rewrite fixtures")))
+    (try
+      (deref
+        (File/write
+          route-path
+          (String/encode-utf8
+            "(ns xt.event.base-route\n  (:require [tahto.core :as l]\n            [tahto.typed :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.spec-base :as xt]\n             [xt.lang.common-data :as xtd]\n             [xt.event.base-listener :as event-common]]})\n\n(defspec.xt RoutePath\n  [:xt/array :xt/str])\n\n(defspec.xt RouteParamMap\n  [:xt/dict :xt/str :xt/str])\n\n(defspec.xt RouteParams\n  [:xt/dict :xt/str RouteParamMap])\n\n(defspec.xt RouteInterim\n  [:xt/record\n   [\"path\" RoutePath]\n   [\"params\" RouteParams]])\n\n(defspec.xt RouteTree\n  [:xt/dict :xt/str :xt/any])\n\n(defspec.xt RouteDiff\n  [:xt/dict :xt/str :xt/bool])\n\n(defspec.xt RouteEvent\n  [:xt/record\n   [\"type\" :xt/str]\n   [\"params\" RouteDiff]\n   [\"path\" RouteDiff]\n   [\"meta\" [:xt/maybe xt.event.base-listener/EventListenerMeta]]])\n\n(defspec.xt EventRoute\n  [:xt/record\n   [\"::\" :xt/str]\n   [\"listeners\" xt.event.base-listener/EventListenerMap]\n   [\"tree\" RouteTree]\n   [\"history\" [:xt/array :xt/str]]])\n\n(defspec.xt interim-from-url\n  [:fn [:xt/str] RouteInterim])\n\n(defspec.xt interim-to-url\n  [:fn [RouteInterim] :xt/str])\n\n(defspec.xt path-to-tree\n  [:fn [RoutePath [:xt/maybe :xt/bool]] RouteTree])\n\n(defspec.xt interim-to-tree\n  [:fn [RouteInterim [:xt/maybe :xt/bool]] RouteTree])\n\n(defspec.xt path-from-tree\n  [:fn [RouteTree] RoutePath])\n\n(defspec.xt path-params-from-tree\n  [:fn [RouteTree RoutePath] RouteParamMap])\n\n(defspec.xt interim-from-tree\n  [:fn [RouteTree] RouteInterim])\n\n(defspec.xt changed-params-raw\n  [:fn [[:xt/maybe RouteParamMap] [:xt/maybe RouteParamMap]] RouteDiff])\n\n(defspec.xt changed-params\n  [:fn [RouteTree RouteTree [:xt/maybe RoutePath]] RouteDiff])\n\n(defspec.xt changed-path-raw\n  [:fn [RoutePath RoutePath] RouteDiff])\n\n(defspec.xt changed-path\n  [:fn [RouteTree RouteTree] RouteDiff])\n\n(defspec.xt get-url\n  [:fn [EventRoute] :xt/str])\n\n(defspec.xt get-segment\n  [:fn [EventRoute RoutePath] [:xt/maybe :xt/str]])\n\n(defspec.xt get-param\n  [:fn [EventRoute :xt/str [:xt/maybe RoutePath]] [:xt/maybe :xt/str]])\n\n(defspec.xt get-all-params\n  [:fn [EventRoute [:xt/maybe RoutePath]] RouteParamMap])\n\n(defspec.xt make-route\n  [:fn [:xt/any] EventRoute])\n\n(defspec.xt add-url-listener\n  [:fn [EventRoute\n        :xt/str\n        xt.event.base-listener/EventListenerCallback\n        [:xt/maybe xt.event.base-listener/EventListenerMeta]]\n       xt.event.base-listener/EventListenerEntry])\n\n(defspec.xt add-path-listener\n  [:fn [EventRoute\n        RoutePath\n        :xt/str\n        xt.event.base-listener/EventListenerCallback\n        [:xt/maybe xt.event.base-listener/EventListenerMeta]]\n       xt.event.base-listener/EventListenerEntry])\n\n(defspec.xt add-param-listener\n  [:fn [EventRoute\n        :xt/str\n        :xt/str\n        xt.event.base-listener/EventListenerCallback\n        [:xt/maybe xt.event.base-listener/EventListenerMeta]]\n       xt.event.base-listener/EventListenerEntry])\n\n(defspec.xt add-full-listener\n  [:fn [EventRoute\n        RoutePath\n        :xt/str\n        :xt/str\n        xt.event.base-listener/EventListenerCallback\n        [:xt/maybe xt.event.base-listener/EventListenerMeta]]\n       xt.event.base-listener/EventListenerEntry])\n\n(defspec.xt set-url\n  [:fn [EventRoute :xt/str [:xt/maybe :xt/bool]] [:xt/array :xt/str]])\n\n(defspec.xt set-path\n  [:fn [EventRoute [:xt/maybe RoutePath] [:xt/maybe RouteParamMap]] [:xt/array :xt/str]])\n\n(defspec.xt set-segment\n  [:fn [EventRoute RoutePath :xt/str] [:xt/array :xt/str]])\n\n(defspec.xt set-param\n  [:fn [EventRoute :xt/str [:xt/maybe :xt/str] [:xt/maybe RoutePath]] [:xt/array :xt/str]])\n\n(defspec.xt reset-route\n  [:fn [EventRoute [:xt/maybe :xt/str]] [:xt/array :xt/str]])\n\n\n;;\n;;\n;;\n\n(defn.xt interim-from-url\n  \"creates interim from url\"\n  {:added \"4.0\"}\n  [url]\n  (var arr (xt/x:str-split (xt/x:cat \"/\" url) \"?\"))\n  (var body (xt/x:first arr))\n  (var search nil)\n  (when (< 1 (xt/x:len arr))\n    (:= search (xt/x:second arr)))\n  (var path (-> (xt/x:str-split body \"/\")\n                (xt/x:arr-filter (fn [x]\n                                   (return (< 0 (xt/x:len x)))))))\n  (var params {})\n  (when (xt/x:not-nil? search)\n     (xt/for:array [pair (xt/x:str-split search \"&\")]\n                   (when (< 0 (xt/x:len pair))\n                     (var parts (xt/x:str-split pair \"=\"))\n                     (var key   (xt/x:first parts))\n                     (var val   (xt/x:second parts))\n                     (xt/x:set-key params key val))))\n  (cond (xtd/obj-empty? params)\n        (return {:path path :params {}})\n\n        :else\n        (return {:path path :params {(xt/x:json-encode path) params}})))\n\n(defn.xt interim-to-url\n  \"creates url from interim\"\n  {:added \"4.0\"}\n  [interim]\n  (var #{path params} interim)\n  (var param-arr [])\n  (var scoped-params (xt/x:get-key params (xt/x:json-encode path)))\n  (when (xt/x:nil? scoped-params)\n    (:= scoped-params {}))\n  (xt/for:object [[key val] scoped-params]\n    (when (xt/x:not-nil? val)\n      (xt/x:arr-push param-arr (xt/x:cat key \"=\" val))))\n  (return\n   (xt/x:cat (xt/x:str-join \"/\" path)\n             (:? (xtd/arr-not-empty? param-arr)\n                 (xt/x:cat \"?\" (xt/x:str-join \"&\" param-arr))\n                 \"\"))))\n\n(defn.xt path-to-tree\n  \"turns a path to tree\"\n  {:added \"4.0\"}\n  [path terminate]\n  (var out {})\n  (var arr [])\n  (xt/for:array [[i v] path]\n    (xt/x:set-key out (xt/x:json-encode arr) v)\n    (xt/x:arr-push arr v))\n  (when terminate\n    (xt/x:set-key out (xt/x:json-encode arr) nil))\n  (return out))\n\n(defn.xt interim-to-tree\n  \"converts interim to tree\"\n  {:added \"4.0\"}\n  [interim terminate]\n  (var #{path params} interim)\n  (var tree (-/path-to-tree path terminate))\n  (xt/x:set-key tree \"params\" params)\n  (return tree))\n\n(defn.xt path-from-tree\n  \"gets the path from tree\"\n  {:added \"4.0\"}\n  [tree]\n  (var path [])\n  (var v    (xt/x:get-key tree (xt/x:json-encode path)))\n  (while (xtd/arr-not-empty? v)\n    (xt/x:arr-push path v)\n    (:= v (xt/x:get-key tree (xt/x:json-encode path))))\n  (return path))\n\n(defn.xt path-params-from-tree\n  \"gets path params from tree\"\n  {:added \"4.0\"}\n  [tree path]\n  (var params (-> tree\n                  (xt/x:get-key \"params\")\n                  (xt/x:get-key (xt/x:json-encode path))))\n  (when (xt/x:nil? params)\n    (:= params {}))\n  (return params))\n\n(defn.xt interim-from-tree\n  \"converts interim from tree\"\n  {:added \"4.0\"}\n  [tree]\n  (var #{params} tree)\n  (var path (-/path-from-tree tree))\n  (when (xt/x:nil? params)\n    (:= params {}))\n  (return {:path path\n           :params params}))\n\n(defn.xt changed-params-raw\n  \"checks for changed params\"\n  {:added \"4.0\"}\n  [pparams nparams]\n  (when (xt/x:nil? pparams)\n    (:= pparams {}))\n  (when (xt/x:nil? nparams)\n    (:= nparams {}))\n  (var diff-fn\n       (fn [m other]\n         (var out {})\n         (xt/for:object [[k v] m]\n           (when (not= v (xt/x:get-key other k))\n             (xt/x:set-key out k true)))\n         (return out)))\n  (return (xt/x:obj-assign\n           (diff-fn pparams nparams)\n           (diff-fn nparams pparams))))\n\n(defn.xt changed-params\n  \"gets diff between params\"\n  {:added \"4.0\"}\n  [ptree ntree path]\n  (var path-arr path)\n  (when (xt/x:nil? path-arr)\n    (:= path-arr []))\n  (var pparams (-/path-params-from-tree ptree path-arr))\n  (var nparams (-/path-params-from-tree ntree path-arr))\n  (return (-/changed-params-raw pparams nparams)))\n\n(defn.xt changed-path-raw\n  \"checks that path has changed\"\n  {:added \"4.0\"}\n  [ppath npath]\n  (var all {})\n  (var arr [])\n  (var i 0)\n  (var changed false)\n  \n  (xt/for:array [v npath]\n    (var pv nil)\n    (when (< i (xt/x:len ppath))\n      (:= pv (xt/x:get-idx ppath (xt/x:offset i))))\n    (when (not= pv v)\n      (:= changed true))\n    (when changed\n      (xt/x:set-key all (xt/x:json-encode arr) true))\n    (xt/x:arr-push arr v)\n    (:= i (+ i 1)))\n  (return all))\n\n(defn.xt changed-path\n  \"gets changed routes\"\n  {:added \"4.0\"}\n  [ptree ntree]\n  (var ppath (-/path-from-tree ptree))\n  (var npath (-/path-from-tree ntree))\n  (return (-/changed-path-raw ppath npath)))\n\n(defn.xt get-url\n  \"gets the url for the route\"\n  {:added \"4.0\"}\n  [route]\n  (var #{tree} route)\n  (return (-/interim-to-url (-/interim-from-tree tree))))\n\n(defn.xt get-segment\n  \"gets the value for a segment segment\"\n  {:added \"4.0\"}\n  [route path]\n  (var #{tree} route)\n  (:= path (event-common/arrayify-path path))\n  (var pkey (xt/x:json-encode path))\n  (return (xt/x:get-key tree pkey)))\n\n(defn.xt get-param\n  \"gets the param value\"\n  {:added \"4.0\"}\n  [route param path]\n  (var #{tree} route)\n  (:= path (:? (xt/x:nil? path) (-/path-from-tree tree) path))\n  (:= path (event-common/arrayify-path path))\n  (return (xt/x:get-key (-/path-params-from-tree tree path)\n                        param)))\n\n(defn.xt get-all-params\n  \"gets all params in the route\"\n  {:added \"4.0\"}\n  [route path]\n  (var #{tree} route)\n  (:= path (:? (xt/x:nil? path) (-/path-from-tree tree) path))\n  (:= path (event-common/arrayify-path path))\n  (return (-/path-params-from-tree tree path)))\n\n\n;;\n;;\n;;\n\n(defn.xt make-route\n  \"makes a route\"\n  {:added \"4.0\"}\n  [initial]\n  (var input   (:? (xt/x:is-function? initial) (initial) initial))\n  (var interim (-/interim-from-url input))\n  (var tree    (-/interim-to-tree interim false))\n  (return\n   (event-common/blank-container\n    \"event.route\"\n    {:tree      tree\n     :history   []})))\n\n(defn.xt add-url-listener\n  \"adds a url listener\"\n  {:added \"4.0\"}\n  [route listener-id callback meta]\n  (return\n   (event-common/add-listener\n    route listener-id \"route.url\"\n    callback\n    meta\n    (fn:> [event] true))))\n\n(defn.xt add-path-listener\n  \"adds a path listener\"\n  {:added \"4.0\"}\n  [route path listener-id callback meta]\n  (:= path (event-common/arrayify-path path))\n  (var pkey (xt/x:json-encode path))\n  (return\n   (event-common/add-listener\n    route listener-id \"route.path\"\n    callback\n    (xt/x:obj-assign\n     {:route/path path}\n     meta)\n    (fn [event]\n      (return (xt/x:get-key (. event [\"path\"])\n                            pkey))))))\n\n(defn.xt add-param-listener\n  \"adds a param listener\"\n  {:added \"4.0\"}\n  [route param listener-id callback meta]\n  (return\n   (event-common/add-listener\n    route listener-id \"route.param\"\n    callback\n    (xt/x:obj-assign\n     {:route/param param}\n     meta)\n    (fn [event]\n      (return (xt/x:get-key (. event [\"params\"])\n                            param))))))\n\n(defn.xt add-full-listener\n  \"adds a full listener\"\n  {:added \"4.0\"}\n  [route path param listener-id callback meta]\n  (:= path (event-common/arrayify-path path))\n  (var pkey (xt/x:json-encode path))\n  (return\n   (event-common/add-listener\n    route listener-id \"route.full\"\n    callback\n    (xt/x:obj-assign\n     {:route/path  path\n      :route/param param}\n     meta)\n    (fn [event]\n      (return (and (== true\n                       (xt/x:get-key (. event [\"path\"])\n                                      pkey))\n                   (xt/x:not-nil?\n                    (xt/x:get-key (. event [\"params\"])\n                                  param))))))))\n\n(defn.xt remove-listener\n  \"removes a listener from the route\"\n  {:added \"4.0\"}\n  [route listener-id]\n  (return (event-common/remove-listener route listener-id)))\n\n(defn.xt list-listeners\n  \"lists all route listeners\"\n  {:added \"4.0\"}\n  [route]\n  (return (event-common/list-listeners route)))\n\n(defn.xt set-url\n  \"sets the url for a route\"\n  {:added \"4.0\"}\n  [route url terminate]\n  (var #{tree listeners} route)\n  (var ninterim (-/interim-from-url url))\n  (var ninterim-params (. ninterim [\"params\"]))\n  (var all-params (. tree [\"params\"]))\n  \n  ^CHANGES\n  (var ppath   (-/path-from-tree tree))\n  (var npath   (. ninterim [\"path\"]))\n  (var pkey    (xt/x:json-encode npath))\n  \n  (var pparams (xt/x:get-key all-params pkey))\n  (var nparams (xt/x:get-key ninterim-params pkey))\n  (when (xt/x:nil? nparams)\n    (:= nparams {}))\n\n  (var dpath   (-/changed-path-raw ppath npath))\n  (var dparams (-/changed-params-raw pparams nparams))\n  \n  ^MERGE\n  (xt/x:obj-assign tree (-/path-to-tree npath terminate))\n  (cond (xtd/obj-empty? nparams)\n        (when (xt/x:has-key? all-params pkey)\n          (xt/x:del-key all-params pkey))\n        \n        :else\n        (xt/x:set-key all-params pkey nparams))\n\n  (var #{history} route)\n  (xtd/arr-pushl history url 50)\n  (return\n   (event-common/trigger-listeners\n    route\n    {:type \"route.url\"\n     :params dparams\n     :path   dpath})))\n\n(defn.xt set-path\n  \"sets the path and param\"\n  {:added \"4.0\"}\n  [route path params]\n  (var #{tree} route)\n  (var all-params (. tree [\"params\"]))\n\n  ^CHANGES\n  (var ppath    (-/path-from-tree tree))\n  (var npath    path)\n  (when (xt/x:nil? npath)\n    (:= npath ppath))\n  (:= npath (xtd/arrayify npath))\n  (var pkey    (xt/x:json-encode npath))\n  \n  (var pparams  (xt/x:get-key all-params pkey))\n  (var nparams  params)\n  (when (xt/x:nil? nparams)\n    (:= nparams pparams))\n  (when (xt/x:nil? nparams)\n    (:= nparams {}))\n\n  (var dpath   (-/changed-path-raw ppath npath))\n  (var dparams (-/changed-params-raw pparams nparams))\n\n  ^MERGE\n  (xt/x:obj-assign tree (-/path-to-tree npath true))\n  (cond (xtd/obj-empty? nparams)\n        (when (xt/x:has-key? all-params pkey)\n          (xt/x:del-key all-params pkey))\n        \n        :else\n        (xt/x:set-key all-params pkey nparams))\n\n  (var #{history} route)\n  (xtd/arr-pushl history (-/get-url route) 50)\n  (return\n   (event-common/trigger-listeners\n    route\n    {:type \"route.path\"\n     :params dparams\n     :path   dpath})))\n\n(defn.xt set-segment\n  \"sets the current segment\"\n  {:added \"4.0\"}\n  [route path value]\n  (var #{tree} route)\n  (:= path (xtd/arrayify path))\n  (var pkey   (xt/x:json-encode path))\n  (var pvalue (xt/x:get-key tree pkey))\n  (xt/x:set-key tree pkey value)\n  \n  (var #{history} route)\n  (xtd/arr-pushl history (-/get-url route) 50)\n  (return\n   (event-common/trigger-listeners\n    route\n    {:type \"route.path\"\n     :params {}\n     :path   {pkey true}})))\n\n(defn.xt set-param\n  \"sets a param in a route\"\n  {:added \"4.0\"}\n  [route param value path]\n  (var #{tree} route)\n  (when (xt/x:nil? path)\n    (:= path (-/path-from-tree tree)))\n  (:= path (xtd/arrayify path))\n  (var pkey (xt/x:json-encode path))\n  (var all-params (. tree [\"params\"]))\n  (var pparams (xt/x:get-key all-params pkey))\n  (when (xt/x:nil? pparams)\n    (:= pparams {}))\n  (var pvalue  (xt/x:get-key pparams param))\n  (cond (not= pvalue value)\n        (do (cond (xt/x:nil? value)\n                  (xt/x:del-key pparams param)\n                  \n                  :else\n                  (xt/x:set-key pparams param value))\n\n            (cond (xtd/obj-empty? pparams)\n                  (when (xt/x:has-key? all-params pkey)\n                    (xt/x:del-key all-params pkey))\n                  \n                  :else\n                  (xt/x:set-key all-params pkey pparams))\n\n            (var #{history} route)\n            (xtd/arr-pushl history (-/get-url route) 50)\n            (return\n             (event-common/trigger-listeners\n              route\n              {:type \"route.params\"\n               :params {param true}\n               :path   {}})))\n\n        :else\n        (return [])))\n\n(defn.xt reset-route\n  \"resets the route, clearing all params\"\n  {:added \"4.0\"}\n  [route url]\n  (xt/x:set-key route \"history\" [])\n  (var route-url (:? (xt/x:nil? url) \"\" url))\n  (xt/x:set-key route \"tree\"\n                (-/interim-to-tree (-/interim-from-url route-url) true))\n  (-/set-url route route-url true))\n")
+          {:mode :create}))
+      (deref
+        (File/write
+          listener-path
+          (String/encode-utf8
+            "(ns xt.event.base-listener\n  (:require [tahto.core :as l :refer [defspec.xt]]))\n\n(l/script :xtalk\n  {:require [[xt.lang.spec-base :as xt]\n             [xt.lang.common-data :as xtd]]})\n\n(defspec.xt EventPayload\n  :xt/any)\n\n(defspec.xt EventListenerMeta\n  :xt/any)\n\n(defspec.xt EventListenerCallback\n  [:fn [EventPayload] :xt/any])\n\n(defspec.xt EventListenerEntry\n  [:xt/record\n   [\"callback\" EventListenerCallback]\n   [\"meta\" EventListenerMeta]\n   [\"pred\" [:xt/maybe [:fn [:xt/any] :xt/bool]]]])\n\n(defspec.xt EventListenerMap\n  [:xt/dict :xt/str EventListenerEntry])\n\n(defspec.xt EventListenerGroups\n  [:xt/dict :xt/str EventListenerMap])\n\n(defspec.xt EventTypeIndex\n  [:xt/dict :xt/str [:xt/array :xt/str]])\n\n(defspec.xt EventContainer\n  [:xt/record\n   [\"::\" :xt/str]\n   [\"listeners\" EventListenerMap]])\n\n(defspec.xt blank-container\n  [:fn [:xt/str [:xt/dict :xt/str :xt/any]] EventContainer])\n\n(defspec.xt make-container\n  [:fn [:xt/any :xt/str [:xt/dict :xt/str :xt/any]] EventContainer])\n\n(defspec.xt make-listener-entry\n  [:fn [:xt/str :xt/str\n        EventListenerCallback\n        [:xt/maybe EventListenerMeta]\n        [:xt/maybe [:fn [:xt/any] :xt/bool]]]\n       EventListenerEntry])\n\n(defspec.xt arrayify-path\n  [:fn [:xt/any] [:xt/array :xt/any]])\n\n(defspec.xt clear-listeners\n  [:fn [EventContainer] EventListenerMap])\n\n(defspec.xt add-listener\n  [:fn [EventContainer\n        :xt/str\n        :xt/str\n        EventListenerCallback\n        [:xt/maybe EventListenerMeta]\n        [:xt/maybe [:fn [:xt/any] :xt/bool]]]\n       EventListenerEntry])\n\n(defspec.xt remove-listener\n  [:fn [EventContainer :xt/str] [:xt/maybe EventListenerEntry]])\n\n(defspec.xt list-listeners\n  [:fn [EventContainer] [:xt/array :xt/str]])\n\n(defspec.xt list-listener-types\n  [:fn [EventContainer] EventTypeIndex])\n\n(defspec.xt trigger-entry\n  [:fn [EventListenerEntry EventPayload] [:xt/maybe :xt/any]])\n\n(defspec.xt trigger-listeners\n  [:fn [EventContainer [:xt/maybe EventPayload]] [:xt/array :xt/str]])\n\n(defspec.xt add-keyed-listener\n  [:fn [EventContainer\n        :xt/str\n        :xt/str\n        :xt/str\n        EventListenerCallback\n        [:xt/maybe EventListenerMeta]\n        [:xt/maybe [:fn [:xt/any] :xt/bool]]]\n       EventListenerEntry])\n\n(defspec.xt remove-keyed-listener\n  [:fn [EventContainer :xt/str :xt/str] [:xt/maybe EventListenerEntry]])\n\n(defspec.xt list-keyed-listeners\n  [:fn [EventContainer :xt/str] [:xt/array :xt/str]])\n\n(defspec.xt all-keyed-listeners\n  [:fn [EventContainer] [:xt/dict :xt/str [:xt/array :xt/str]]])\n\n(defspec.xt trigger-keyed-listeners\n  [:fn [EventContainer :xt/str [:xt/maybe EventPayload]] [:xt/array :xt/str]])\n\n(defn.xt blank-container\n  \"creates a blank container\"\n  {:added \"4.0\"}\n  [type-name opts]\n  (var container (xt/x:obj-assign\n                  {\"::\" type-name\n                   :listeners {}}\n                  opts))\n  (return container))\n\n(defn.xt make-container\n  \"makes a container\"\n  {:added \"4.0\"}\n  [initial type-name opts]\n  (var initialFn initial)\n  (when (not (xt/x:is-function? initialFn))\n    (:= initialFn\n        (fn [] (return initial))))\n  (var data   (initialFn))\n  (var container (xt/x:obj-assign\n                  {\"::\" type-name\n                   :data data\n                   :initial initialFn\n                   :listeners {}}\n                  opts))\n  (return container))\n\n(defn.xt make-listener-entry\n  \"makes a listener entry\"\n  {:added \"4.0\"}\n  [listener-id listener-type callback meta pred]\n  (return\n   {:callback callback\n    :pred pred\n    :meta (xt/x:obj-assign\n           {:listener/id   listener-id\n            :listener/type listener-type}\n           meta)}))\n\n(defn.xt listener-entry?\n  \"checks whether a listeners map value is a plain listener entry\"\n  {:added \"4.1\"}\n  [entry]\n  (return (and (xt/x:not-nil? entry)\n               (xt/x:is-function? (. entry [\"callback\"])))))\n\n(defn.xt arrayify-path\n  \"normalizes event path-like inputs, treating empty objects as empty arrays\"\n  {:added \"4.1\"}\n  [x]\n  (when (xt/x:is-array? x)\n    (return x))\n  (when (or (xt/x:nil? x)\n            (and (xt/x:is-object? x)\n                 (xtd/is-empty? x)))\n    (return []))\n  (return [x]))\n\n(defn.xt callback-data\n  \"normalizes event payload for callback consumers\"\n  {:added \"4.1\"}\n  [event]\n  (when (not (xt/x:is-object? event))\n    (return event))\n  (var out (xt/x:obj-clone event))\n  (when (xt/x:has-key? out \"meta\")\n    (xt/x:del-key out \"meta\"))\n  (return out))\n\n(defn.xt callback-time\n  \"extracts an event timestamp when present\"\n  {:added \"4.1\"}\n  [event]\n  (when (not (xt/x:is-object? event))\n    (return nil))\n  (when (xt/x:has-key? event \"time\")\n    (return (. event [\"time\"])))\n  (when (xt/x:has-key? event \"t\")\n    (return (. event [\"t\"])))\n  (return nil))\n\n(defn.xt clear-listeners\n  \"clears all listeners\"\n  {:added \"4.0\"}\n  [container]\n   (var #{listeners} container)\n   (var cleared {})\n   (var kept {})\n   (xt/for:object [[id entry] listeners]\n     (if (-/listener-entry? entry)\n       (xt/x:set-key cleared id entry)\n       (xt/x:set-key kept id entry)))\n   (xt/x:set-key container \"listeners\" kept)\n   (return cleared))\n\n(defn.xt add-listener\n  \"adds a listener to container\"\n  {:added \"4.0\"}\n  [container listener-id listener-type callback meta pred]\n  (var #{listeners} container)\n  (var entry (-/make-listener-entry listener-id listener-type callback meta pred))\n  (xt/x:set-key listeners listener-id entry)\n  (return entry))\n\n(defn.xt remove-listener\n  \"removes a listener\"\n  {:added \"4.0\"}\n  [container listener-id]\n  (var #{listeners} container)\n  (var entry (xt/x:get-key listeners listener-id))\n  (when (not (-/listener-entry? entry))\n    (return nil))\n  (xt/x:del-key listeners listener-id)\n  (return entry))\n\n(defn.xt list-listeners\n  \"lists all current listeners\"\n  {:added \"4.0\"}\n  [container]\n  (var #{listeners} container)\n  (var out [])\n  (xt/for:object [[id entry] listeners]\n    (when (-/listener-entry? entry)\n      (xt/x:arr-push out id)))\n  (return out))\n\n(defn.xt list-listener-types\n  \"lists listeners by their type\"\n  {:added \"4.0\"}\n  [container]\n  (var #{listeners} container)\n  (var out {})\n  (xt/for:object [[id listener-entry] listeners]\n    (when (-/listener-entry? listener-entry)\n      (var #{meta} listener-entry)\n      (var t   (. meta [\"listener/type\"]))\n      (var arr (xt/x:get-key out t))\n      (when (xt/x:nil? arr)\n        (:= arr [])\n        (xt/x:set-key out t arr))\n      (xt/x:arr-push arr id)))\n  (return out))\n\n(defn.xt trigger-entry\n  \"triggers the individual entry\"\n  {:added \"4.0\"}\n  [entry event]\n  (var #{callback meta pred} entry)\n  (when (or (xt/x:nil? pred)\n            (pred event))\n    (var nmeta (xt/x:obj-assign (or (. event [\"meta\"])\n                                    {})\n                                meta))\n    (var listener-id (. meta [\"listener/id\"]))\n    (return\n     (callback\n      listener-id\n      (-/callback-data event)\n      (-/callback-time event)\n      nmeta))))\n\n(defn.xt trigger-listeners\n  \"triggers listeners given event\"\n  {:added \"4.0\"}\n  [container event]\n  (when (xt/x:nil? event)\n    (:= event {}))\n  (var #{listeners} container)\n  (var triggered [])\n  (xt/for:object [[id entry] listeners]\n    (when (-/listener-entry? entry)\n      (-/trigger-entry entry event)\n      (xt/x:arr-push triggered id)))\n  (return triggered))\n\n\n;;\n;;\n;;\n\n(defn.xt add-keyed-listener\n  \"adds a keyed entry\"\n  {:added \"4.0\"}\n  [container key listener-id listener-type callback meta pred]\n  (var #{listeners} container)\n  (var entry (-/make-listener-entry listener-id listener-type callback meta pred))\n  (var group (xt/x:get-key listeners key))\n  (when (xt/x:nil? group)\n    (:= group {})\n    (xt/x:set-key listeners key group))\n  (xt/x:set-key group listener-id entry)\n  (return entry))\n\n(defn.xt remove-keyed-listener\n  \"removes a keyed listener\"\n  {:added \"4.0\"}\n  [container key listener-id]\n  (var #{listeners} container)\n  (var group (xt/x:get-key listeners key))\n  (when (or (xt/x:nil? group)\n            (-/listener-entry? group))\n    (return nil))\n  (var entry (xt/x:get-key group listener-id))\n  (xt/x:del-key group listener-id)\n  (when (xtd/obj-empty? group)\n    (xt/x:del-key listeners key))\n  (return entry))\n\n(defn.xt list-keyed-listeners\n  \"lists all listeners under and key\"\n  {:added \"4.0\"}\n  [container key]\n  (var #{listeners} container)\n  (var group (xt/x:get-key listeners key))\n  (when (or (xt/x:nil? group)\n            (-/listener-entry? group))\n    (return []))\n  (return (xt/x:obj-keys group)))\n\n(defn.xt all-keyed-listeners\n  \"lists all listeners\"\n  {:added \"4.0\"}\n  [container]\n  (var #{listeners} container)\n  (var out {})\n  (xt/for:object [[key group] listeners]\n    (when (not (-/listener-entry? group))\n      (xt/x:set-key out key (-/list-keyed-listeners container key))))\n  (return out))\n\n(defn.xt trigger-keyed-listeners\n  \"triggers listeners under a key\"\n  {:added \"4.0\"}\n  [container key event]\n  (when (xt/x:nil? event)\n    (:= event {}))\n  (var #{listeners} container)\n  (var group (xt/x:get-key listeners key))\n  (var triggered [])\n  (when (and (xt/x:not-nil? group)\n             (not (-/listener-entry? group)))\n    (xt/for:object [[id entry] group]\n      (-/trigger-entry entry event)\n      (xt/x:arr-push triggered id)))\n  (return triggered))\n")
+          {:mode :create}))
+      (do
+        (do
+          (lang.typed.xtalk-common/clear-registry!)
+          (lang.typed.xtalk-parse/register-types!
+            (lang.typed.xtalk-parse/analyze-file listener-path))
+          (lang.typed.xtalk-parse/register-types!
+            (lang.typed.xtalk-parse/analyze-file route-path)))
+        (canonical-stage
+          '(do
+             (var r (route/make-route))
+             (. (. r ["listeners"]) ["a1"]))
+          {:mopts
+           {:lang :python,
+            :module
+            {:id 'xt.event.base-route-test,
+             :alias {'route 'xt.event.base-route}}}}))
+      (finally
+        (reset! lang.typed.xtalk-common/*type-registry* baseline)
+        (deref (File/delete listener-path {:missing-ok? true}))
+        (deref (File/delete route-path {:missing-ok? true})))))
+  =>
+  '(do
+     (var r (xt.event.base-route/make-route))
+     (x:get-key (x:get-key r "listeners") "a1")))
+
+^{:refer lang.base.emit-rewrite/canonical-stage :id canonical-stage-xtalk-entry :added "4.1"}
+(fact "runs canonical lowering for XTalk entries"
+  (canonical-stage '(. value [key])
+                   {:mopts {:entry {:lang :xtalk}}})
+  => '(. value [key]))
+
+^{:refer lang.base.emit-rewrite/rewrite-stage :added "4.1"}
+(fact "applies each transform for a stage to the form"
+  (rewrite-stage :staging
+                 1
+                 {:rewrite {:staging [(fn [form _] (inc form))
+                                      (fn [form _] (inc form))]}}
+                 {})
+  => 3
+
+  (rewrite-stage :emit
+                 5
+                 {:rewrite {:emit [(fn [form _] (* form 2))
+                                   (fn [form _] (+ form 1))]}}
+                 {})
+  => 11
+
+  (has? (set (stage-transforms (emit/default-grammar) :canonical))
+             #'canonical-stage)
+  => true)
 
 ^{:refer lang.base.emit-rewrite/xtalk-context}
-(Test/check [{:name "derives XTalk context from module namespaces and aliases"
-              :test (fn [] (rewrite/xtalk-context {:module {:id 'fixture.core :alias {'short 'fixture.core}}}))
-              :expected {:ns 'fixture.core :aliases {'short 'fixture.core} :env {} :preserve-unknown true}}])
+(fact "derives namespace and aliases by the original precedence"
+  (let [full (xtalk-context {:ns 'explicit :aliases {'a 'explicit.alias}
+                            :entry {:namespace 'entry :aliases {'a 'entry.alias}}
+                            :module {:namespace 'module :id 'module-id :alias {'a 'module.alias}}})]
+    [(select-keys full [:ns :aliases :env :preserve-unknown])
+     (= (:infer full) infer/infer-type)
+     (:ns (xtalk-context {:entry {:namespace 'entry} :module {:namespace 'module}}))
+     (:ns (xtalk-context {:module {:namespace 'module :id 'module-id}}))
+     (:ns (xtalk-context {:module {:id 'module-id}}))
+     (select-keys (xtalk-context {:aliases {'a 'alias-only}}) [:ns :aliases])
+     (xtalk-context {})])
+  => [{:ns 'explicit :aliases {'a 'explicit.alias} :env {} :preserve-unknown true}
+      true 'entry 'module 'module-id {:ns nil :aliases {'a 'alias-only}} nil])
 
 ^{:refer lang.base.emit-rewrite/infer-environment}
-(Test/check [{:name "merges inferred environment and preserves context on inference failure"
-              :test (fn [] [(select-keys
-                             (rewrite/infer-environment
-                              'form
-                              {:env {'existing {:kind :map}}
-                               :infer (fn [form context] {:env {'values {:kind :array}}})})
-                             [:env])
-                            (select-keys
-                             (rewrite/infer-environment
-                              'form
-                              {:env {} :infer (fn [form context] (throw "failure"))})
-                             [:env])])
-              :expected [{:env {'existing {:kind :map} 'values {:kind :array}}}
-                         {:env {}}]}])
+(fact "merges inferred bindings and preserves context on no environment or inference failure"
+  (let [ctx {:ns 'sample :aliases {} :env {'old {:kind :primitive :name :xt/str}}
+             :infer infer/infer-type}
+        failing (assoc ctx :infer (fn [form ctx] (throw (ex :generic {}))))]
+    [(:env (infer-environment '(var x 1) ctx))
+     (= ctx (infer-environment 1 ctx))
+     (= failing (infer-environment [1] failing))])
+  => [{'old {:kind :primitive :name :xt/str} 'x {:kind :primitive :name :xt/int}}
+      true true])
 
 ^{:refer lang.base.emit-rewrite/contains-dot?}
-(Test/check [{:name "detects nested dot forms in aggregate Hara values"
-              :test (fn [] [(rewrite/contains-dot? '(outer (. value ["name"])))
-                            (rewrite/contains-dot? {:plain [1 2]})])
-              :expected [true false]}])
-
-^{:refer lang.base.emit-rewrite/rewrite-symbol-value}
-(Test/check [{:name "rewrites a qualified symbol through the module alias map"
-              :test (fn [] [(rewrite/rewrite-symbol-value 'short/value {'short 'target})
-                            (rewrite/rewrite-symbol-value 'plain {'short 'target})])
-              :expected ['target/value 'plain]}])
-
-^{:refer lang.base.emit-rewrite/array-target?}
-(Test/check [{:name "recognizes inferred array access targets"
-              :test (fn [] [(rewrite/array-target? 'items {'items {:kind :array}})
-                            (rewrite/array-target? 'item {'item {:kind :map}})])
-              :expected [true false]}])
-
-^{:refer lang.base.emit-rewrite/canonical-lower}
-(Test/check [{:name "lowers string and array dot access to canonical XTalk operations"
-              :test (fn [] [(rewrite/canonical-lower '(. object ["name"]) {} {})
-                            (rewrite/canonical-lower '(. items [0]) {} {'items {:kind :array}})])
-              :expected ['(x:get-key object "name") '(x:get-idx items 0)]}])
-
-^{:refer lang.base.emit-rewrite/canonical-stage}
-(Test/check [{:name "uses only canonical lang context keys and lowers aliases"
-              :test (fn [] (rewrite/canonical-stage
-                            '(. short/object ["name"])
-                            {:mopts {:lang/xtalk-context {:aliases {'short 'target} :env {}}}}))
-              :expected '(x:get-key target/object "name")}])
-
-^{:refer lang.base.emit-rewrite/rewrite-stage}
-(Test/check [{:name "runs canonical lowering before configured stage transforms"
-              :test (fn [] (rewrite/rewrite-stage
-                            :staging '(. object ["name"])
-                            {:rewrite {:staging [(fn [form context] (list 'wrapped form))]}}
-                            {:module {:id 'fixture.core}}))
-              :expected '(wrapped (x:get-key object "name"))}])
+(fact "finds nested dot forms in lists vectors map keys and map values"
+  [(contains-dot? 1) (contains-dot? '())
+   (contains-dot? '(. value [key])) (contains-dot? '[1 (. value [key])])
+   (contains-dot? '{(. key [i]) 1}) (contains-dot? '{:key (. value [i])})
+   (contains-dot? '{:key [1 2]})]
+  => [false nil true true true true nil])
