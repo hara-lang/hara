@@ -3,11 +3,25 @@
   (:require [lang.base.book-meta :as book-meta]
             [lang.model.v1.spec-js.meta :as meta]))
 
-^{:refer lang.model.v1.spec-js.meta/js-module-import-async}
-(fact "builds a lazy ESM proxy import"
-  (let [form (meta/js-module-import-async "react" '{:as React})]
-    [(first form) (second form) (first (nth form 2))])
-  => ['const 'React 'new])
+^{:refer lang.model.v1.spec-js.meta/js-module-import-async, :id :pinned-async-dsl}
+(fact
+  "retains the complete quoted proxy callback as DSL data"
+  (meta/js-module-import-async "react" '{:as React})
+  =>
+  '(const
+     React
+     (new
+       Proxy
+       (import "react")
+       {:get
+        (fn [esm key]
+          (return
+            (. esm
+             (then
+               (fn [m]
+                 (return
+                   {"__esMODULE" true,
+                    :default (. m default [key])}))))))})))
 
 ^{:refer lang.model.v1.spec-js.meta/js-module-import}
 (fact "ports Foundation JavaScript module imports across ESM CommonJS and globals"
@@ -25,13 +39,15 @@
       '(const React := (require "react"))
       '(Object.defineProperty !:G "React" {:value (require "react")})])
 
-^{:refer lang.model.v1.spec-js.meta/js-module-import}
-(fact "keeps scoped npm links as bare package specifiers"
+^{:refer lang.model.v1.spec-js.meta/js-module-import, :id :scoped-package-import}
+(fact
+  "keeps scoped npm links as bare package specifiers"
   (meta/js-module-import
-   "@xtalk/lang/common-data"
-   '{:as xtd :suffix ".js"}
-   {:emit {:import :link :lang/format :commonjs}})
-  => '(const xtd := (require "@xtalk/lang/common-data.js")))
+    "@xtalk/lang/common-data"
+    '{:as xtd, :suffix ".js"}
+    {:emit {:import :link, :lang/format :commonjs}})
+  =>
+  '(const xtd := (require "@xtalk/lang/common-data.js")))
 
 ^{:refer lang.model.v1.spec-js.meta/js-module-export}
 (fact "ports Foundation JavaScript module export forms"
@@ -66,10 +82,38 @@
       "const answer = 42"])
 
 ^{:refer lang.model.v1.spec-js.meta/+meta+}
-(fact "materializes the complete JavaScript BookMeta hook surface"
+(fact
+  "retains original BookMeta Var hooks and empty module-current boundary"
   [(book-meta/book-meta? meta/+meta+)
-   (mapv fn? [(:module-import meta/+meta+)
-              (:module-export meta/+meta+)
-              (:module-link meta/+meta+)])
-   (mapv fn? (get-in meta/+meta+ [:transforms :entry]))]
-  => [true [true true true] [true]])
+   (:module-import meta/+meta+)
+   (:module-export meta/+meta+)
+   (:module-link meta/+meta+)
+   (get-in meta/+meta+ [:transforms :entry])
+   (has? meta/+meta+ :module-current)
+   (when-let [current (:module-current meta/+meta+)] (current))
+   ((deref (:module-import meta/+meta+)) 'react '{:as React} {})]
+  =>
+  [true
+   #'meta/js-module-import
+   #'meta/js-module-export
+   #'meta/js-module-link
+   [#'meta/js-transform-entry]
+   true
+   nil
+   '(:- :import '[React] :from "'react'")])
+
+^{:refer lang.model.v1.spec-js.meta/js-module-import, :id :pinned-js-module-import-branches} (fact "preserves original import modes scoped-package boundaries and quoted async callbacks" (mapv (fn [[module-name link mopts]] (meta/js-module-import module-name link mopts)) (quote [[react {} {}] [react {:as React} {}] [react {:refer [hello world]} {}] [react {:as [:* React], :refer [hello world]} {}] [react {:as React, :suffix ".js"} {:emit {:import :link}}] ["@xtalk/lang/common-data" {:as xtd, :suffix ".js"} {:emit {:import :link, :lang/format :commonjs}}] ["@loose" {:as value} {:emit {:import :link}}] ["@bad$/file" {:as value} {:emit {:import :link}}] ["https://example.test/module" {:as value} {:emit {:import :link}}] ["../module" {:as value} {:emit {:import :link}}] ["/module" {:as value} {:emit {:import :link}}] [react {:as React} {:emit {:lang/format :none}}] [react {:as [:* React]} {:emit {:lang/format :global}}] [react {:as [:* React]} {:emit {:lang/format :commonjs}}] [react {:ns react.core, :as React} {:emit {:static {:import/async [react.core]}}}] [react {:as React} {:emit {:format :commonjs}}]])) => (quote [(:- :import "'react'") (:- :import (quote [React]) :from "'react'") (:- :import (quote [#{hello world}]) :from "'react'") (:- :import (quote [(:- :* :as React) #{hello world}]) :from "'react'") (:- :import (quote [(:- * :as React)]) :from "'./react.js'") (const xtd := (require "@xtalk/lang/common-data.js")) (:- :import (quote [(:- * :as value)]) :from "'./@loose'") (:- :import (quote [(:- * :as value)]) :from "'./@bad$/file'") (:- :import (quote [(:- * :as value)]) :from "'https://example.test/module'") (:- :import (quote [(:- * :as value)]) :from "'../module'") (:- :import (quote [(:- * :as value)]) :from "'/module'") nil (Object.defineProperty !:G "React" {:value (require "react")}) (const React := (require "react")) (const React (new Proxy (import "react") {:get (fn [esm key] (return (. esm (then (fn [m] (return {"__esMODULE" true, :default (. m default [key])}))))))})) (:- :import (quote [React]) :from "'react'")]))
+
+^{:refer lang.model.v1.spec-js.meta/js-module-export, :id :pinned-js-module-export-branches} (fact "preserves original export modes and static declarations" (mapv (fn [[module-value mopts]] (meta/js-module-export module-value mopts)) (quote [[{} {}] [{} {:emit {:lang/export true}}] [{} {:emit {:lang/format :commonjs}}] [{:static {:export [answer]}} {}] [{:static {:export [answer helper]}} {}] [{:static {:export [answer]}} {:emit {:lang/format :none}}] [{:static {:export [answer]}} {:emit {:lang/format :global}}] [{:static {:export []}} {:emit {:lang/export true}}] [{} {:emit {:export true}}]])) => (quote [nil (:- :export :default (tab)) (:= module.exports (tab)) (:- :export :default answer) (:- :export :default (tab [(:% "answer") answer] [(:% "helper") helper])) nil nil (:- :export :default (tab)) nil]))
+
+^{:refer lang.model.v1.spec-js.meta/js-transform-entry, :id :pinned-js-transform-entry-branches} (fact "preserves original declaration export decisions and script boundaries" (mapv (fn [[body context]] (meta/js-transform-entry body context)) (quote [["BODY" {:entry {:op-key :def}}] ["BODY" {:entry {:op-key :defn}}] ["BODY" {:entry {:op-key :defclass}}] ["BODY" {:entry {:op-key :var}}] ["BODY" {:entry {:op-key :def}, :mopts {:emit {:type :script}}}] ["BODY" {:entry {:op-key :def}, :mopts {:emit {:lang/format :none}}}] ["BODY" {:entry {:op-key :def}, :mopts {:emit {:lang/format :global}}}] ["BODY" {:entry {:op-key :def}, :mopts {:emit {:lang/format :commonjs}}}] ["BODY" {:entry {:op-key :def}, :mopts {:emit {:format :commonjs}}}]])) => (quote ["export BODY" "export BODY" "export BODY" "BODY" "BODY" "BODY" "BODY" "BODY" "export BODY"]))
+
+^{:refer lang.model.v1.spec-js.meta/js-module-link, :id :pinned-js-module-link-branches} (fact "preserves root-relative external internal sibling and parent module paths" (mapv (fn [[target graph]] (meta/js-module-link target graph)) (quote [[kmi.common {:base kmi.hello}] [kmi.exchange {:base kmi, :target "src"}] [kmi.exchange {:base kmi.other.namespace, :target "src"}] [js.core {:base kmi.other.main, :target "src"}] [js.core {:base kmi.app.main, :root-ns kmi.app.main}] [js.core {:base kmi.app.feature.main, :root-ns kmi.app.main}] [kmi.app.other {:base kmi.app.main, :root-ns kmi.app.main}] [other.lib {:base external.main, :root-ns kmi.app.main}] [kmi.app {:base kmi.app.main, :root-ns kmi.app.main}] [kmi {:base kmi.main}] [js.core {:base kmi.main, :root-ns kmi.main}] [kmi.app.main {:base kmi.app.main, :root-ns kmi.app.main}]])) => ["./common" "./kmi/exchange" "../exchange" "../../js/core" "./js/core" "../js/core" "./other" "../other/lib" "../app" "../kmi" "./js/core" "./main"])
+
+(require [lang.core.impl-deps :as deps])
+^{:refer lang.model.v1.spec-js.meta/+meta+ :id :original-book-hook-consumers}
+(fact "original dependency consumers invoke the JavaScript BookMeta Vars"
+ [(deps/module-import-form {:meta meta/+meta+} 'react '{:as React} {})
+  (deps/module-export-form {:meta meta/+meta+} {:static {:export '[answer]}} {})
+  (deps/module-link-form {:meta meta/+meta+} 'js.core {:base 'kmi.app.main :root-ns 'kmi.app.main})]
+ => ['(:- :import (quote [React]) :from "'react'") '(:- :export :default answer) "./js/core"])

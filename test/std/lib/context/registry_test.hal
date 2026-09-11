@@ -1,11 +1,51 @@
 (ns std.lib.context.registry-test
   (:require [std.lib.context.registry :as registry]))
 
+(defstruct NullRuntimeFixture [lang runtime])
+
 (defn isolated [function]
   (try (registry/reset-registry!) (function) (finally (registry/reset-registry!))))
 
 ^{:refer std.lib.context.registry/rt-null?}
-(Test/check [{:name "recognizes null runtime instances" :test (fn [] (registry/rt-null? registry/+rt-null+)) :expected true}])
+(Test/check
+  [{:name "recognizes null runtime instances",
+    :test (fn [] (registry/rt-null? registry/+rt-null+)),
+    :expected true}
+   {:name
+    "recognizes original null-runtime maps and records and rejects near misses",
+    :test
+    (fn []
+      (mapv
+        registry/rt-null?
+        [{:lang :null, :runtime :default}
+         {:lang :null, :runtime :default, :extra 42}
+         (NullRuntimeFixture :null :default)
+         (NullRuntimeFixture :lua :default)
+         (NullRuntimeFixture :null :basic)
+         {:lang :lua, :runtime :default}
+         {:lang :null, :runtime :basic}
+         {:lang :null}
+         {:runtime :default}
+         {}
+         nil
+         false
+         []
+         :null])),
+    :expected
+    [true
+     true
+     true
+     false
+     false
+     false
+     false
+     false
+     false
+     false
+     false
+     false
+     false
+     false]}])
 ^{:refer std.protocol.icontextlifecycle/has-setup-ptr?}
 (Test/check [{:name "keeps null-runtime pointer setup absence in lifecycle state"
               :test (fn [] (IContextLifeCycle/has-setup-ptr? registry/+rt-null+ :missing))

@@ -1,0 +1,91 @@
+(ns lang.core.script-macro (:config {:override [intern-in]}) (:require [lang.base.util :as ut]))
+
+(def +form-allow+ [:line :column :file :name :ns])
+
+(defn body-arglists
+  "makes arglists from body"
+  {:added "4.0"}
+  [body]
+  (let [args-fn (fn [body]
+                  (vec
+                    (remove
+                      (fn [x]
+                        (or
+                          (keyword? x)
+                          (number? x)
+                          (and (vector? x) (not (some symbol? x)))
+                          (string? x)))
+                      (first body))))]
+    (if (vector? (first body))
+      (list (args-fn body))
+      (apply list (map args-fn body)))))
+
+(defn intern-in
+  "interns a macro"
+  {:added "4.0"}
+  [prefix tag val & migration-optional-arguments]
+  (let [namespace (first (drop 0 migration-optional-arguments))]
+    (intern
+      (or namespace (ns-current))
+      (with-meta
+        (symbol (str prefix (if (string? tag) tag (name tag))))
+        {:macro true, :arglists '([& body])})
+      val)))
+
+(defn intern-prep
+  "outputs the module and form meta"
+  {:added "4.0"}
+  [lang form]
+  (let [fmeta (meta form)
+        module (or
+                 (:module fmeta)
+                 (let [rt (ut/lang-rt lang)] (:module rt)))
+        _ (when (not (boolean module))
+            (throw
+              (ex
+                :argument
+                {}
+                :ex/message
+                "Module required for insertion.")))]
+    [module fmeta]))
+
+(defn intern-free-fn
+  "interns a free pointer in the namespace\n   \n   (macro/intern-free-fn :lua '(defptr.lua hello 1)\n                         {})\n   => #'tahto.core.script-macro-test/hello"
+  {:added "4.0"}
+  [lang [_ sym body] smeta]
+  (let [rt (ut/lang-rt lang)
+        module (or (:module smeta) (:module rt))
+        ptr (ut/lang-pointer lang {:module module, :form body})]
+    (intern (ns-current) sym ptr)))
+
+(defn intern-free
+  "creates a defptr macro
+ 
+   (macro/intern-free :lua \"hello\")
+   => #'tahto.core.script-macro-test/defptr.hello"
+  {:added "4.0"}
+  ([lang tag]
+   (intern-in
+    "defptr." tag
+    (fn [&form _ & body]
+      `(lang.core.script-macro/intern-free-fn ~lang (quote ~&form)
+                       ~(meta &form))))))
+
+(defn intern-highlights
+  "interns the highlight macros in the grammar"
+  {:added "4.0"}
+  [lang grammar]
+  (let [{:keys [highlight reserved]} grammar]
+    (vec
+      (keep
+        (fn [sym]
+          (let [op (get reserved sym)]
+            (intern
+              (ns-current)
+              (with-meta
+                sym
+                (merge
+                  {:macro true}
+                  (select-keys (or op {}) [:arglists :style/indent])))
+              (fn [_ _ & args] nil))))
+        highlight))))

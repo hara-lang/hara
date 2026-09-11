@@ -197,3 +197,19 @@
       :lang/symbol 'missing :lang/form '(missing)}
      {:lang/line 11 :lang/subsystem :lang.base.emit-top-level/emit-form
       :lang/symbol 'missing :lang/form '(missing)}])
+
+(require [lang.base.emit :as emit])
+
+^{:refer lang.base.emit-top-level/transform-defclass-inner :id persistent-class-members}
+(fact "class members retain exact forms metadata and repeated emission"
+  (let [form (first (transform-defclass-inner '[(var field 7)]))
+        grammar (grammar/grammar :test (grammar/to-reserved (grammar/build)) helper/+default+)]
+    [(vec form) (emit/emit-main form grammar {}) (emit/emit-main form grammar {}) (vec form)])
+  => ['[var.inner field 7] "field = 7" "field = 7" '[var.inner field 7]]
+  (let [input (with-meta '(fn method [self] (return 1)) {:decorators '[classmethod] :line 7})
+        forms (transform-defclass-inner [input '(var field 7) :unchanged])
+        function-form (first forms)]
+    [(vec function-form) (vec function-form) (meta (second function-form))
+     (= forms (transform-defclass-inner forms)) (meta input) (last forms)])
+  => ['[fn.inner method [self] (return 1)] '[fn.inner method [self] (return 1)]
+      {:decorators '[classmethod] :line 7} true {:decorators '[classmethod] :line 7} :unchanged])

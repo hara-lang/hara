@@ -1,5 +1,8 @@
 (ns std.foundation-test)
 
+(def intern-value-slot nil)
+(def ^{:doc "intern metadata baseline"} intern-metadata-slot nil)
+
 (intern-in [published-when std.foundation/when])
 
 ^{:refer std.foundation/type}
@@ -582,6 +585,84 @@
                 (or (= :loaded (get state :state))
                     (= :unloaded (get state :state)))])))
    :expected ['str 'std.foundation.string true]}])
+
+^{:refer std.foundation/intern}
+(Test/check
+ [{:name "interns a live native pointer containing a Var callback"
+   :test (fn []
+           (let [baseline intern-value-slot
+                 before (ns-current)
+                 value (pointer {:context :lang/lua :lang :lua :module 'sample :id 'add
+                                 :context/fn (var identity)})]
+             (try
+               (let [published (intern before 'intern-value-slot value)
+                     stored (deref published)]
+                 [(= published (var intern-value-slot))
+                  (pointer? stored)
+                  (select-keys stored [:lang :module :id])
+                  (= (:context/fn stored) (var identity))
+                  (= before (ns-current))])
+               (finally (intern before 'intern-value-slot baseline)))))
+   :expected [true true {:lang :lua :module 'sample :id 'add} true true]}
+  {:name "retains a captured function without serializing its value"
+   :test (fn []
+           (let [baseline intern-value-slot offset 40]
+             (try
+               (let [published (intern (ns-current) 'intern-value-slot
+                                       (fn [x] (+ offset x)))]
+                 ((deref published) 2))
+               (finally (intern (ns-current) 'intern-value-slot baseline)))))
+   :expected 42}
+  {:name "stores a supplied Var itself rather than copying its root"
+   :test (fn []
+           (let [baseline intern-value-slot]
+             (try
+               (= (deref (intern (ns-current) 'intern-value-slot (var identity)))
+                  (var identity))
+               (finally (intern (ns-current) 'intern-value-slot baseline)))))
+   :expected true}
+  {:name "rebinds the same destination Var and supports nil"
+   :test (fn []
+           (let [baseline intern-value-slot]
+             (try
+               (let [first-var (intern (ns-current) 'intern-value-slot 42)
+                     second-var (intern (ns-current) 'intern-value-slot 43)
+                     replaced (deref first-var)]
+                 (intern (ns-current) 'intern-value-slot nil)
+                 [(= first-var second-var) replaced (deref first-var)])
+               (finally (intern (ns-current) 'intern-value-slot baseline)))))
+   :expected [true 43 nil]}
+  {:name "adopts name-symbol metadata and restores metadata with the value"
+   :test (fn []
+           (let [baseline intern-metadata-slot
+                 before (meta (var intern-metadata-slot))
+                 result
+                 (try
+                   (let [published (intern (ns-current)
+                                           (with-meta 'intern-metadata-slot
+                                             {:doc "script entry" :arglists '([x]) :lang :lua})
+                                           42)
+                         tagged (meta published)]
+                     (intern (ns-current) 'intern-metadata-slot 43)
+                     (let [retained (= tagged (meta published))]
+                       (intern (ns-current)
+                               (with-meta 'intern-metadata-slot {:doc "replacement"}) 44)
+                       [(:doc tagged) (:arglists tagged) (:lang tagged)
+                        retained (meta published)]))
+                   (finally
+                     (intern (ns-current) (with-meta 'intern-metadata-slot before) baseline)))]
+             [result (= before (meta (var intern-metadata-slot)))
+              (= baseline intern-metadata-slot)]))
+   :expected [["script entry" '([x]) :lua true {:doc "replacement"}] true true]}
+  {:name "rejects invalid targets without changing the binding"
+   :test (fn []
+           (let [baseline intern-value-slot]
+             [(try (intern (ns-current) 'other/intern-value-slot 1)
+                   :accepted (catch error :rejected))
+              (try (intern (ns-current) :intern-value-slot 1)
+                   :accepted (catch error :rejected))
+              (= baseline intern-value-slot)]))
+   :expected [:rejected :rejected true]}])
 
 ^{:refer std.foundation/intern-var}
 (Test/check

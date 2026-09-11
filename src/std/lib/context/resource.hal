@@ -44,21 +44,70 @@
 (defn ^{:public true} spec-list []
   (keys (deref *resource-registry*)))
 
-(defn ^{:public true} spec-add [spec]
-  (let [type (:type spec)
-        base-variant (get (:variant +resource-type+) :default)
-        variants (map-vals (fn [variant]
-                             (resource-merge-config base-variant variant))
-                           (:variant spec))
-        variants (assoc variants
-                        :default
-                        (resource-merge-config
-                         base-variant
-                         (get (:variant spec) :default {})))
-        entry (resource-merge-config +resource-type+ spec)
-        entry (assoc entry :variant variants)]
-    (swap! *resource-registry* assoc type entry)
-    [:changed entry]))
+(defn ^{:public true} spec-add
+  "Merges a normalized resource spec, returning changed leaves or [:no-change]."
+  [spec]
+  (letfn
+    [(merge-spec
+       [left right]
+       (cond
+         (and (nil? left) (nil? right)) nil
+         (and
+           (or (nil? left) (map? left))
+           (or (nil? right) (map? right))) (merge-with
+                                             merge-spec
+                                             left
+                                             right)
+         :else right))
+     (changes
+       [new old]
+       (reduce-kv
+         (fn [out key value]
+           (cond
+             (not (has? (or old {}) key)) (assoc out key value)
+             (and (map? value) (map? (get old key))) (let
+                                                       [nested
+                                                        (changes
+                                                          value
+                                                          (get
+                                                            old
+                                                            key))]
+                                                       (if
+                                                         (empty?
+                                                           nested)
+                                                         out
+                                                         (assoc
+                                                           out
+                                                           key
+                                                           nested)))
+             (= value (get old key)) out
+             :else (assoc out key value)))
+         {}
+         new))]
+    (let [type (:type spec)
+          base-variant (get (:variant +resource-type+) :default)
+          variants (map-vals
+                     (fn [variant]
+                       (resource-merge-config base-variant variant))
+                     (or (:variant spec) {}))
+          variants (assoc
+                     variants
+                     :default
+                     (resource-merge-config
+                       base-variant
+                       (get (or (:variant spec) {}) :default {})))
+          entry (assoc
+                  (resource-merge-config +resource-type+ spec)
+                  :variant
+                  variants)]
+      (swap-return!
+        *resource-registry*
+        (fn [registry]
+          (let [old (get registry type)
+                new (merge-spec old entry)
+                delta (changes new old)]
+            [(if (empty? delta) [:no-change] [:changed delta])
+             (assoc registry type new)]))))))
 
 (defn ^{:public true} spec-remove [type]
   (swap-return!

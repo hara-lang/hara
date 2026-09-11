@@ -1,5 +1,5 @@
 (ns lang.base.grammar-macro
-  (:require [lang.base.grammar-spec :as spec] [std.foundation :as f]))
+  (:require [lang.base.grammar-spec :as spec]))
 
 ;;
 ;; macros
@@ -33,10 +33,12 @@
    => '(br* (if true :A :B :C))"
   {:added "3.0"}
   ([[_ check & body]] (let [body (not-empty (apply list (vec body)))]
-                        (std.foundation/seq (std.foundation/concat (std.foundation/list (quote br*))
-                                              (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote if))
-                                                                                         (std.foundation/list check)
-                                                                                         body))))))))
+                        (apply list
+                          (std.foundation/concat (std.foundation/list (quote br*))
+                            (std.foundation/list (apply list
+                                                   (std.foundation/concat (std.foundation/list (quote if))
+                                                     (std.foundation/list check)
+                                                     body))))))))
 
 (defn tf-if
   "transforms `if` to branch
@@ -46,14 +48,18 @@
   {:added "3.0"}
   ([[_ check then & else-values]] (let [else-values (not-empty (apply list (vec else-values)))]
                                     (let [else (first else-values)]
-                                      (std.foundation/seq (std.foundation/concat (std.foundation/list (quote br*))
-                                                            (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote if))
-                                                                                                       (std.foundation/list check)
-                                                                                                       (std.foundation/list then))))
-                                                            (if else
-                                                              (std.foundation/apply std.foundation/vector
-                                                                (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote else))
-                                                                                                                                                      (std.foundation/list else))))))))))))))
+                                      (apply list
+                                        (std.foundation/concat (std.foundation/list (quote br*))
+                                          (std.foundation/list (apply list
+                                                                 (std.foundation/concat (std.foundation/list (quote if))
+                                                                   (std.foundation/list check)
+                                                                   (std.foundation/list then))))
+                                          (if else
+                                            (std.foundation/apply std.foundation/vector
+                                              (apply list
+                                                (std.foundation/concat (std.foundation/list (apply list
+                                                                                              (std.foundation/concat (std.foundation/list (quote else))
+                                                                                                (std.foundation/list else))))))))))))))
 
 (defn tf-cond
   "transforms `cond` to branch"
@@ -61,34 +67,41 @@
   ([[_ check then & more]] (let [more (not-empty (apply list (vec more)))]
                              (let [args    (vec (partition 2 more))
                                    [ei el] (if (= :else (first (last args))) [(butlast args) (last args)] [args nil])]
-                               (std.foundation/seq (std.foundation/concat (std.foundation/list (quote br*))
-                                                     (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote if))
-                                                                                                (std.foundation/list check)
-                                                                                                (std.foundation/list then))))
-                                                     (map (fn [[check then]]
-                                                            (std.foundation/seq (std.foundation/concat (std.foundation/list (quote elseif))
-                                                                                  (std.foundation/list check)
-                                                                                  (std.foundation/list then))))
-                                                       ei)
-                                                     (if el
-                                                       (std.foundation/apply std.foundation/vector
-                                                         (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote else))
-                                                                                                                                               (std.foundation/list (second el)))))))))))))))
+                               (apply list
+                                 (std.foundation/concat (std.foundation/list (quote br*))
+                                   (std.foundation/list (apply list
+                                                          (std.foundation/concat (std.foundation/list (quote if))
+                                                            (std.foundation/list check)
+                                                            (std.foundation/list then))))
+                                   (map (fn [[check then]]
+                                          (apply list
+                                            (std.foundation/concat (std.foundation/list (quote elseif))
+                                              (std.foundation/list check)
+                                              (std.foundation/list then))))
+                                     ei)
+                                   (if el
+                                     (std.foundation/apply std.foundation/vector
+                                       (apply list
+                                         (std.foundation/concat (std.foundation/list (apply list
+                                                                                       (std.foundation/concat (std.foundation/list (quote else))
+                                                                                         (std.foundation/list (second el)))))))))))))))
 
 (defn tf-let-bind
   "converts to a statement"
   {:added "4.0"}
   ([[_ bindings & body]] (let [body (not-empty (apply list (vec body)))]
-                           (std.foundation/seq (std.foundation/concat (std.foundation/list (quote do*))
-                                                 (map (fn [[sym val]]
-                                                        (if (= (quote _) sym)
-                                                          val
-                                                          (std.foundation/seq (std.foundation/concat (std.foundation/list (quote var))
-                                                                                (std.foundation/list sym)
-                                                                                (std.foundation/list :=)
-                                                                                (std.foundation/list val)))))
-                                                   (partition 2 bindings))
-                                                 body)))))
+                           (apply list
+                             (std.foundation/concat (std.foundation/list (quote do*))
+                               (map (fn [[sym val]]
+                                      (if (= (quote _) sym)
+                                        val
+                                        (apply list
+                                          (std.foundation/concat (std.foundation/list (quote var))
+                                            (std.foundation/list sym)
+                                            (std.foundation/list :=)
+                                            (std.foundation/list val)))))
+                                 (partition 2 bindings))
+                               body)))))
 
 (defn tf-case
   "transforms the case statement to switch representation"
@@ -96,19 +109,22 @@
   ([[_ val & options]] (let [options (not-empty (apply list (vec options)))]
                          (let [cs      (vec (partition-all 2 options))
                                [cs df] (if (= 1 (count (last cs))) [(butlast cs) [(last cs)]] [cs []])]
-                           (std.foundation/seq (std.foundation/concat (std.foundation/list (quote switch))
-                                                 (std.foundation/list (std.foundation/apply std.foundation/vector
-                                                                        (std.foundation/seq (std.foundation/concat (std.foundation/list val)))))
-                                                 (map (fn [[val body]]
-                                                        (std.foundation/seq (std.foundation/concat (std.foundation/list (quote case))
-                                                                              (std.foundation/list (std.foundation/apply std.foundation/vector
-                                                                                                     (std.foundation/seq (std.foundation/concat (std.foundation/list val)))))
-                                                                              (std.foundation/list body))))
-                                                   cs)
-                                                 (map (fn [[body]]
-                                                        (std.foundation/seq (std.foundation/concat (std.foundation/list (quote default))
-                                                                              (std.foundation/list body))))
-                                                   df)))))))
+                           (apply list
+                             (std.foundation/concat (std.foundation/list (quote switch))
+                               (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                      (apply list (std.foundation/concat (std.foundation/list val)))))
+                               (map (fn [[val body]]
+                                      (apply list
+                                        (std.foundation/concat (std.foundation/list (quote case))
+                                          (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                                 (apply list (std.foundation/concat (std.foundation/list val)))))
+                                          (std.foundation/list body))))
+                                 cs)
+                               (map (fn [[body]]
+                                      (apply list
+                                        (std.foundation/concat (std.foundation/list (quote default))
+                                          (std.foundation/list body))))
+                                 df)))))))
 
 (defn tf-lambda-arrow
   "generalized lambda transformation"
@@ -120,14 +136,17 @@
                         exprs   (not-empty (apply list (vec exprs)))
                         final   (last exprs)
                         body    (butlast exprs)]
-                    (std.foundation/seq (std.foundation/concat (std.foundation/list (quote fn))
-                                          (std.foundation/list args)
-                                          body
-                                          (if (and (form? final) (= (quote return) (first final)))
-                                            [final]
-                                            (std.foundation/apply std.foundation/vector
-                                              (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote return))
-                                                                                                                                    (std.foundation/list final))))))))))))))
+                    (apply list
+                      (std.foundation/concat (std.foundation/list (quote fn))
+                        (std.foundation/list args)
+                        body
+                        (if (and (form? final) (= (quote return) (first final)))
+                          [final]
+                          (std.foundation/apply std.foundation/vector
+                            (apply list
+                              (std.foundation/concat (std.foundation/list (apply list
+                                                                            (std.foundation/concat (std.foundation/list (quote return))
+                                                                              (std.foundation/list final))))))))))))))
 
 (defn tf-tcond
   "transforms the ternary cond\n \n   (tf-tcond '(:?> :a a :b b :else c))\n   => '(:? :a [a (:? :b [b c])])"
@@ -136,9 +155,12 @@
     (let [more (not-empty (apply list (vec more)))]
       (let [pairs (vec (map vec (partition 2 more)))
             _ (if (not= :else (first (last pairs)))
-                (f/error
-                  "ternary cond has to end with :else"
-                  {:form (last pairs)}))]
+                (throw
+                  (ex
+                    :generic
+                    {:form (last pairs)}
+                    :ex/message
+                    "ternary cond has to end with :else")))]
         (reduce
           (fn [acc [q alt]] (list :? q [alt acc]))
           (last (last pairs))
@@ -174,10 +196,12 @@
     => '((fn [] 1 2 (return 3)))"
   {:added "4.0"}
   ([[_ & body]] (let [body (not-empty (apply list (vec body)))]
-                  (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote fn))
-                                                                                                        (std.foundation/list (std.foundation/apply std.foundation/vector
-                                                                                                                               (std.foundation/seq (std.foundation/concat))))
-                                                                                                        body))))))))
+                  (apply list
+                    (std.foundation/concat (std.foundation/list (apply list
+                                                                  (std.foundation/concat (std.foundation/list (quote fn))
+                                                                    (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                                                           (apply list (std.foundation/concat))))
+                                                                    body))))))))
 
 (defn tf-forange
   "creates the forange form
@@ -199,23 +223,30 @@
                                                 step     (or step 1)
                                                 [sign
                                                  step]   (if (and (number? step) (neg? step)) [(quote -) (- step)] [(quote +) step])]
-                                            (std.foundation/seq (std.foundation/concat (std.foundation/list (quote for))
-                                                                  (std.foundation/list (std.foundation/apply std.foundation/vector
-                                                                                         (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote var))
-                                                                                                                                                                               types
-                                                                                                                                                                               (std.foundation/list sym)
-                                                                                                                                                                               (std.foundation/list start))))
-                                                                                                               (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list (quote <))
-                                                                                                                                                          (std.foundation/list sym)
-                                                                                                                                                          (std.foundation/list end))))
-                                                                                                               (std.foundation/list (std.foundation/apply std.foundation/vector
-                                                                                                                                      (std.foundation/seq (std.foundation/concat (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list :=)
-                                                                                                                                                                                                                            (std.foundation/list sym)
-                                                                                                                                                                                                                            (std.foundation/list (std.foundation/seq (std.foundation/concat (std.foundation/list sign)
-                                                                                                                                                                                                                                                                       (std.foundation/list sym)
-                                                                                                                                                                                                                                                                       (std.foundation/list step)))))))
-                                                                                                                                                            params))))))))
-                                                                  body))))))
+                                            (apply list
+                                              (std.foundation/concat (std.foundation/list (quote for))
+                                                (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                                       (apply list
+                                                                         (std.foundation/concat (std.foundation/list (apply list
+                                                                                                                       (std.foundation/concat (std.foundation/list (quote var))
+                                                                                                                         types
+                                                                                                                         (std.foundation/list sym)
+                                                                                                                         (std.foundation/list start))))
+                                                                           (std.foundation/list (apply list
+                                                                                                  (std.foundation/concat (std.foundation/list (quote <))
+                                                                                                    (std.foundation/list sym)
+                                                                                                    (std.foundation/list end))))
+                                                                           (std.foundation/list (std.foundation/apply std.foundation/vector
+                                                                                                  (apply list
+                                                                                                    (std.foundation/concat (std.foundation/list (apply list
+                                                                                                                                                  (std.foundation/concat (std.foundation/list :=)
+                                                                                                                                                    (std.foundation/list sym)
+                                                                                                                                                    (std.foundation/list (apply list
+                                                                                                                                                                           (std.foundation/concat (std.foundation/list sign)
+                                                                                                                                                                             (std.foundation/list sym)
+                                                                                                                                                                             (std.foundation/list step)))))))
+                                                                                                      params))))))))
+                                                body))))))
 
 (def +op-macro+
   [{:op :tfirst    :symbol #{'->}     :emit :macro  :macro #'tf-macroexpand   :type :template}

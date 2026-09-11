@@ -1,7 +1,8 @@
 (ns std.lib.context.space
   (:config {:role :internal})
   (:require [std.lib.context.registry :as registry]
-            [std.lib.component :as component]))
+            [std.lib.component :as component]
+            [std.lib.context.resource ]))
 
 (def ^{:dynamic true} *namespace* nil)
 (def ^{:dynamic true} *spaces* (atom {}))
@@ -31,9 +32,12 @@
 
 (defn ^{:public true} space-context-set [space context key config]
   (let [runtime (registry/registry-rt context key)
-        entry (assoc runtime
-                     :variant (or key :default)
-                     :config (space-merge-config (:config runtime) config))]
+        entry (assoc
+                runtime
+                :variant
+                (or (:variant runtime) :default)
+                :config
+                (space-merge-config (:config runtime) config))]
     (swap! (:state space) assoc context entry)
     entry))
 
@@ -50,24 +54,56 @@
       (throw (ex :not-found {:input context :options (keys (deref (:state space)))} :ex/message "Context not found")))))
 
 (defn ^{:public true} space-rt-create [space context]
-  (let [entry (space-context-get space context)
-        create (:create entry)]
-    (if create
-      (create (:config entry))
-      (throw (ex :host {:context context :runtime entry} :ex/message "Runtime has no create function")))))
+  (let [{:keys [resource variant config create], :as entry} (space-context-get
+                                                              space
+                                                              context)]
+    (if resource
+      (let [spec (std.lib.context.resource/variant-get
+                   resource
+                   variant)
+            constructor (get-in spec [:instance :create])
+            full-config (space-merge-config (:config spec) config)]
+        (constructor full-config))
+      (if create
+        (create config)
+        (throw
+          (ex
+            :host
+            {:context context, :runtime entry}
+            :ex/message
+            "Runtime has no create function"))))))
 
 (defn ^{:public true} space-rt-start [space context]
-  (or (:instance (get (deref (:state space)) context))
-      (let [runtime (component/start (space-rt-create space context))]
-        (swap! (:state space) assoc-in [context :instance] runtime)
-        runtime)))
+  (or
+    (:instance (get (deref (:state space)) context))
+    (let [{:keys [resource variant config]} (space-context-get
+                                              space
+                                              context)
+          runtime (if resource
+                    (let [spec (std.lib.context.resource/variant-get
+                                 resource
+                                 variant)]
+                      (std.lib.context.resource/resource-setup
+                        resource
+                        variant
+                        (space-merge-config (:config spec) config)))
+                    (component/start (space-rt-create space context)))]
+      (swap! (:state space) assoc-in [context :instance] runtime)
+      runtime)))
 
 (defn ^{:public true} space-rt-stop [space context]
-  (let [entry (space-context-get space context)
+  (let [{:keys [resource variant], :as entry} (space-context-get
+                                                space
+                                                context)
         runtime (:instance entry)]
     (if runtime
       (do
-        (component/stop runtime)
+        (if resource
+          (std.lib.context.resource/resource-teardown
+            resource
+            variant
+            runtime)
+          (component/stop runtime))
         (swap! (:state space) update-in [context] dissoc :instance)
         nil))))
 
@@ -130,7 +166,9 @@
 (defn ^{:public true} space
   ([] (space *namespace*))
   ([namespace]
-   (let [key (or namespace :default)
+   (let [key (or namespace
+                 std.lib.context.resource/*resource-namespace*
+                 (ns-current))
          existing (get (deref *spaces*) key)]
      (or existing
          (let [created (space-create {:namespace key})]

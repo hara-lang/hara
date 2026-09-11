@@ -123,3 +123,37 @@
   [(emit-word :int false +grammar+ {})
    (emit-word :const true +grammar+ {})]
   => ["int" "CONST"])
+
+^{:refer lang.base.emit-fn/emit-input-default :id :rest-callback-type-shadowing}
+(fact "rest callbacks preserve argument fields without shadowing native type inspection"
+  (mapv
+   (fn [argument-type]
+     (emit-input-default
+      {:rest true :symbol 'values :type argument-type}
+      "="
+      {:marker :grammar
+       :default {:function {:args {:rest
+         (fn [argument grammar options]
+           [(:symbol argument) (:type argument) (:marker grammar) (:marker options)])}}}}
+      {:marker :options}))
+   [nil [:int]])
+  => [['values nil :grammar :options]
+      ['values [:int] :grammar :options]]
+
+  (mapv
+   (fn [argument-type]
+     (let [argument {:rest true :type argument-type :marker :argument}
+           grammar {:marker :grammar
+                    :default {:function {:args {:rest (var vector)}}}}
+           output (emit-input-default argument "=" grammar {:marker :options})]
+       [(:type (first output)) (mapv :marker output)]))
+   [nil [:int]])
+  => [[nil [:argument :grammar :options]]
+      [[:int] [:argument :grammar :options]]]
+
+  (try
+    (emit-input-default {:rest true :symbol 'values :type [:int]} "=" {} {:lang :fixture})
+    :missing-error
+    (catch error [(ex-message error)
+                  (select-keys (ex-data error) [:lang :symbol])]))
+  => ["Rest argument emitter not configured" {:lang :fixture :symbol 'values}])

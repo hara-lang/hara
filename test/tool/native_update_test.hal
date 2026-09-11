@@ -1,0 +1,273 @@
+(ns tool.native-update-test
+  (:require [tool.native-update :as subject]))
+
+^{:refer tool.native-update/+default-native-version+}
+(Test/check
+ [{:name "defaults to the released Hara Native version"
+   :test (fn [] subject/+default-native-version+)
+   :expected "0.1.28"}])
+
+^{:refer tool.native-update/+native-pin-marker+}
+(Test/check
+ [{:name "matches the project manifest native pin"
+   :test (fn [] subject/+native-pin-marker+)
+   :expected ":project/native {:version \""}])
+
+^{:refer tool.native-update/+native-version-marker+}
+(Test/check
+ [{:name "matches the distribution native version field"
+   :test (fn [] subject/+native-version-marker+)
+   :expected ":native/version \""}])
+
+^{:refer tool.native-update/update-plan}
+(Test/check
+ [{:name "plans the native host, Hara distribution, and Emacs launcher paths"
+   :test (fn []
+           (select-keys
+            (subject/update-plan "/workspace/technology/hara" "0.1.28")
+            [:hara-root
+             :workspace-root
+             :version
+             :project-path
+             :native-manifest
+             :native-host
+             :distribution-test
+             :distribution-manifest
+             :emacs-launcher
+             :native-build-argv
+             :distribution-argv
+             :launcher-argv]))
+   :expected {:hara-root "/workspace/technology/hara"
+              :workspace-root "/workspace"
+              :version "0.1.28"
+              :project-path "/workspace/technology/hara/project.edn"
+              :native-manifest "/workspace/technology/hara-native/core/rust/Cargo.toml"
+              :native-host "/workspace/technology/hara-native/core/rust/target/release/hara-native"
+              :distribution-test "/workspace/technology/hara/test/std/package/distribution_build_acceptance_test.hal"
+              :distribution-manifest "/workspace/technology/hara/target/hara/lib/release.edn"
+              :emacs-launcher "/workspace/extensions/hara-emacs/bin/hara"
+              :native-build-argv ["cargo" "build" "--locked"
+                                  "--manifest-path" "/workspace/technology/hara-native/core/rust/Cargo.toml"
+                                  "--release" "--bin" "hara-native"]
+              :distribution-argv ["/workspace/technology/hara-native/core/rust/target/release/hara-native"
+                                  "test"
+                                  "--project" "/workspace/technology/hara"
+                                  "--file" "/workspace/technology/hara/test/std/package/distribution_build_acceptance_test.hal"]
+              :launcher-argv ["/workspace/extensions/hara-emacs/bin/hara" "--version"]}}])
+
+^{:refer tool.native-update/replace-native-version}
+(Test/check
+ [{:name "updates one manifest pin and is idempotent at the requested version"
+   :test (fn []
+           (let [before "{:project/native {:version \"0.1.27\"}}\n"
+                 after (subject/replace-native-version before "0.1.28")]
+             [after
+              (= after
+                 (subject/replace-native-version after "0.1.28"))]))
+   :expected ["{:project/native {:version \"0.1.28\"}}\n" true]}
+  {:name "rejects unsafe, missing, ambiguous, and malformed pins"
+   :test (fn []
+           (let [invalid (try
+                           (subject/replace-native-version "x" "0.1\".bad")
+                           :missing
+                           (catch error (:ex/code (ex-data error))))
+                 missing (try
+                           (subject/replace-native-version "x" "0.1.28")
+                           :missing
+                           (catch error (:ex/code (ex-data error))))
+                 ambiguous (try
+                             (subject/replace-native-version
+                              ":project/native {:version \"0.1.27\"}\n:project/native {:version \"0.1.28\"}"
+                              "0.1.29")
+                             :missing
+                             (catch error (:ex/code (ex-data error))))
+                 malformed (try
+                             (subject/replace-native-version
+                              ":project/native {:version \"0.1.27}"
+                              "0.1.28")
+                             :missing
+                             (catch error (:ex/code (ex-data error))))]
+             [invalid missing ambiguous malformed]))
+   :expected [:tool.native-update/invalid-version
+              :tool.native-update/native-pin-not-found
+              :tool.native-update/native-pin-ambiguous
+              :tool.native-update/native-pin-malformed]}])
+
+^{:refer tool.native-update/read-text}
+(Test/check
+ [{:name "reads the UTF-8 text written by the native file boundary"
+   :test (fn []
+           (let [path (deref (File/temp-file "." {:prefix "hara-native-update-read-"}))]
+             (try
+               (deref (File/write path
+                                  (String/encode-utf8 "read-me\n")
+                                  {:mode :replace}))
+               (subject/read-text path)
+               (finally
+                 (deref (File/delete path {:missing-ok? true}))))))
+   :expected "read-me\n"}])
+
+^{:refer tool.native-update/write-text}
+(Test/check
+ [{:name "writes exact UTF-8 text and returns the destination path"
+   :test (fn []
+           (let [path (deref (File/temp-file "." {:prefix "hara-native-update-write-"}))]
+             (try
+               [(= path (subject/write-text path "write-me\n"))
+                (subject/read-text path)]
+               (finally
+                 (deref (File/delete path {:missing-ok? true}))))))
+   :expected [true "write-me\n"]}])
+
+^{:refer tool.native-update/command-record}
+(Test/check
+ [{:name "captures argv, working directory, output, and exit status"
+   :test (fn []
+           (let [record (subject/command-record ["printf" "native-update-ok"] (OS/cwd))]
+             [(:command record)
+              (:cwd record)
+              (:stdout record)
+              (:stderr record)
+              (:exit record)]))
+   :expected [["printf" "native-update-ok"] (OS/cwd) "native-update-ok" "" 0]}])
+
+^{:refer tool.native-update/require-success}
+(Test/check
+ [{:name "returns successful command records unchanged and preserves failure data"
+   :test (fn []
+           (let [success {:command ["true"] :exit 0 :stdout "" :stderr ""}
+                 failure {:command ["false"] :exit 2 :stdout "" :stderr "failed"}
+                 error-data (try
+                              (subject/require-success failure)
+                              :missing
+                              (catch error
+                                (select-keys (ex-data error)
+                                             [:ex/code :command :exit :stderr])))]
+             [(= success (subject/require-success success))
+              error-data]))
+   :expected [true
+              {:ex/code :tool.native-update/command-failed
+               :command ["false"]
+               :exit 2
+               :stderr "failed"}]}])
+
+^{:refer tool.native-update/host-ready?}
+(Test/check
+ [{:name "accepts only an exact successful Hara Native version"
+   :test (fn []
+           [(subject/host-ready? {:exit 0 :stdout "hara-native 0.1.28\n"} "0.1.28")
+            (subject/host-ready? {:exit 0 :stdout "hara-native 0.1.27\n"} "0.1.28")
+            (subject/host-ready? {:exit 1 :stdout "hara-native 0.1.28\n"} "0.1.28")])
+   :expected [true false false]}])
+
+^{:refer tool.native-update/host-current?}
+(Test/check
+ [{:name "checks the sibling host without requiring project-root file access"
+   :test (fn []
+           (let [plan (subject/update-plan (OS/cwd) "0.1.28")
+                 missing (assoc plan
+                                 :native-host
+                                 (File/join (OS/cwd)
+                                            "target/hara-native-update-missing-host"))]
+             [(subject/host-current? plan "0.1.28")
+              (subject/host-current? plan "0.1.27")
+              (subject/host-current? missing "0.1.28")]))
+   :expected [true false false]}])
+
+^{:refer tool.native-update/distribution-ready?}
+(Test/check
+ [{:name "requires the requested native version in the distribution manifest"
+   :test (fn []
+           [(subject/distribution-ready?
+             "{:native/version \"0.1.28\" :source/version \"0.1.25\"}"
+             "0.1.28")
+            (subject/distribution-ready?
+             "{:native/version \"0.1.27\" :source/version \"0.1.25\"}"
+             "0.1.28")])
+   :expected [true false]}])
+
+^{:refer tool.native-update/complete-update!}
+(Test/check
+ [{:name "verifies a rebuilt distribution and restores the project pin on failure"
+   :test (fn []
+           (let [manifest-path
+                 (deref (File/temp-file "." {:prefix "hara-native-update-manifest-"}))
+                 project-path
+                 (deref (File/temp-file "." {:prefix "hara-native-update-project-"}))
+                 root (OS/cwd)
+                 plan {:hara-root root
+                       :workspace-root root
+                       :project-path project-path
+                       :distribution-manifest manifest-path
+                       :distribution-argv ["printf" "distribution-built"]
+                       :launcher-argv ["printf" "hara 0.1.0\n"]}]
+             (try
+               (deref (File/write
+                       manifest-path
+                       (String/encode-utf8 "{:native/version \"0.1.28\"}")
+                       {:mode :replace}))
+               (deref (File/write
+                       project-path
+                       (String/encode-utf8 "changed")
+                       {:mode :replace}))
+               (let [success
+                     (select-keys
+                      (subject/complete-update!
+                       plan
+                       "0.1.28"
+                       "before"
+                       false
+                       :current)
+                      [:status
+                       :version
+                       :host/status
+                       :project/changed
+                       :distribution
+                       :launcher/stdout])
+                     failure-plan (assoc plan :launcher-argv ["false"])
+                     failure
+                     (try
+                       (subject/complete-update!
+                        failure-plan
+                        "0.1.28"
+                        "before"
+                        true
+                        :built)
+                       :not-thrown
+                       (catch error
+                         [(:ex/code (ex-data error))
+                          (subject/read-text project-path)]))]
+                 [success failure])
+               (finally
+                 (deref (File/delete manifest-path {:missing-ok? true}))
+                 (deref (File/delete project-path {:missing-ok? true}))))))
+   :expected [{:status :updated
+               :version "0.1.28"
+               :host/status :current
+               :project/changed false
+               :distribution :rebuilt
+               :launcher/stdout "hara 0.1.0\n"}
+              [:tool.native-update/command-failed "before"]]}])
+
+^{:refer tool.native-update/update!}
+(Test/check
+ [{:name "supports a side-effect-free dry run with the complete update plan"
+   :test (fn []
+           (select-keys
+            (subject/update! {:hara-root "/workspace/technology/hara"
+                              :version "0.1.28"
+                              :dry-run true})
+            [:status
+             :version
+             :project-path
+             :native-host
+             :distribution-test
+             :distribution-manifest
+             :emacs-launcher]))
+   :expected {:status :dry-run
+              :version "0.1.28"
+              :project-path "/workspace/technology/hara/project.edn"
+              :native-host "/workspace/technology/hara-native/core/rust/target/release/hara-native"
+              :distribution-test "/workspace/technology/hara/test/std/package/distribution_build_acceptance_test.hal"
+              :distribution-manifest "/workspace/technology/hara/target/hara/lib/release.edn"
+              :emacs-launcher "/workspace/extensions/hara-emacs/bin/hara"}}])

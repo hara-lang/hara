@@ -30,7 +30,55 @@
 ^{:refer std.lib.context.resource/spec-list}
 (Test/check [{:name "lists registered resource types" :test (fn [] (isolated (fn [] (vec (resource/spec-list))))) :expected [:test/resource]}])
 ^{:refer std.lib.context.resource/spec-add}
-(Test/check [{:name "adds normalized specs" :test (fn [] (isolated (fn [] (let [entry (second (resource/spec-add {:type :other/resource :variant {:default {:config {}}}}))] [(:type entry) (has? (:variant entry) :default)])))) :expected [:other/resource true]}])
+(Test/check
+  [{:name "adds normalized specs",
+    :test
+    (fn []
+      (isolated
+        (fn []
+          (let [entry (second
+                        (resource/spec-add
+                          {:type :other/resource,
+                           :variant {:default {:config {}}}}))]
+            [(:type entry) (has? (:variant entry) :default)])))),
+    :expected [:other/resource true]}
+   {:name
+    "spec-add normalizes absent variants and reports an identical repeat",
+    :test
+    (fn []
+      (binding [resource/*resource-registry* (atom {})]
+        (let [first-result (resource/spec-add {:type :test/minimal})
+              installed (resource/spec-get :test/minimal)]
+          [(first first-result)
+           (:type (second first-result))
+           (has? (:variant installed) :default)
+           (resource/spec-add {:type :test/minimal})
+           (= installed (resource/spec-get :test/minimal))]))),
+    :expected [:changed :test/minimal true [:no-change] true]}
+   {:name
+    "spec-add merges partial configuration and reports only changed leaves",
+    :test
+    (fn []
+      (binding [resource/*resource-registry* (atom {})]
+        (resource/spec-add
+          {:type :test/partial,
+           :config {:nested {:keep 1, :change 2}, :nil nil},
+           :variant {:extra {:config {:retained true}}}})
+        [(resource/spec-add
+           {:type :test/partial,
+            :config {:nested {:change 3}, :nil nil}})
+         (:config (resource/spec-get :test/partial))
+         (get-in
+           (resource/spec-get :test/partial)
+           [:variant :extra :config])
+         (resource/spec-add
+           {:type :test/partial,
+            :config {:nested {:change 3}, :nil nil}})])),
+    :expected
+    [[:changed {:config {:nested {:change 3}}}]
+     {:nested {:keep 1, :change 3}, :nil nil}
+     {:retained true}
+     [:no-change]]}])
 ^{:refer std.lib.context.resource/spec-remove}
 (Test/check [{:name "removes a registered spec" :test (fn [] (isolated (fn [] (resource/spec-remove :test/resource) (empty? (resource/spec-list))))) :expected true}])
 ^{:refer std.lib.context.resource/spec-get}

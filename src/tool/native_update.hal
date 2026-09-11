@@ -1,0 +1,232 @@
+(ns tool.native-update
+  (:config {:role :internal}))
+
+(def +default-native-version+ "0.1.28")
+(def +native-pin-marker+ ":project/native {:version \"")
+(def +native-version-marker+ ":native/version \"")
+
+(defn update-plan
+  [hara-root version]
+  (let [hara-root (File/resolve hara-root "")
+        workspace-root (or (OS/getenv "HARA_WORKSPACE_ROOT")
+                           (File/parent (File/parent hara-root)))]
+    (if (nil? workspace-root)
+      (throw
+       (ex :tool.native-update/workspace-not-found
+           {:hara-root hara-root}
+           :ex/message "Cannot determine the workspace root"))
+      (let [workspace-root (File/resolve workspace-root "")
+            native-root (File/join workspace-root "technology/hara-native")
+            native-manifest (File/join native-root "core/rust/Cargo.toml")
+            native-host (File/join native-root "core/rust/target/release/hara-native")
+            project-path (File/join hara-root "project.edn")
+            distribution-test (File/join hara-root "test/std/package/distribution_build_acceptance_test.hal")
+            distribution-manifest (File/join hara-root "target/hara/lib/release.edn")
+            emacs-launcher (File/join workspace-root "extensions/hara-emacs/bin/hara")]
+        {:hara-root hara-root
+         :workspace-root workspace-root
+         :version version
+         :project-path project-path
+         :native-manifest native-manifest
+         :native-host native-host
+         :distribution-test distribution-test
+         :distribution-manifest distribution-manifest
+         :emacs-launcher emacs-launcher
+         :native-build-argv ["cargo" "build" "--locked"
+                             "--manifest-path" native-manifest
+                             "--release" "--bin" "hara-native"]
+         :distribution-argv [native-host "test"
+                             "--project" hara-root
+                             "--file" distribution-test]
+         :launcher-argv [emacs-launcher "--version"]}))))
+
+(defn replace-native-version
+  [source version]
+  (if (or (not (string? version))
+          (= 0 (String/length version))
+          (not (= -1 (String/index-of version "\"")))
+          (not (= -1 (String/index-of version "\n")))
+          (not (= -1 (String/index-of version " "))))
+    (throw
+     (ex :tool.native-update/invalid-version
+         {:version version}
+         :ex/message "Hara Native version must be a non-empty token")))
+  (let [first-index (String/index-of source +native-pin-marker+)
+        second-index (if (= -1 first-index)
+                       -1
+                       (String/index-of source +native-pin-marker+ (inc first-index)))]
+    (cond
+      (= -1 first-index)
+      (throw
+       (ex :tool.native-update/native-pin-not-found
+           {}
+           :ex/message "project.edn does not contain a native version pin"))
+
+      (not (= -1 second-index))
+      (throw
+       (ex :tool.native-update/native-pin-ambiguous
+           {:matches 2}
+           :ex/message "project.edn contains multiple native version pins"))
+
+      :else
+      (let [version-start (+ first-index (String/length +native-pin-marker+))
+            end-index (String/index-of source "\"" version-start)]
+        (if (= -1 end-index)
+          (throw
+           (ex :tool.native-update/native-pin-malformed
+               {}
+               :ex/message "project.edn native version pin is malformed"))
+          (String/join
+           ""
+           [(String/slice source 0 version-start)
+            version
+            (String/slice source end-index)]))))))
+
+(defn read-text
+  [path]
+  (String/decode-utf8 (IDeref/deref (File/read path))))
+
+(defn write-text
+  [path source]
+  (IDeref/deref
+   (File/write path
+               (String/encode-utf8 source)
+               {:mode :replace
+                :parents? true}))
+  path)
+
+(defn command-record
+  [argv cwd]
+  (let [process (Process/spawn argv
+                              {:cwd cwd
+                               :env {"HARA_NATIVE_UPDATE_RUN" "0"}})]
+    (try
+      (Process/close-input process)
+      (let [result (Result/synchronize
+                    (Promise/all [(Process/stdout process)
+                                  (Process/stderr process)
+                                  (Process/wait process)]))]
+        (if (Result/success? result)
+          (let [values (Result/data result)]
+            {:command argv
+             :cwd cwd
+             :stdout (String/decode-utf8 (nth values 0))
+             :stderr (String/decode-utf8 (nth values 1))
+             :exit (nth values 2)})
+          (throw (Result/error-value result))))
+      (catch error
+        (do
+          (try
+            (Process/kill process)
+            (catch ignored nil))
+          (throw error))))))
+
+(defn require-success
+  [record]
+  (if (= 0 (:exit record))
+    record
+    (throw
+     (ex :tool.native-update/command-failed
+         record
+         :ex/message "Native update command failed"))))
+
+(defn host-ready?
+  [record version]
+  (and (= 0 (:exit record))
+       (= (String/trim (:stdout record))
+          (String/join " " ["hara-native" version]))))
+
+(defn host-current?
+  [plan version]
+  (try
+    (host-ready?
+     (command-record [(:native-host plan) "--version"]
+                     (:workspace-root plan))
+     version)
+    (catch error
+      false)))
+
+(defn distribution-ready?
+  [manifest version]
+  (not (= -1
+          (String/index-of
+           manifest
+           (String/join "" [+native-version-marker+ version "\""])))))
+
+(defn complete-update!
+  [plan version before changed? host-status]
+  (try
+    (do
+      (require-success
+       (command-record (:distribution-argv plan)
+                       (:hara-root plan)))
+      (let [manifest (read-text (:distribution-manifest plan))]
+        (if (not (distribution-ready? manifest version))
+          (throw
+           (ex :tool.native-update/distribution-version-mismatch
+               {:manifest (:distribution-manifest plan)
+                :version version}
+               :ex/message "Hara distribution did not record the requested native version")))
+        (let [launcher (require-success
+                        (command-record (:launcher-argv plan)
+                                        (:workspace-root plan)))]
+          (if (= "" (String/trim (:stdout launcher)))
+            (throw
+             (ex :tool.native-update/launcher-failed
+                 launcher
+                 :ex/message "hara-emacs launcher returned no version"))
+            {:status :updated
+             :version version
+             :host/status host-status
+             :project/changed changed?
+             :distribution :rebuilt
+             :launcher/stdout (:stdout launcher)}))))
+    (catch error
+      (do
+        (if changed?
+          (write-text (:project-path plan) before)
+          nil)
+        (throw error)))))
+
+(defn ^{:public true} update!
+  "Updates the sibling native host, project pin, Hara distribution, and Emacs launcher."
+  ([]
+   (update! {}))
+  ([options]
+   (let [hara-root (or (:hara-root options) (OS/cwd))
+         version (or (:version options)
+                     (OS/getenv "HARA_NATIVE_VERSION")
+                     +default-native-version+)
+         plan (update-plan hara-root version)]
+     (if (:dry-run options)
+       (assoc plan :status :dry-run)
+       (let [host-current?
+             (host-current? plan version)
+             host-status
+             (if host-current?
+               :current
+               (do
+                 (require-success
+                  (command-record (:native-build-argv plan)
+                                  (:workspace-root plan)))
+                 (if (host-ready?
+                      (command-record [(:native-host plan) "--version"]
+                                      (:workspace-root plan))
+                      version)
+                   :built
+                   (throw
+                    (ex :tool.native-update/native-version-mismatch
+                        {:host (:native-host plan)
+                         :version version}
+                        :ex/message "Built hara-native did not match the requested version")))))
+             before (read-text (:project-path plan))
+             after (replace-native-version before version)
+             changed? (not (= before after))]
+         (if changed?
+           (write-text (:project-path plan) after)
+           nil)
+         (complete-update! plan version before changed? host-status))))))
+
+(if (= "1" (OS/getenv "HARA_NATIVE_UPDATE_RUN"))
+  (println (Edn/write (update! {})))
+  nil)

@@ -1,0 +1,148 @@
+(ns lang.core.script-macro-test
+  (:require [lang.core.script-macro :as macro] [code.test :refer :all]))
+(def ^{:macro false} toy.hello nil)
+(def ^{:macro false} quoted.probe nil)
+^{:refer lang.core.script-macro/body-arglists :added "4.0"}
+(fact "makes arglists from body"
+  (macro/body-arglists '([a b c])) => '([a b c])
+  (macro/body-arglists '(([a b c := 5]))) => '([a b c]))
+^{:refer lang.core.script-macro/intern-in :added "4.0"}
+(fact "interns a macro"
+  (try
+    (do (macro/intern-in 'toy '.hello 1)
+        (eval '@(var toy.hello)))
+    (finally (intern (ns-current) (with-meta 'toy.hello {:macro false}) nil)))
+  => 1)
+^{:refer lang.core.script-macro/body-arglists :id decorated-multiple-arities}
+(fact "retains binding symbols and drops DSL annotations in each arity"
+  (macro/body-arglists '(([a :int 7 "doc" [:json] [nested] & rest] body)
+                         ([x := 2] other)))
+  => '([a [nested] & rest] [x])
+  (macro/body-arglists '([] body)) => '([])
+  (macro/body-arglists '()) => '())
+^{:refer lang.core.script-macro/intern-in :id callback-install-reset}
+(fact "publishes a live macro callback through the explicit namespace argument"
+  (try
+    (let [published (macro/intern-in "quoted." :probe
+                      (fn [form environment value] (list 'quote value))
+                      (ns-current))]
+      [(= published (var quoted.probe))
+       (select-keys (meta published) [:macro :arglists])
+       (macroexpand-1 '(quoted.probe (+ 1 2)))
+       (eval '(quoted.probe (+ 1 2)))])
+    (finally (intern (ns-current) (with-meta 'quoted.probe {:macro false}) nil)))
+  => [true {:macro true :arglists '([& body])} '(quote (+ 1 2)) '(+ 1 2)])
+^{:refer lang.core.script-macro/intern-in :id baseline-restored}
+(fact "both fixture slots return to their nonmacro baseline"
+  [(deref (var toy.hello)) (:macro (meta (var toy.hello)))
+   (deref (var quoted.probe)) (:macro (meta (var quoted.probe)))
+   (macroexpand-1 '(quoted.probe (+ 1 2)))]
+  => [nil false nil false '(quoted.probe (+ 1 2))])
+
+^{:refer lang.core.script-macro/+form-allow+}
+(fact "preserves the original allowed form metadata fields" macro/+form-allow+ => [:line :column :file :name :ns])
+
+(require [std.lib.context.space :as space] [std.lib.context.registry :as registry])
+(def ^{:macro false} highlight.one nil)
+(def ^{:macro false} highlight.two nil)
+^{:refer lang.core.script-macro/intern-prep :added "4.0"}
+(fact "outputs the module and form meta"
+ (macro/intern-prep :lua (with-meta '(def$.lua hello hello) {:module 'L.core :line 1}))
+ => '[L.core {:module L.core :line 1}])
+^{:refer lang.core.script-macro/intern-prep :id runtime-module-fallback}
+(fact "uses the runtime module only when form metadata does not select one"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (try
+   (registry/registry-install :lang/lua {:scratch {:module 'runtime.core}})
+   [(macro/intern-prep :lua (with-meta '(def x 1) {:line 9}))
+    (macro/intern-prep :lua (with-meta '(def x 1) {:module 'form.core :line 8}))]
+   (finally (space/reset-spaces!) (registry/reset-registry!))))
+ => '[[runtime.core {:line 9}] [form.core {:module form.core :line 8}]])
+^{:refer lang.core.script-macro/intern-highlights :id metadata-and-expansion}
+(fact "interns highlights with only their original selected metadata"
+ (try
+  (let [published (macro/intern-highlights :lua
+                   {:highlight '[highlight.one highlight.two]
+                    :reserved {'highlight.one {:arglists '([x]) :style/indent 2 :discard true}}})]
+   [(= published [(var highlight.one) (var highlight.two)])
+    (select-keys (meta (first published)) [:macro :arglists :style/indent :discard])
+    (select-keys (meta (second published)) [:macro :arglists :style/indent])
+    (macroexpand-1 '(highlight.one any arguments))
+    (eval '(highlight.two any arguments))
+    (macro/intern-highlights :lua {:highlight [] :reserved {}})])
+  (finally
+   (intern (ns-current) (with-meta 'highlight.one {:macro false}) nil)
+   (intern (ns-current) (with-meta 'highlight.two {:macro false}) nil)))
+ => [true {:macro true :arglists '([x]) :style/indent 2} {:macro true} nil nil []])
+^{:refer lang.core.script-macro/intern-highlights :id highlight-reset}
+(fact "highlight slots return to ordinary values after interning"
+ [(deref (var highlight.one)) (deref (var highlight.two))
+  (:macro (meta (var highlight.one))) (:macro (meta (var highlight.two)))
+  (macroexpand-1 '(highlight.one x))]
+ => '[nil nil false false (highlight.one x)])
+
+^{:refer lang.core.script-macro/intern-prep :id missing-module-error}
+(fact "rejects an insertion with no form or runtime module"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (try
+   (registry/registry-install :lang/lua {:scratch {:marker :moduleless}})
+   (try (macro/intern-prep :lua '(def x 1))
+        (catch error [(:ex/code (ex-data error)) (:ex/message (ex-data error))]))
+   (finally (space/reset-spaces!) (registry/reset-registry!))))
+ => [:hara/argument "Module required for insertion."])
+
+(def hello nil)
+(def ^{:macro false} defptr.hello nil)
+(def published nil)
+^{:refer lang.core.script-macro/intern-free-fn :added "4.0"}
+(fact "interns a free pointer in the namespace"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (try
+   (registry/registry-install :lang/lua {:scratch {:module 'runtime.core}})
+   (macro/intern-free-fn :lua '(defptr.lua hello 1) {})
+   (finally
+    (intern (ns-current) 'hello nil)
+    (space/reset-spaces!) (registry/reset-registry!))))
+ => #'lang.core.script-macro-test/hello)
+^{:refer lang.core.script-macro/intern-free :added "4.0"}
+(fact "creates a defptr macro"
+ (try (macro/intern-free :lua "hello")
+  (finally (intern (ns-current) (with-meta 'defptr.hello {:macro false}) nil)))
+ => #'lang.core.script-macro-test/defptr.hello)
+^{:refer lang.core.script-macro/intern-free-fn :id native-pointer-fields}
+(fact "uses the native Pointer and respects explicit versus runtime modules"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (try
+   (registry/registry-install :lang/lua {:scratch {:module 'runtime.core}})
+   (let [a (deref (macro/intern-free-fn :lua '(defptr.lua hello (+ 1 2)) {}))
+         b (deref (macro/intern-free-fn :lua '(defptr.lua hello false) {:module 'explicit.core}))]
+    [(IPointer/ptr-context a) (select-keys a [:lang :module :form])
+     (IPointer/ptr-context b) (select-keys b [:lang :module :form])])
+   (finally (intern (ns-current) 'hello nil)
+    (space/reset-spaces!) (registry/reset-registry!))))
+ => [:lang/lua '{:lang :lua :module runtime.core :form (+ 1 2)}
+     :lang/lua '{:lang :lua :module explicit.core :form false}])
+^{:refer lang.core.script-macro/intern-free :id macro-expansion-and-evaluation}
+(fact "preserves the original quoted expansion and call metadata through evaluation"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (try
+   (registry/registry-install :lang/lua {:scratch {:module 'runtime.core}})
+   (macro/intern-free :lua "hello")
+   (let [form (with-meta '(defptr.hello published (+ 1 2)) {:module '(quote form.core)})
+         expanded (macroexpand-1 form)
+         published-var (eval form)
+         value (deref published-var)]
+    [expanded (= published-var (var published))
+     (IPointer/ptr-context value) (select-keys value [:lang :module :form])])
+   (finally
+    (intern (ns-current) (with-meta 'defptr.hello {:macro false}) nil)
+    (intern (ns-current) 'published nil)
+    (space/reset-spaces!) (registry/reset-registry!))))
+ => '[(lang.core.script-macro/intern-free-fn :lua
+       (quote (defptr.hello published (+ 1 2))) {:module (quote form.core)})
+      true :lang/lua {:lang :lua :module form.core :form (+ 1 2)}])
+^{:refer lang.core.script-macro/intern-free :id free-pointer-reset}
+(fact "restores pointer and macro slots"
+ [(deref (var hello)) (deref (var published)) (deref (var defptr.hello))
+  (:macro (meta (var defptr.hello))) (macroexpand-1 '(defptr.hello published 1))]
+ => '[nil nil nil false (defptr.hello published 1)])

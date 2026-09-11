@@ -1309,3 +1309,20 @@
           {:marker :seen}
           {:custom (var migration-expansion-handler)})
  => [:custom :fixture '(custom 1) :seen])
+
+^{:refer lang.base.emit-common/emit-macro :id native-var-macro-callback}
+(fact "macro emission accepts native Vars and ordinary functions without losing context"
+ (binding [common/*emit-fn* (fn [form grammar options] [form (:tag grammar) options])]
+  [(common/emit-macro :probe '(probe 7)
+    {:tag :fixture :reserved {'probe {:macro #'identity}}} {:layout :flat})
+   (common/emit-macro :probe '(probe 7)
+    {:tag :fixture :reserved {'probe {:macro (fn [form] (list 'rewritten (second form)))}}} {:layout :flat})])
+ => '[[(probe 7) :fixture {:layout :flat}]
+      [(rewritten 7) :fixture {:layout :flat}]])
+^{:refer lang.base.emit-common/emit-wrappable? :id native-var-wrappable-callback}
+(fact "wrappability follows Var-backed macros into their expanded operation"
+ (let [grammar {:reserved {'probe {:emit :macro :macro #'second}
+                           '+ {:emit :infix}}}]
+  [(common/emit-wrappable? '(probe (+ 1 2)) grammar)
+   (common/emit-wrappable? '(probe token) grammar)])
+ => [true false])

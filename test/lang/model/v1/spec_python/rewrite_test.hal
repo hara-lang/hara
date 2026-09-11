@@ -1,0 +1,170 @@
+(ns lang.model.v1.spec-python.rewrite-test
+  (:require [lang.model.v1.spec-python.rewrite :as rewrite]
+            [lang.core.rewrite.common :as common]
+            [code.test :refer :all]))
+
+^{:refer lang.model.v1.spec-python.rewrite/python-normalize-form, :added "4.1"}
+(comment
+  "Original empty fact; semantic coverage is supplied by native additions."
+  "^{:refer tahto.model.spec-python.rewrite/python-normalize-form, :added \"4.1\"} (fact \"normalizes python forms\")")
+
+^{:refer lang.model.v1.spec-python.rewrite/python-rewrite-stage, :added "4.1"}
+(fact
+  "keeps top-level named functions intact"
+  (rewrite/python-rewrite-stage '(fn f-raw [x] (return (* x 10))) nil)
+  =>
+  '(fn f-raw [x] (return (* x 10))))
+
+^{:refer lang.model.v1.spec-python.rewrite/+python-lambda-disallowed-emits+}
+(fact "retains the exact original disallowed emitter categories"
+ rewrite/+python-lambda-disallowed-emits+
+ => #{:abstract :assign :comment :def-assign :discard :do :do* :return :with-decorate :with-deref :with-eval :with-global :with-lang :with-module :with-rand :with-uuid})
+
+^{:refer lang.model.v1.spec-python.rewrite/+python-lambda-disallowed-types+}
+(fact "retains the original non-expression type categories"
+ rewrite/+python-lambda-disallowed-types+ => #{:block :def :free})
+
+^{:refer lang.model.v1.spec-python.rewrite/+python-lambda-disallowed-ops+}
+(fact "retains throw as the original disallowed operation"
+ rewrite/+python-lambda-disallowed-ops+ => #{:throw})
+
+^{:refer lang.model.v1.spec-python.rewrite/python-lambda-entry}
+(fact "resolves exact reserved operators before unqualified fallback and ignores non-forms"
+ (let [grammar {:reserved {'a/f {:id :exact} 'f {:id :fallback} :kw {:id :keyword}}}]
+  [(rewrite/python-lambda-entry '(a/f 1) grammar)
+   (rewrite/python-lambda-entry '(b/f 1) grammar)
+   (rewrite/python-lambda-entry '(f 1) grammar)
+   (rewrite/python-lambda-entry '(:kw 1) grammar)
+   (rewrite/python-lambda-entry '[f 1] grammar)
+   (rewrite/python-lambda-entry '(missing) grammar)])
+ => [{:id :exact} {:id :fallback} {:id :fallback} {:id :keyword} nil nil])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-lambda-expr?}
+(fact "classifies scalar collection quote return assignment and macro expression branches"
+ [(mapv (fn [v] (rewrite/python-lambda-expr? v {}))
+         [nil 'x "s" :k 1 false [] #{} {} '(quote (:= x 1)) '(return) '(return false) '(return 1 2) '(:= x 1) '(:+= x 1)])
+  (mapv (fn [v] (rewrite/python-lambda-expr? v {}))
+         ['[1 (:= x 1)] '#{(:= x 1)} '{(:= x 1) 1} '{:k (:= x 1)} '(f (:= x 1))])
+  (mapv (fn [entry] (rewrite/python-lambda-expr? '(f 1) {:reserved {'f entry}}))
+         [{:op :throw} {:type :block} {:emit :do} {}])
+  (rewrite/python-lambda-expr? '(f 1) {:reserved {'f {:macro (fn [_] '(return 1))}}})
+  (rewrite/python-lambda-expr? '(f 1) {:reserved {'f {:macro (fn [_] '(:= x 1))}}})
+  (rewrite/python-lambda-expr? '(f 1) {:reserved {'f {:macro identity :emit :do}}})
+  (rewrite/python-lambda-expr? '(f 1) {:reserved {'f {:macro #'identity}}})]
+ => [[true true true true true true true true true true true true false false false]
+     [false false false false false] [false false false true] true false false true])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-lambda-compatible?}
+(fact "allows only unnamed empty or single-expression function bodies"
+ (mapv (fn [v] (rewrite/python-lambda-compatible? v {}))
+       ['(fn []) '(fn [x] x) '(fn [x] (return x)) '(fn named [x] x)
+        '(fn [x] x x) '(fn [x] (:= x 1)) '(fn [x] (fn [y] y))])
+ => [true true true false false false true])
+
+^{:refer lang.model.v1.spec-python.rewrite/+python-rewriter+}
+(fact "publishes the four original rewriter functions with the configured named-function behavior"
+ [(set (keys rewrite/+python-rewriter+))
+  ((:rewrite-expression rewrite/+python-rewriter+) '(call (fn named [x] x)) {})]
+ => [#{:function-form? :rewrite-expression :rewrite-statement :rewrite-statements :rewrite-stage}
+     ['[(var named (fn [x] x))] '(call named)]])
+
+^{:refer lang.model.v1.spec-python.rewrite/with-form-meta}
+(fact "metadata forwarding replaces output metadata and leaves the source unchanged"
+ (let [source (with-meta [] {:line 7})
+       output (rewrite/with-form-meta source (with-meta 'item {:old true}))]
+  [output (meta output) (meta source) (rewrite/with-form-meta source 42)])
+ => ['item {:line 7} {:line 7} 42])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-rewrite-expression}
+(fact "hoists named callbacks before expression use and leaves quoted forms untouched"
+ [(rewrite/python-rewrite-expression '(call (fn named [x] x)) {})
+  (rewrite/python-rewrite-expression '(quote (fn named [x] x)) {})]
+ => [['[(var named (fn [x] x))] '(call named)] [[] '(quote (fn named [x] x))]])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-rewrite-statement}
+(fact "places named callback declarations before the containing statement"
+ (rewrite/python-rewrite-statement '(var f (call (fn named [x] x))) {})
+ => '(do* (var named (fn [x] x)) (var f (call named))))
+
+^{:refer lang.model.v1.spec-python.rewrite/python-rewrite-statements}
+(fact "keeps statement order while expanding a named callback in one statement"
+ (vec (rewrite/python-rewrite-statements '[(call (fn named [x] x)) (return 1)] {}))
+ => '[(do* (var named (fn [x] x)) (call named)) (return 1)])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-handler-form?}
+(fact "recognizes only matching list handler forms"
+ (mapv (fn [v] (rewrite/python-handler-form? 'catch v))
+       ['(catch e) '(finally x) '[catch e] 'catch nil '()])
+ => [true false false false false false])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-value-catch-binding?}
+(fact "only non-capitalized symbols select value-catching"
+ (mapv rewrite/python-value-catch-binding? ['err '_ 'ns/err 'Exception 'ns/Error ['Exception :as 'e] nil])
+ => [true true true false false false false])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-catch-binding}
+(fact "builds an Exception alias with the original binding metadata"
+ (let [binding (with-meta 'err {:line 9})
+       output (rewrite/python-catch-binding binding 'caught)]
+  [output (meta output) (meta binding)])
+ => [['Exception :as 'caught] {:line 9} {:line 9}])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-catch-value}
+(fact "uses the stored thrown value only when the exception carries that attribute"
+ (rewrite/python-catch-value 'caught)
+ => '(:? (hasattr caught "__xt_value__") (. caught __xt_value__) caught))
+
+^{:refer lang.model.v1.spec-python.rewrite/python-rewrite-throw}
+(fact "evaluates the thrown value once and wraps only non-native exceptions"
+ (let [input (with-meta '(throw (get-value)) {:line 7})
+       value (common/stable-symbol "py_throw_value__" input)
+       error (common/stable-symbol "py_throw_err__" input)
+       output (rewrite/python-rewrite-throw input)]
+  [(prewalk-replace {value 'VALUE error 'ERROR} output) (meta output) input])
+ => ['(do (var VALUE := (get-value))
+           (var ERROR := (:? (isinstance VALUE BaseException) VALUE (Exception VALUE)))
+           (when (not (isinstance VALUE BaseException)) (setattr ERROR "__xt_value__" VALUE))
+           (throw ERROR))
+     {:line 7} '(throw (get-value))])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-rewrite-handler}
+(fact "normalizes value catches while preserving typed catches finally and unknown handlers"
+ (let [input (with-meta '(catch err (return err)) {:line 9})
+       error (common/stable-symbol "py_catch_err__" input)
+       output (rewrite/python-rewrite-handler input)]
+  [(prewalk-replace {error 'ERROR} output) (meta output)
+   (rewrite/python-rewrite-handler '(catch Exception (return 1)))
+   (rewrite/python-rewrite-handler '(catch [Exception :as e] (return e)))
+   (rewrite/python-rewrite-handler '(finally (cleanup)))
+   (rewrite/python-rewrite-handler '(other x))])
+ => ['(catch [Exception :as ERROR]
+        (var err := (:? (hasattr ERROR "__xt_value__") (. ERROR __xt_value__) ERROR))
+        (return err))
+     {:line 9} '(catch Exception (return 1)) '(catch [Exception :as e] (return e))
+     '(finally (cleanup)) '(other x)])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-rewrite-try}
+(fact "retains body and handler order with metadata and empty-try boundary"
+ (let [input (with-meta '(try (work) (catch Exception (recover)) (finally (cleanup))) {:line 5})
+       output (rewrite/python-rewrite-try input)]
+  [output (meta output) (rewrite/python-rewrite-try '(try))])
+ => ['(try (work) (catch Exception (recover)) (finally (cleanup))) {:line 5} '(try)])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-rewrite-list}
+(fact "preserves quotes and non-forms and lowers only single-key assignments"
+ [(rewrite/python-rewrite-list '(quote (throw 1)))
+  (rewrite/python-rewrite-list '[a b])
+  (rewrite/python-rewrite-list '(:= (. obj ["key"]) 7))
+  (rewrite/python-rewrite-list '(:= (. obj [a b]) 7))
+  (rewrite/python-rewrite-list '(:= (. obj) 7))]
+ => ['(quote (throw 1)) '[a b] '(:= (. obj (setitem "key")) 7)
+     '(:= (. obj [a b]) 7) '(:= (. obj) 7)])
+
+^{:refer lang.model.v1.spec-python.rewrite/python-normalize-form}
+(fact "rewrites nested collection forms preserves metadata and stabilizes assignment lowering"
+ (let [input (with-meta '[(:= (. obj ["key"]) 7) (quote (throw 1))] {:line 3})
+       output (rewrite/python-normalize-form input)]
+  [output (meta output) (= output (rewrite/python-normalize-form output))
+   (rewrite/python-normalize-form nil)])
+ => ['[(:= (. obj (setitem "key")) 7) (quote (throw 1))] {:line 3} true nil])
+

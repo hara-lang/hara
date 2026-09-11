@@ -1,9 +1,42 @@
 (ns std.lib.context.space-test
   (:require [std.lib.context.registry :as registry]
-            [std.lib.context.space :as space]))
+            [std.lib.context.space :as space]
+            [std.lib.context.resource :as resource]))
 
 ^{:refer std.lib.context.space/space}
-(Test/check [{:name "caches spaces by namespace" :test (fn [] (binding [space/*spaces* (atom {})] (= (space/space :demo) (space/space :demo)))) :expected true}])
+(Test/check
+  [{:name "caches spaces by namespace"
+    :test (fn [] (binding [space/*spaces* (atom {})]
+                   (= (space/space :demo) (space/space :demo))))
+    :expected true}
+   {:name "implicit spaces share the current namespace and isolate other namespaces"
+    :test
+    (fn []
+      (binding [space/*spaces* (atom {}) space/*namespace* nil
+                resource/*resource-namespace* nil]
+        (try
+          (let [current (ns-current)
+                implicit (space/space)
+                explicit (space/space current)
+                other (eval-in-ns 'std.lib.context.registry (fn [] (space/space)))]
+            [(Base/identical? implicit explicit)
+             (= current (:namespace implicit))
+             (Base/identical? implicit other)
+             (:namespace other)
+             (= #{current 'std.lib.context.registry} (set (keys @space/*spaces*)))])
+          (finally (space/reset-spaces!)))))
+    :expected [true true false 'std.lib.context.registry true]}
+   {:name "explicit and dynamic namespace choices preserve original precedence"
+    :test
+    (fn []
+      (binding [space/*spaces* (atom {}) space/*namespace* 'context.override
+                resource/*resource-namespace* 'resource.override]
+        (try
+          [(:namespace (space/space))
+           (:namespace (space/space nil))
+           (:namespace (space/space 'explicit))]
+          (finally (space/reset-spaces!)))))
+    :expected '[context.override resource.override explicit]}])
 
 ^{:refer std.lib.context.space/protocol-tmpl}
 (Test/check [{:name "builds protocol member templates" :test (fn [] ((space/protocol-tmpl {:prefix "space:" :protocol 'ISpace}) {:name 'rt-get :arglists '([x])})) :expected {:name 'space:rt-get :arglists '([x]) :protocol 'ISpace :instance nil :resolve nil :default nil}}])
@@ -29,7 +62,39 @@
 (Test/check [{:name "gets configured contexts" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (:variant (space/space-context-get s :demo)))))) :expected :default}])
 
 ^{:refer std.lib.context.space/space-context-set}
-(Test/check [{:name "sets resolved context runtime entries" :test (fn [] (isolated (fn [] (let [s (space/space-create {:namespace :demo})] (:config (space/space-context-set s :demo :default {:nested {:local 2}})))))) :expected {:nested {:base 1 :local 2}}}])
+(Test/check
+  [{:name "sets resolved context runtime entries",
+    :test
+    (fn []
+      (isolated
+        (fn []
+          (let [s (space/space-create {:namespace :demo})]
+            (:config
+              (space/space-context-set
+                s
+                :demo
+                :default
+                {:nested {:local 2}})))))),
+    :expected {:nested {:base 1, :local 2}}}
+   {:name "runtime keys do not select resource variants",
+    :test
+    (fn []
+      (binding [registry/*registry* (atom {})]
+        (let [s (space/space-create {})]
+          (try
+            (registry/registry-install
+              :fixture
+              {:rt
+               {:basic {:key :basic, :resource :fixture.resource},
+                :selected
+                {:key :selected,
+                 :resource :fixture.resource,
+                 :variant :special}}})
+            [(:variant (space/space-context-set s :fixture :basic {}))
+             (:variant
+               (space/space-context-set s :fixture :selected {}))]
+            (finally (reset! (:state s) {})))))),
+    :expected [:default :special]}])
 
 ^{:refer std.lib.context.space/space-context-unset}
 (Test/check [{:name "unsets context entries" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (space/space-context-unset s :demo) (ISpace/context-list s))))) :expected []}])
@@ -44,13 +109,249 @@
 (Test/check [{:name "resolves symbols and retains spaces" :test (fn [] (binding [space/*spaces* (atom {})] [(space/space? (space/space-resolve 'demo)) (space/space? (space/space-resolve (space/space :demo)))])) :expected [true true]}])
 
 ^{:refer std.lib.context.space/space-rt-create}
-(Test/check [{:name "creates configured runtimes" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (registry/rt-null? (space/space-rt-create s :demo)))))) :expected true}])
+(Test/check
+  [{:name "creates configured runtimes",
+    :test
+    (fn []
+      (isolated
+        (fn []
+          (let [s (space/space-create {})]
+            (space/space-context-set s :demo :default {})
+            (registry/rt-null? (space/space-rt-create s :demo)))))),
+    :expected true}
+   {:name
+    "resource creation uses the registered constructor and nested defaults without starting",
+    :test
+    (fn []
+      (binding [registry/*registry* (atom {})
+                resource/*resource-registry* (atom {})]
+        (let [calls (atom []) s (space/space-create {})]
+          (try
+            (resource/spec-add
+              {:type :fixture.resource,
+               :config {:nested {:base 1, :override 0}},
+               :instance
+               {:create
+                (fn [config]
+                  (swap! calls conj :create)
+                  {:config config, :phase :created}),
+                :setup (fn [value] (swap! calls conj :setup) value)},
+               :variant {:default {:config {:selected :default}}}})
+            (registry/registry-install
+              :fixture
+              {:rt
+               {:default
+                {:resource :fixture.resource,
+                 :create
+                 (fn [config]
+                   (throw
+                     (ex
+                       :host
+                       {}
+                       :ex/message
+                       "direct constructor must not run"))),
+                 :config {:nested {:context 2, :override 3}}}}})
+            (space/space-context-set
+              s
+              :fixture
+              :default
+              {:nested {:local 4}})
+            [(space/space-rt-create s :fixture)
+             @calls
+             (ISpace/rt-active s)]
+            (finally (reset! (:state s) {}) (reset! calls [])))))),
+    :expected
+    [{:config
+      {:nested {:base 1, :context 2, :override 3, :local 4},
+       :selected :default},
+      :phase :created}
+     [:create]
+     []]}])
 
 ^{:refer std.lib.context.space/space-rt-start}
-(Test/check [{:name "starts runtimes once" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (= (space/space-rt-start s :demo) (space/space-rt-start s :demo)))))) :expected true}])
+(Test/check
+  [{:name "starts runtimes once",
+    :test
+    (fn []
+      (isolated
+        (fn []
+          (let [s (space/space-create {})]
+            (space/space-context-set s :demo :default {})
+            (=
+              (space/space-rt-start s :demo)
+              (space/space-rt-start s :demo)))))),
+    :expected true}
+   {:name
+    "resource setup uses hooks and preserves the cached runtime identity",
+    :test
+    (fn []
+      (binding [registry/*registry* (atom {})
+                resource/*resource-registry* (atom {})]
+        (let [calls (atom []) s (space/space-create {})]
+          (try
+            (resource/spec-add
+              {:type :fixture.resource,
+               :config {:nested {:base 1, :override 0}},
+               :instance
+               {:create
+                (fn [config]
+                  (swap! calls conj :create)
+                  {:config config}),
+                :setup
+                (fn [value]
+                  (swap! calls conj :setup)
+                  (assoc value :started true)),
+                :teardown identity},
+               :variant
+               {:default
+                {:hook
+                 {:pre-setup
+                  (fn [value]
+                    (swap! calls conj :pre)
+                    (assoc value :prepared true)),
+                  :post-setup
+                  (fn [value]
+                    (swap! calls conj :post)
+                    (assoc value :ready true))}}}})
+            (registry/registry-install
+              :fixture
+              {:rt
+               {:default
+                {:resource :fixture.resource,
+                 :config {:nested {:override 3}}}}})
+            (space/space-context-set s :fixture :default {})
+            (let [first (space/space-rt-start s :fixture)
+                  second (space/space-rt-start s :fixture)]
+              [first
+               (Base/identical? first second)
+               @calls
+               (ISpace/rt-active s)])
+            (finally
+              (space/space-stop s)
+              (reset! (:state s) {})
+              (reset! calls [])))))),
+    :expected
+    [{:config {:nested {:base 1, :override 3}},
+      :prepared true,
+      :started true,
+      :ready true}
+     true
+     [:create :pre :setup :post]
+     [:fixture]]}
+   {:name
+    "failed resource setup is not cached and a later start retries",
+    :test
+    (fn []
+      (binding [registry/*registry* (atom {})
+                resource/*resource-registry* (atom {})]
+        (let [attempts (atom 0) s (space/space-create {})]
+          (try
+            (resource/spec-add
+              {:type :fixture.resource,
+               :instance
+               {:create (fn [config] {:config config}),
+                :setup
+                (fn [value]
+                  (if (= 1 (swap! attempts inc))
+                    (throw
+                      (ex
+                        :host
+                        {:attempt 1}
+                        :ex/message
+                        "setup failed"))
+                    (assoc value :ready true))),
+                :teardown identity}})
+            (registry/registry-install
+              :fixture
+              {:rt
+               {:default
+                {:resource :fixture.resource, :config {:keep 1}}}})
+            (space/space-context-set s :fixture :default {})
+            (let [before (space/space-context-get s :fixture)
+                  failure (try
+                            (space/space-rt-start s :fixture)
+                            :unexpected-success
+                            (catch
+                              error
+                              [(ex-message error)
+                               (:attempt (ex-data error))]))
+                  restored (=
+                             before
+                             (space/space-context-get s :fixture))
+                  active-after-failure (ISpace/rt-active s)
+                  runtime (space/space-rt-start s :fixture)]
+              [failure
+               restored
+               active-after-failure
+               runtime
+               @attempts])
+            (finally
+              (space/space-stop s)
+              (reset! (:state s) {})
+              (reset! attempts 0)))))),
+    :expected
+    [["setup failed" 1] true [] {:config {:keep 1}, :ready true} 2]}])
 
 ^{:refer std.lib.context.space/space-rt-stop}
-(Test/check [{:name "stops active runtimes" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (space/space-rt-start s :demo) (space/space-rt-stop s :demo) (ISpace/rt-stopped? s :demo))))) :expected true}])
+(Test/check
+  [{:name "stops active runtimes",
+    :test
+    (fn []
+      (isolated
+        (fn []
+          (let [s (space/space-create {})]
+            (space/space-context-set s :demo :default {})
+            (space/space-rt-start s :demo)
+            (space/space-rt-stop s :demo)
+            (ISpace/rt-stopped? s :demo))))),
+    :expected true}
+   {:name
+    "resource stop calls teardown hooks once and preserves context configuration",
+    :test
+    (fn []
+      (binding [registry/*registry* (atom {})
+                resource/*resource-registry* (atom {})]
+        (let [calls (atom []) s (space/space-create {})]
+          (try
+            (resource/spec-add
+              {:type :fixture.resource,
+               :instance
+               {:create (fn [config] {:marker :runtime}),
+                :setup identity,
+                :teardown
+                (fn [value]
+                  (swap! calls conj [:stop (:prepared value)])
+                  (assoc value :stopped true))},
+               :variant
+               {:default
+                {:hook
+                 {:pre-teardown
+                  (fn [value]
+                    (swap! calls conj [:pre (:marker value)])
+                    (assoc value :prepared true)),
+                  :post-teardown
+                  (fn [value]
+                    (swap! calls conj [:post (:stopped value)])
+                    value)}}}})
+            (registry/registry-install
+              :fixture
+              {:rt
+               {:default
+                {:resource :fixture.resource, :config {:keep 1}}}})
+            (space/space-context-set s :fixture :default {})
+            (let [before (space/space-context-get s :fixture)]
+              (space/space-rt-start s :fixture)
+              [(space/space-rt-stop s :fixture)
+               (space/space-rt-stop s :fixture)
+               @calls
+               (= before (space/space-context-get s :fixture))
+               (ISpace/rt-active s)])
+            (finally
+              (space/space-stop s)
+              (reset! (:state s) {})
+              (reset! calls [])))))),
+    :expected
+    [nil nil [[:pre :runtime] [:stop true] [:post true]] true []]}])
 
 ^{:refer std.lib.context.space/space-stop}
 (Test/check [{:name "stops every active runtime" :test (fn [] (isolated (fn [] (let [s (space/space-create {})] (space/space-context-set s :demo :default {}) (space/space-rt-start s :demo) (space/space-stop s) (ISpace/rt-stopped? s :demo))))) :expected true}])

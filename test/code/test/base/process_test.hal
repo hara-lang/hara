@@ -31,3 +31,34 @@
               (Test/passed? failing) (Test/failure-count failing)
               (Test/passed? expected-error) (Result/error? unexpected-error)]))
    :expected [true 1 false 1 true true]}])
+
+^{:refer code.test.base.process/check}
+(Test/check
+ [{:name "error expectations require a thrown outcome, not a returned value"
+   :test (fn []
+           (mapv (fn [value]
+                   [(Test/passed? (code.test.base.process/check
+                                   (fn [] value) (code.test.checker/throws)))
+                    (Test/passed? (code.test.base.process/check
+                                   (fn [] value) (code.test.checker/throws-info)))])
+                 [nil false 42 "boom" {:kind :fixture}
+                  (ex :generic {:kind :fixture} :ex/message "boom")]))
+   :expected [[false false] [false false] [false false]
+              [false false] [false false] [false false]]}
+  {:name "thrown exceptions and host errors match only error expectations"
+   :test (fn []
+           (let [calls (atom 0)
+                 thunk (fn []
+                         (swap! calls inc)
+                         (throw (ex :generic {:kind :fixture} :ex/message "boom")))
+                 matched (code.test.base.process/check thunk (code.test.checker/throws))
+                 data-match (code.test.base.process/check thunk (code.test.checker/throws-info {:kind :fixture}))
+                 mismatch (code.test.base.process/check thunk (code.test.checker/throws nil "other"))
+                 wildcard (code.test.base.process/check thunk (code.test.checker/anything))
+                 host (code.test.base.process/check (fn [] (nth [] 1)) (code.test.checker/throws))
+                 returned (code.test.base.process/check (fn [] "boom") "boom")]
+             [(Test/passed? matched) (Test/passed? data-match)
+              (Test/passed? mismatch) (Test/failure-count mismatch)
+              (Result/error? wildcard) (Test/passed? host)
+              (Test/passed? returned) (deref calls)]))
+   :expected [true true false 1 true true true 4]}])

@@ -1,5 +1,8 @@
 (ns lang.base.grammar-macro-test
   (:require [lang.base.grammar-macro :refer :all]
+    [lang.base.emit-block :as block]
+    [lang.base.grammar :as grammar]
+    [lang.base.emit-helper :as helper]
     [lang.base.v1.grammar-spec :as snapshot])
   (:use code.test))
 
@@ -384,3 +387,54 @@
 (fact "delegates non-thread macros to native one-step expansion"
  (lang.base.grammar-macro/tf-macroexpand '(lang.base.grammar-macro-test/migration-thread-fixture :ok))
  => '(do :ok))
+
+^{:refer lang.base.grammar-macro/tf-when, :id :tf-when-persistent-emission}
+(fact "when expansion survives inspection and repeated emission"
+ (let [g (grammar/grammar :test (grammar/to-reserved (grammar/build)) helper/+default+)
+       expanded (tf-when (quote (when true (return 1) (return 2))))
+       before (pr-str expanded)
+       first-output (block/test-block-emit expanded g {})
+       second-output (block/test-block-emit expanded g {})]
+  [before first-output second-output (pr-str expanded)])
+ => ["(br* (if true (return 1) (return 2)))" "if(true){\n  return 1;\n  return 2;\n}" "if(true){\n  return 1;\n  return 2;\n}" "(br* (if true (return 1) (return 2)))"])
+
+^{:refer lang.base.grammar-macro/tf-if, :id :tf-if-persistent-emission}
+(fact "if expansion retains both branches through repeated emission"
+ (let [g (grammar/grammar :test (grammar/to-reserved (grammar/build)) helper/+default+)
+       expanded (tf-if (quote (if true (return 1) (return 2))))
+       before (pr-str expanded)
+       first-output (block/test-block-emit expanded g {})
+       second-output (block/test-block-emit expanded g {})]
+  [before first-output second-output (pr-str expanded)])
+ => ["(br* (if true (return 1)) (else (return 2)))" "if(true){\n  return 1;\n}\nelse{\n  return 2;\n}" "if(true){\n  return 1;\n}\nelse{\n  return 2;\n}" "(br* (if true (return 1)) (else (return 2)))"])
+
+^{:refer lang.base.grammar-macro/tf-cond, :id :tf-cond-persistent-emission}
+(fact "cond expansion preserves initial elseif and default bodies"
+ (let [g (grammar/grammar :test (grammar/to-reserved (grammar/build)) helper/+default+)
+       expanded (tf-cond (quote (cond true (return 1) false (return 2) :else (return 3))))
+       before (pr-str expanded)
+       first-output (block/test-block-emit expanded g {})
+       second-output (block/test-block-emit expanded g {})]
+  [before first-output second-output (pr-str expanded)])
+ => ["(br* (if true (return 1)) (elseif false (return 2)) (else (return 3)))" "if(true){\n  return 1;\n}\nelse if(false){\n  return 2;\n}\nelse{\n  return 3;\n}" "if(true){\n  return 1;\n}\nelse if(false){\n  return 2;\n}\nelse{\n  return 3;\n}" "(br* (if true (return 1)) (elseif false (return 2)) (else (return 3)))"])
+
+(require [lang.base.emit :as emit])
+
+^{:refer lang.base.grammar-macro/tf-let-bind :id persistent-let-body}
+(fact "let expansion retains all bindings and body statements through repeated emission"
+  (let [g (grammar/grammar :test (grammar/to-reserved (grammar/build)) helper/+default+)
+        expanded (tf-let-bind '(let [x 1 y 2] (print x) (return y)))
+        before (pr-str expanded)
+        first-output (emit/emit-main expanded g {})
+        second-output (emit/emit-main expanded g {})]
+    [before first-output second-output (pr-str expanded)])
+  => ["(do* (var x := 1) (var y := 2) (print x) (return y))"
+      "x = 1;\ny = 2;\nprint(x);\nreturn y"
+      "x = 1;\ny = 2;\nprint(x);\nreturn y"
+      "(do* (var x := 1) (var y := 2) (print x) (return y))"])
+
+^{:refer lang.base.grammar-macro/tf-tcond :id native-ternary-error}
+(fact "invalid ternary tails retain the original message and offending pair"
+  (mapv (fn [form] (try (tf-tcond form) :missing-error (catch error [(ex-message error) (:form (ex-data error))])))
+        ['(:?> :a 1) '(:?>)])
+  => [["ternary cond has to end with :else" [:a 1]] ["ternary cond has to end with :else" nil]])

@@ -135,3 +135,13 @@
   (let [rewriter (hoist/create-rewriter {})]
     ((:rewrite-expression rewriter) (seq '[fn named [x] x]) {}))
   => ['[(var named (fn [x] x))] 'named])
+
+^{:refer lang.core.rewrite.hoist/create-rewriter :id :hoist-function-scope}
+(fact "keeps lifted callbacks inside all original function-definition scopes"
+  (let [rewrite (:rewrite-statement (hoist/create-rewriter {}))]
+    (mapv (fn [tag]
+            (rewrite (list tag 'outer '[s] '(call (fn thunk [] (return s)))) {}))
+          '[defn defn- defgen]))
+  => ['(defn outer [s] (var thunk (fn [] (return s))) (call thunk))
+      '(defn- outer [s] (var thunk (fn [] (return s))) (call thunk))
+      '(defgen outer [s] (var thunk (fn [] (return s))) (call thunk))])

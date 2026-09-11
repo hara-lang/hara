@@ -17,14 +17,21 @@
      :failures []})))
 
 (defn ^{:public true} check
-  "Evaluates a thunk once and compares its outcome against a code.test matcher."
+  "Evaluates a thunk once. Only error matchers accept thrown outcomes; they
+  never accept a normal return, even when the returned value is an exception."
   [thunk expected]
-  (try
-    (let [actual (thunk)
-          comparison (result/compare actual expected)]
-      (result/comparison-result "code.test/check" actual expected comparison))
-    (catch error
-      (if (checker/matches? expected error)
-        (let [comparison (result/compare error expected)]
-          (result/comparison-result "code.test/check" error expected comparison))
-        (error-result expected error)))))
+  (let [expects-error (and (checker/checker? expected)
+                           (has? #{:throws :throws-info} (:checker/type expected)))
+        outcome (try
+                  {:value (thunk) :thrown false}
+                  (catch error {:value error :thrown true}))
+        actual (:value outcome)]
+    (if (:thrown outcome)
+      (if expects-error
+        (result/comparison-result "code.test/check" actual expected
+                                  (result/compare actual expected))
+        (error-result expected actual))
+      (result/comparison-result "code.test/check" actual expected
+                                (if expects-error
+                                  (Test/compare false true)
+                                  (result/compare actual expected))))))

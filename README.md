@@ -201,6 +201,33 @@ The optional legacy sealed executable remains separate: call
 required. It writes its primary and specs HARPs beneath `target/hara-sealed/`;
 the normal `target/hara/` companion never mounts or ships the specs package.
 
+### Refresh the native host and Emacs distribution
+
+When the sibling hara-native release changes, run the checked-in updater from
+the Hara project root:
+
+From the workspace root, the Make entry is equivalent:
+
+    make hara-native-update
+
+To select another release, pass HARA_NATIVE_VERSION=VERSION.
+
+    cd /path/to/workspace/technology/hara
+    HARA_NATIVE_UPDATE_RUN=1 \
+    HARA_NATIVE_VERSION=0.1.28 \
+    ../hara-native/core/rust/target/release/hara-native \
+      test --project . --file test/tool/native_update_test.hal
+
+The updater builds the sibling native host when its version is missing or
+mismatched, updates the :project/native pin, rebuilds target/hara, verifies the
+distribution manifest, and smoke-tests extensions/hara-emacs/bin/hara.
+HARA_NATIVE_VERSION defaults to the current checked-in release. The standard
+workspace layout is inferred automatically; set HARA_WORKSPACE_ROOT when the
+two repositories are elsewhere. If the default Hara install directory is not
+writable on the host, add HARA_DIST_HOME="$(mktemp -d)" to the command. The
+operation is safe to rerun and restores the project pin if a later
+distribution or launcher check fails.
+
 Before committing a HAL change, run its focused test in a fresh native process
 and then run the full project suite. The repository workflow requires each
 implementation function to receive a behavioral test rather than a type-only
