@@ -150,3 +150,130 @@
                    (catch error true))]
   [before during caught (= before entry/*extra*)])
  => [{} {:probe/value 7} true true])
+
+
+(ns lang.core.impl-entry-test
+  (:require [lang.core.impl-entry :as entry]
+            [lang.base.emit :as emit])
+  (:use code.test))
+
+^{:refer lang.core.impl-entry/with:cache-none :id installed-cache-none}
+(fact "cache bypass binding restores on normal and exceptional exits"
+  [(entry/with:cache-none entry/*cache-none*)
+   (try (entry/with:cache-none (throw (ex :state {})))
+        (catch error entry/*cache-none*))
+   entry/*cache-none*]
+  => [true false false])
+
+^{:refer lang.core.impl-entry/with:cache-force :id installed-cache-force}
+(fact "force binding restores on normal and exceptional exits"
+  [(entry/with:cache-force entry/*cache-force*)
+   (try (entry/with:cache-force (throw (ex :state {})))
+        (catch error entry/*cache-force*))
+   entry/*cache-force*]
+  => [true false false])
+
+^{:refer lang.core.impl-entry/emit-entry-cached :id installed-cache-identity}
+(fact "cache hits require the same grammar and entry objects"
+  (let [baseline (entry/emit-entry-cached-state)
+        calls (atom 0)
+        grammar @emit/+test-grammar+
+        object {:module 'cache.fixture :id 'value :namespace (ns-current) :form 42}
+        options {:emit {:transform (fn [form _] (swap! calls inc) form)}}
+        request {:grammar grammar :entry object :mopts options}]
+    (try
+      (entry/emit-entry-cached-reset)
+      [(entry/emit-entry-cached request)
+       (entry/emit-entry-cached request)
+       @calls
+       (entry/emit-entry-cached (assoc request :entry (assoc object :probe true)))
+       @calls
+       (entry/emit-entry-cached (assoc request :grammar (assoc grammar :probe true)))
+       @calls
+       (entry/with:cache-force (entry/emit-entry-cached request))
+       @calls]
+      (finally (entry/emit-entry-cached-reset baseline) (reset! calls 0))))
+  => ["42" "42" 1 "42" 2 "42" 3 "42" 4])
+
+^{:refer lang.core.impl-entry/emit-entry-cached-state :id installed-cache-restore}
+(fact "snapshot restore retains the actual cache state object"
+  (let [baseline (entry/emit-entry-cached-state)
+        saved {[:fixture {}] {:tag [:saved] :return "saved"}}]
+    (try
+      (entry/emit-entry-cached-reset saved)
+      [(Base/identical? saved (entry/emit-entry-cached-state))
+       (entry/emit-entry-cached-state)]
+      (finally (entry/emit-entry-cached-reset baseline))))
+  => [true {[:fixture {}] {:tag [:saved] :return "saved"}}])
+
+^{:refer lang.core.impl-entry/emit-entry-cached-reset :id installed-cache-reset}
+(fact "reset is idempotent after a populated cache"
+  (let [baseline (entry/emit-entry-cached-state)]
+    (try
+      (entry/emit-entry-cached-reset {:populated true})
+      [(entry/emit-entry-cached-reset)
+       (entry/emit-entry-cached-reset)
+       (entry/emit-entry-cached-state)]
+      (finally (entry/emit-entry-cached-reset baseline))))
+  => [{} {} {}])
+
+^{:refer lang.core.impl-entry/emit-entry-cached-raw :id installed-cache-raw}
+(fact "raw cache helper emits without changing the cache"
+  (let [baseline (entry/emit-entry-cached-state)]
+    (try
+      (entry/emit-entry-cached-reset)
+      [(entry/emit-entry-cached-raw
+         {:grammar @emit/+test-grammar+
+          :entry {:module 'cache.fixture :id 'value :namespace (ns-current) :form 42}
+          :mopts {}})
+       (entry/emit-entry-cached-state)]
+      (finally (entry/emit-entry-cached-reset baseline))))
+  => ["42" {}])
+
+^{:refer lang.core.impl-entry/+cached-emit-keys+ :id installed-emit-options}
+(fact "retains the original emit cache option inventory"
+  entry/+cached-emit-keys+ => [:transform :label :trim])
+
+^{:refer lang.core.impl-entry/+cached-keys+ :id installed-cache-options}
+(fact "retains the original request cache option inventory"
+  entry/+cached-keys+ => [:layout :emit])
+
+(def +entry-transform+ (fn [body _] (str body "!")))
+^{:refer lang.core.impl-entry-test/+entry-transform+ :id installed-var-transforms}
+(fact "entry and book transforms accept native Vars through the original pipeline"
+  (let [grammar @emit/+test-grammar+
+        object {:module 'cache.fixture :id 'value :namespace (ns-current) :form 42}]
+    (entry/with:cache-none
+      [(entry/emit-entry grammar object
+         {:emit {:code {:transforms {:entry [#'+entry-transform+]}}}})
+       (entry/emit-entry grammar object
+         {:lang :js :module {}
+          :snapshot {:js {:book {:meta {:transforms {:entry [#'+entry-transform+]}}}}}})]))
+  => ["42!" "42!"])
+
+^{:refer lang.core.impl-entry/*cache-none* :id installed-bypass-flag}
+(fact "cache bypass flag starts false and supports scoped overrides"
+  [entry/*cache-none* (binding [entry/*cache-none* true] entry/*cache-none*) entry/*cache-none*]
+  => [false true false])
+
+^{:refer lang.core.impl-entry/*cache-force* :id installed-force-flag}
+(fact "cache force flag starts false and supports scoped overrides"
+  [entry/*cache-force* (binding [entry/*cache-force* true] entry/*cache-force*) entry/*cache-force*]
+  => [false true false])
+
+^{:refer lang.core.impl-entry/+emit-entry-cached+ :id installed-cache-storage}
+(fact "real emission stores the original key and retains object identity"
+  (let [baseline (entry/emit-entry-cached-state)
+        grammar @emit/+test-grammar+
+        object {:module 'cache.fixture :id 'value :namespace (ns-current) :form 42}]
+    (try
+      (entry/emit-entry-cached-reset)
+      (entry/emit-entry-cached {:grammar grammar :entry object :mopts {}})
+      (let [state @entry/+emit-entry-cached+
+            record (get state ['cache.fixture/value {}])
+            [_ saved-grammar saved-entry options qualified] (:tag record)]
+        [(count state) (:return record)
+         (Base/identical? grammar saved-grammar)
+         (Base/identical? object saved-entry) options qualified])
+      (finally (entry/emit-entry-cached-reset baseline))))
+  => [1 "42" true true {} {}])

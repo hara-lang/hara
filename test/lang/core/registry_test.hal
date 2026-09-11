@@ -1,488 +1,90 @@
 (ns lang.core.registry-test
   (:use code.test)
-  (:require [lang.base.book :as book]
-            [lang.base.registry :as catalog]
-            [lang.core.registry :as registry]))
+  (:require [lang.core.registry :refer :all]))
 
-(defn isolated
-  [function]
-  (let [before (registry/registry-snapshot)
-        image-before (deref registry/+book-image-registry+)]
+^{:refer lang.core.registry/registry-book-list :added "4.1"}
+(fact "lists all registered books"
+  (let [books (set (registry-book-list))]
+    [(has? books [:js :default])
+      (has? books [:lua :default])
+      (has? books [:lua.nginx :default])
+      (has? books [:lua.redis :default])
+      (has? books [:postgres :default])])
+  => [true true true true true])
+
+^{:refer lang.core.registry/registry-book-ns :added "4.1"}
+(fact "gets the namespace for a registry entry"
+  (registry-book-ns :js)
+  => 'lang.model.v1.spec-js
+
+  (registry-book-ns :circom)
+  => 'lang.model.annex.spec-circom
+
+  (registry-book-ns :fortran)
+  => 'lang.model.annex.spec-fortran
+
+  (registry-book-ns :llvm)
+  => 'lang.model.spec-llvm
+
+  (registry-book-ns :solidity)
+  => 'lang.model.spec-solidity
+
+  (registry-book-ns :ruby)
+  => 'lang.model.spec-ruby
+
+  (registry-book-ns :verilog)
+  => 'lang.model.annex.spec-verilog)
+
+^{:refer lang.core.registry/registry-book-info :added "4.1"}
+(fact "gets the full registry entry"
+  (registry-book-info :js)
+  => '{:ns lang.model.v1.spec-js
+       :book +book+
+       :parent :xtalk})
+
+^{:refer lang.core.registry/registry-book-info, :id registry-lua-variants}
+(fact
+  "gets variant lua book info"
+  (registry-book-info :lua.redis)
+  =>
+  '{:ns lang.model.spec-lua.variant-redis, :book +book+, :parent :lua}
+  (registry-book-info :lua.nginx)
+  =>
+  '{:ns lang.model.spec-lua.variant-nginx, :book +book+, :parent :lua})
+
+^{:refer lang.core.registry/registry-book, :added "4.1"}
+(comment :deferred-original-model-loading)
+
+^{:refer lang.core.registry/+registry+}
+(fact "keeps the original runtime coordinate values and supports exact restoration"
+  (let [before (deref +registry+)]
     (try
-      (registry/registry-reset!)
-      (reset! registry/+book-image-registry+ {})
-      (function)
-      (finally
-        (registry/registry-restore! before)
-        (reset! registry/+book-image-registry+ image-before)))))
+      (let [original [(get before [:js :basic]) (get before [:lua :basic]) (get before [:python :basic])]]
+        (reset! +registry+ {})
+        (reset! +registry+ before)
+        [original (= before (deref +registry+))])
+      (finally (reset! +registry+ before))))
+  => [['lang.runtime.basic.impl.process-js 'lang.runtime.basic.impl.process-lua
+       'lang.runtime.basic.impl.process-python] true])
 
-^{:refer lang.core.registry/registry-snapshot}
-(fact "the registry declaration leaves grammar and Book images unmaterialized"
-  (isolated
-   (fn []
-     [(:grammars (registry/registry-snapshot))
-      (deref registry/+book-image-registry+)]))
-  => [nil {}])
-
-^{:refer lang.core.registry/registry-grammar-list}
-(fact "an exact grammar query loads only its selected model specification"
-  (isolated
-   (fn []
-     (let [sources (registry/registry-grammar-list {:source/id :c :source/kind :grammar})]
-       [(mapv (fn [source] (:source/id source)) sources)
-        (mapv (fn [grammar-id]
-                (catalog/versions (deref registry/+grammar-registry+) grammar-id))
-              [:xtalk :hara :postgres :c :js :py :lua :go :dt])])))
-  => [[:c] [[1] [] [] [1] [] [] [] [] []]])
-
-^{:refer lang.core.registry/registry-grammar-load}
-(fact "Dart source can load without materializing a grammar or Book image"
-  (isolated
-   (fn []
-     [(registry/registry-namespace-loaded? 'lang.model.v1.spec-dart)
-      (deref registry/+book-image-registry+)
-      (registry/registry-grammar-versions :dt)
-      (not (nil? (registry/registry-grammar-load :dart)))
-      (registry/registry-grammar-versions :dt)
-      (registry/registry-namespace-loaded? 'lang.model.v1.spec-dart)
-      (deref registry/+book-image-registry+)]))
-  => [true {} [] true [1] true {}])
-
-^{:refer lang.core.registry/registry-grammar-load}
-(fact "grammar loading is idempotent through the lazy registry"
-  (isolated
-   (fn []
-     (let [first-catalog (registry/registry-grammar-load :c)
-           second-catalog (registry/registry-grammar-load :c)]
-       [(= first-catalog second-catalog)
-        (registry/registry-grammar-versions :c)])))
-  => [true [1]])
-
-^{:refer lang.core.registry/registry-grammar}
-(fact "grammar resolution is independent and exactly versioned"
-  (isolated
-   (fn []
-     (let [selection (registry/registry-grammar :c 1)]
-       [(:coordinate selection)
-        (registry/registry-grammar-versions :c)])))
-  => [{:grammar/release "foundation-v1"
-       :grammar/version 1
-       :grammar/id :c
-       :grammar/facets []}
-      [1]])
-
-^{:refer lang.core.registry/registry-grammar-list}
-(fact "the current source grammar set includes every target-owned grammar"
-  (isolated
-   (fn []
-     (set (map (fn [source] (:source/id source))
-               (registry/registry-grammar-list {:source/kind :grammar})))))
-  => #{:xtalk :hara :postgres :c :js :py :lua :go :dt})
+^{:refer lang.core.registry/+book-registry+}
+(fact "keeps unversioned variant descriptors and restores all registry entries"
+  (let [before (deref +book-registry+)]
+    (try
+      (let [variant (get before [:lua.redis :default])]
+        (reset! +book-registry+ {})
+        (reset! +book-registry+ before)
+        [variant (= before (deref +book-registry+))])
+      (finally (reset! +book-registry+ before))))
+  => [{:ns 'lang.model.spec-lua.variant-redis :book '+book+ :parent :lua} true])
 
 ^{:refer lang.core.registry/registry-book}
-(fact "language books remain immutable values pinned to supported grammar coordinates"
-  (isolated
-   (fn []
-     (mapv (fn [language]
-             (let [value (registry/registry-book language)]
-               [language (book/book? value) (:grammar-coordinate value)]))
-           [:xtalk :hara :js :python :lua :postgres :c :go :dart])))
-  => [[:xtalk true {:grammar/release "foundation-v1" :grammar/version 1 :grammar/id :xtalk :grammar/facets []}]
-      [:hara true {:grammar/release "hara-v1" :grammar/version 1 :grammar/id :hara :grammar/facets []}]
-      [:js true {:grammar/release "alpha" :grammar/version 1 :grammar/id :js :grammar/facets []}]
-      [:python true {:grammar/release "alpha" :grammar/version 1 :grammar/id :py :grammar/facets []}]
-      [:lua true {:grammar/release "alpha" :grammar/version 1 :grammar/id :lua :grammar/facets []}]
-      [:postgres true {:grammar/release "alpha" :grammar/version 1 :grammar/id :postgres :grammar/facets []}]
-      [:c true {:grammar/release "foundation-v1" :grammar/version 1 :grammar/id :c :grammar/facets []}]
-      [:go true {:grammar/release "alpha" :grammar/version 1 :grammar/id :go :grammar/facets []}]
-      [:dart true {:grammar/release "alpha" :grammar/version 1 :grammar/id :dt :grammar/facets []}]])
-
-^{:refer lang.core.registry/registry-book}
-(fact "caches a dynamically loaded Book as an image for later registry lookups"
-  (isolated
-   (fn []
-     (let [value (registry/registry-book :js)
-           cached (get (deref registry/+book-image-registry+)
-                       [:js :default 1])]
-       [(book/book? cached)
-        (= (:grammar-coordinate value) (:grammar-coordinate cached))
-        (= value cached)])))
-  => [true true true])
-
-^{:refer lang.core.registry/registry-book}
-(fact "target books retain their explicit source provenance"
-  (isolated
-   (fn []
-     (mapv (fn [language]
-             [language (:provenance (:selection (registry/registry-book language)))])
-           [:js :python :lua])))
-  => [[:js [[:emit-template :js 1] [:profile :js 1] [:grammar :js 1]]]
-      [:python [[:emit-template :py 1] [:profile :py 1] [:grammar :py 1]]]
-      [:lua [[:emit-template :lua 1] [:profile :lua 1] [:grammar :lua 1]]]])
-
-^{:refer lang.core.registry-test/isolated}
-(Test/check
- [{:name "restores registry state after an isolated operation"
-   :test (fn []
-           (let [before (registry/registry-snapshot)
-                 image-before (deref registry/+book-image-registry+)]
-             (try
-               (isolated (fn [] (registry/registry-reset!)))
-               [(= before (registry/registry-snapshot))
-                (= image-before (deref registry/+book-image-registry+))]
-               (finally
-                 (registry/registry-restore! before)
-                 (reset! registry/+book-image-registry+ image-before)))))
-   :expected [true true]}])
-
-^{:refer lang.core.registry/registry-snapshot}
-(Test/check
- [{:name "captures runtime book and grammar state"
-   :test (fn []
-           (isolated
-            (fn []
-              (let [snapshot (registry/registry-snapshot)]
-                [(set (keys snapshot))
-                 (count (:runtime snapshot))
-                 (set (keys (:books snapshot)))
-                 (count (registry/registry-grammar-list))]))))
-   :expected [#{:runtime :books :book-macros :grammars}
-              22
-              #{[:xtalk :default] [:postgres :default]
-                [:hara :default] [:js :default]
-                [:python :default] [:lua :default]
-                [:go :default] [:dart :default] [:c :default]}
-              23]}])
-
-^{:refer lang.core.registry/registry-restore!}
-(Test/check
- [{:name "restores supplied state and the nil baseline"
-   :test (fn []
-           (let [before (registry/registry-snapshot)]
-             (try
-               (let [restored (registry/registry-restore!
-                                {:runtime {[:fixture :host] {:namespace 'fixture.host}}
-                                 :books {}
-                                 :grammars (:grammars before)})
-                     baseline (registry/registry-restore! nil)]
-                 [[(count (:runtime restored))
-                   (not (nil? (get (:runtime restored) [:fixture :host])))]
-                  [(count (:runtime baseline))
-                   (set (keys (:books baseline))) ]])
-               (finally (registry/registry-restore! before)))))
-   :expected [[1 true]
-              [22 #{[:xtalk :default] [:postgres :default]
-                    [:hara :default] [:js :default]
-                    [:python :default] [:lua :default]
-                    [:go :default] [:dart :default] [:c :default]}]]}])
-
-^{:refer lang.core.registry/registry-reset!}
-(Test/check
- [{:name "is idempotent over all registries"
-   :test (fn []
-           (isolated
-            (fn []
-              (registry/registry-add :fixture :host 'fixture.host)
-              [(count (:runtime (registry/registry-reset!)))
-               (count (:runtime (registry/registry-reset!)))])))
-   :expected [22 22]}])
-
-^{:refer lang.core.registry/registry-namespace-loaded?}
-(Test/check
- [{:name "distinguishes loaded sources from unknown namespaces"
-   :test (fn []
-           (isolated
-            (fn []
-              (registry/registry-grammar-load :xtalk)
-              [(registry/registry-namespace-loaded? 'lang.model.v1.spec-xtalk)
-               (registry/registry-namespace-loaded? 'fixture.absent)])))
-   :expected [true false]}])
-
-^{:refer lang.core.registry/registry-list}
-(Test/check
- [{:name "lists exact runtime coordinates"
-   :test (fn [] (set (registry/registry-list)))
-   :expected #{[:js :oneshot] [:js :verify] [:js :basic]
-               [:python :oneshot] [:python :verify] [:python :basic]
-               [:lua :oneshot] [:lua :verify] [:lua :basic]
-               [:c :twostep] [:c :verify]
-               [:go :twostep] [:go :verify]
-               [:rust :twostep] [:rust :verify]
-               [:dart :twostep] [:dart :verify]
-               [:xtalk :host] [:hara :host]
-               [:xtalk :basic] [:hara :basic]
-               [:postgres :client]}}])
-
-^{:refer lang.core.registry/registry-add}
-(Test/check
- [{:name "adds a portable runtime coordinate"
-   :test (fn []
-           (isolated
-            (fn []
-              [(registry/registry-add :fixture :host 'fixture.host)
-               (registry/registry-runtime-ns :fixture :host)])))
-   :expected ['fixture.host 'fixture.host]}])
-
-^{:refer lang.core.registry/registry-runtime-ns}
-(Test/check
- [{:name "looks up a runtime namespace without loading it"
-   :test (fn [] [(registry/registry-runtime-ns :postgres :client)
-                 (registry/registry-runtime-ns :unknown :missing)])
-   :expected ['lang.runtime.postgres.client nil]}])
-
-^{:refer lang.core.registry/registry-runtime}
-(Test/check
- [{:name "returns a namespace linked by the host"
-   :test (fn []
-           (isolated
-            (fn []
-              (registry/registry-grammar-load :xtalk)
-              (registry/registry-add :fixture :host 'lang.model.v1.spec-xtalk)
-              (registry/registry-runtime :fixture :host))))
-   :expected 'lang.model.v1.spec-xtalk}])
-
-^{:refer lang.core.registry/registry-book-list}
-(Test/check
- [{:name "lists the available archive-compatible book coordinates"
-   :test (fn [] (set (registry/registry-book-list)))
-   :expected #{[:xtalk :default] [:postgres :default]
-               [:hara :default] [:js :default]
-               [:python :default] [:lua :default]
-               [:go :default] [:dart :default] [:c :default]}}])
-
-^{:refer lang.core.registry/registry-grammar-load}
-(Test/check
- [{:name "loads a grammar source once"
-   :test (fn []
-           (isolated
-            (fn []
-              (registry/registry-grammar-load :xtalk)
-              [(registry/registry-grammar-versions :xtalk)
-               (registry/registry-grammar-versions :xtalk)])))
-   :expected [[1] [1]]}])
-
-^{:refer lang.core.registry/registry-grammar-list}
-(Test/check
- [{:name "filters the lazily installed PostgreSQL grammar"
-   :test (fn []
-           (isolated
-            (fn []
-              (vec (map (fn [source] (:source/id source))
-                        (registry/registry-grammar-list
-                         {:source/id :postgres :source/kind :grammar}))))))
-   :expected [:postgres]}])
-
-^{:refer lang.core.registry/registry-grammar-versions}
-(Test/check
- [{:name "returns supported and absent grammar versions"
-   :test (fn []
-           (isolated
-            (fn [] [(registry/registry-grammar-versions :postgres)
-                    (registry/registry-grammar-versions :missing)])))
-   :expected [[1] []]}])
-
-^{:refer lang.core.registry/registry-grammar}
-(Test/check
- [{:name "resolves an exact PostgreSQL grammar independent of XTalk ancestry"
-   :test (fn []
-           (isolated
-            (fn []
-              (select-keys (:coordinate (registry/registry-grammar :postgres 1))
-                           [:grammar/id :grammar/version :grammar/release :grammar/facets]))))
-   :expected {:grammar/id :postgres
-              :grammar/version 1
-              :grammar/release "alpha"
-              :grammar/facets []}}])
-
-^{:refer lang.core.registry/registry-book-entry}
-(Test/check
- [{:name "returns the stable version table"
-   :test (fn []
-           (let [entry (registry/registry-book-entry :postgres :default)]
-             [(:default-version entry) (set (keys (:versions entry)))]))
-   :expected [1 #{1}]}])
-
-^{:refer lang.core.registry/registry-book-versions}
-(Test/check
- [{:name "lists known and unknown book versions"
-   :test (fn [] [(registry/registry-book-versions :xtalk)
-                 (registry/registry-book-versions :missing)])
-   :expected [[1] []]}])
-
-^{:refer lang.core.registry/registry-book-default-version}
-(Test/check
- [{:name "selects a stable default version"
-   :test (fn [] [(registry/registry-book-default-version :postgres)
-                 (registry/registry-book-default-version :missing)])
-   :expected [1 nil]}])
-
-^{:refer lang.core.registry/registry-book-info}
-(Test/check
- [{:name "returns exact metadata and reports absent installed versions"
-   :test (fn [] (select-keys (registry/registry-book-info :postgres)
-                             [:language :key :version :default-version :ns]))
-   :expected {:language :postgres :key :default :version 1 :default-version 1
-              :ns 'lang.model.v1.spec-postgres}}])
-
-^{:refer lang.core.registry/registry-book-add}
-(Test/check
- [{:name "adds a version and rejects a duplicate"
-   :test (fn []
-           (isolated
-            (fn []
-              (let [info {:ns 'lang.model.v1.spec-xtalk :book '+book+}]
-                (select-keys (registry/registry-book-add :fixture 1 info)
-                             [:language :key :version :ns])))))
-   :expected {:language :fixture :key :default :version 1
-              :ns 'lang.model.v1.spec-xtalk}}])
-
-^{:refer lang.core.registry/registry-book-set-default}
-(Test/check
- [{:name "changes only the versionless selection"
-   :test (fn []
-           (isolated
-            (fn []
-              (let [info {:ns 'lang.model.v1.spec-xtalk :book '+book+}]
-                (registry/registry-book-add :fixture 1 info)
-                (registry/registry-book-add :fixture 2 info)
-                [(registry/registry-book-set-default :fixture 2)
-                 (registry/registry-book-default-version :fixture)]))))
-   :expected [2 2]}])
-
-^{:refer lang.core.registry/registry-book-remove}
-(Test/check
- [{:name "removes versions and retargets the default"
-   :test (fn []
-           (isolated
-            (fn []
-              (let [info {:ns 'lang.model.v1.spec-xtalk :book '+book+}]
-                (registry/registry-book-add :fixture 1 info)
-                (registry/registry-book-add :fixture 2 info)
-                [(select-keys (registry/registry-book-remove :fixture 1)
-                              [:language :key :version])
-                 (registry/registry-book-default-version :fixture)
-                 (select-keys (registry/registry-book-remove :fixture 2)
-                              [:language :key :version])
-                 (registry/registry-book-info :fixture)]))))
-   :expected [{:language :fixture :key :default :version 1}
-              2
-              {:language :fixture :key :default :version 2}
-              nil]}])
-
-^{:refer lang.core.registry/registry-book-ns}
-(Test/check
- [{:name "finds a selected book owner namespace"
-   :test (fn [] [(registry/registry-book-ns :xtalk)
-                 (registry/registry-book-ns :missing)])
-   :expected ['lang.model.v1.spec-xtalk nil]}])
-
-^{:refer lang.core.registry/registry-book}
-(Test/check
- [{:name "materializes independent XTalk and PostgreSQL books"
-   :test (fn []
-           (try
-             (let [xtalk (registry/registry-book :xtalk)
-                   postgres (registry/registry-book :postgres)
-                   value [(book/book? xtalk)
-                          (:lang xtalk)
-                          (book/book? postgres)
-                          (:lang postgres)
-                          (:parent postgres)
-                          (get-in postgres [:grammar-coordinate :grammar/id])]]
-               value)
-             (catch error
-               (throw error))))
-   :expected [true :xtalk true :postgres nil :postgres]}])
-
-^{:refer lang.core.registry/registry-book}
-(Test/check
- [{:name "uses a target Book image before invoking its registered provider"
-   :test (fn []
-           (isolated
-            (fn []
-              (let [loaded (atom false)]
-                (registry/registry-book-add
-                 :fixture 1
-                 {:ns 'lang.core.registry
-                  :load (fn []
-                          (reset! loaded true)
-                          {:lang :fixture :version 1 :route :source})})
-                (reset! registry/+book-image-registry+
-                        {[:fixture :default 1] {:lang :fixture :version 1 :route :image}})
-                [(registry/registry-book :fixture)
-                 (deref loaded)]))))
-   :expected [{:lang :fixture :version 1 :route :image} false]}])
-
-^{:refer lang.core.registry/registry-book-macro-info}
-(Test/check
- [{:name "provides static declaration macros without selecting a Book loader"
-   :test (fn []
-           (isolated
-            (fn []
-              (reset! registry/+book-registry+
-                      {[:js :default]
-                       {:default-version 1
-                        :versions {1 {:ns 'fixture.js
-                                      :load (fn []
-                                              (throw
-                                               (ex :state {}
-                                                   :ex/message "Book loader invoked")))}}}})
-              [(registry/registry-book-macro-info :js)
-               (registry/registry-book-macro-info :python)
-               (registry/registry-book-macro-info :lua)
-               (registry/registry-book-macro-info :dart)
-               (registry/registry-book-macro-info :postgres)])))
-   :expected [{:tag :js
-               :definitions '[def defabstract defclass defgen defglobal defn defn- defrun deftemp]
-               :highlights ['br 'break 'return 'set=]
-               :highlight-meta {'br {} 'break {} 'return {} 'set= {}}}
-              {:tag :py
-               :definitions '[def defabstract defclass defgen defglobal defn defn- defrun deftemp]
-               :highlights ['await 'break 'pass 'raise 'return 'tup 'with 'yield]
-               :highlight-meta {'await {} 'break {} 'pass {} 'raise {}
-                                'return {} 'tup {} 'with {} 'yield {}}}
-              {:tag :lua
-               :definitions '[def defabstract defclass defgen defglobal defn defn- defrun deftemp]
-               :highlights ['br 'break 'return 'set=]
-               :highlight-meta {'br {} 'break {} 'return {} 'set= {}}}
-              {:tag :dt
-               :definitions '[def defabstract defclass defgen defglobal defn defn- defrun deftemp]
-               :highlights ['break 'continue 'return]
-               :highlight-meta {'break {} 'continue {} 'return {}}}
-              {:tag :postgres
-               :definitions '[def defabstract defclass defconst defenum defgen defglobal defn defn-
-                              defrun deftemp deftrigger deftype]
-               :highlights ['br 'break 'return 'set=]
-               :highlight-meta {'br {} 'break {} 'return {} 'set= {}}}]}
-  {:name "uses a precompiled macro index without invoking a Book loader"
-   :test (fn []
-           (isolated
-            (fn []
-              (reset! registry/+book-macro-registry+
-                      {:fixture {:tag :fixture
-                                 :definitions ['defn]
-                                 :highlights ['return]
-                                 :highlight-meta
-                                 {'return {:style/indent 2}}}})
-              (registry/registry-book-macro-info :fixture))))
-   :expected {:tag :fixture
-              :definitions ['defn]
-              :highlights ['return]
-              :highlight-meta {'return {:style/indent 2}}}}
-  {:name "rejects missing macro metadata without materializing a Book"
-   :test (fn []
-           (isolated
-            (fn []
-              (let [loaded (atom false)]
-                (registry/registry-book-add
-                 :fixture 1
-                 {:ns 'lang.core.registry
-                  :load (fn []
-                          (reset! loaded true)
-                          {:lang :fixture :version 1})})
-                [(try
-                   (registry/registry-book-macro-info :fixture)
-                   false
-                   (catch error true))
-                 (deref loaded)]))))
-   :expected [true false]}])
+(fact "loads the registered namespace and returns its Var value without a selection cache"
+  (let [before (deref +book-registry+)]
+    (try
+      (reset! +book-registry+
+        {[:contract :default] {:ns 'migration.registry-value-fixture :book 'fixture-value}
+         [:contract :missing-var] {:ns 'migration.registry-value-fixture :book 'absent}})
+      [(registry-book :contract) (registry-book :contract :missing-var) (registry-book :absent)]
+      (finally (reset! +book-registry+ before))))
+  => [{:origin :registered-var} nil nil])

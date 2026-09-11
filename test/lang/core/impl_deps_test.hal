@@ -1,7 +1,307 @@
 (ns lang.core.impl-deps-test
-  (:use code.test)
-  (:require [lang.core.impl-deps :as deps]
-            [lang.core.script :as script]))
+  (:require [lang.base.emit-prep-lua-test :as prep]
+            [lang.core.impl-deps :as deps]
+            [lang.core.impl-entry :as entry]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap])
+  (:use code.test))
+(fact:global
+  {:teardown
+   [(try
+      (lib/reset-all! +library-ext+)
+      (finally (reset! (:settings +library-ext+) {})))]})
+
+(def +library-ext+
+  (doto (lib/library:create
+         {:snapshot (snap/snapshot {:lua {:id :lua
+                                          :book prep/+book-min+}})})
+    (lib/install-module! :lua 'L.util
+                         {:require '[[L.core :as u]]
+                          :import  '[["cjson" :as cjson]]})
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn sub-fn
+         [a b]
+         (return (fn:> ((u/identity-fn u/sub) a b))))
+      {:lang :lua
+       :namespace 'L.util
+       :module 'L.util}
+      {}))
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn add-fn
+         [a b]
+         (return (fn:> ((u/identity-fn u/add) a (-/sub-fn b 0)))))
+      {:lang :lua
+       :namespace 'L.util
+       :module 'L.util}
+      {}))
+
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn cjson-read
+         [s]
+         (return (cjson.read s)))
+      {:lang :lua
+       :namespace 'L.util
+       :module 'L.util}
+      {}))
+    (lib/install-module! :lua 'L.app
+                         {:require '[[L.core :as u]
+                                     [L.util :as ut]]})
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn app-read
+         [s]
+         (return (ut/cjson-read s)))
+      {:lang :lua
+       :namespace 'L.app
+       :module 'L.app}
+      {}))))
+
+^{:refer lang.core.impl-deps/module-import-form, :added "4.0"}
+(fact
+  "import form"
+  (deps/module-import-form prep/+book-min+ 'cjson '{:as cjson} {})
+  =>
+  '(var* :local cjson := (require "cjson")))
+
+^{:refer lang.core.impl-deps/module-export-form, :added "4.0"}
+(fact
+  "export form"
+  (deps/module-export-form prep/+book-min+ {} {})
+  =>
+  '(return (tab)))
+
+^{:refer lang.core.impl-deps/module-link-form, :added "4.0"}
+(fact
+  "link form for projects"
+  (deps/module-link-form
+    prep/+book-min+
+    'kmi.common
+    {:root-ns 'kmi.hello})
+  =>
+  "./common")
+
+^{:refer lang.core.impl-deps/has-module-form, :added "4.0"}
+(fact
+  "checks if module is available"
+  (deps/has-module-form prep/+book-min+ 'kmi.common)
+  =>
+  nil)
+
+^{:refer lang.core.impl-deps/setup-module-form, :added "4.0"}
+(fact
+  "setup the module"
+  (deps/setup-module-form prep/+book-min+ 'kmi.common)
+  =>
+  nil)
+
+^{:refer lang.core.impl-deps/teardown-module-form, :added "4.0"}
+(fact
+  "teardown the module"
+  (deps/teardown-module-form prep/+book-min+ 'kmi.common)
+  =>
+  nil)
+
+^{:refer lang.core.impl-deps/has-ptr-form, :added "4.0"}
+(fact
+  "form to check if pointer exists"
+  (deps/has-ptr-form prep/+book-min+ '{:id hello, :module kmi.common})
+  =>
+  '(not= kmi.common/hello nil))
+
+^{:refer lang.core.impl-deps/setup-ptr-form, :added "4.0"}
+(fact
+  "form to setup pointer"
+  (deps/setup-ptr-form
+    prep/+book-min+
+    '{:id hello, :module kmi.common})
+  =>
+  nil)
+
+^{:refer lang.core.impl-deps/teardown-ptr-form, :added "4.0"}
+(fact
+  "form to teardown pointer"
+  (deps/teardown-ptr-form
+    prep/+book-min+
+    '{:id hello, :module kmi.common})
+  =>
+  '(:= kmi.common/hello nil))
+
+^{:refer lang.core.impl-deps/collect-script-natives, :added "4.0"}
+(fact
+  "gets native imported modules"
+  (deps/collect-script-natives
+    [{:native {'cjson "cjson"}}
+     {:native {'cjson "cjson", 'lustache "lustache"}}]
+    {})
+  =>
+  '{cjson "cjson", lustache "lustache"})
+
+^{:refer lang.core.impl-deps/collect-script-entries, :added "4.0"}
+(fact
+  "collects all entries"
+  (deps/collect-script-entries
+    (lib/get-book +library-ext+ :lua)
+    '[L.util/add-fn])
+  =>
+  (satisfies vector?))
+
+^{:refer lang.core.impl-deps/collect-script, :added "4.0"}
+(fact
+  "collect dependencies given a form and book"
+  (-> (deps/collect-script
+        (lib/get-book +library-ext+ :lua)
+        '(u/add (ut/sub-fn 1 2) (ut/add-fn 3 4))
+        {:module {:link '{ut L.util, u L.core}}})
+   (deps/collect-script-summary))
+  =>
+  '[(+ (L.util/sub-fn 1 2) (L.util/add-fn 3 4))
+    (L.core/identity-fn L.util/add-fn L.util/sub-fn)
+    {}]
+  (-> (deps/collect-script
+        (lib/get-book +library-ext+ :lua)
+        '(ut/cjson-read "hello")
+        {:module {:link '{ut L.util, u L.core}}})
+   (deps/collect-script-summary))
+  =>
+  '[(L.util/cjson-read "hello")
+    (L.util/cjson-read)
+    {"cjson" {:as cjson}}])
+
+^{:refer lang.core.impl-deps/collect-script-summary, :added "4.0"}
+(fact
+  "summaries the output of `collect-script`"
+  (-> '[(+ (L.util/sub-fn 1 2) (L.util/add-fn 3 4))
+        ()
+        {"cjson" {:as cjson}}]
+   (deps/collect-script-summary))
+  =>
+  '[(+ (L.util/sub-fn 1 2) (L.util/add-fn 3 4))
+    ()
+    {"cjson" {:as cjson}}])
+
+
+^{:refer lang.core.impl-deps/collect-module, :added "4.0"}
+(fact
+  "collects information for the entire module"
+  (-> (deps/collect-module
+        (lib/get-book +library-ext+ :lua)
+        (lib/get-module +library-ext+ :lua 'L.util))
+   (update :code (fn [arr] (set (map :id arr)))))
+  =>
+  '{:setup nil,
+    :teardown nil,
+    :code #{cjson-read add-fn sub-fn},
+    :native {"cjson" {:as cjson}},
+    :direct #{L.core}}
+  (-> (deps/collect-module
+        (lib/get-book +library-ext+ :lua)
+        (lib/get-module +library-ext+ :lua 'L.util))
+   (update :code (fn [arr] (set (map :id arr)))))
+  =>
+  '{:setup nil,
+    :teardown nil,
+    :code #{cjson-read add-fn sub-fn},
+    :native {"cjson" {:as cjson}},
+    :direct #{L.core}}
+  (-> (deps/collect-module
+        (lib/get-book +library-ext+ :lua)
+        (lib/get-module +library-ext+ :lua 'L.app))
+   (update :code (fn [arr] (set (map :id arr)))))
+  =>
+  '{:setup nil,
+    :teardown nil,
+    :code #{app-read},
+    :native {},
+    :direct #{L.util}})
+
+
+
+
+(do)
+
+
+^{:refer lang.core.impl-deps/native-name-with-override, :added "4.1"}
+(fact
+  "applies native override to a native import name"
+  (deps/native-name-with-override 'cjson {})
+  =>
+  'cjson
+  (deps/native-name-with-override
+    'cjson
+    {:override {'json "rapidjson"}})
+  =>
+  'cjson
+  (deps/native-name-with-override
+    'cjson
+    {:override {'cjson "rapidjson"}})
+  =>
+  "rapidjson"
+  (deps/native-name-with-override
+    "cjson"
+    {:override {"cjson" "rapidjson"}})
+  =>
+  "rapidjson"
+  (deps/native-name-with-override
+    'cjson
+    {:override {"cjson" "rapidjson"}})
+  =>
+  "rapidjson")
+^{:refer lang.core.impl-deps/collect-script-entries :id stable-dependency-ties}
+(fact "canonicalizes only ties while retaining priority, line and time ordering"
+  (let [book (lib/get-book +library-ext+ :lua)
+        roots ['L.util/add-fn 'L.util/sub-fn]
+        tied (-> book
+                 (assoc-in [:modules 'L.util :code 'add-fn :priority] 5)
+                 (assoc-in [:modules 'L.util :code 'sub-fn :priority] 5)
+                 (assoc-in [:modules 'L.util :code 'add-fn :line] 1)
+                 (assoc-in [:modules 'L.util :code 'sub-fn :line] 1)
+                 (assoc-in [:modules 'L.util :code 'add-fn :time] 1)
+                 (assoc-in [:modules 'L.util :code 'sub-fn :time] 1))
+        priority (assoc-in tied [:modules 'L.util :code 'sub-fn :priority] 1)
+        line (assoc-in tied [:modules 'L.util :code 'sub-fn :line] 0)
+        time (assoc-in tied [:modules 'L.util :code 'sub-fn :time] 0)
+        names (fn [book roots] (mapv :id (first (deps/collect-script-entries book roots))))]
+    [(names tied roots) (names tied (reverse roots))
+     (names priority roots) (names line roots) (names time roots)])
+  => '[[identity-fn add-fn sub-fn] [identity-fn add-fn sub-fn]
+       [identity-fn sub-fn add-fn] [identity-fn sub-fn add-fn] [identity-fn sub-fn add-fn]])
+
+^{:refer lang.core.impl-deps/collect-script-natives :id import-conflict-data}
+(fact "preserves conflicting import provenance and leaves the initial declarations unchanged"
+  (let [initial {"json" {:as 'First}}
+        observed (try (deps/collect-script-natives [{:id 'demo :native {"json" {:as 'Second}}}] initial)
+                      :no-error
+                      (catch error (select-keys (ex-data error) [:ns :key :curr :new])))]
+    [observed initial])
+  => '[{:ns demo :key "json" :curr {:as First} :new {:as Second}} {"json" {:as First}}])
+
+^{:refer lang.core.impl-deps/collect-script :id missing-book-contract}
+(fact "rejects a missing Book before attempting preprocessing"
+  (try (deps/collect-script nil '(+ 1 2) {}) :no-error
+       (catch error (:ex/message (ex-data error))))
+  => "Book required.")
+
+^{:refer lang.core.impl-deps/collect-module :id dependency-fixture-cleanup}
+(fact "resets the real Lua fixture and its self-referencing settings idempotently"
+  (let [modules (set (lib/list-modules +library-ext+ :lua))
+        _ (lib/reset-all! +library-ext+)
+        _ (reset! (:settings +library-ext+) {})
+        once [(vec (keys (deref (:instance +library-ext+)))) (deref (:settings +library-ext+))]
+        _ (lib/reset-all! +library-ext+)
+        _ (reset! (:settings +library-ext+) {})]
+    [modules once [(vec (keys (deref (:instance +library-ext+)))) (deref (:settings +library-ext+))]])
+  => '[#{L.core L.util L.app} [[] {}] [[] {}]])
+
+
+^{:refer lang.core.impl-deps/collect-script :id dependency-free-body}
+(fact "collects a dependency-free body without introducing a nil symbol"
+  (let [[form entries natives] (deps/collect-script prep/+book-min+ '(do 1 2 3) {})]
+    [form (vec entries) natives])
+  => '[(do 1 2 3) [] {}])
+
 
 (def +hooks+
   {:module-import (fn [name module-value options]
@@ -81,179 +381,6 @@
   (deps/teardown-ptr-form +fixture-book+ {:module 'demo.math :id 'add})
   => '[:teardown-ptr {:module demo.math :id add}])
 
-^{:refer lang.core.impl-deps/collect-script-natives}
-(fact "merges matching imports and rejects incompatible import declarations"
-  [(deps/collect-script-natives [{:id 'demo.a :native {"math" {:as 'math}}}
-                                 {:id 'demo.b :native {"math" {:as 'math}
-                                                       "date" {:as 'date}}}]
-                                {})
-   (try
-     (deps/collect-script-natives [{:id 'demo.a :native {"math" {:as 'math}}}
-                                   {:id 'demo.b :native {"math" {:as 'm}}}]
-                                  {})
-     :no-error
-     (catch error (:ex/code (ex-data error))))]
-  => '[{"math" {:as math} "date" {:as date}} :hara/conflict])
-
-^{:refer lang.core.impl-deps/entry-symbol}
-(fact "qualifies a Book entry with its owning module"
-  (deps/entry-symbol {:module 'demo.math :id 'add})
-  => 'demo.math/add)
-
-^{:refer lang.core.impl-deps/entry-dependencies}
-(fact "uses the Book dependency view for an entry"
-  (deps/entry-dependencies +fixture-book+
-                           (get-in +fixture-book+ [:modules 'demo.math :code 'add]))
-  => #{'demo.base/identity})
-
-^{:refer lang.core.impl-deps/entry-sort-key}
-(fact "keeps same-module entries ordered by priority then source position"
-  [(deps/entry-sort-key {:module 'demo.math :id 'add :priority 2 :line 2 :time 3})
-   (deps/entry-sort-key {:module 'demo.math :id 'subtract :priority 1 :line 1 :time 4})]
-  => [[2 2 3 "demo.math/add"] [1 1 4 "demo.math/subtract"]])
-
-^{:refer lang.core.impl-deps/order-script-entries}
-(fact "places transitive dependencies before a dependent entry"
-  (mapv deps/entry-symbol
-        (deps/order-script-entries
-         +fixture-book+
-         [(get-in +fixture-book+ [:modules 'demo.app :code 'run])
-          (get-in +fixture-book+ [:modules 'demo.math :code 'add])
-          (get-in +fixture-book+ [:modules 'demo.base :code 'identity])]))
-  => ['demo.base/identity 'demo.math/add 'demo.app/run])
-
-^{:refer lang.core.impl-deps/collect-script-entries}
-(fact "collects an exact transitive code closure and preserves module order"
-  (let [[entries module-lu]
-        (deps/collect-script-entries +fixture-book+ ['demo.app/run])]
-    [(mapv deps/entry-symbol entries)
-     (mapv (fn [module-id]
-             [(get-in module-lu [module-id :index])
-              (get-in module-lu [module-id :module :id])])
-           ['demo.base 'demo.math 'demo.app])])
-  => [['demo.base/identity 'demo.math/add 'demo.app/run]
-      [[0 'demo.base] [1 'demo.math] [2 'demo.app]]])
-
-^{:refer lang.core.impl-deps/collect-script-summary}
-(fact "summarizes dependency entries without replacing their full coordinates"
-  (deps/collect-script-summary
-   ['(demo.math/add 1 2)
-    [(get-in +fixture-book+ [:modules 'demo.math :code 'add])]
-    {"math" {:as 'math}}])
-  => '[(demo.math/add 1 2) (demo.math/add) {"math" {:as math}}])
-
-^{:refer lang.core.impl-deps/collect-module}
-(fact "collects lifecycle sections plus only direct module dependencies"
-  (let [collected (deps/collect-module +fixture-book+
-                                       (get-in +fixture-book+ [:modules 'demo.math]))]
-    [(mapv :id (:code collected))
-     (:native collected)
-     (:direct collected)])
-  => '[[subtract add] {"math" {:as math}} #{demo.base}])
-
-^{:refer lang.core.impl-deps/collect-module}
-(fact "includes transitive fragment native declarations through the Foundation import owner"
-  (let [book-value
-        {:lang :js
-         :grammar {:reserved {}}
-         :meta +hooks+
-         :modules
-         {'demo.app {:id 'demo.app :lang :js :native {}
-                     :code {'main {:id 'main :module 'demo.app :section :code
-                                   :deps #{}
-                                   :deps-fragment #{'demo.parts/shared}}}}
-          'demo.parts {:id 'demo.parts :lang :js :native {"react" {:as 'React}}
-                       :fragment {'shared {:id 'shared :module 'demo.parts
-                                           :section :fragment
-                                           :deps-native {"react" #{'React}}
-                                           :deps-fragment #{}}}
-                       :code {}}}
-         }
-        collected (deps/collect-module book-value
-                                       (get-in book-value [:modules 'demo.app]))]
-    [(:native collected) (:direct collected)])
-  => [{"react" {:as 'React}} #{}])
-
-^{:refer lang.core.impl-deps/native-name-with-override}
-(fact "uses string-equivalent override keys while preserving unmatched names"
-  [(deps/native-name-with-override 'math {:override {"math" "fast-math"}})
-   (deps/native-name-with-override "date" {:override {'math "fast-math"}})
-   (deps/native-name-with-override 'date {})]
-  => '["fast-math" "date" date])
-
-^{:refer lang.core.impl-deps/order-script-entries}
-(fact "preserves Foundation source order inside a module even when entries depend on later entries"
-  (let [early {:id 'early :module 'demo.one :section :code
-               :deps #{'demo.one/late} :priority 1 :line 1 :time 1}
-        late {:id 'late :module 'demo.one :section :code
-              :deps #{} :priority 2 :line 2 :time 1}
-        book-value {:lang :js :grammar {}
-                    :modules {'demo.one {:id 'demo.one :code {'early early 'late late}}}}]
-    [(mapv :id (deps/order-script-entries book-value [late early]))
-     (mapv :id (deps/order-script-entries book-value [early late]))])
-  => [['early 'late] ['early 'late]])
-
-^{:refer lang.core.impl-deps/order-script-entries}
-(fact "keeps absent priority distinct from zero and uses line before time"
-  (let [entries [{:id 'negative :module 'demo.one :priority -1 :line 1 :time 1}
-                 {:id 'absent :module 'demo.one :line 9 :time 9}
-                 {:id 'later-line :module 'demo.one :priority 2 :line 2 :time 1}
-                 {:id 'earlier-line :module 'demo.one :priority 2 :line 1 :time 9}]
-        book-value {:lang :js :grammar {} :modules {'demo.one {:id 'demo.one :code {}}}}]
-    (mapv :id (deps/order-script-entries book-value entries)))
-  => ['absent 'negative 'earlier-line 'later-line])
-
-^{:refer lang.core.impl-deps/collect-script-entries}
-(fact "retains linked modules without selected code entries in the module lookup"
-  (let [entry {:id 'run :module 'demo.app :section :code :deps #{}}
-        base {:id 'demo.base :code {}}
-        app {:id 'demo.app :link {'base 'demo.base} :code {'run entry}}
-        book-value {:lang :js :grammar {} :modules {'demo.base base 'demo.app app}}
-        [entries module-lu] (deps/collect-script-entries book-value ['demo.app/run])]
-    [(mapv deps/entry-symbol entries)
-     (get-in module-lu ['demo.base :index])
-     (get-in module-lu ['demo.app :index])
-     (= base (get-in module-lu ['demo.base :module]))
-     (= app (get-in module-lu ['demo.app :module]))])
-  => [['demo.app/run] 0 1 true true])
-
-^{:refer lang.core.impl-deps/collect-script-entries}
-(fact "accepts a single Foundation symbol and produces the same closure as a collection"
-  (= (deps/collect-script-entries +fixture-book+ 'demo.app/run)
-     (deps/collect-script-entries +fixture-book+ ['demo.app/run]))
-  => true
-  (deps/collect-script-entries +fixture-book+ [])
-  => [[] {}])
-
-^{:refer lang.core.impl-deps/collect-script-entries}
-(fact "rejects cyclic module dependencies even when selected code has no dependencies"
-  (let [book-value {:lang :js :grammar {}
-                    :modules
-                    {'demo.a {:id 'demo.a :link {'b 'demo.b}
-                              :code {'run {:id 'run :module 'demo.a :section :code :deps #{}}}}
-                     'demo.b {:id 'demo.b :link {'a 'demo.a} :code {}}}}]
-    (try
-      (deps/collect-script-entries book-value ['demo.a/run])
-      :no-error
-      (catch error (:ex/code (ex-data error)))))
-  => :foundation/circular-dependency)
-
-^{:refer lang.core.impl-deps/collect-script}
-(fact "collects a staged expression and its empty code and native closure"
-  (let [baseline (script/script-snapshot)
-        result
-        (try
-          (script/script-reset!)
-          (script/setup :lua 'demo.bootstrap {} true 'lang.core.impl-deps-test)
-          (let [book (script/selected-book :lua)]
-            (deps/collect-script-summary
-             (deps/collect-script book '(+ 1 2 3)
-                                  {:lang :lua
-                                   :module (get-in book [:modules 'demo.bootstrap])})))
-          (finally (script/script-restore! baseline)))]
-    [result (= baseline (script/script-snapshot))])
-  => [['(+ 1 2 3) [] {}] true])
-
 ^{:refer lang.core.impl-deps/module-import-form, :id :original-var-module-import-form} (fact "invokes original Var-backed :module-import and preserves absent hook behavior" [(deps/module-import-form {:meta {:module-import (var vector)}} (quote "math") (quote {:as math}) (quote {:mode :script})) (deps/module-import-form {:meta {:module-import nil}} (quote "math") (quote {:as math}) (quote {:mode :script})) (deps/module-import-form {} (quote "math") (quote {:as math}) (quote {:mode :script}))] => (quote [["math" {:as math} {:mode :script}] nil nil]))
 
 ^{:refer lang.core.impl-deps/module-export-form, :id :original-var-module-export-form} (fact "invokes original Var-backed :module-export and preserves absent hook behavior" [(deps/module-export-form {:meta {:module-export (var vector)}} (quote {:id demo.app}) (quote {:layout :module})) (deps/module-export-form {:meta {:module-export nil}} (quote {:id demo.app}) (quote {:layout :module})) (deps/module-export-form {} (quote {:id demo.app}) (quote {:layout :module}))] => (quote [[{:id demo.app} {:layout :module}] nil nil]))
@@ -271,3 +398,356 @@
 ^{:refer lang.core.impl-deps/setup-ptr-form, :id :original-var-setup-ptr-form} (fact "invokes original Var-backed :setup-ptr and preserves absent hook behavior" [(deps/setup-ptr-form {:meta {:setup-ptr (var vector)}} (quote {:module demo.math, :id add})) (deps/setup-ptr-form {:meta {:setup-ptr nil}} (quote {:module demo.math, :id add})) (deps/setup-ptr-form {} (quote {:module demo.math, :id add}))] => (quote [[{:module demo.math, :id add}] nil nil]))
 
 ^{:refer lang.core.impl-deps/teardown-ptr-form, :id :original-var-teardown-ptr-form} (fact "invokes original Var-backed :teardown-ptr and preserves absent hook behavior" [(deps/teardown-ptr-form {:meta {:teardown-ptr (var vector)}} (quote {:module demo.math, :id add})) (deps/teardown-ptr-form {:meta {:teardown-ptr nil}} (quote {:module demo.math, :id add})) (deps/teardown-ptr-form {} (quote {:module demo.math, :id add}))] => (quote [[{:module demo.math, :id add}] nil nil]))
+
+^{:refer lang.core.impl-deps/collect-script-natives}
+(fact
+  "merges matching imports and rejects incompatible import declarations"
+  [(deps/collect-script-natives
+     [{:id 'demo.a, :native {"math" {:as 'math}}}
+      {:id 'demo.b, :native {"math" {:as 'math}, "date" {:as 'date}}}]
+     {})
+   (try
+     (deps/collect-script-natives
+       [{:id 'demo.a, :native {"math" {:as 'math}}}
+        {:id 'demo.b, :native {"math" {:as 'm}}}]
+       {})
+     :no-error
+     (catch error (:ex/code (ex-data error))))]
+  =>
+  '[{"math" {:as math}, "date" {:as date}} :hara/conflict])
+
+^{:refer lang.core.impl-deps/collect-script-summary}
+(fact
+  "summarizes dependency entries without replacing their full coordinates"
+  (deps/collect-script-summary
+    ['(demo.math/add 1 2)
+     [(get-in +fixture-book+ [:modules 'demo.math :code 'add])]
+     {"math" {:as 'math}}])
+  =>
+  '[(demo.math/add 1 2) (demo.math/add) {"math" {:as math}}])
+
+^{:refer lang.core.impl-deps/collect-module}
+(fact
+  "includes transitive fragment native declarations through the Foundation import owner"
+  (let [book-value {:lang :js,
+                    :grammar {:reserved {}},
+                    :meta +hooks+,
+                    :modules
+                    {'demo.app
+                     {:id 'demo.app,
+                      :lang :js,
+                      :native {},
+                      :code
+                      {'main
+                       {:id 'main,
+                        :module 'demo.app,
+                        :section :code,
+                        :deps #{},
+                        :deps-fragment #{'demo.parts/shared}}}},
+                     'demo.parts
+                     {:id 'demo.parts,
+                      :lang :js,
+                      :native {"react" {:as 'React}},
+                      :fragment
+                      {'shared
+                       {:id 'shared,
+                        :module 'demo.parts,
+                        :section :fragment,
+                        :deps-native {"react" #{'React}},
+                        :deps-fragment #{}}},
+                      :code {}}}}
+        collected (deps/collect-module
+                    (lang.base.book/map->Book book-value)
+                    (get-in book-value [:modules 'demo.app]))]
+    [(:native collected) (:direct collected)])
+  =>
+  [{"react" {:as 'React}} #{}])
+
+^{:refer lang.core.impl-deps/native-name-with-override}
+(fact
+  "uses string-equivalent override keys while preserving unmatched names"
+  [(deps/native-name-with-override
+     'math
+     {:override {"math" "fast-math"}})
+   (deps/native-name-with-override
+     "date"
+     {:override {'math "fast-math"}})
+   (deps/native-name-with-override 'date {})]
+  =>
+  '["fast-math" "date" date])
+
+^{:refer lang.core.impl-deps/collect-script-entries}
+(fact
+  "retains linked modules without selected code entries in the module lookup"
+  (let [entry {:id 'run, :module 'demo.app, :section :code, :deps #{}}
+        base {:id 'demo.base, :code {}}
+        app {:id 'demo.app,
+             :link {'base 'demo.base},
+             :code {'run entry}}
+        book-value {:lang :js,
+                    :grammar {},
+                    :modules {'demo.base base, 'demo.app app}}
+        [entries module-lu] (deps/collect-script-entries
+                              (lang.base.book/map->Book book-value)
+                              ['demo.app/run])]
+    [(mapv lang.base.util/sym-full entries)
+     (get-in module-lu ['demo.base :index])
+     (get-in module-lu ['demo.app :index])
+     (= base (get-in module-lu ['demo.base :module]))
+     (= app (get-in module-lu ['demo.app :module]))])
+  =>
+  [['demo.app/run] 0 1 true true])
+
+^{:refer lang.core.impl-deps/collect-script-entries}
+(fact
+  "accepts a single Foundation symbol and produces the same closure as a collection"
+  (=
+    (deps/collect-script-entries
+      (lang.base.book/map->Book +fixture-book+)
+      'demo.app/run)
+    (deps/collect-script-entries
+      (lang.base.book/map->Book +fixture-book+)
+      ['demo.app/run]))
+  =>
+  true
+  (deps/collect-script-entries
+    (lang.base.book/map->Book +fixture-book+)
+    [])
+  =>
+  [[] {}])
+
+^{:refer lang.core.impl-deps/collect-script-entries}
+(fact
+  "rejects cyclic module dependencies even when selected code has no dependencies"
+  (let [book-value {:lang :js,
+                    :grammar {},
+                    :modules
+                    {'demo.a
+                     {:id 'demo.a,
+                      :link {'b 'demo.b},
+                      :code
+                      {'run
+                       {:id 'run,
+                        :module 'demo.a,
+                        :section :code,
+                        :deps #{}}}},
+                     'demo.b
+                     {:id 'demo.b, :link {'a 'demo.a}, :code {}}}}]
+    (try
+      (deps/collect-script-entries
+        (lang.base.book/map->Book book-value)
+        ['demo.a/run])
+      :no-error
+      (catch error (:ex/code (ex-data error)))))
+  =>
+  :foundation/circular-dependency)
+
+^{:refer lang.base.util/sym-full}
+(fact
+  "qualifies a Book entry with its owning module"
+  (lang.base.util/sym-full {:module 'demo.math, :id 'add})
+  =>
+  'demo.math/add)
+
+^{:refer lang.core.impl-deps/collect-script-entries, :id :retained-priority-source-position}
+(fact
+  "orders native fixture entries by priority then source position through the original collector"
+  (let [add {:module 'demo.math,
+             :id 'add,
+             :section :code,
+             :deps #{},
+             :priority 2,
+             :line 2,
+             :time 3}
+        subtract {:module 'demo.math,
+                  :id 'subtract,
+                  :section :code,
+                  :deps #{},
+                  :priority 1,
+                  :line 1,
+                  :time 4}
+        book (lang.base.book/map->Book
+               {:lang :js,
+                :modules
+                {'demo.math
+                 {:id 'demo.math,
+                  :code {'add add, 'subtract subtract}}}})
+        [entries _] (deps/collect-script-entries
+                      book
+                      ['demo.math/add 'demo.math/subtract])]
+    (vec entries))
+  =>
+  [{:module 'demo.math,
+    :id 'subtract,
+    :section :code,
+    :deps #{},
+    :priority 1,
+    :line 1,
+    :time 4}
+   {:module 'demo.math,
+    :id 'add,
+    :section :code,
+    :deps #{},
+    :priority 2,
+    :line 2,
+    :time 3}])
+
+^{:refer lang.core.impl-deps/collect-script-entries, :id :retained-transitive-entry-order}
+(fact
+  "places transitive dependencies before a dependent entry through the original collector"
+  (let [[entries _] (deps/collect-script-entries
+                      (lang.base.book/map->Book +fixture-book+)
+                      ['demo.app/run
+                       'demo.math/add
+                       'demo.base/identity])]
+    (mapv lang.base.util/sym-full entries))
+  =>
+  ['demo.base/identity 'demo.math/add 'demo.app/run])
+
+^{:refer lang.core.impl-deps/collect-script-entries, :id :retained-foundation-source-order}
+(fact
+  "preserves Foundation source order inside a module through the original collector"
+  (let [early {:id 'early,
+               :module 'demo.one,
+               :section :code,
+               :deps #{'demo.one/late},
+               :priority 1,
+               :line 1,
+               :time 1}
+        late {:id 'late,
+              :module 'demo.one,
+              :section :code,
+              :deps #{},
+              :priority 2,
+              :line 2,
+              :time 1}
+        book-value (lang.base.book/map->Book
+                     {:lang :js,
+                      :grammar {},
+                      :modules
+                      {'demo.one
+                       {:id 'demo.one,
+                        :code {'early early, 'late late}}}})]
+    [(mapv
+       :id
+       (first
+         (deps/collect-script-entries
+           book-value
+           ['demo.one/late 'demo.one/early])))
+     (mapv
+       :id
+       (first
+         (deps/collect-script-entries
+           book-value
+           ['demo.one/early 'demo.one/late])))])
+  =>
+  [['early 'late] ['early 'late]])
+
+^{:refer lang.core.impl-deps/collect-script-entries, :id :retained-absent-priority}
+(fact
+  "keeps absent priority distinct from zero and uses line before time through the original collector"
+  (let [entries [{:id 'negative,
+                  :module 'demo.one,
+                  :priority -1,
+                  :line 1,
+                  :time 1}
+                 {:id 'absent, :module 'demo.one, :line 9, :time 9}
+                 {:id 'later-line,
+                  :module 'demo.one,
+                  :priority 2,
+                  :line 2,
+                  :time 1}
+                 {:id 'earlier-line,
+                  :module 'demo.one,
+                  :priority 2,
+                  :line 1,
+                  :time 9}]
+        book-value (lang.base.book/map->Book
+                     {:lang :js,
+                      :grammar {},
+                      :modules
+                      {'demo.one
+                       {:id 'demo.one,
+                        :code
+                        (into
+                          {}
+                          (map
+                            (fn [entry] [(:id entry)
+                                         (assoc
+                                           entry
+                                           :section
+                                           :code
+                                           :deps
+                                           #{})])
+                            entries))}}})]
+    (mapv
+      :id
+      (first
+        (deps/collect-script-entries
+          book-value
+          (mapv lang.base.util/sym-full entries)))))
+  =>
+  ['absent 'negative 'earlier-line 'later-line])
+
+(def +source-fixture-book+
+  (let [forms {'demo.base/identity 1
+               'demo.math/add '(do (demo.base/identity 1) (math.abs 1))
+               'demo.math/subtract '(do (demo.base/identity 1) (math.abs 1))
+               'demo.app/run '(demo.math/add 1)}]
+    (-> +fixture-book+
+        (assoc :grammar {:reserved {:plain {}}})
+        (assoc-in [:modules 'demo.math :native-lu] {'math "math"})
+        (update :modules
+          (fn [modules]
+            (reduce-kv
+              (fn [output module-id module]
+                (assoc output module-id
+                  (update module :code
+                    (fn [entries]
+                      (reduce-kv
+                        (fn [code id entry]
+                          (assoc code id
+                            (assoc entry :lang :js :op :plain
+                              :form-input (get forms (lang.base.util/sym-full entry)))))
+                        {} entries)))))
+              {} modules))))))
+
+^{:refer lang.core.impl-deps/collect-script-entries}
+(fact
+  "collects an exact transitive code closure and preserves module order"
+  (let [[entries module-lu] (deps/collect-script-entries
+                              (lang.base.book/map->Book
+                                +source-fixture-book+)
+                              ['demo.app/run])]
+    [(mapv lang.base.util/sym-full entries)
+     (mapv
+       (fn [module-id] [(get-in module-lu [module-id :index])
+                        (get-in module-lu [module-id :module :id])])
+       ['demo.base 'demo.math 'demo.app])])
+  =>
+  [['demo.base/identity 'demo.math/add 'demo.app/run]
+   [[0 'demo.base] [1 'demo.math] [2 'demo.app]]])
+
+^{:refer lang.core.impl-deps/collect-module}
+(fact
+  "collects lifecycle sections plus only direct module dependencies"
+  (let [collected (deps/collect-module
+                    (lang.base.book/map->Book +source-fixture-book+)
+                    (get-in
+                      +source-fixture-book+
+                      [:modules 'demo.math]))]
+    [(mapv :id (:code collected))
+     (:native collected)
+     (:direct collected)])
+  =>
+  '[[subtract add] {"math" {:as math}} #{demo.base}])
+
+^{:refer lang.base.book/get-code-deps}
+(fact
+  "uses the Book dependency view for an entry"
+  (lang.base.book/get-code-deps
+    +source-fixture-book+
+    (lang.base.util/sym-full
+      (get-in +source-fixture-book+ [:modules 'demo.math :code 'add])))
+  =>
+  #{'demo.base/identity})

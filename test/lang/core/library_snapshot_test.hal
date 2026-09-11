@@ -1,189 +1,475 @@
 (ns lang.core.library-snapshot-test
-  (:require [lang.base.book-entry :as entry]
-            [lang.base.book-module :as module]
-            [lang.core.library-snapshot :as snapshot]))
+  (:require [lang.base.book :as b]
+            [lang.base.book-entry :as e]
+            [lang.base.book-meta :as meta]
+            [lang.base.book-module :as m]
+            [lang.core.impl-entry :as entry]
+            [lang.core.library-snapshot :as snap]
+            [lang.core.library-snapshot-prep-test :as prep]
+            [lang.model.v1.spec-lua :as lua])
+  (:use code.test))
 
-(defn selected
-  []
-  (snapshot/snapshot-select-book (snapshot/snapshot-empty)
-                                 :js :default 1 {:namespace 'demo.js}))
+^{:refer lang.core.library-snapshot/get-deps, :added "4.0"}
+(fact
+  "gets a dependency chain"
+  (snap/get-deps prep/+snap+ :lua)
+  =>
+  #{:x}
+  (snap/get-deps prep/+snap+ :x)
+  =>
+  #{}
+  (deps-ordered prep/+snap+ [:lua.redis])
+  =>
+  '(:x :lua :lua.redis)
+  (deps-ordered prep/+snap+ [:lua])
+  =>
+  '(:x :lua))
 
-^{:refer lang.core.library-snapshot/snapshot?}
-(Test/check [{:name "identifies immutable LibrarySnapshot values"
-              :test (fn [] [(snapshot/snapshot? (snapshot/snapshot-empty))
-                             (snapshot/snapshot? {})])
-              :expected [true false]}])
+^{:refer lang.core.library-snapshot/snapshot-string :added "4.0"}
+(fact "gets the snapshot string"
 
-^{:refer lang.core.library-snapshot/snapshot}
-(Test/check [{:name "applies the empty lazy-book baseline"
-              :test (fn [] (select-keys (snapshot/snapshot {:revision 3})
-                                        [:revision :books :selected]))
-              :expected {:revision 3 :books {} :selected {}}}])
+  (snap/snapshot-string prep/+snap+)
+  => "#lib.snapshot [:lua :lua.redis :x]")
 
-^{:refer lang.core.library-snapshot/snapshot-empty}
-(Test/check [{:name "returns the deterministic empty baseline"
-              :test (fn [] (select-keys (snapshot/snapshot-empty)
-                                        [:revision :books :selected]))
-              :expected {:revision 0 :books {} :selected {}}}])
+^{:refer lang.core.library-snapshot/snapshot? :added "4.0"}
+(fact "checks if object is a snapshot"
 
-^{:refer lang.core.library-snapshot/snapshot-coordinate}
-(Test/check [{:name "uses language key version coordinates"
-              :test (fn [] (snapshot/snapshot-coordinate :js :default 1))
-              :expected [:js :default 1]}])
+  (snap/snapshot? prep/+snap+)
+  => true)
 
-^{:refer lang.core.library-snapshot/snapshot-book-coordinate}
-(Test/check [{:name "returns the selected coordinate"
-              :test (fn [] (snapshot/snapshot-book-coordinate (selected) :js))
-              :expected [:js :default 1]}])
+^{:refer lang.core.library-snapshot/snapshot, :added "4.0"}
+(fact
+  "creates a snapshot"
+  (snap/snapshot {})
+  =>
+  (satisfies snap/snapshot?))
 
-^{:refer lang.core.library-snapshot/snapshot-book}
-(Test/check [{:name "returns a lazy selected Book record"
-              :test (fn [] (snapshot/snapshot-book (selected) :js))
-              :expected {:info {:namespace 'demo.js} :book nil :modules {}}}])
+^{:refer lang.core.library-snapshot/snapshot-reset, :added "4.0"}
+(fact
+  "resets a snapshot to it's blanked modules"
+  (-> (snap/snapshot-reset prep/+snap+) (get-in [:lua :book :modules]))
+  =>
+  {}
+  (-> (snap/snapshot-reset prep/+snap+ [:lua]) keys seq)
+  =>
+  '(:lua))
 
-^{:refer lang.core.library-snapshot/snapshot-book-at}
-(Test/check [{:name "looks up Book records by exact coordinate"
-              :test (fn [] (snapshot/snapshot-book-at (selected) [:js :default 1]))
-              :expected {:info {:namespace 'demo.js} :book nil :modules {}}}])
+^{:refer lang.core.library-snapshot/snapshot-merge, :added "4.0"}
+(fact
+  "a rough merge of only the modules from the child to the parent"
+  (snap/snapshot-merge nil prep/+snap+)
+  =>
+  (satisfies (fn [value] (or (map? value) (snap/snapshot? value))))
+  (snap/snapshot-merge prep/+snap+ nil)
+  =>
+  (satisfies (fn [value] (or (map? value) (snap/snapshot? value))))
+  (snap/snapshot-merge prep/+snap+ prep/+snap+)
+  =>
+  (satisfies (fn [value] (or (map? value) (snap/snapshot? value)))))
 
-^{:refer lang.core.library-snapshot/snapshot-book-info}
-(Test/check [{:name "returns only Book descriptor metadata"
-              :test (fn [] (snapshot/snapshot-book-info (selected) :js))
-              :expected {:namespace 'demo.js}}])
+^{:refer lang.core.library-snapshot/get-book-raw, :added "4.0"}
+(fact
+  "gets the raw book"
+  (-> (snap/get-book-raw prep/+snap+ :lua) :modules keys seq)
+  =>
+  '(L.core)
+  (-> (snap/get-book-raw prep/+snap+ :lua.redis) :modules keys seq)
+  =>
+  nil)
 
-^{:refer lang.core.library-snapshot/snapshot-revision}
-(Test/check [{:name "reads the deterministic mutation revision"
-              :test (fn [] (snapshot/snapshot-revision (selected)))
-              :expected 1}])
+^{:refer lang.core.library-snapshot/get-book :added "4.0"}
+(fact "gets the merged book for a given language"
 
-^{:refer lang.core.library-snapshot/snapshot-next}
-(Test/check [{:name "advances a snapshot revision without changing books"
-              :test (fn [] (snapshot/snapshot-revision (snapshot/snapshot-next (selected))))
-              :expected 2}])
+  (-> (snap/get-book prep/+snap+ :lua.redis)
+      :modules
+      keys
+      set)
+  => '#{L.core x.core})
 
-^{:refer lang.core.library-snapshot/snapshot-select-book}
-(Test/check [{:name "selects a Book without resolving its Book value"
-              :test (fn [] (select-keys (snapshot/snapshot-select-book
-                                          (selected) :python :default 1 {:namespace 'demo.py})
-                                         [:revision :selected]))
-              :expected {:revision 2
-                         :selected {:js [:js :default 1]
-                                    :python [:python :default 1]}}}])
+^{:refer lang.core.library-snapshot/add-book :added "4.0"}
+(fact "adds a book to a snapshot"
 
-^{:refer lang.core.library-snapshot/snapshot-cache-book}
-(Test/check [{:name "caches a resolved immutable Book independently of modules"
-              :test (fn [] (get-in (snapshot/snapshot-cache-book (selected) :js :book)
-                                   [:books [:js :default 1] :book]))
-              :expected :book}])
+  (-> (snap/add-book (snap/snapshot {})
+                     prep/+book-x+)
+      (keys))
+  => '(:x))
 
-^{:refer lang.core.library-snapshot/snapshot-module}
-(Test/check [{:name "returns nil for an unregistered module"
-              :test (fn [] (snapshot/snapshot-module (selected) :js 'demo.module))
-              :expected nil}])
+^{:refer lang.core.library-snapshot/set-module :added "4.0"}
+(fact "sets a module in the snapshot"
 
-^{:refer lang.core.library-snapshot/snapshot-entry}
-(Test/check [{:name "returns nil for an unregistered entry"
-              :test (fn [] (snapshot/snapshot-entry (selected) :js 'demo.module :code 'value))
-              :expected nil}])
+  (-> (snap/set-module prep/+snap+
+                       (m/book-module '{:lang :lua.redis
+                                        :id L.redis
+                                        :link {- L.redis
+                                               u L.core}}))
+      second
+      (get-in [:lua.redis :book])
+      (b/book-string))
+  => "#book [:lua.redis] {L.redis {:code 0, :fragment 0}}")
 
-^{:refer lang.core.library-snapshot/snapshot-require-book}
-(Test/check [{:name "returns a selected record for mutation validation"
-              :test (fn [] (:info (snapshot/snapshot-require-book (selected) :js)))
-              :expected {:namespace 'demo.js}}])
+^{:refer lang.core.library-snapshot/delete-module :added "4.0"}
+(fact "deletes a module in the snapshot"
 
-^{:refer lang.core.library-snapshot/snapshot-module-value}
-(Test/check [{:name "retains typed modules and metadata-bearing source maps"
-              :test (fn [] (let [typed (module/book-module {:lang :js :id 'typed})
-                                 source {:lang :js :id 'source :emit {:layout :flat}}]
-                             [(module/book-module? (snapshot/snapshot-module-value typed))
-                              (snapshot/snapshot-module-value source)]))
-              :expected [true {:lang :js :id 'source :emit {:layout :flat}}]}])
+  (-> (snap/delete-module prep/+snap+
+                          :lua 'L.core)
+      second
+      (get-in [:lua :book])
+      (b/book-string))
+  => "#book [:lua] {}")
 
-^{:refer lang.core.library-snapshot/snapshot-entry-value}
-(Test/check [{:name "retains typed entries and metadata-bearing source maps"
-              :test (fn [] (let [typed (entry/book-entry {:lang :js :module 'demo.module
-                                                           :section :code :id 'typed})
-                                 source {:lang :js :module 'demo.module :section :code :id 'source
-                                         :op-key :defn}]
-                             [(entry/book-entry? (snapshot/snapshot-entry-value typed))
-                              (snapshot/snapshot-entry-value source)]))
-              :expected [true {:lang :js :module 'demo.module :section :code :id 'source
-                               :op-key :defn}]}])
+^{:refer lang.core.library-snapshot/delete-modules :added "4.0"}
+(fact  "deletes a bunch of modules in the snapshot"
+  (-> (snap/delete-modules prep/+snap+ :lua ['L.core])
+      second
+      (get-in [:lua :book])
+      (b/book-string))
+  => "#book [:lua] {}")
 
-^{:refer lang.core.library-snapshot/snapshot-set-module}
-(Test/check [{:name "stores a module under its declared language Book"
-              :test (fn [] (select-keys
-                             (snapshot/snapshot-module
-                              (snapshot/snapshot-set-module (selected) :js
-                                                            {:lang :js :id 'demo.module})
-                              :js 'demo.module)
-                             [:lang :id]))
-              :expected {:lang :js :id 'demo.module}}])
+^{:refer lang.core.library-snapshot/list-modules :added "4.0"}
+(fact "list modules for a snapshot"
 
-^{:refer lang.core.library-snapshot/snapshot-delete-module}
-(Test/check [{:name "deletes a locally owned module and advances revision"
-              :test (fn [] (let [with-module (snapshot/snapshot-set-module
-                                               (selected) :js {:lang :js :id 'demo.module})
-                               deleted (snapshot/snapshot-delete-module with-module :js 'demo.module)]
-                           [(snapshot/snapshot-module deleted :js 'demo.module)
-                            (snapshot/snapshot-revision deleted)]))
-              :expected [nil 3]}])
+  (set (snap/list-modules prep/+snap+ :lua))
+  => '#{L.core x.core})
 
-^{:refer lang.core.library-snapshot/snapshot-set-entry}
-(Test/check [{:name "stores BookEntry data in its owned BookModule"
-              :test (fn [] (let [with-module (snapshot/snapshot-set-module
-                                               (selected) :js {:lang :js :id 'demo.module})
-                               with-entry (snapshot/snapshot-set-entry
-                                           with-module :js
-                                           {:lang :js :module 'demo.module :section :code :id 'value})]
-                           (select-keys (snapshot/snapshot-entry with-entry :js 'demo.module :code 'value)
-                                        [:lang :module :section :id])))
-              :expected {:lang :js :module 'demo.module :section :code :id 'value}}])
+^{:refer lang.core.library-snapshot/list-entries :added "4.0"}
+(fact "lists entries for a snapshot"
 
-^{:refer lang.core.library-snapshot/snapshot-delete-entry}
-(Test/check [{:name "deletes one locally owned entry"
-              :test (fn [] (let [with-module (snapshot/snapshot-set-module
-                                               (selected) :js {:lang :js :id 'demo.module})
-                               with-entry (snapshot/snapshot-set-entry
-                                           with-module :js
-                                           {:lang :js :module 'demo.module :section :code :id 'value})]
-                           (snapshot/snapshot-entry
-                            (snapshot/snapshot-delete-entry with-entry :js 'demo.module :code 'value)
-                            :js 'demo.module :code 'value)))
-              :expected nil}])
+  (set (snap/list-entries prep/+snap+ :lua))
+  => '#{x.core/identity-fn L.core/identity-fn}
 
-^{:refer lang.core.library-snapshot/snapshot-list-modules}
-(Test/check [{:name "lists module ids in stable order"
-              :test (fn [] (snapshot/snapshot-list-modules
-                             (snapshot/snapshot-set-module (selected) :js {:lang :js :id 'demo.module})
-                             :js))
-              :expected ['demo.module]}])
+  (snap/list-entries prep/+snap+ :lua 'L.core)
+  => '{:code (identity-fn), :fragment (add sub)}
 
-^{:refer lang.core.library-snapshot/snapshot-list-entries}
-(Test/check [{:name "lists entry ids in stable order"
-              :test (fn [] (let [with-module (snapshot/snapshot-set-module
-                                               (selected) :js {:lang :js :id 'demo.module})
-                               with-entry (snapshot/snapshot-set-entry
-                                           with-module :js
-                                           {:lang :js :module 'demo.module :section :code :id 'value})]
-                           (snapshot/snapshot-list-entries with-entry :js 'demo.module :code)))
-              :expected ['value]}])
+  (snap/list-entries prep/+snap+ :x 'x.core :code)
+  => '(identity-fn))
 
-^{:refer lang.core.library-snapshot/snapshot-merge-book}
-(Test/check [{:name "prefers child modules while retaining a parent Book cache"
-              :test (fn [] (snapshot/snapshot-merge-book
-                             {:info {:parent true} :book :parent :modules {'a 1}}
-                             {:info {:child true} :book nil :modules {'a 2 'b 3}}))
-              :expected {:info {:child true} :book :parent :modules {'a 2 'b 3}}}])
+^{:refer lang.core.library-snapshot/set-entry :added "4.0"}
+(fact "stores raw entries and materializes them through the merged book view"
 
-^{:refer lang.core.library-snapshot/snapshot-merge}
-(Test/check [{:name "merges parent Books with child selection and overlays"
-              :test (fn [] (let [parent (snapshot/snapshot-set-module
-                                       (selected) :js {:lang :js :id 'parent.module})
-                               child (snapshot/snapshot-set-module
-                                      (snapshot/snapshot-select-book (snapshot/snapshot-empty)
-                                                                      :js :default 1 {:namespace 'demo.js})
-                                      :js {:lang :js :id 'child.module})]
-                           (snapshot/snapshot-list-modules
-                            (snapshot/snapshot-merge parent child) :js)))
-              :expected ['child.module 'parent.module]}])
+  (-> (snap/set-entry prep/+snap+
+                      (entry/create-code-base
+                       '(defn sub-fn
+                          [a b]
+                          (return (fn:> ((-/identity-fn -/sub) a b))))
+                       {:lang :lua
+                        :namespace 'L.core
+                         :module 'L.core}
+                        {}))
+      second
+      (snap/get-book :lua)
+      (b/get-code-entry-view 'L.core/sub-fn)
+      :form)
+  => '(defn sub-fn [a b] (return (fn [] (return ((L.core/identity-fn (fn [x y] (return (- x y)))) a b))))))
+
+(fact "fails unresolved namespaced symbols at save time"
+
+  (snap/set-entry prep/+snap+
+                  (entry/create-code-base
+                   '(defn bad-fn
+                      []
+                      (return (dbsql/query-async conn "SELECT 1;")))
+                   {:lang :lua
+                    :namespace 'L.core
+                    :module 'L.core}
+                   {}))
+  => (throws))
+
+(def +snap-mixed+
+ (-> prep/+snap+
+  (snap/set-entries
+    [(entry/create-fragment
+       '(def$ G G)
+       {:lang :lua, :namespace (ns-current), :module 'L.core})
+     (entry/create-code-base
+       '(defn sub-g [a] (return (- a -/G)))
+       {:lang :lua, :namespace (ns-current), :module 'L.core}
+       {})])
+  second
+  (snap/set-module
+    (m/book-module
+      '{:lang :lua.redis, :id L.redis, :link {- L.redis, u L.core}}))
+  second))
+^{:refer lang.core.library-snapshot/set-entries, :added "4.0"}
+(fact
+  "materializes entries for the current language and preserves raw insertion order"
+  (-> (snap/set-entries
+        +snap-mixed+
+        [(entry/create-code-base
+           '(defn redis-g [] (return u/G))
+           {:lang :lua.redis,
+            :namespace (ns-current),
+            :module 'L.redis}
+           {})])
+   second
+   (snap/get-book :lua.redis)
+   (b/get-code-entry-view 'L.redis/redis-g)
+   :form)
+  =>
+  '(defn redis-g [] (return G))
+  (let [[diff snapshot] (snap/set-entries
+                          +snap-mixed+
+                          [(entry/create-code-base
+                             '(defn redis-g [] (return u/G))
+                             {:lang :lua.redis,
+                              :namespace (ns-current),
+                              :module 'L.redis}
+                             {})])]
+    [(boolean (seq diff)) (snap/snapshot? snapshot)])
+  =>
+  [true true]
+  (snap/set-entries
+    prep/+snap+
+    [(entry/create-code-base
+       '(defn sub-g [a] (return (- a -/G)))
+       {:lang :lua, :namespace (ns-current), :module 'L.core}
+       {})
+     (entry/create-fragment
+       '(def$ G G)
+       {:lang :lua, :namespace (ns-current), :module 'L.core})])
+  =>
+  (throws))
+
+^{:refer lang.core.library-snapshot/delete-entry :added "4.0"}
+(fact "deletes an entry from the snapshot"
+
+  (-> prep/+snap+
+      (snap/delete-entry {:lang :lua
+                          :section :code
+                          :module 'L.core
+                          :id 'identity-fn})
+      second
+      (snap/delete-entry {:lang :lua
+                          :section :code
+                          :module 'L.core
+                          :id 'identity-fn})
+      first)
+  => '([[:modules L.core :code identity-fn] nil]))
+
+^{:refer lang.core.library-snapshot/delete-entries :added "4.0"}
+(fact "delete entries from the snapshot"
+
+  (-> prep/+snap+
+      (snap/delete-entries [{:lang :lua
+                             :section :code
+                             :module 'L.core
+                             :id 'identity-fn}])
+      second
+      (get-in [:lua :book])
+      (b/list-entries))
+  => ())
+
+^{:refer lang.core.library-snapshot/install-check-merged :added "4.0"}
+(fact "checks that the book is not merged (used to check mutate)"
+  (snap/install-check-merged {:merged [1]}) => nil)
+
+^{:refer lang.core.library-snapshot/install-module-update, :added "4.0"}
+(fact
+  "updates the book module"
+  (snap/install-module-update
+    (b/book {:lang :lua, :meta {:a 1}, :grammar {:a 1}, :modules {}})
+    {:id :lua, :code {}})
+  =>
+  (satisfies vector?))
+
+^{:refer lang.core.library-snapshot/install-module, :added "4.0"}
+(fact
+  "adds an new module or update fields if exists"
+  (snap/install-module prep/+snap+ :lua 'L.util {})
+  =>
+  (satisfies vector?)
+  (snap/install-module
+    prep/+snap+
+    :lua
+    'L.core
+    '{:import [["hello" :as hello] ["world" :as world]]})
+  =>
+  (satisfies vector?))
+
+^{:refer lang.core.library-snapshot/install-module-specialized :added "4.1"}
+(fact "adds a specialized module clone to the snapshot"
+  (let [[snapshot status module] (snap/install-module-specialized
+                                  prep/+snap+
+                                  :lua
+                                  'L.core
+                                  'L.core-specialized
+                                  {:bindings {'L.core 'L.util}})]
+    [status
+     (get-in snapshot [:lua :book :modules 'L.core-specialized :id])
+     (get-in module [:link '-])])
+  => [:new 'L.core-specialized 'L.core-specialized])
+
+^{:refer lang.core.library-snapshot/install-book-update, :added "4.0"}
+(fact
+  "updates the book grammar, meta and parent"
+  (snap/install-book-update
+    prep/+snap+
+    {:lang :lua, :grammar {:a 1}, :meta {:a 1}, :parent :x})
+  =>
+  (satisfies vector?))
+
+^{:refer lang.core.library-snapshot/install-book, :added "4.0"}
+(fact
+  "adds a new book or updates grammar if exists"
+  (snap/install-book
+    prep/+snap+
+    (b/book
+      {:lang :hello,
+       :meta (meta/book-meta {}),
+       :grammar (assoc (:grammar prep/+book-x+) :tag :hello)}))
+  =>
+  (satisfies vector?)
+  (snap/install-book
+    prep/+snap+
+    (b/book
+      {:lang :lua.redis,
+       :meta (meta/book-meta {}),
+       :grammar (assoc lua/+grammar+ :tag :lua.redis)}))
+  =>
+  (satisfies vector?))
+
+(do)
+
+^{:refer lang.core.library-snapshot/*parent* :id scoped-parent-hydration}
+(fact "hydrates against a scoped parent without copying parent modules into local state"
+  (let [baseline snap/*parent*
+        parent prep/+snap+
+        child (second (snap/set-module
+                        (snap/snapshot-reset parent)
+                        (m/book-module {:lang :lua :id 'L.child
+                                        :link {'- 'L.child 'u 'L.core}})))
+        value (entry/create-code-base
+                '(defn inherited [a b] (return (u/add a b)))
+                {:lang :lua :namespace (ns-current) :module 'L.child} {})
+        without-parent (try (snap/set-entry child value) :unexpected
+                            (catch error :missing-parent))
+        [diff updated] (binding [snap/*parent* parent] (snap/set-entry child value))
+        materialized (-> (snap/snapshot-merge parent updated)
+                         (snap/get-book :lua)
+                         (b/get-code-entry-view 'L.child/inherited)
+                         :form)
+        thrown (try (binding [snap/*parent* parent] (throw (ex :migration/expected {})))
+                    (catch error :caught))]
+    [without-parent materialized
+     (has? (get-in updated [:lua :book :modules]) 'L.core)
+     (get-in child [:lua :book :modules 'L.child :code 'inherited])
+     thrown (= baseline snap/*parent*)])
+  => [:missing-parent '(defn inherited [a b] (return (+ a b))) false nil :caught true])
+
+^{:refer lang.core.library-snapshot/install-check-merged :id rejects-merged-book}
+(fact "reports the original merged-book rejection instead of failing in diagnostic printing"
+  (try
+    (snap/install-check-merged {:merged #{:x :lua} :modules {'L.core {}}} 'L.core)
+    :unexpected
+    (catch error (ex-message error)))
+  => "MERGED BOOK DISALLOWED")
+
+^{:refer lang.core.library-snapshot/snapshot? :id native-record-distinction}
+(fact "retains the native distinction between Snapshot records and plain maps"
+  [(snap/snapshot? (snap/snapshot {})) (snap/snapshot? {})]
+  => [true false])
+
+^{:refer lang.core.library-snapshot/set-module :id native-immutable-module-roundtrip}
+(fact "retains module metadata and immutable insert-delete behavior without coordinate storage"
+  (let [base (snap/snapshot-reset prep/+snap+)
+        value (m/book-module {:lang :lua :id 'demo.module :emit {:layout :flat}})
+        added (second (snap/set-module base value))
+        removed (second (snap/delete-module added :lua 'demo.module))]
+    [(get-in base [:lua :book :modules 'demo.module])
+     (select-keys (get-in added [:lua :book :modules 'demo.module]) [:lang :id :emit])
+     (get-in removed [:lua :book :modules 'demo.module])
+     (= (get-in base [:lua :book :modules]) (get-in removed [:lua :book :modules]))])
+  => [nil {:lang :lua :id 'demo.module :emit {:layout :flat}} nil true])
+
+^{:refer lang.core.library-snapshot/snapshot-reset :id native-reset-idempotence}
+(fact "resets modules idempotently while retaining the installed Book grammar"
+  (let [base (snap/snapshot-reset prep/+snap+)
+        added (second (snap/set-module base (m/book-module {:lang :lua :id 'demo.module})))
+        cleared (snap/snapshot-reset added)]
+    [(get-in cleared [:lua :book :modules])
+     (= cleared (snap/snapshot-reset cleared))
+     (= (get-in added [:lua :book :grammar]) (get-in cleared [:lua :book :grammar]))
+     (get-in added [:lua :book :modules 'demo.module :id])])
+  => [{} true true 'demo.module])
+
+^{:refer lang.core.library-snapshot/snapshot-merge :id native-child-module-precedence}
+(fact "keeps parent-only modules and gives the child precedence without mutating either input"
+  (let [base (snap/snapshot-reset prep/+snap+)
+        parent (second (snap/set-module base (m/book-module {:lang :lua :id 'shared :native-marker :parent})))
+        parent (second (snap/set-module parent (m/book-module {:lang :lua :id 'parent-only})))
+        child (second (snap/set-module base (m/book-module {:lang :lua :id 'shared :native-marker :child})))
+        merged (snap/snapshot-merge parent child)]
+    [(get-in merged [:lua :book :modules 'shared :native-marker])
+     (get-in merged [:lua :book :modules 'parent-only :id])
+     (get-in parent [:lua :book :modules 'shared :native-marker])
+     (get-in child [:lua :book :modules 'parent-only])])
+  => [:child 'parent-only :parent nil])
+
+^{:refer lang.core.library-snapshot/snapshot :id native-empty-baseline}
+(fact "the original empty Snapshot has no synthetic coordinate or revision fields"
+  (into {} (snap/snapshot {}))
+  => {})
+
+^{:refer lang.core.library-snapshot/get-book :id native-missing-lookups}
+(fact "preserves missing Book module and entry lookups and rejects a nil language"
+  (let [base (snap/snapshot-reset prep/+snap+)
+        book (snap/get-book base :lua)]
+    [(snap/get-book-raw base :missing)
+     (snap/get-book base :missing)
+     (b/get-module book 'missing)
+     (get-in book [:modules 'missing :code 'value])
+     (try (snap/get-book base nil) :unexpected (catch error (ex-message error)))])
+  => [nil nil nil nil "Lang cannot be null."])
+
+^{:refer lang.core.library-snapshot/set-module :id native-module-representation}
+(fact "stores typed modules and source maps without discarding extension metadata"
+  (let [base (snap/snapshot-reset prep/+snap+)
+        typed (m/book-module {:lang :lua :id 'typed :emit {:layout :flat}})
+        source {:lang :lua :id 'source :emit {:layout :flat}}
+        updated (second (snap/set-module (second (snap/set-module base typed)) source))]
+    [(m/book-module? (get-in updated [:lua :book :modules 'typed]))
+     (get-in updated [:lua :book :modules 'typed :emit])
+     (get-in updated [:lua :book :modules 'source])
+     (get-in base [:lua :book :modules])])
+  => [true {:layout :flat} {:lang :lua :id 'source :emit {:layout :flat}} {}])
+
+^{:refer lang.core.library-snapshot/set-entry :id native-entry-roundtrip}
+(fact "retains typed and raw entry identity metadata and deletes only the selected local entry"
+  (let [base (second (snap/set-module (snap/snapshot-reset prep/+snap+)
+                                     (m/book-module {:lang :lua :id 'demo.module})))
+        typed (assoc (entry/create-code-base '(defn value [] (return 7))
+                                             {:lang :lua :namespace (ns-current) :module 'demo.module} {})
+                     :native-marker :typed)
+        source {:lang :lua :module 'demo.module :section :code :id 'raw :native-marker :raw}
+        added (second (snap/set-entry (second (snap/set-entry base typed)) source))
+        stored (get-in added [:lua :book :modules 'demo.module :code 'value])
+        removed (second (snap/delete-entry added typed))]
+    [(e/book-entry? stored)
+     (select-keys stored [:lang :module :section :id :native-marker])
+     (select-keys (get-in added [:lua :book :modules 'demo.module :code 'raw])
+                  [:lang :module :section :id :native-marker])
+     (get-in base [:lua :book :modules 'demo.module :code 'value])
+     (get-in removed [:lua :book :modules 'demo.module :code 'value])
+     (get-in removed [:lua :book :modules 'demo.module :code 'raw :native-marker])
+     (get-in added [:lua :book :modules 'demo.module :code 'value :id])])
+  => [true {:lang :lua :module 'demo.module :section :code :id 'value :native-marker :typed}
+      {:lang :lua :module 'demo.module :section :code :id 'raw :native-marker :raw}
+      nil nil :raw 'value])
+
+^{:refer lang.core.library-snapshot/list-entries :id native-singleton-listings}
+(fact "retains exact singleton module and entry listings without inventing a new sorting contract"
+  (let [base (second (snap/set-module (snap/snapshot-reset prep/+snap+)
+                                     (m/book-module {:lang :lua :id 'demo.module})))
+        value (entry/create-code-base '(defn value [] (return 7))
+                                      {:lang :lua :namespace (ns-current) :module 'demo.module} {})
+        updated (second (snap/set-entry base value))]
+    [(vec (snap/list-modules updated :lua))
+     (vec (snap/list-entries updated :lua 'demo.module :code))])
+  => [['demo.module] ['value]])
+
+^{:refer lang.core.library-snapshot/snapshot-merge :id native-disjoint-module-union}
+(fact "retains both disjoint parent and child modules"
+  (let [base (snap/snapshot-reset prep/+snap+)
+        parent (second (snap/set-module base (m/book-module {:lang :lua :id 'parent.module})))
+        child (second (snap/set-module base (m/book-module {:lang :lua :id 'child.module})))]
+    (set (snap/list-modules (snap/snapshot-merge parent child) :lua)))
+  => '#{parent.module child.module})

@@ -1,466 +1,654 @@
 (ns lang.core.library-test
-  (:require [lang.base.book :as book]
-            [lang.core.library :as library]
-            [lang.core.registry :as registry]))
+  (:require [lang.base.book :as b]
+            [lang.base.book-entry :as entry]
+            [lang.base.book-meta :as meta]
+            [lang.base.book-module :as module]
+            [lang.base.emit-common :as common]
+            [lang.base.emit-helper :as helper]
+            [lang.base.grammar :as grammar]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap]
+            [lang.core.library-snapshot-prep-test :as prep]
+            [lang.base.emit-prep-lua-test :as lua-prep]
+            [lang.base.util :as ut]
+            [lang.model.v1.spec-lua :as lua])
+  (:use code.test))
 
-(defn temporary-library
-  ([] (temporary-library nil))
-  ([parent] (library/library-create {:id :test :parent parent})))
+(do
+  (def +migration-owned-libraries+ (atom []))
+  (fact:global
+    {:teardown
+     [(try
+        (doseq [library (deref +migration-owned-libraries+)]
+          (try
+            (lib/reset-all! library)
+            (finally (reset! (:settings library) {}))))
+        (finally (reset! +migration-owned-libraries+ [])))]})
+  (def +library+
+   (let [migration-created-library (lib/library
+                                     {:snapshot prep/+snap+})]
+     (swap! +migration-owned-libraries+ conj migration-created-library)
+     migration-created-library)))
 
-(defn module-value
-  [language id]
-  {:lang language :id id :code {} :fragment {}})
+(def +contract-book+
+  (b/book {:lang :lua
+           :meta (:meta lua-prep/+book-empty+)
+           :grammar (:grammar lua-prep/+book-empty+)
+           :modules {'L.contract (module/book-module {:lang :lua
+                                                      :id 'L.contract
+                                                      :code {'foo (b/book-entry {:lang :lua
+                                                                                 :module 'L.contract
+                                                                                 :section :code
+                                                                                 :id 'foo
+                                                                                 :form-input '(defabstract foo [x])
+                                                                                 :namespace 'L.contract})}})
+                     'L.impl (module/book-module {:lang :lua
+                                                 :id 'L.impl
+                                                 :implements ['L.contract]
+                                                 :code {'foo (b/book-entry {:lang :lua
+                                                                            :module 'L.impl
+                                                                            :section :code
+                                                                            :id 'foo
+                                                                            :form-input '(defn foo [x] x)
+                                                                            :namespace 'L.impl})}})}}))
 
-(defn entry-value
-  [language module id]
-  {:lang language :module module :section :code :id id})
+(def +contract-snapshot+
+  (snap/snapshot {:lua {:id :lua
+                        :book +contract-book+}}))
 
-(defn with-namespace-libraries
-  [function]
-  (let [snapshot (library/namespace-library-snapshot)]
+^{:refer lang.core.library/wait-snapshot, :added "4.0"}
+(fact
+  "gets the current waiting snapshot"
+  (lib/wait-snapshot +library+)
+  =>
+  (satisfies snap/snapshot?)
+  (meta (lib/wait-snapshot +library+))
+  =>
+  {:parent nil})
+
+^{:refer lang.core.library/wait-apply, :added "4.0"}
+(fact
+  "get the library state when task queue is empty"
+  (snap/snapshot? (lib/wait-apply +library+ identity))
+  (lib/wait-apply +library+ snap/get-book :lua)
+  =>
+  (satisfies b/book?)
+  (lib/wait-apply +library+ deps-ordered [:lua.redis])
+  =>
+  '(:x :lua :lua.redis))
+
+^{:refer lang.core.library/wait-mutate!, :added "4.0"}
+(fact
+  "mutates library once task queue is empty"
+  (-> +library+
+   (doto (lib/wait-mutate! snap/delete-module :x 'x.core))
+   (lib/wait-apply snap/get-book :x)
+   (b/list-entries))
+  =>
+  ()
+  (do
+    (lib/add-module! +library+ prep/+x-module+)
+    (when (not
+            (=
+              (keys
+                (get-in
+                  (lib/get-snapshot +library+)
+                  [:x :book :modules]))
+              '(x.core)))
+      (throw
+        (ex
+          :migration/assertion
+          {}
+          :ex/message
+          "Historical Library assertion failed")))))
+
+^{:refer lang.core.library/get-snapshot, :added "4.0"}
+(fact
+  "gets the current snapshot for the library"
+  (lib/get-snapshot +library+)
+  =>
+  (satisfies snap/snapshot?))
+
+^{:refer lang.core.library/snapshot-find-module, :added "4.1"}
+(fact
+  "finds a module anywhere in the merged library snapshot"
+  (-> (lib/snapshot-find-module prep/+snap+ 'L.core) first)
+  =>
+  :lua
+  (-> (lib/snapshot-find-module prep/+snap+ 'L.core) second)
+  =>
+  (satisfies module/book-module?)
+  (-> (lib/snapshot-find-module prep/+snap+ 'x.core) first)
+  =>
+  :x
+  (lib/snapshot-find-module prep/+snap+ 'missing.module)
+  =>
+  nil)
+
+^{:refer lang.core.library/entry-arity :added "4.1"}
+(fact "returns the arity of an entry from its input form"
+
+  (lib/entry-arity {:form-input '(defn add-fn [a b] (+ a b))})
+  => 2
+
+  (lib/entry-arity {:form-input '(defn no-args [] x)})
+  => 0
+
+  (lib/entry-arity {:form-input '(do something)})
+  => nil)
+
+^{:refer lang.core.library/entry-abstract? :added "4.1"}
+(fact "checks if an entry was declared with `defabstract`"
+
+  (lib/entry-abstract? {:form-input '(defabstract foo [x])})
+  => true
+
+  (lib/entry-abstract? {:form-input '(defn foo [x] x)})
+  => false
+
+  (lib/entry-abstract? {:form-input "not a seq"})
+  => false)
+
+^{:refer lang.core.library/validate-module-implements :added "4.1"}
+(fact "checks that a module satisfies all declared abstract contracts"
+
+  (lib/validate-module-implements +contract-snapshot+ :lua 'L.impl)
+  => true
+
+  (lib/validate-module-implements (snap/snapshot
+                                   {:lua {:id :lua
+                                          :book (assoc-in +contract-book+
+                                                          [:modules 'L.impl :code]
+                                                          {})}})
+                                  :lua
+                                  'L.impl)
+  => (throws-info {:missing '[foo]})
+
+  (lib/validate-module-implements (snap/snapshot
+                                   {:lua {:id :lua
+                                          :book (assoc-in +contract-book+
+                                                          [:modules 'L.impl :code 'foo :form-input]
+                                                          '(defn foo [x y] x))}})
+                                  :lua
+                                  'L.impl)
+  => (throws-info {:mismatched '[{:id foo
+                                  :expected 1
+                                  :actual 2}]}))
+
+^{:refer lang.core.library/get-book, :added "4.0"}
+(fact
+  "gets a book from library"
+  (lib/get-book +library+ :x)
+  =>
+  (satisfies b/book?))
+
+^{:refer lang.core.library/get-book-raw, :added "4.0"}
+(fact
+  "gets the raw book, without merge"
+  (b/list-entries (lib/get-book-raw +library+ :lua.redis))
+  =>
+  (satisfies empty?)
+  (b/list-entries (lib/get-book +library+ :lua.redis))
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value)))))
+
+^{:refer lang.core.library/get-module, :added "4.0"}
+(fact
+  "gets a module from library"
+  (lib/get-module +library+ :x 'x.core)
+  =>
+  (satisfies module/book-module?))
+
+^{:refer lang.core.library/get-entry, :added "4.0"}
+(fact
+  "gets an entry from library"
+  (lib/get-entry
+    +library+
+    '{:lang :lua, :module L.core, :section :fragment, :id sub})
+  =>
+  (satisfies entry/book-entry?))
+
+^{:refer lang.core.library/add-book!, :added "4.0"}
+(fact
+  "adds a book to the library"
+  (lib/add-book!
+    +library+
+    (b/book
+      (b/book
+        {:lang :js,
+         :parent :x,
+         :meta (meta/book-meta {}),
+         :grammar
+         (grammar/grammar
+           :js
+           (grammar/to-reserved (grammar/build))
+           helper/+default+)})))
+  (lib/wait-apply +library+ deps-ordered [:js])
+  =>
+  '(:x :js)
+  (lib/delete-book! +library+ :js)
+  =>
+  (any (satisfies nil?) (satisfies map?)))
+
+^{:refer lang.core.library/delete-book! :added "4.0"}
+(fact "deletes a book"
+  (lib/delete-book! +library+ :js) => nil)
+
+^{:refer lang.core.library/reset-all!, :added "4.0"}
+(fact
+  "resets the library"
+  (lib/reset-all! +library+ (lib/reset-all! +library+))
+  =>
+  (satisfies snap/snapshot?))
+
+^{:refer lang.core.library/list-modules :added "4.0"}
+(fact "lists all modules"
+
+  (lib/list-modules +library+ :lua)
+  => (contains ['L.core 'x.core]
+               :in-any-order :gaps-ok))
+
+^{:refer lang.core.library/list-entries :added "4.0"}
+(fact "lists entries"
+
+  (lib/list-entries +library+ :lua)
+  => '(L.core/identity-fn)
+
+  (lib/list-entries +library+ :lua 'L.core)
+  => '{:code (identity-fn), :fragment (add sub)})
+
+^{:refer lang.core.library/add-module!, :added "4.0"}
+(fact
+  "adds a module to the library"
+  (lib/add-module!
+    +library+
+    (module/book-module
+      '{:lang :lua.redis,
+        :id L.redis.hello,
+        :link {r L.redis, u L.core}}))
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value))))
+  (lib/delete-module! +library+ :lua.redis 'L.redis.hello)
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value)))))
+
+^{:refer lang.core.library/delete-module!, :added "4.0"}
+(fact
+  "deletes a module from the library"
+  (lib/delete-module! +library+ :lua.redis 'L.redis.hello)
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value)))))
+
+^{:refer lang.core.library/delete-modules!, :added "4.0"}
+(fact
+  "deletes a bunch of modules from the library"
+  (lib/delete-modules! +library+ :lua.redis ['L.redis.hello])
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value)))))
+
+^{:refer lang.core.library/library-string, :added "4.0"}
+(fact
+  "returns the library string"
+  (lib/library-string +library+)
+  =>
+  (satisfies string?))
+
+^{:refer lang.core.library/library? :added "4.0"}
+(fact "checks if object is a library"
+
+  (lib/library? +library+)
+  => true)
+
+^{:refer lang.core.library/library:create, :added "4.0"}
+(fact
+  "creates a new library"
+  (let [migration-created-library (lib/library:create {})]
+    (swap! +migration-owned-libraries+ conj migration-created-library)
+    migration-created-library)
+  =>
+  (satisfies lib/library?))
+
+^{:refer lang.core.library/library, :added "4.0"}
+(fact
+  "creates and start a new library"
+  (let [migration-created-library (lib/library {})]
+    (swap! +migration-owned-libraries+ conj migration-created-library)
+    migration-created-library)
+  =>
+  (satisfies lib/library?))
+
+(do)
+
+^{:refer lang.core.library/add-entry-single!, :added "4.0"}
+(fact
+  "adds an entry synchronously"
+  (lib/delete-entry!
+    +library+
+    {:lang :lua, :section :code, :module 'L.core, :id 'add-fn})
+  (lib/add-entry-single!
+    +library+
+    (b/book-entry
+      {:lang :lua,
+       :section :code,
+       :namespace (ns-current),
+       :module 'L.core,
+       :id 'add-fn,
+       :form-input '(defn add-fn [x y] (return (+ x y))),
+       :deps #{}}))
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value)))))
+
+^{:refer lang.core.library/delete-entry!, :added "4.0"}
+(fact
+  "deletes an entry from the library"
+  (lib/delete-entry!
+    +library+
+    {:lang :lua, :module 'L.core, :id 'add-fn})
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value)))))
+
+^{:refer lang.core.library/install-module!, :added "4.0"}
+(fact
+  "installs a module to library"
+  (lib/delete-module! +library+ :lua 'L.util)
+  (lib/install-module! +library+ :lua 'L.util {})
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value)))))
+
+(code.test.registry/register
+  'lang.core.library-test
+  {:desc "installs a specialized module clone into the library",
+   :meta
+   {:refer 'lang.core.library/install-module-specialized!,
+    :added "4.1"},
+   :function
+   (fn [_]
+     (let [+specialized-lib+ (let [migration-created-library
+                                   (lib/library
+                                     {:snapshot prep/+snap+})]
+                               (swap!
+                                 +migration-owned-libraries+
+                                 conj
+                                 migration-created-library)
+                               migration-created-library)]
+       (try
+         (lib/install-module-specialized!
+           +specialized-lib+
+           :lua
+           'L.core
+           'L.core.specialized
+           {})
+         [(code.test.base.process/check
+            (fn []
+              (lib/get-module
+                +specialized-lib+
+                :lua
+                'L.core.specialized))
+            (satisfies module/book-module?))
+          (code.test.base.process/check
+            (fn []
+              (-> (lib/get-module
+                    +specialized-lib+
+                    :lua
+                    'L.core.specialized)
+               :id))
+            'L.core.specialized)]
+         (finally
+           (lib/reset-all! +specialized-lib+)
+           (reset! (:settings +specialized-lib+) {})))))})
+
+^{:refer lang.core.library/install-book!, :added "4.0"}
+(fact
+  "installs a book to library"
+  (lib/delete-book! +library+ :lua.redis)
+  (lib/install-book! +library+ prep/+book-lua-redis-empty+)
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value))))
+  (:parent (lib/get-book-raw +library+ :lua.redis))
+  =>
+  :lua
+  (:parent prep/+book-lua-redis-empty+)
+  =>
+  :lua)
+
+^{:refer lang.core.library/purge-book!, :added "4.0"}
+(fact
+  "clears all modules from book"
+  (lib/purge-book! +library+ :lua)
+  =>
+  (satisfies
+    (fn [value]
+      (or (coll? value) (form? value) (iter? value) (b/book? value)))))
+
+(do)
+^{:refer lang.core.library/reset-all! :id historical-fixture-cleanup}
+(fact "clears every tracked historical Library and repeats teardown idempotently"
+ (let [owned (vec (deref +migration-owned-libraries+))
+       teardown (:after-all (deref code.test.registry/+lifecycle-config+))]
+  (teardown)
+  [(count owned)
+   (vec (map (fn [library] [(into {} (deref (:instance library))) (deref (:settings library))]) owned))
+   (deref +migration-owned-libraries+)
+   (do (teardown) (deref +migration-owned-libraries+))])
+ => [4 [[{} {}] [{} {}] [{} {}] [{} {}]] [] []])
+
+^{:refer lang.core.library/add-entry! :id supplied-dispatch-contract}
+(fact "passes the original entry to the supplied dispatcher and propagates its outcome"
+ (let [library (lib/library:create {})
+       calls (atom [])
+       entry lua-prep/+core-fragment-add+
+       accepting (assoc library :dispatch (fn [value] (swap! calls conj value) [:queued (:id value)]))
+       rejecting (assoc library :dispatch (fn [_] (throw (ex :migration/dispatch {} :ex/message "dispatch failed"))))]
+  (try
+   [(lib/add-entry! accepting entry)
+    (= [entry] (deref calls))
+    (try (lib/add-entry! rejecting entry) :unexpected (catch error (ex-message error)))
+    (into {} (deref (:instance library)))]
+   (finally (lib/reset-all! library) (reset! (:settings library) {}) (reset! calls []))))
+ => [[:queued 'add] true "dispatch failed" {}])
+
+(require [lang.model.v1.spec-xtalk :as xt])
+^{:refer lang.core.library/wait-snapshot :id parent-module-overlay}
+(fact "overlays child modules while retaining the parent's Book fields and snapshot metadata"
+ (let [parent-book (assoc xt/+book+ :modules {'shared {:owner :parent} 'base {:owner :parent}} :scope :parent)
+       child-book (assoc xt/+book+ :modules {'shared {:owner :child} 'local {:owner :child}} :scope :child)
+       parent (lib/library:create {:snapshot (snap/add-book (snap/snapshot {}) parent-book)})
+       child (lib/library:create {:parent parent :snapshot (snap/add-book (snap/snapshot {}) child-book)})]
+  (try
+   (let [result (lib/wait-snapshot child)
+         resolved (snap/get-book-raw result :xtalk)]
+    [(:modules resolved) (:scope resolved)
+     (= (lib/wait-snapshot parent) (:parent (meta result)))
+     (= child-book (snap/get-book-raw (deref (:instance child)) :xtalk))
+     (= parent-book (snap/get-book-raw (deref (:instance parent)) :xtalk))])
+   (finally (lib/reset-all! child) (reset! (:settings child) {})
+            (lib/reset-all! parent) (reset! (:settings parent) {}))))
+ => [{'shared {:owner :child} 'base {:owner :parent} 'local {:owner :child}} :parent true true true])
+^{:refer lang.core.library/wait-snapshot :id parent-supplier-live}
+(fact "resolves a parent supplier again after parent state changes"
+ (let [parent (lib/library:create {})
+       calls (atom 0)
+       child (lib/library:create {:parent (fn [] (swap! calls inc) parent)})]
+  (try
+   (let [before (lib/wait-snapshot child)
+         _ (lib/install-book! parent xt/+book+)
+         after (lib/wait-snapshot child)]
+    [(into {} before) (set (keys after)) (deref calls)
+     (into {} (deref (:instance child)))])
+   (finally (lib/reset-all! child) (reset! (:settings child) {})
+            (lib/reset-all! parent) (reset! (:settings parent) {}) (reset! calls 0))))
+ => [{} #{:xtalk} 2 {}])
+^{:refer lang.core.library/wait-mutate! :id strict-rejection-atomic}
+(fact "strict validation rejects merged Books before committing the local snapshot"
+ (let [value (lib/library:create {})
+       merged (assoc xt/+book+ :merged #{:xtalk :lua})]
+  (try
+   (let [before (deref (:instance value))
+         previous-strict lib/*strict*
+         error (binding [lib/*strict* true]
+                 (try (lib/wait-mutate! value
+                        (fn [state] [:invalid (snap/add-book state merged)]))
+                      :unexpected (catch error (ex-message error))))
+         unchanged (= before (deref (:instance value)))
+         accepted (binding [lib/*strict* false]
+                    (lib/wait-mutate! value
+                     (fn [state] [:accepted (snap/add-book state merged)])))]
+    [error unchanged (= previous-strict lib/*strict*) accepted
+     (= merged (snap/get-book-raw (deref (:instance value)) :xtalk))])
+   (finally (binding [lib/*strict* false] (lib/reset-all! value))
+            (reset! (:settings value) {}))))
+ => ["MERGED BOOK DISALLOWED" true true :accepted true])
+(def ^:dynamic *parent-fixture* nil)
+(defn parent-supplier [] *parent-fixture*)
+^{:refer lang.core.library/wait-snapshot :id parent-var-supplier}
+(fact "dereferences a Var parent supplier before invoking it"
+ (let [parent (lib/library:create {:snapshot (snap/add-book (snap/snapshot {}) xt/+book+)})]
+  (binding [*parent-fixture* parent]
+   (let [child (lib/library:create {:parent (var parent-supplier)})]
     (try
-      (library/namespace-library-reset!)
-      (function)
-      (finally
-        (library/namespace-library-restore! snapshot)))))
+     [(set (keys (lib/wait-snapshot child))) (into {} (deref (:instance child)))]
+     (finally (lib/reset-all! child) (reset! (:settings child) {})
+              (lib/reset-all! parent) (reset! (:settings parent) {}))))))
+ => [#{:xtalk} {}])
 
-^{:refer lang.core.library/library?}
-(Test/check [{:name "identifies state-owning Library values"
-              :test (fn [] [(library/library? (temporary-library))
-                             (library/library? {})])
-              :expected [true false]}])
+^{:refer lang.core.library/library:create :id native-constructor-baseline}
+(fact "uses the original constructor fields and independent local state"
+  (let [value (lib/library:create {:id :requested})
+        other (lib/library:create {})]
+    (try
+      [(lib/library? value) (lib/library? {})
+       (:id value) (:parent value)
+       (into {} (deref (:instance value)))
+       (= value (:library (deref (:settings value))))
+       (do (lib/add-book! value prep/+book-x+) (into {} (deref (:instance other))))]
+      (finally (lib/reset-all! value) (reset! (:settings value) {})
+               (lib/reset-all! other) (reset! (:settings other) {}))))
+  => [true false nil nil {} true {}])
 
-^{:refer lang.core.library/library-create}
-(Test/check [{:name "creates a blank local snapshot with identity and parent"
-              :test (fn [] (let [parent (temporary-library)
-                                 child (temporary-library parent)]
-                             [(:id child)
-                              (= parent (:parent child))
-                              (select-keys (library/library-raw-snapshot child)
-                                           [:revision :books :selected])]))
-              :expected [:test true {:revision 0 :books {} :selected {}}]}])
+^{:refer lang.core.library/reset-all! :id native-snapshot-restore-roundtrip}
+(fact "reset returns the prior snapshot and supports idempotent clearing and exact restore"
+  (let [value (lib/library:create {:snapshot (snap/snapshot-reset prep/+snap+)})]
+    (try
+      (let [before (deref (:instance value))
+            previous (lib/reset-all! value)
+            empty-first (into {} (deref (:instance value)))
+            empty-second (lib/reset-all! value)
+            replaced (lib/reset-all! value previous)]
+        [(= before previous) empty-first (into {} empty-second)
+         (into {} replaced) (= before (deref (:instance value)))])
+      (finally (lib/reset-all! value) (reset! (:settings value) {}))))
+  => [true {} {} {} true])
 
-^{:refer lang.core.library/library-parent}
-(Test/check [{:name "returns the direct parent Library"
-              :test (fn [] (let [parent (temporary-library)]
-                             (= parent (library/library-parent (temporary-library parent)))))
-              :expected true}])
+^{:refer lang.core.library/delete-module! :id native-local-delete-parent-preserved}
+(fact "deleting a local module reveals its inherited parent without changing parent state"
+  (let [base (snap/snapshot-reset prep/+snap+)
+        parent (lib/library:create {:snapshot base})
+        child (lib/library:create {:parent parent :snapshot base})]
+    (try
+      (lib/add-module! parent (module/book-module {:lang :lua :id 'demo.module :native-marker :parent}))
+      (lib/add-module! child (module/book-module {:lang :lua :id 'demo.module :native-marker :child}))
+      (let [before (:native-marker (lib/get-module child :lua 'demo.module))
+            removed (lib/delete-module! child :lua 'demo.module)]
+        [before (first (first removed))
+         (:native-marker (lib/get-module child :lua 'demo.module))
+         (get-in (deref (:instance child)) [:lua :book :modules 'demo.module])
+         (:native-marker (lib/get-module parent :lua 'demo.module))
+         (get-in (lib/get-book-raw child :lua) [:modules 'demo.module :native-marker])])
+      (finally (lib/reset-all! child) (reset! (:settings child) {})
+               (lib/reset-all! parent) (reset! (:settings parent) {}))))
+  => [:child [:modules 'demo.module] :parent nil :parent :parent])
 
-^{:refer lang.core.library/library-raw-snapshot}
-(Test/check [{:name "returns only locally owned source state"
-              :test (fn [] (select-keys (library/library-raw-snapshot (temporary-library))
-                                        [:revision :books :selected]))
-              :expected {:revision 0 :books {} :selected {}}}])
+^{:refer lang.core.library/add-entry-single! :id native-entry-mutation-results}
+(fact "synchronous entry changes preserve identity fields and original mutation diff paths"
+  (let [value (lib/library:create {:snapshot (snap/snapshot-reset prep/+snap+)})]
+    (try
+      (let [module-diff (lib/add-module! value (module/book-module {:lang :lua :id 'demo.module}))
+            data (entry/book-entry {:lang :lua :module 'demo.module :section :code :id 'value :native-marker :kept})
+            entry-diff (lib/add-entry-single! value data)
+            stored (lib/get-entry value data)
+            listed (vec (lib/list-entries value :lua 'demo.module :code))
+            deleted (lib/delete-entry! value data)]
+        [(first (first module-diff)) (first (first entry-diff))
+         (select-keys stored [:lang :module :section :id :native-marker])
+         listed (first (first deleted))
+         (lib/get-entry value data)
+         (vec (lib/list-entries value :lua 'demo.module :code))])
+      (finally (lib/reset-all! value) (reset! (:settings value) {}))))
+  => [[:modules 'demo.module] [:modules 'demo.module :code 'value]
+      {:lang :lua :module 'demo.module :section :code :id 'value :native-marker :kept}
+      ['value] [:modules 'demo.module :code 'value] nil []])
 
-^{:refer lang.core.library/library-snapshot}
-(Test/check [{:name "merges parent source overlays into a child view"
-              :test (fn [] (let [parent (temporary-library)
-                                 _ (library/library-select-book! parent :xtalk)
-                                 _ (library/library-add-module! parent :xtalk
-                                                                (module-value :xtalk 'parent.module))
-                                 child (temporary-library parent)]
-                             (library/library-list-modules child :xtalk)))
-              :expected ['parent.module]}])
+^{:refer lang.core.library/purge-book! :id native-purge-preserves-grammar}
+(fact "purge clears only the selected language modules and retains its Book"
+  (let [value (lib/library:create {:snapshot (snap/snapshot-reset prep/+snap+)})]
+    (try
+      (lib/add-module! value (module/book-module {:lang :lua :id 'a}))
+      (lib/add-module! value (module/book-module {:lang :lua :id 'b}))
+      (lib/add-module! value (module/book-module {:lang :x :id 'parent.module}))
+      (let [grammar (:grammar (lib/get-book-raw value :lua))
+            purged (lib/purge-book! value :lua)]
+        [(:lang purged) (:modules purged)
+         (get-in (deref (:instance value)) [:lua :book :modules])
+         (= grammar (:grammar (lib/get-book-raw value :lua)))
+         (get-in (deref (:instance value)) [:x :book :modules 'parent.module :id])])
+      (finally (lib/reset-all! value) (reset! (:settings value) {}))))
+  => [:lua {} {} true 'parent.module])
 
-^{:refer lang.core.library/library-restore!}
-(Test/check [{:name "restores a supplied local snapshot"
-              :test (fn [] (let [value (temporary-library)
-                                 snapshot (library/library-raw-snapshot value)]
-                             (library/library-select-book! value :xtalk)
-                             (select-keys (library/library-restore! value snapshot)
-                                          [:revision :books :selected])))
-              :expected {:revision 0 :books {} :selected {}}}])
+^{:refer lang.core.library/*strict* :id native-strict-binding}
+(fact "strict mode defaults off and its binding is restored after normal and exceptional exits"
+  (let [before lib/*strict*]
+    [before
+     (binding [lib/*strict* true] lib/*strict*)
+     (try (binding [lib/*strict* true] (throw (ex :migration/expected {})))
+          (catch error :caught))
+     (= before lib/*strict*)])
+  => [false true :caught true])
 
-^{:refer lang.core.library/library-reset!}
-(Test/check [{:name "clears local Library state idempotently"
-              :test (fn [] (let [value (temporary-library)]
-                             (library/library-select-book! value :xtalk)
-                             [(select-keys (library/library-reset! value) [:revision :books :selected])
-                              (select-keys (library/library-reset! value) [:revision :books :selected])]))
-              :expected [{:revision 0 :books {} :selected {}}
-                         {:revision 0 :books {} :selected {}}]}])
+^{:refer lang.core.library/+ops+ :id native-original-operation-table}
+(fact "the original operation table preserves keys mutation pairs and immutable snapshots"
+  (let [empty (snap/snapshot {})
+        [language added] ((get lib/+ops+ :add-book) empty prep/+book-x+)
+        data (entry/book-entry {:lang :x :module 'demo.module :section :code :id 'value})
+        [module-diff with-module] ((get lib/+ops+ :set-module) added
+                                   (module/book-module {:lang :x :id 'demo.module :code {'value data}}))
+        [entry-diff without-entry] ((get lib/+ops+ :delete-entry) with-module data)
+        [delete-diff without-module] ((get lib/+ops+ :delete-module) without-entry :x 'demo.module)
+        [deleted-language without-book] ((get lib/+ops+ :delete-book) without-module :x)]
+    [(set (keys lib/+ops+)) language
+     (first (first module-diff)) (first (first entry-diff))
+     (get-in without-entry [:x :book :modules 'demo.module :code 'value])
+     (first (first delete-diff)) deleted-language (into {} without-book) (into {} empty)])
+  => [#{:add-book :delete-book :set-module :delete-module :delete-entry} :x
+      [:modules 'demo.module] [:modules 'demo.module :code 'value] nil
+      [:modules 'demo.module] :x {} {}])
 
-^{:refer lang.core.library/library-book-record}
-(Test/check [{:name "returns a selected lazy Book descriptor"
-              :test (fn [] (let [value (temporary-library)]
-                             (library/library-select-book! value :xtalk)
-                             (select-keys (library/library-book-record value :xtalk)
-                                          [:info :book :modules])))
-              :expected {:info (registry/registry-book-info :xtalk) :book nil :modules {}}}])
-
-^{:refer lang.core.library/library-raw-book-record}
-(Test/check [{:name "returns a locally selected lazy Book descriptor"
-              :test (fn [] (let [value (temporary-library)]
-                             (library/library-select-book! value :xtalk)
-                             (select-keys (library/library-raw-book-record value :xtalk)
-                                          [:info :book :modules])))
-              :expected {:info (registry/registry-book-info :xtalk) :book nil :modules {}}}])
-
-^{:refer lang.core.library/library-book-info}
-(Test/check [{:name "reads selected metadata without materializing a Book"
-              :test (fn [] (let [value (temporary-library)]
-                             (library/library-select-book! value :xtalk)
-                             (library/library-book-info value :xtalk)))
-              :expected (registry/registry-book-info :xtalk)}])
-
-^{:refer lang.core.library/library-select-book!}
-(Test/check [{:name "records Book selection without a resolved Book value"
-              :test (fn [] (let [value (temporary-library)]
-                             (select-keys (library/library-select-book! value :js)
-                                          [:info :book :modules])))
-              :expected {:info (registry/registry-book-info :js) :book nil :modules {}}}])
-
-^{:refer lang.core.library/library-ensure-book!}
-(Test/check [{:name "creates a default descriptor only when a language is requested"
-              :test (fn [] (let [value (temporary-library)]
-                             [(library/library-book-record value :lua)
-                              (select-keys (library/library-ensure-book! value :lua)
-                                           [:info :book :modules])]))
-              :expected [nil {:info (registry/registry-book-info :lua) :book nil :modules {}}]}])
-
-^{:refer lang.core.library/library-cache-book!}
-(Test/check [{:name "caches a supplied immutable Book after lazy selection"
-              :test (fn [] (let [value (temporary-library)]
-                             (library/library-cache-book! value :xtalk :fixture)
-                             (get-in (library/library-raw-snapshot value)
-                                     [:books [:xtalk :default 1] :book])))
-              :expected :fixture}])
-
-^{:refer lang.core.library/library-base-book}
-(Test/check [{:name "materializes only the requested registered Book"
-              :test (fn [] (let [value (temporary-library)
-                                 resolved (library/library-base-book value :xtalk)]
-                             [(book/book? resolved)
-                              (book/book? (get-in (library/library-raw-snapshot value)
-                                                  [:books [:xtalk :default 1] :book]))]))
-              :expected [true true]}])
-
-^{:refer lang.core.library/library-book-modules}
-(Test/check [{:name "returns effective module overlays without Book materialization"
-              :test (fn [] (let [value (temporary-library)]
-                             (library/library-add-module! value :xtalk
-                                                          (module-value :xtalk 'demo.module))
-                             (keys (library/library-book-modules value :xtalk))))
-              :expected ['demo.module]}])
-
-^{:refer lang.core.library/library-raw-book-modules}
-(Test/check [{:name "returns only locally owned module overlays"
-              :test (fn [] (let [parent (temporary-library)
-                                 _ (library/library-add-module! parent :xtalk
-                                                                (module-value :xtalk 'parent.module))
-                                 child (temporary-library parent)]
-                             (library/library-raw-book-modules child :xtalk)))
-              :expected {}}])
-
-^{:refer lang.core.library/library-apply-modules}
-(Test/check [{:name "overlays BookModule values onto an immutable Book"
-              :test (fn [] (let [base (registry/registry-book :xtalk)
-                                 resolved (library/library-apply-modules
-                                           base {'demo.module (module-value :xtalk 'demo.module)})]
-                             (:id (book/get-module resolved 'demo.module))))
-              :expected 'demo.module}])
-
-^{:refer lang.core.library/library-get-book-raw}
-(Test/check [{:name "returns a Book with only local source modules"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))]
-                             (:id (book/get-module (library/library-get-book-raw value :xtalk)
-                                                   'demo.module))))
-              :expected 'demo.module}])
-
-^{:refer lang.core.library/library-get-book}
-(Test/check [{:name "merges the target Book with its XTalk parent overlay"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))]
-                             (:id (book/get-module (library/library-get-book value :js)
-                                                   'demo.module))))
-              :expected 'demo.module}
-             {:name "flattens empty parent ancestry without materializing its Book"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-book!
-                                    value
-                                    (book/book {:lang :js
-                                                :meta (lang.base.book-meta/book-meta {})
-                                                :merged #{:js}
-                                                :parent :xtalk
-                                                :grammar {:tag :js}}))
-                                 resolved (library/library-get-book value :js)]
-                             [(:parent resolved)
-                              (:merged resolved)
-                              (library/library-raw-book-record value :xtalk)]))
-              :expected [nil #{:js :xtalk} nil]}])
-
-^{:refer lang.core.library/library-get-module}
-(Test/check [{:name "resolves a module through the effective Book chain"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))]
-                             (:id (library/library-get-module value :js 'demo.module))))
-              :expected 'demo.module}])
-
-^{:refer lang.core.library/library-get-source-module}
-(Test/check [{:name "resolves a generic source module through parent metadata without materializing Books"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))
-                                 module-value (library/library-get-source-module
-                                               value :js 'demo.module)]
-                             [(select-keys module-value [:id :lang])
-                              (get-in (library/library-raw-snapshot value)
-                                      [:books [:js :default 1] :book])
-                              (get-in (library/library-raw-snapshot value)
-                                      [:books [:xtalk :default 1] :book])]))
-              :expected [{:id 'demo.module :lang :xtalk} nil nil]}])
-
-^{:refer lang.core.library/library-get-local-source-module}
-(Test/check [{:name "distinguishes a child-owned source module from an inherited one"
-              :test (fn [] (let [parent (temporary-library)
-                                 module (module-value :xtalk 'demo.module)
-                                 _ (library/library-add-module! parent :xtalk module)
-                                 child (temporary-library parent)]
-                             [(= module
-                                 (library/library-get-source-module child :js 'demo.module))
-                              (nil? (library/library-get-local-source-module
-                                     child :js 'demo.module))
-                              (do (library/library-add-module! child :xtalk module)
-                                  (= module
-                                     (library/library-get-local-source-module
-                                      child :js 'demo.module)))]))
-              :expected [true true true]}])
-
-^{:refer lang.core.library/library-find-module}
-(Test/check [{:name "finds one source module in the selected Library snapshot"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module!
-                                    value :postgres
-                                    (assoc (module-value :postgres 'demo.module)
-                                           :source 'demo.source))
-                                 [language module-value]
-                                 (library/library-find-module value 'demo.module)]
-                             [language (select-keys module-value [:id :lang :source])]))
-              :expected [:postgres {:id 'demo.module :lang :postgres :source 'demo.source}]}])
-
-^{:refer lang.core.library/library-find-module-by-source}
-(Test/check [{:name "finds one source module from its declaring namespace"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module!
-                                    value :postgres
-                                    (assoc (module-value :postgres 'demo.module)
-                                           :source 'demo.source))
-                                 [language module-value]
-                                 (library/library-find-module-by-source value 'demo.source)]
-                             [language (select-keys module-value [:id :lang :source])]))
-              :expected [:postgres {:id 'demo.module :lang :postgres :source 'demo.source}]}])
-
-^{:refer lang.core.library/library-get-entry}
-(Test/check [{:name "resolves an entry through the effective Book chain"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))
-                                 _ (library/library-set-entry! value :xtalk
-                                                               (entry-value :xtalk 'demo.module 'value))]
-                             (:id (library/library-get-entry value :js 'demo.module :code 'value))))
-              :expected 'value}])
-
-^{:refer lang.core.library/library-add-book!}
-(Test/check [{:name "registers an already resolved Book without a provider reload"
-              :test (fn [] (let [value (temporary-library)
-                                 resolved (registry/registry-book :xtalk)]
-                             (book/book? (:book (library/library-add-book! value resolved)))))
-              :expected true}])
-
-^{:refer lang.core.library/library-add-module!}
-(Test/check [{:name "stores BookModule values without resolving their Book"
-              :test (fn [] (let [value (temporary-library)]
-                             (select-keys (library/library-add-module! value :xtalk
-                                                                      (module-value :xtalk 'demo.module))
-                                          [:lang :id :code :fragment])))
-              :expected {:lang :xtalk :id 'demo.module :code {} :fragment {}}}])
-
-^{:refer lang.core.library/library-delete-module!}
-(Test/check [{:name "deletes only a locally owned module"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))]
-                             [(:id (library/library-delete-module! value :xtalk 'demo.module))
-                              (library/library-list-modules value :xtalk)]))
-              :expected ['demo.module []]}])
-
-^{:refer lang.core.library/library-set-entry!}
-(Test/check [{:name "stores a BookEntry in its local BookModule"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))]
-                             (select-keys (library/library-set-entry! value :xtalk
-                                                                      (entry-value :xtalk 'demo.module 'value))
-                                          [:lang :module :section :id])))
-              :expected {:lang :xtalk :module 'demo.module :section :code :id 'value}}])
-
-^{:refer lang.core.library/library-delete-entry!}
-(Test/check [{:name "deletes a locally owned BookEntry"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))
-                                 _ (library/library-set-entry! value :xtalk
-                                                               (entry-value :xtalk 'demo.module 'value))]
-                             [(:id (library/library-delete-entry! value :xtalk 'demo.module :code 'value))
-                              (library/library-list-entries value :xtalk 'demo.module :code)]))
-              :expected ['value []]}])
-
-^{:refer lang.core.library/library-purge-book!}
-(Test/check [{:name "purges every locally owned source module"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'a))
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'b))]
-                             [(library/library-purge-book! value :xtalk)
-                              (library/library-list-modules value :xtalk)]))
-              :expected [['a 'b] []]}])
-
-^{:refer lang.core.library/library-list-modules}
-(Test/check [{:name "lists effective source modules without resolving Books"
-              :test (fn [] (let [parent (temporary-library)
-                                 _ (library/library-add-module! parent :xtalk
-                                                                (module-value :xtalk 'parent.module))]
-                             (library/library-list-modules (temporary-library parent) :xtalk)))
-              :expected ['parent.module]}])
-
-^{:refer lang.core.library/library-list-entries}
-(Test/check [{:name "lists effective source entries without resolving Books"
-              :test (fn [] (let [value (temporary-library)
-                                 _ (library/library-add-module! value :xtalk
-                                                                (module-value :xtalk 'demo.module))
-                                 _ (library/library-set-entry! value :xtalk
-                                                               (entry-value :xtalk 'demo.module 'value))]
-                             (library/library-list-entries value :xtalk 'demo.module :code)))
-              :expected ['value]}])
-
-^{:refer lang.core.library/library-clone}
-(Test/check [{:name "clones the effective snapshot without retaining a parent"
-              :test (fn [] (let [parent (temporary-library)
-                                 _ (library/library-add-module! parent :xtalk
-                                                                (module-value :xtalk 'parent.module))
-                                 clone (library/library-clone (temporary-library parent))]
-                             [(library/library-parent clone)
-                              (library/library-list-modules clone :xtalk)]))
-              :expected [nil ['parent.module]]}])
-
-^{:refer lang.core.library/default-library}
-(Test/check [{:name "returns one process default Library"
-              :test (fn [] (let [first (library/default-library)
-                                 second (library/default-library)]
-                             [(library/library? first) (= first second)]))
-              :expected [true true]}])
-
-^{:refer lang.core.library/default-library:reset}
-(Test/check [{:name "resets the process default Library idempotently"
-              :test (fn [] (let [value (library/default-library)
-                                 before (library/library-raw-snapshot value)]
-                             (try
-                               (library/library-add-module! value :xtalk
-                                                            (module-value :xtalk 'temporary.module))
-                               [(library/default-library:reset)
-                                (library/default-library:reset)]
-                               [(library/library-list-modules (library/default-library) :xtalk)
-                                (library/library-list-modules (library/default-library) :xtalk)]
-                               (finally (library/library-restore! value before)))))
-              :expected [[] []]}])
-
-^{:refer lang.core.library/namespace-library}
-(Test/check [{:name "does not create a namespace Library during lookup"
-              :test (fn [] (with-namespace-libraries
-                             (fn [] (library/namespace-library 'demo.source))))
-              :expected nil}])
-
-^{:refer lang.core.library/namespace-library-register!}
-(Test/check [{:name "selects a supplied child Library for its namespace"
-              :test (fn [] (with-namespace-libraries
-                             (fn [] (let [current (temporary-library)]
-                                      [(= current (library/namespace-library-register!
-                                                  'demo.source current))
-                                       (= current (library/namespace-library 'demo.source))]))))
-              :expected [true true]}])
-
-^{:refer lang.core.library/namespace-library-remove!}
-(Test/check [{:name "removes and returns one namespace child Library"
-              :test (fn [] (with-namespace-libraries
-                             (fn [] (let [current (temporary-library)]
-                                      (library/namespace-library-register! 'demo.source current)
-                                      [(= current (library/namespace-library-remove! 'demo.source))
-                                       (library/namespace-library 'demo.source)]))))
-              :expected [true nil]}])
-
-^{:refer lang.core.library/namespace-library-snapshot}
-(Test/check [{:name "captures selected child Libraries without copying them"
-              :test (fn [] (with-namespace-libraries
-                             (fn [] (let [current (temporary-library)]
-                                      (library/namespace-library-register! 'demo.source current)
-                                      (= current (get (library/namespace-library-snapshot)
-                                                      'demo.source))))))
-              :expected true}])
-
-^{:refer lang.core.library/namespace-library-restore!}
-(Test/check [{:name "restores a prior namespace child-Library snapshot"
-              :test (fn [] (with-namespace-libraries
-                             (fn [] (let [first (temporary-library)
-                                          second (temporary-library)]
-                                      (library/namespace-library-register! 'demo.source first)
-                                      (let [snapshot (library/namespace-library-snapshot)]
-                                        (library/namespace-library-register! 'demo.source second)
-                                        [(= first (get (library/namespace-library-restore! snapshot)
-                                                       'demo.source))
-                                         (= first (library/namespace-library 'demo.source))])))))
-              :expected [true true]}])
-
-^{:refer lang.core.library/namespace-library-reset!}
-(Test/check [{:name "clears selected child Libraries idempotently"
-              :test (fn [] (with-namespace-libraries
-                             (fn [] (library/namespace-library-register!
-                                     'demo.source (temporary-library))
-                                    [(library/namespace-library-reset!)
-                                     (library/namespace-library-reset!)])))
-              :expected [{} {}]}])
-
-^{:refer lang.core.library/with:namespace-library}
-(Test/check [{:name "binds the selected namespace child Library for registration"
-              :test (fn [] (with-namespace-libraries
-                             (fn [] (let [current (temporary-library)]
-                                      (library/namespace-library-register! 'demo.source current)
-                                      (library/with:namespace-library ['demo.source]
-                                        (= current (library/runtime-library)))))))
-              :expected true}
-             {:name "falls back to the default Library when no namespace is selected"
-              :test (fn [] (with-namespace-libraries
-                             (fn [] (library/with:namespace-library ['demo.source]
-                                      (= (library/default-library)
-                                         (library/runtime-library))))))
-              :expected true}])
-
-^{:refer lang.core.library/runtime-library}
-(Test/check [{:name "uses the default Library outside an explicit binding"
-              :test (fn [] (with-namespace-libraries
-                             (fn [] (= (library/default-library) (library/runtime-library)))))
-              :expected true}])
-
-^{:refer lang.core.library/with:library}
-(Test/check [{:name "binds the current Library for registration and compilation"
-              :test (fn [] (let [value (temporary-library)]
-                             (library/with:library [value]
-                               (= value (library/runtime-library)))))
-              :expected true}])
-
-^{:refer lang.core.library/library-apply-modules}
-(Test/check
- [{:name "consumes Book mutation result pairs while preserving the input Book"
-   :test (fn []
-           (let [base (book/book {:lang :lua :meta (lang.base.book-meta/book-meta {})
-                                  :grammar {:tag :lua}})
-                 resolved (library/library-apply-modules
-                           base {'demo.module {:lang :lua :id 'demo.module :code {} :fragment {}}})]
-             [(book/book? resolved)
-              (:id (book/get-module resolved 'demo.module))
-              (:modules base)]))
-   :expected [true 'demo.module {}]}])
+^{:refer lang.core.library/install-module-specialized! :id native-specialized-module-state}
+(fact "specialization returns original installation status and keeps source and cloned module identities separate"
+  (let [value (lib/library:create {:snapshot prep/+snap+})]
+    (try
+      (let [[snapshot status installed] (lib/install-module-specialized!
+                                        value :lua 'L.core 'L.core.native-copy {})
+            copied (lib/get-module value :lua 'L.core.native-copy)]
+        [status (:id installed) (:id copied) (get-in copied [:link '-])
+         (:id (lib/get-module value :lua 'L.core))
+         (get-in snapshot [:lua :book :modules 'L.core.native-copy :id])])
+      (finally (lib/reset-all! value) (reset! (:settings value) {}))))
+  => [:new 'L.core.native-copy 'L.core.native-copy 'L.core.native-copy 'L.core 'L.core.native-copy])

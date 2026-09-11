@@ -1,209 +1,641 @@
 (ns lang.core.library-snapshot
-  (:config {:role :internal})
-  (:require [lang.base.book-entry :as entry]
-            [lang.base.book-module :as module]))
+  (:require [lang.base.book :as book]
+            [lang.core.impl-entry :as entry]
+            [lang.base.emit-template :as impl-template]
+            [lang.base.util :as ut]))
 
-(defstruct LibrarySnapshot [revision books selected])
+(def ^:dynamic *parent* nil)
+
+(defn get-deps
+  "gets a dependency chain"
+  {:added "4.0"}
+  [snapshot id]
+  (if-let [parent (get-in snapshot [id :book :parent])] #{parent} #{}))
+
+(defn snapshot-string
+  "gets the snapshot string"
+  {:added "4.0"}
+  [snapshot]
+  (str "#lib.snapshot " (vec (sort (keys snapshot)))))
+
+(do
+  (defstruct ^{:open true} Snapshot [])
+  (extend-type
+    Snapshot
+    IDeps
+    (dep-get [snapshot id] (get snapshot id))
+    (dep-keys [snapshot] (keys snapshot))
+    (dep-entries [snapshot id] (get-deps snapshot id))))
 
 (defn snapshot?
-  "Returns true when value is a pure LibrarySnapshot."
-  [value]
-  (instance? lang.core.library-snapshot/LibrarySnapshot value))
+  "checks if object is a snapshot"
+  {:added "4.0"}
+  [obj]
+  (instance? Snapshot obj))
 
 (defn snapshot
-  "Constructs an immutable LibrarySnapshot with lazy Book records."
-  [value]
-  (map->LibrarySnapshot
-   (merge {:revision 0 :books {} :selected {}}
-          (or value {}))))
+  "creates a snapshot"
+  {:added "4.0"}
+  [m]
+  (map->Snapshot m))
 
-(defn snapshot-empty
-  "Returns the deterministic blank library snapshot."
-  []
-  (snapshot {}))
 
-(defn snapshot-coordinate
-  "Returns the stable coordinate for a selected Book version."
-  [language key version]
-  [language key version])
 
-(defn snapshot-book-coordinate
-  "Returns the selected Book coordinate for one language."
-  [value language]
-  (get (:selected value) language))
+;;
+;;
+;;
 
-(defn snapshot-book
-  "Returns the lazy Book record selected for one language."
-  [value language]
-  (let [coordinate (snapshot-book-coordinate value language)]
-    (if coordinate (get (:books value) coordinate))))
-
-(defn snapshot-book-at
-  "Returns a lazy Book record by its exact coordinate."
-  [value coordinate]
-  (get (:books value) coordinate))
-
-(defn snapshot-book-info
-  "Returns cheap registry metadata for the selected Book."
-  [value language]
-  (:info (snapshot-book value language)))
-
-(defn snapshot-revision
-  "Returns the revision used to invalidate derived compilation state."
-  [value]
-  (:revision value))
-
-(defn snapshot-next
-  "Returns a snapshot with one advanced mutation revision."
-  [value]
-  (assoc value :revision (inc (snapshot-revision value))))
-
-(defn snapshot-select-book
-  "Selects a lazy Book coordinate without resolving its Book value."
-  [value language key version info]
-  (let [coordinate (snapshot-coordinate language key version)
-        previous (snapshot-book-at value coordinate)
-        record (merge {:info info :book nil :modules {}}
-                      previous
-                      {:info info})]
-    (-> value
-        (assoc-in [:books coordinate] record)
-        (assoc-in [:selected language] coordinate)
-        (snapshot-next))))
-
-(defn snapshot-cache-book
-  "Stores an already resolved immutable Book in its selected lazy record."
-  [value language resolved]
-  (let [coordinate (snapshot-book-coordinate value language)]
-    (if (nil? coordinate)
-      (throw (ex :not-found {:language language}
-                 :ex/message "Book is not selected in this LibrarySnapshot"))
-      (assoc-in value [:books coordinate :book] resolved))))
-
-(defn snapshot-module
-  "Returns one source module owned by the selected language Book."
-  [value language module-id]
-  (get-in value [:books (snapshot-book-coordinate value language)
-                 :modules module-id]))
-
-(defn snapshot-entry
-  "Returns one source entry owned by a selected Book module."
-  [value language module-id section entry-id]
-  (get-in value [:books (snapshot-book-coordinate value language)
-                 :modules module-id section entry-id]))
-
-(defn snapshot-require-book
-  "Returns a selected Book record or throws a stable missing-selection error."
-  [value language]
-  (let [record (snapshot-book value language)]
-    (if record
-      record
-      (throw (ex :not-found {:language language
-                             :available (keys (:selected value))}
-                 :ex/message "Book is not selected in this LibrarySnapshot")))))
-
-(defn snapshot-module-value
-  "Retains a BookModule or persistent source module map without dropping metadata."
-  [value]
-  value)
-
-(defn snapshot-entry-value
-  "Retains a BookEntry or persistent source entry map without dropping metadata."
-  [value]
-  value)
-
-(defn snapshot-set-module
-  "Associates one BookModule with its declared language Book."
-  [value language module-value]
-  (let [module-value (snapshot-module-value module-value)
-        _ (snapshot-require-book value language)]
-    (if (not= language (:lang module-value))
-      (throw (ex :argument {:language language :module module-value}
-                 :ex/message "BookModule language does not match selected Book"))
-      (-> value
-          (assoc-in [:books (snapshot-book-coordinate value language)
-                     :modules (:id module-value)]
-                    module-value)
-          (snapshot-next)))))
-
-(defn snapshot-delete-module
-  "Deletes one locally owned BookModule from its selected language Book."
-  [value language module-id]
-  (let [_ (snapshot-require-book value language)]
-    (-> value
-        (update-in [:books (snapshot-book-coordinate value language) :modules]
-                   dissoc module-id)
-        (snapshot-next))))
-
-(defn snapshot-set-entry
-  "Associates one BookEntry with an existing locally owned BookModule."
-  [value language entry-value]
-  (let [entry-value (snapshot-entry-value entry-value)
-        module-value (snapshot-module value language (:module entry-value))]
-    (if (nil? module-value)
-      (throw (ex :not-found {:language language
-                             :module (:module entry-value)
-                             :entry (:id entry-value)}
-                 :ex/message "BookModule is not owned by this LibrarySnapshot"))
-      (if (not= language (:lang entry-value))
-        (throw (ex :argument {:language language :entry entry-value}
-                   :ex/message "BookEntry language does not match selected Book"))
-        (-> value
-            (assoc-in [:books (snapshot-book-coordinate value language)
-                       :modules (:module entry-value) (:section entry-value)
-                       (:id entry-value)]
-                      entry-value)
-            (snapshot-next))))))
-
-(defn snapshot-delete-entry
-  "Deletes one locally owned BookEntry."
-  [value language module-id section entry-id]
-  (let [_ (snapshot-require-book value language)]
-    (-> value
-        (update-in [:books (snapshot-book-coordinate value language)
-                    :modules module-id section]
-                   dissoc entry-id)
-        (snapshot-next))))
-
-(defn snapshot-list-modules
-  "Lists locally owned module ids in deterministic order."
-  [value language]
-  (vec (sort-by str (keys (or (:modules (snapshot-book value language)) {})))))
-
-(defn snapshot-list-entries
-  "Lists locally owned entry ids in deterministic order."
-  [value language module-id section]
-  (vec (sort-by str
-                (keys (or (get-in value [:books
-                                         (snapshot-book-coordinate value language)
-                                         :modules module-id section]) {})))))
-
-(defn snapshot-merge-book
-  "Merges parent and child records for one exact Book coordinate."
-  [parent child]
-  (cond (nil? parent) child
-        (nil? child) parent
-        :else {:info (or (:info child) (:info parent))
-               :book (or (:book child) (:book parent))
-               :modules (merge (or (:modules parent) {})
-                               (or (:modules child) {}))}))
+(defn snapshot-reset
+  "resets a snapshot to it's blanked modules"
+  {:added "4.0"}
+  ([snapshot] (snapshot-reset snapshot nil))
+  ([snapshot ks]
+    (map->Snapshot
+      (map-vals
+        (fn [m] (assoc-in m [:book :modules] {}))
+        (if ks (select-keys snapshot ks) snapshot)))))
 
 (defn snapshot-merge
-  "Builds an effective child snapshot without mutating either input snapshot."
+  "a rough merge of only the modules from the child to the parent"
+  {:added "4.0"}
   [parent child]
-  (cond (nil? parent) child
-        (nil? child) parent
-        :else
-        (let [books (reduce-kv
-                     (fn [output coordinate record]
-                       (assoc output coordinate
-                              (snapshot-merge-book (get output coordinate) record)))
-                     (or (:books parent) {})
-                     (or (:books child) {}))
-              selected (merge (or (:selected parent) {})
-                              (or (:selected child) {}))]
-          (snapshot {:revision (hash [(:revision parent)
-                                      (:revision child)
-                                      selected])
-                     :books books
-                     :selected selected}))))
+  (cond (not parent)
+    child
+    :else
+    (reduce-kv (fn [parent lang {:keys [book]}]
+                 (if (get parent lang)
+                   (update-in parent [lang :book :modules] merge (:modules book))
+                   ((fn [message & [data]] (throw (ex :generic (or data {}) :ex/message message))) "Parent has no book"
+                     {:lang lang})))
+      parent
+      child)))
+
+;;
+;; merge access
+;;
+
+(defn get-book-raw
+  "gets the raw book"
+  {:added "4.0"}
+  [snapshot lang]
+  (get-in snapshot [lang :book]))
+
+(defn get-book
+  "gets the merged book for a given language"
+  {:added "4.0"}
+  [snapshot lang]
+  (or
+    lang
+    ((fn [message & [data]]
+       (throw (ex :generic (or data {}) :ex/message message)))
+      "Lang cannot be null."
+      {:input lang}))
+  (book/book-from snapshot lang))
+
+;;
+;; snapshot methods
+;;
+
+(defn add-book
+  "adds a book to a snapshot"
+  {:added "4.0"}
+  [snapshot {:keys [lang], :as book}]
+  (or
+    lang
+    ((fn [message & [data]]
+       (throw (ex :generic (or data {}) :ex/message message)))
+      "Lang cannot be null."
+      {:input book}))
+  (assoc snapshot lang {:id lang, :book book}))
+
+(defn set-module
+  "sets a module in the snapshot"
+  {:added "4.0"}
+  [snapshot module]
+  (let [{:keys [lang]} module]
+    ((fn [migration-snapshot
+          migration-path
+          migration-update
+          &
+          migration-args]
+       (let [[migration-diff migration-current] (apply
+                                                  migration-update
+                                                  (cons
+                                                    (get-in
+                                                      migration-snapshot
+                                                      migration-path)
+                                                    migration-args))]
+         [migration-diff
+          (assoc-in
+            migration-snapshot
+            migration-path
+            migration-current)]))
+      snapshot
+      [lang :book]
+      (fn [book] (book/set-module book module)))))
+
+(defn delete-module
+  "deletes a module in the snapshot"
+  {:added "4.0"}
+  [snapshot lang module-id]
+  ((fn [migration-snapshot
+        migration-path
+        migration-update
+        &
+        migration-args]
+     (let [[migration-diff migration-current] (apply
+                                                migration-update
+                                                (cons
+                                                  (get-in
+                                                    migration-snapshot
+                                                    migration-path)
+                                                  migration-args))]
+       [migration-diff
+        (assoc-in
+          migration-snapshot
+          migration-path
+          migration-current)]))
+    snapshot
+    [lang :book]
+    (fn [book] (book/delete-module book module-id))))
+
+(defn delete-modules
+  "deletes a bunch of modules in the snapshot"
+  {:added "4.0"}
+  [snapshot lang module-ids]
+  ((fn [migration-snapshot
+        migration-path
+        migration-update
+        &
+        migration-args]
+     (let [[migration-diff migration-current] (apply
+                                                migration-update
+                                                (cons
+                                                  (get-in
+                                                    migration-snapshot
+                                                    migration-path)
+                                                  migration-args))]
+       [migration-diff
+        (assoc-in
+          migration-snapshot
+          migration-path
+          migration-current)]))
+    snapshot
+    [lang :book]
+    (fn [book] (book/delete-modules book module-ids))))
+
+(defn list-modules
+  "list modules for a snapshot"
+  {:added "4.0"}
+  [snapshot lang]
+  (book/list-entries (get-book snapshot lang) :module))
+
+(defn list-entries
+  "lists entries for a snapshot"
+  {:added "4.0"}
+  ([snapshot lang] (book/list-entries (get-book snapshot lang) :code))
+  ([snapshot lang module-id] (let [book (get-book snapshot lang)]
+                               (into {}
+                                 (map (fn [migration-map-juxt-value]
+                                        [(identity migration-map-juxt-value)
+                                         ((fn [section] (keys (get-in book [:modules module-id section])))
+                                          migration-map-juxt-value)])
+                                   [:code :fragment]))))
+  ([snapshot lang module-id section] (-> (get-book snapshot lang) (get-in [:modules module-id section]) keys)))
+
+(defn set-entry
+  "sets an entry in the snapshot"
+  {:added "4.0"}
+  [snapshot entry & [mopts]]
+  (let [{:keys [lang module section]} entry
+        shadow-snapshot (snapshot-merge *parent* snapshot)
+        {:keys [grammar modules], :as book} (get-book
+                                              shadow-snapshot
+                                              lang)
+        mopts (merge
+                {:lang lang,
+                 :snapshot shadow-snapshot,
+                 :module (book/get-module book module)}
+                mopts)
+        entry (cond
+                (= section :fragment) (entry/create-fragment-hydrate
+                                        entry
+                                        grammar
+                                        modules
+                                        mopts)
+                :else (let [reserved (impl-template/entry-reserved
+                                       grammar
+                                       entry)]
+                        (if reserved
+                          (entry/create-code-hydrate
+                            entry
+                            reserved
+                            grammar
+                            modules
+                            mopts)
+                          (entry/prepare-code-entry entry))))]
+    ((fn [migration-snapshot
+          migration-path
+          migration-update
+          &
+          migration-args]
+       (let [[migration-diff migration-current] (apply
+                                                  migration-update
+                                                  (cons
+                                                    (get-in
+                                                      migration-snapshot
+                                                      migration-path)
+                                                    migration-args))]
+         [migration-diff
+          (assoc-in
+            migration-snapshot
+            migration-path
+            migration-current)]))
+      snapshot
+      [lang :book]
+      book/set-entry
+      entry)))
+
+(defn set-entries
+  "sets an entry in the snapshot"
+  {:added "4.0"}
+  [snapshot entries & [opts]]
+  (reduce
+    (fn [[diffs snapshot] {:keys [namespace], :as entry}]
+      (eval-in-ns
+        namespace
+        (fn []
+          (let [[diff new-snapshot] (set-entry snapshot entry opts)]
+            [(concat diffs diff) new-snapshot]))))
+    [[] snapshot]
+    entries))
+
+(defn delete-entry
+  "deletes an entry from the snapshot"
+  {:added "4.0"}
+  [snapshot {:keys [lang module section id]}]
+  ((fn [migration-snapshot
+        migration-path
+        migration-update
+        &
+        migration-args]
+     (let [[migration-diff migration-current] (apply
+                                                migration-update
+                                                (cons
+                                                  (get-in
+                                                    migration-snapshot
+                                                    migration-path)
+                                                  migration-args))]
+       [migration-diff
+        (assoc-in
+          migration-snapshot
+          migration-path
+          migration-current)]))
+    snapshot
+    [lang :book]
+    (fn [book] (book/delete-entry book module section id))))
+
+(defn delete-entries
+  "delete entries from the snapshot"
+  {:added "4.0"}
+  [snapshot entries]
+  (reduce (fn [[diffs snapshot] entry]
+            (let [[diff new-snapshot] (delete-entry snapshot entry)]
+              [(concat diffs diff) new-snapshot]))
+          [[] snapshot]
+          entries))
+
+
+;;
+;;
+;;
+
+(defn install-check-merged
+  "checks that the book is not merged (used to check mutate)"
+  {:added "4.0"}
+  [book & [module-id]]
+  (when (< 1 (count (:merged book)))
+    ((fn [& values] (println (apply pr-str values)))
+      [module-id (:merged book) (sort (keys (:modules book)))])
+    ((fn [message & [data]]
+       (throw (ex :generic (or data {}) :ex/message message)))
+      "MERGED BOOK DISALLOWED")))
+
+(defn install-module-update
+  "updates the book module"
+  {:added "4.0"}
+  [book {module-id :id, :as module}]
+  (let [soft-keys [:code :fragment]
+        soft-maps (select-keys module soft-keys)
+        hard-maps (apply dissoc module soft-keys)
+        [soft-diffs new-book] ((fn
+                                 [migration-current
+                                  migration-path
+                                  migration-values]
+                                 (let
+                                   [migration-before
+                                    (get-in
+                                      migration-current
+                                      migration-path)
+                                    migration-after
+                                    (let
+                                      [migration-merge
+                                       (fn
+                                         [migration-self
+                                          migration-left
+                                          migration-right]
+                                         (if
+                                           (nil? migration-right)
+                                           migration-left
+                                           (reduce-kv
+                                             (fn
+                                               [migration-output
+                                                migration-key
+                                                migration-value]
+                                               (if
+                                                 (has?
+                                                   migration-output
+                                                   migration-key)
+                                                 (let
+                                                   [migration-old
+                                                    (get
+                                                      migration-output
+                                                      migration-key)]
+                                                   (assoc
+                                                     migration-output
+                                                     migration-key
+                                                     (if
+                                                       (and
+                                                         (or
+                                                           (map?
+                                                             migration-old)
+                                                           (nil?
+                                                             migration-old))
+                                                         (or
+                                                           (map?
+                                                             migration-value)
+                                                           (nil?
+                                                             migration-value)))
+                                                       (migration-self
+                                                         migration-self
+                                                         migration-old
+                                                         migration-value)
+                                                       migration-value)))
+                                                 (assoc
+                                                   migration-output
+                                                   migration-key
+                                                   migration-value)))
+                                             (or migration-left {})
+                                             migration-right)))]
+                                      (migration-merge
+                                        migration-merge
+                                        migration-before
+                                        migration-values))]
+                                   [[migration-before migration-after]
+                                    (if
+                                      (empty? migration-path)
+                                      migration-after
+                                      (assoc-in
+                                        migration-current
+                                        migration-path
+                                        migration-after))]))
+                                book
+                                [:modules module-id]
+                                soft-maps)
+        [hard-diffs new-book] ((fn
+                                 [migration-current
+                                  migration-path
+                                  migration-values]
+                                 (reduce-kv
+                                   (fn
+                                     [[migration-diffs migration-state]
+                                      migration-key
+                                      migration-value]
+                                     (let
+                                       [migration-key-path
+                                        (conj
+                                          (vec migration-path)
+                                          migration-key)]
+                                       [(conj
+                                          migration-diffs
+                                          [migration-key-path
+                                           (get-in
+                                             migration-state
+                                             migration-key-path)
+                                           migration-value])
+                                        (assoc-in
+                                          migration-state
+                                          migration-key-path
+                                          migration-value)]))
+                                   [[] migration-current]
+                                   migration-values))
+                                new-book
+                                [:modules module-id]
+                                hard-maps)
+        soft-changes ((fn [[migration-before migration-after]]
+                        (loop [migration-pending [[[]
+                                                   migration-after
+                                                   migration-before]]
+                               migration-changed {}]
+                          (if (empty? migration-pending)
+                            (if (empty? migration-changed)
+                              [:no-change]
+                              [:changed migration-changed])
+                            (let [[migration-path
+                                   migration-new
+                                   migration-old]
+                                  (last migration-pending)
+                                  [migration-next migration-result]
+                                  (reduce-kv
+                                    (fn
+                                      [[migration-work
+                                        migration-output]
+                                       migration-key
+                                       migration-value]
+                                      (let
+                                        [migration-old-value
+                                         (get
+                                           migration-old
+                                           migration-key)
+                                         migration-key-path
+                                         (conj
+                                           migration-path
+                                           migration-key)]
+                                        (cond
+                                          (and
+                                            (map? migration-value)
+                                            (map? migration-old-value))
+                                          [(conj
+                                             migration-work
+                                             [migration-key-path
+                                              migration-value
+                                              migration-old-value])
+                                           migration-output]
+                                          (or
+                                            (not
+                                              (has?
+                                                (or migration-old {})
+                                                migration-key))
+                                            (not=
+                                              migration-value
+                                              migration-old-value))
+                                          [migration-work
+                                           (assoc-in
+                                             migration-output
+                                             migration-key-path
+                                             migration-value)]
+                                          :else
+                                          [migration-work
+                                           migration-output])))
+                                    [(vec (butlast migration-pending))
+                                     migration-changed]
+                                    migration-new)]
+                              (recur
+                                migration-next
+                                migration-result)))))
+                       soft-diffs)
+        hard-changes ((fn [migration-diffs]
+                        (let [migration-changed (reduce
+                                                  (fn
+                                                    [migration-output
+                                                     [migration-path
+                                                      migration-before
+                                                      migration-after]]
+                                                    (if
+                                                      (=
+                                                        migration-before
+                                                        migration-after)
+                                                      migration-output
+                                                      (assoc-in
+                                                        migration-output
+                                                        migration-path
+                                                        migration-after)))
+                                                  {}
+                                                  migration-diffs)]
+                          (if (empty? migration-changed)
+                            [:no-change]
+                            [:changed migration-changed])))
+                       hard-diffs)
+        all-changes (merge
+                      (second soft-changes)
+                      (second hard-changes))]
+    (if (empty? all-changes)
+      [new-book :no-change]
+      [new-book :changed all-changes]))) 
+
+
+(defn install-module
+  "adds an new module or update fields if exists"
+  {:added "4.0"}
+  [snapshot lang module-id options]
+  (let [new-module   (-> (get-book snapshot lang)
+                         (book/module-create module-id (assoc options :lang lang :id module-id)))
+        book         (get-book-raw snapshot lang)
+        [new-book
+         status
+         changes]    (if (book/has-module? book module-id)
+                       (install-module-update book new-module)
+                       [(second (book/set-module book new-module)) :new new-module])
+        new-snapshot (if (= status :no-change)
+                       snapshot
+                       (assoc snapshot lang {:book new-book :id lang}))]
+    [new-snapshot status changes]))
+
+(defn install-module-specialized
+  "clones a source module under a new module id with rewritten links"
+  {:added "4.1"}
+  [snapshot lang source-id module-id options]
+  (let [book       (get-book-raw snapshot lang)
+        specialized (book/module-specialize book source-id module-id options)
+        [new-book status changes] (if (book/has-module? book module-id)
+                                    (install-module-update book specialized)
+                                    [(second (book/set-module book specialized))
+                                     :new
+                                     specialized])
+        new-snapshot (if (= status :no-change)
+                       snapshot
+                       (assoc snapshot lang {:id lang
+                                             :book new-book}))]
+    [new-snapshot status changes]))
+
+;;
+;;
+;;
+
+(defn install-book-update
+  "updates the book grammar, meta and parent"
+  {:added "4.0"}
+  [snapshot {:keys [lang grammar parent meta]}]
+  (let [new-book (-> (get-book-raw snapshot lang) (assoc :meta meta))
+        [diffs new-book] ((fn [migration-current
+                               migration-path
+                               migration-values]
+                            (reduce-kv
+                              (fn [[migration-diffs migration-state]
+                                   migration-key
+                                   migration-value]
+                                (let
+                                  [migration-key-path
+                                   (conj
+                                     (vec migration-path)
+                                     migration-key)]
+                                  [(conj
+                                     migration-diffs
+                                     [migration-key-path
+                                      (get-in
+                                        migration-state
+                                        migration-key-path)
+                                      migration-value])
+                                   (assoc-in
+                                     migration-state
+                                     migration-key-path
+                                     migration-value)]))
+                              [[] migration-current]
+                              migration-values))
+                           new-book
+                           []
+                           {:parent parent, :grammar grammar})]
+    (if (empty? diffs)
+      [new-book :no-change]
+      (vec
+        (cons
+          (add-book snapshot new-book)
+          ((fn [migration-diffs]
+             (let [migration-changed (reduce
+                                       (fn
+                                         [migration-output
+                                          [migration-path
+                                           migration-before
+                                           migration-after]]
+                                         (if
+                                           (=
+                                             migration-before
+                                             migration-after)
+                                           migration-output
+                                           (assoc-in
+                                             migration-output
+                                             migration-path
+                                             migration-after)))
+                                       {}
+                                       migration-diffs)]
+               (if (empty? migration-changed)
+                 [:no-change]
+                 [:changed migration-changed])))
+            diffs))))))
+
+(defn install-book
+  "adds a new book or updates grammar if exists"
+  {:added "4.0"}
+  [snapshot {:keys [lang parent], :as new-book}]
+  (let [_ (if parent
+            (or
+              (get-book-raw snapshot parent)
+              ((fn [message & [data]]
+                 (throw
+                   (ex :generic (or data {}) :ex/message message)))
+                "Parent not installed"
+                {:options (keys snapshot)})))
+        _ (install-check-merged new-book nil)]
+    (if (not (get-book-raw snapshot lang))
+      [(add-book snapshot new-book) :new new-book]
+      (install-book-update snapshot new-book))))

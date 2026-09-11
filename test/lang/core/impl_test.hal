@@ -1,84 +1,707 @@
 (ns lang.core.impl-test
-  (:use code.test)
   (:require [lang.base.book :as book]
-            [lang.core.impl :as impl]
-            [lang.core.script :as script]))
+            [lang.base.emit-prep-lua-test :as prep]
+            [lang.core.impl :as impl :refer :all]
+            [lang.core.impl-deps :as deps]
+            [lang.core.impl-entry :as entry]
+            [lang.core.impl-lifecycle :as lifecycle]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap]
+            [lang.model.v1.spec-xtalk :as xtalk]
+            [lang.model.v1.spec-js :as js]
+            [lang.model.v1.spec-js.meta :as js-meta])
+  (:use code.test))
 
-(def +snapshot+ (atom nil))
-(def +book+ (atom nil))
+(def migration-libraries (atom []))
+(def migration-default-library (lib/library:create {}))
+(swap! migration-libraries conj migration-default-library)
+(lib/install-book! migration-default-library xtalk/+book+)
+(lib/install-book! migration-default-library prep/+book-min+)
+(lib/install-book! migration-default-library (book/book {:lang :js :parent :xtalk :meta js-meta/+meta+ :grammar js/+grammar+}))
+(fact:global {:teardown [(doseq [library @migration-libraries]
+                          (lib/reset-all! library)
+                          (reset! (:settings library) {}))]})
 
-(fact:global
- {:setup [(reset! +snapshot+ (script/script-snapshot))
-          (script/script-reset!)
-          (script/setup :js 'demo.color
-                        '{:require [[xt.lang.common-color :as color]]}
-                        true
-                        'lang.core.impl-test)
-          (reset! +book+ (script/selected-book :js))]
-  :teardown [(script/script-restore! (deref +snapshot+))]})
 
-^{:refer lang.core.impl/emit-options}
-(fact "builds one immutable compiler context for the selected JavaScript Book"
-  (let [book-value (deref +book+)
-        context (impl/emit-options
-                 {:book book-value
-                  :lang :js
-                  :module (get-in book-value [:modules 'demo.color])
-                  :layout :flat
-                  :emit {:code {:label true}}})]
-    [(:lang context)
-     (:layout context)
-     (:id (:module context))
-     (= (:modules book-value) (:modules context))
-     (:emit context)
-     (not (nil? (:compiler context)))])
-  => [:js :flat 'demo.color true {:code {:label true}} true])
+(def +library+
+ (let [created (lib/library
+                 {:snapshot
+                  (snap/snapshot
+                    {:lua {:id :lua, :book prep/+book-min+}})})]
+   (swap! migration-libraries conj created)
+   created))
 
-^{:refer lang.core.impl/emit-entry}
-(fact "emits the selected color entry through the active JavaScript grammar"
-  (let [book-value (deref +book+)
-        context (impl/emit-options
-                 {:book book-value :lang :js
-                  :module (get-in book-value [:modules 'demo.color])})
-        entry (book/get-code-entry book-value 'xt.lang.common-color/hex->rgb)]
-    (str/includes? (impl/emit-entry entry context) "function hex__gtrgb"))
-  => true)
+(def +library-ext+
+ (doto
+   (let [created (lib/library:create
+                   {:snapshot
+                    (snap/snapshot
+                      {:lua {:id :lua, :book prep/+book-min+}})})]
+     (swap! migration-libraries conj created)
+     created)
+   (lib/install-module!
+     :lua
+     'L.util
+     {:require '[[L.core :as u]], :import '[["cjson" :as cjson]]})
+   (lib/add-entry-single!
+     (entry/create-code-base
+       '(defn sub-fn [a b] (return ((u/identity-fn u/sub) a b)))
+       {:lang :lua, :module 'L.util}
+       {}))
+   (lib/add-entry-single!
+     (entry/create-code-base
+       '(defn add-fn [a b]
+          (return ((u/identity-fn u/add) a (-/sub-fn b 0))))
+       {:lang :lua, :module 'L.util}
+       {}))))
 
-^{:refer lang.core.impl/emit-script-imports}
-(fact "does not create import source when a selected script has no native imports"
-  (let [book-value (deref +book+)
-        context (impl/emit-options
-                 {:book book-value :lang :js
-                  :module (get-in book-value [:modules 'demo.color])})]
-    (impl/emit-script-imports {} {} context))
+^{:refer lang.core.impl-lifecycle/emit-module-prep, :adopt true, :added "4.0"}
+(fact
+  "prepare data for emit of module"
+  (binding [impl/*library* migration-default-library]
+    (-> (lifecycle/emit-module-prep
+          'L.util
+          {:lang :lua, :library +library-ext+})
+     second
+     (dissoc :code)))
+  =>
+  '{:setup nil, :teardown nil, :native {}, :direct #{L.core}})
+
+^{:refer lang.core.impl-lifecycle/emit-module, :adopt true, :added "4.0"}
+(fact
+  "emits the module string"
+  (binding [impl/*library* migration-default-library]
+    (lifecycle/emit-module-setup
+      'L.util
+      {:lang :lua,
+       :library +library-ext+,
+       :layout :module,
+       :emit {:export {:suppress true}, :link {:suppress true}}}))
+  =>
+  (satisfies string?))
+
+^{:refer lang.core.impl/with:library, :added "4.0"}
+(fact
+  "injects a library as the default"
+  (binding [impl/*library* migration-default-library]
+    (with:library [+library+] *library*))
+  =>
+  +library+)
+
+^{:refer lang.core.impl/default-library, :added "4.0"}
+(fact
+  "gets the default library"
+  (binding [impl/*library* migration-default-library]
+    (default-library))
+  =>
+  (satisfies lib/library?))
+
+^{:refer lang.core.impl/default-library:reset, :added "4.0"}
+(fact
+  "clears the default library, including all grammars"
+  (binding [impl/*library* migration-default-library]
+    (with:library
+      [(let [created (lib/library {})]
+         (swap! migration-libraries conj created)
+         created)]
+      (default-library:reset)))
+  =>
+  (satisfies (fn [value] true)))
+
+^{:refer lang.core.impl/clone-default-library, :added "4.1"}
+(fact
+  "clones the default library"
+  (binding [impl/*library* migration-default-library]
+    (let [created (clone-default-library)]
+      (swap! migration-libraries conj created)
+      created))
+  =>
+  (satisfies lib/library?))
+
+^{:refer lang.core.impl/runtime-library, :added "4.0"}
+(fact
+  "gets the current runtime (annex or default)"
+  (binding [impl/*library* migration-default-library]
+    (runtime-library))
+  =>
+  (satisfies lib/library?))
+
+^{:refer lang.core.impl/grammar, :added "4.0"}
+(fact
+  "gets the grammar"
+  (binding [impl/*library* migration-default-library]
+    (with:library [+library+] (grammar :lua)))
+  =>
+  (satisfies map?))
+
+^{:refer lang.core.impl/emit-options, :added "4.0"}
+(fact
+  "create emit options"
+  (binding [impl/*library* migration-default-library]
+    (emit-options {:lang :lua}))
+  =>
+  (satisfies vector?))
+
+^{:refer lang.core.impl/to-form, :added "4.0"}
+(fact
+  "input to form"
+  (binding [impl/*library* migration-default-library]
+    (to-form '(+ (deref 1) 2 3) {:- :raw, :lang :xtalk}))
+  =>
+  '(+ (deref 1) 2 3)
+  (binding [impl/*library* migration-default-library]
+    (to-form '(+ (deref 1) 2 3) {:lang :lua}))
+  =>
+  '(+ (!:eval 1) 2 3))
+
+^{:refer lang.core.impl/%.form, :added "4.0"}
+(fact
+ "converts to a form"
+ (binding
+  [impl/*library* migration-default-library]
+  ^{:- :raw}
+  (%.form (+ (deref 1) 2 3)))
+ =>
+ '(+ (deref 1) 2 3)
+ (binding
+  [impl/*library* migration-default-library]
+  (%.form (+ (deref 1) 2 3)))
+ =>
+ '(+ (!:eval 1) 2 3))
+
+^{:refer lang.core.impl/emit-direct, :added "4.0"}
+(fact
+  "adds additional controls to transform form"
+  (binding [impl/*library* migration-default-library]
+    (emit-direct
+      (:grammar prep/+book-min+)
+      '(:% (:- "   ") (+ 1 2 3) (:- "   "))
+      (ns-current)
+      {:emit {:trim str/trim}, :lang :lua}))
+  =>
+  "1 + 2 + 3")
+
+(fact
+  "direct emit failures include tahto.core context"
+  (binding [impl/*library* migration-default-library]
+    (let [grammar (assoc-in
+                    (:grammar prep/+book-min+)
+                    [:reserved 'boom-op]
+                    {:op :boom-op,
+                     :emit
+                     (fn [_ _ _]
+                       (throw
+                         (ex
+                           :generic
+                           {:probe true}
+                           :ex/message
+                           "boom")))})
+          form (with-meta '(boom-op 1 2 3) {:line 19})]
+      (try
+        (emit-direct
+          grammar
+          form
+          (ns-current)
+          {:emit {}, :lang :lua, :module {:id 'L.core}})
+        nil
+        (catch
+          t
+          (select-keys
+            (ex-data t)
+            [:probe
+             :lang/phase
+             :lang/subsystem
+             :lang/lang
+             :lang/module
+             :lang/form
+             :lang/provenance-stack])))))
+  =>
+  '{:probe true,
+    :lang/phase :emit/form,
+    :lang/subsystem :lang.base.emit-top-level/emit-form,
+    :lang/lang :lua,
+    :lang/module L.core,
+    :lang/form (boom-op 1 2 3),
+    :lang/provenance-stack
+    [{:lang/phase :emit/form,
+      :lang/subsystem :lang.base.emit-top-level/emit-form,
+      :lang/lang :lua,
+      :lang/module L.core,
+      :lang/namespace lang.core.impl-test,
+      :lang/line 19,
+      :lang/form (boom-op 1 2 3),
+      :lang/symbol boom-op}
+     {:lang/phase :emit/direct,
+      :lang/subsystem :lang.core.impl/emit-direct,
+      :lang/lang :lua,
+      :lang/module L.core,
+      :lang/namespace lang.core.impl-test,
+      :lang/line 19,
+      :lang/form (boom-op 1 2 3)}]})
+
+^{:refer lang.core.impl/emit-str, :added "4.0"}
+(fact
+  "converts to an output string"
+  (binding [impl/*library* migration-default-library]
+    (emit-str '(+ 1 2 3) {:- :raw, :lang :lua}))
+  =>
+  "1 + 2 + 3"
+  (binding [impl/*library* migration-default-library]
+    (emit-str '(+ (deref 1) 2 3) {:lang :lua}))
+  =>
+  "1 + 2 + 3")
+
+^{:refer lang.core.impl/%.str, :added "4.0"}
+(fact "converts a macro form to an output string" (binding [impl/*library* migration-default-library] ^{:- :raw} (%.str (+ (clojure.core/deref 1) 2 3))) => "clojure.core.deref(1) + 2 + 3" (binding [impl/*library* migration-default-library] (%.str (+ (deref 1) 2 3))) => "1 + 2 + 3" (binding [impl/*library* migration-default-library] (%.str (+ ((deref !) 1) 2 3))) => "1 + 2 + 3" (binding [impl/*library* migration-default-library] ^{:lang :js} (%.str (defn hello [:int x :int y := 0] (\\ \\ (if (not= i y) (if (not= 1 2) (return 1)))) (+ 6 x y) (return (or (not (+ 1 2)) (not (+ 1 2))))))) => (str/join "\n" ["function hello(int x,int y = 0){" "  " "  if(i != y){" "    if(1 != 2){" "      return 1;" "    }" "  }" "  6 + x + y;" "  return !(1 + 2) || !(1 + 2);" "}"]) (binding [impl/*library* migration-default-library] ^{:lang :js} (%.str ^{:indent 5, :full-body true} (\\ (do (+ 1 2 3) (+ 1 2 3))))) => (str/join "\n" ["     1 + 2 + 3;" "     1 + 2 + 3;"]) (binding [impl/*library* migration-default-library] ^{:lang :js} (%.str ^{:indent 5} (\\ \\ (do (+ 1 2 3) (+ 1 2 3))))) => (str/join "\n" ["" "     1 + 2 + 3;" "     1 + 2 + 3;"]) (binding [impl/*library* migration-default-library] ^{:lang :js} (%.str (:# (do (+ 1 2 3) (+ 1 2 3))))) => (str/join "\n" ["// 1 + 2 + 3;" "// 1 + 2 + 3;"]) (binding [impl/*library* migration-default-library] ^{:lang :js} (%.str ^{:prefix "|   "} (:# (do (+ 1 2 3) (+ 1 2 3))))) => (str/join "\n" ["|    1 + 2 + 3;" "|    1 + 2 + 3;"]))
+
+^{:refer lang.core.impl/emit-as, :added "4.0"}
+(fact
+  "helper function for emitting multiple forms"
+  (binding [impl/*library* migration-default-library]
+    (emit-as :lua '[(+ 1 2 3) (+ 4 5 6)] {:library +library+}))
+  =>
+  "1 + 2 + 3\n\n4 + 5 + 6")
+
+^{:refer lang.core.impl/emit-symbol, :added "4.0"}
+(fact
+  "emits string given symbol and grammar"
+  (binding [impl/*library* migration-default-library]
+    (with:library
+      [+library+]
+      (emit-symbol
+        :lua
+        'L.core/identity-fn
+        {:module (lib/get-module +library+ :lua 'L.core)})))
+  =>
+  "identity_fn"
+  (binding [impl/*library* migration-default-library]
+    (with:library
+      [+library+]
+      (emit-symbol
+        :lua
+        'L.core/identity-fn
+        {:layout :full,
+         :module (lib/get-module +library+ :lua 'L.core)})))
+  =>
+  "L_core____identity_fn"
+  (binding [impl/*library* migration-default-library]
+    (with:library
+      [+library+]
+      (emit-symbol :lua 'L.core/WRONG {:library +library+})))
+  =>
+  "WRONG")
+
+^{:refer lang.core.impl/get-entry, :added "4.0"}
+(fact
+  "gets an entry"
+  (binding [impl/*library* migration-default-library]
+    (get-entry +library+ :lua 'L.core 'identity-fn))
+  =>
+  (satisfies book/book-entry?))
+
+^{:refer lang.core.impl/emit-entry, :added "4.0"}
+(fact
+  "emits an entry given parameters and options"
+  (binding [impl/*library* migration-default-library]
+    (emit-entry
+      '{:lang :lua, :module L.core, :id identity-fn}
+      {:lang :lua, :library +library+}))
+  =>
+  "function identity_fn(x){\n  return x;\n}"
+  (binding [impl/*library* migration-default-library]
+    (emit-entry
+      '{:lang :lua, :module L.core, :id identity-fn}
+      {:lang :lua, :library +library+, :layout :full}))
+  =>
+  "function L_core____identity_fn(x){\n  return x;\n}")
+
+^{:refer lang.core.impl/emit-entry-deps-collect, :added "4.0"}
+(fact
+  "only collects the dependencies"
+  (binding [impl/*library* migration-default-library]
+    (emit-entry-deps-collect
+      '{:lang :lua, :module L.core, :id identity-fn}
+      {:lang :lua, :library +library+}))
+  =>
+  (satisfies (fn [x] (and (seq x) (book/book-entry? (first x))))))
+
+^{:refer lang.core.impl/emit-entry-deps, :added "4.0"}
+(fact
+  "emits only the entry deps"
+  (binding [impl/*library* migration-default-library]
+    (emit-entry-deps
+      '{:lang :lua, :module L.util, :id add-fn}
+      {:lang :lua, :library +library-ext+, :layout :full}))
+  =>
+  (str/join
+    "\n"
+    ["function L_core____identity_fn(x){"
+     "  return x;"
+     "}"
+     ""
+     "function L_util____add_fn(a,b){"
+     "  return L_core____identity_fn(function (x,y){"
+     "    return x + y;"
+     "  })(a,L_util____sub_fn(b,0));"
+     "}"
+     ""
+     "function L_util____sub_fn(a,b){"
+     "  return L_core____identity_fn(function (x,y){"
+     "    return x - y;"
+     "  })(a,b);"
+     "}"]))
+
+^{:refer lang.core.impl/emit-script-imports, :added "4.0"}
+(fact
+  "emit imports"
+  (binding [impl/*library* migration-default-library]
+    (emit-script-imports
+      '{"cjson" {:as cjson}}
+      nil
+      (emit-options
+        {:lang :lua,
+         :library +library-ext+,
+         :module (lib/get-module +library-ext+ :lua 'L.util),
+         :layout :flat})))
+  =>
+  '("var__(local=cjson,==require(\"cjson\"));")
+  (binding [impl/*library* migration-default-library]
+    (emit-script-imports
+      '{"cjson" {:as cjson}}
+      {:override {"cjson" "https://cdn.example.com/cjson"}}
+      (emit-options
+        {:lang :lua,
+         :library +library-ext+,
+         :module (lib/get-module +library-ext+ :lua 'L.util),
+         :layout :flat})))
+  =>
+  '("var__(local=cjson,==require(\"https://cdn.example.com/cjson\"));"))
+
+^{:refer lang.core.impl/emit-script-deps, :added "4.0"}
+(fact
+  "emits the script deps"
+  (binding [impl/*library* migration-default-library]
+    (let [[stage grammar book namespace mopts] (emit-options
+                                                 {:lang :lua,
+                                                  :library
+                                                  +library-ext+,
+                                                  :module
+                                                  (lib/get-module
+                                                    +library-ext+
+                                                    :lua
+                                                    'L.util),
+                                                  :layout :flat})
+          [deps _] (deps/collect-script-entries
+                     book
+                     (std.foundation/apply
+                       std.foundation/vector
+                       (std.foundation/seq
+                         (std.foundation/concat
+                           (std.foundation/list 'L.util/add-fn)))))]
+      (emit-script-deps
+        deps
+        nil
+        [stage grammar book namespace mopts])))
+  =>
+  (satisfies coll?))
+
+^{:refer lang.core.impl/emit-script-join, :added "4.0"}
+(fact
+  "joins the necessary parts of the script"
+  (binding [impl/*library* migration-default-library]
+    (emit-script-join ["import"] ["deps"] "body"))
+  =>
+  "import\n\ndeps\n\nbody")
+
+^{:refer lang.core.impl/emit-script, :added "4.0"}
+(fact
+  "emits a script with all dependencies"
+  (binding [impl/*library* migration-default-library]
+    (emit-script
+      '(-/add-fn 1 2)
+      {:lang :lua,
+       :library +library-ext+,
+       :module (lib/get-module +library-ext+ :lua 'L.util),
+       :layout :flat}))
+  =>
+  (str/join
+    "\n"
+    ["function identity_fn(x){"
+     "  return x;"
+     "}"
+     ""
+     "function add_fn(a,b){"
+     "  return identity_fn(function (x,y){"
+     "    return x + y;"
+     "  })(a,sub_fn(b,0));"
+     "}"
+     ""
+     "function sub_fn(a,b){"
+     "  return identity_fn(function (x,y){"
+     "    return x - y;"
+     "  })(a,b);"
+     "}"
+     ""
+     "add_fn(1,2)"])
+  (binding [impl/*library* migration-default-library]
+    (emit-script
+      '(-/add-fn 1 2)
+      {:lang :lua,
+       :library +library-ext+,
+       :module (lib/get-module +library-ext+ :lua 'L.util),
+       :layout :full}))
+  =>
+  (str/join
+    "\n"
+    ["function L_core____identity_fn(x){"
+     "  return x;"
+     "}"
+     ""
+     "function L_util____add_fn(a,b){"
+     "  return L_core____identity_fn(function (x,y){"
+     "    return x + y;"
+     "  })(a,L_util____sub_fn(b,0));"
+     "}"
+     ""
+     "function L_util____sub_fn(a,b){"
+     "  return L_core____identity_fn(function (x,y){"
+     "    return x - y;"
+     "  })(a,b);"
+     "}"
+     ""
+     "L_util____add_fn(1,2)"]))
+
+^{:refer lang.core.impl/emit-scaffold-raw-imports, :added "4.0"}
+(fact
+  "gets only the scaffold imports"
+  (binding [impl/*library* migration-default-library]
+    (emit-scaffold-raw-imports
+      []
+      nil
+      (emit-options {:lang :lua, :library +library-ext+})))
+  =>
+  (satisfies vector?))
+
+^{:refer lang.core.impl/emit-scaffold-raw, :added "4.0"}
+(fact
+  "creates entries only for defglobal and defrun entries"
+  (binding [impl/*library* migration-default-library]
+    (emit-scaffold-raw
+      identity
+      'L.core
+      {:lang :lua, :library +library-ext+}))
+  =>
+  (satisfies string?))
+
+^{:refer lang.core.impl/emit-scaffold-for, :added "4.0"}
+(fact
+  "creates scaffold for module and its deps"
+  (binding [impl/*library* migration-default-library]
+    (emit-scaffold-for 'L.core {:lang :lua, :library +library-ext+}))
+  =>
+  (satisfies string?))
+
+^{:refer lang.core.impl/emit-scaffold-to, :added "4.0"}
+(fact
+  "creates scaffold up to module"
+  (binding [impl/*library* migration-default-library]
+    (emit-scaffold-to 'L.core {:lang :lua, :library +library-ext+}))
+  =>
+  (satisfies string?))
+
+^{:refer lang.core.impl/emit-scaffold-imports, :added "4.0"}
+(fact
+  "create scaggold to expose native imports "
+  (binding [impl/*library* migration-default-library]
+    (emit-scaffold-imports
+      'L.core
+      {:lang :lua, :library +library-ext+}))
+  =>
+  (satisfies string?))
+
+
+^{:refer lang.core.impl/*library* :id native-impl-library-binding}
+(fact "library binding controls lookup and restores across nested failure"
+  (let [baseline impl/*library*
+        selected (binding [impl/*library* +library+]
+                   [(= +library+ (impl/default-library))
+                    (= +library+ (impl/runtime-library))
+                    (= +library-ext+ (impl/default-library +library-ext+))
+                    (try
+                      (binding [impl/*library* +library-ext+]
+                        (throw (ex :argument {} :ex/message "binding probe")))
+                      (catch error (= +library+ impl/*library*)))])]
+    [baseline selected (= baseline impl/*library*)])
+  => [nil [true true true true] true])
+
+^{:refer lang.core.impl/*print-form* :id native-impl-print-form}
+(fact "print control captures the original form without changing emitted output"
+  (let [baseline impl/*print-form*
+        output (atom nil)]
+    (try
+      (let [quiet (binding [impl/*print-form* false]
+                    (with-out-string
+                      (reset! output (impl/emit-direct (:grammar prep/+book-min+)
+                                      '(+ 1 2 3) (ns-current) {:lang :lua}))))
+            quiet-result @output
+            verbose (binding [impl/*print-form* true]
+                      (with-out-string
+                        (reset! output (impl/emit-direct (:grammar prep/+book-min+)
+                                        '(+ 1 2 3) (ns-current) {:lang :lua}))))]
+        [baseline quiet quiet-result verbose @output (= baseline impl/*print-form*)])
+      (finally (reset! output nil))))
+  => [nil "" "1 + 2 + 3" ":FORM (+ 1 2 3)\n" "1 + 2 + 3" true])
+
+^{:refer lang.core.impl/emit-options-raw :id native-impl-options-raw}
+(fact "snapshot takes precedence then explicit Library then bound runtime Library"
+  (let [snapshot (lib/get-snapshot +library+)
+        [provided provided-book] (impl/emit-options-raw +library-ext+ snapshot :lua)
+        [explicit explicit-book] (binding [impl/*library* +library-ext+]
+                                   (impl/emit-options-raw +library+ nil :lua))
+        [runtime runtime-book] (binding [impl/*library* +library-ext+]
+                                 (impl/emit-options-raw nil nil :lua))]
+    [(= snapshot provided) (vec (sort (keys (:modules provided-book))))
+     (= snapshot explicit) (vec (sort (keys (:modules explicit-book))))
+     (= (lib/get-snapshot +library-ext+) runtime) (vec (sort (keys (:modules runtime-book))))
+     (= [snapshot nil] (impl/emit-options-raw nil snapshot :missing))])
+  => [true ['L.core] true ['L.core] true ['L.core 'L.util] true])
+
+^{:refer lang.core.impl/emit-bulk? :id native-impl-bulk-shape}
+(fact "bulk requires a vector with truthy bulk metadata"
+  (mapv impl/emit-bulk?
+        [nil [] [1] (with-meta [1] {:bulk true}) (with-meta [] {:bulk true})
+         (with-meta [1] {:bulk false}) (with-meta [1] {:bulk nil})
+         (with-meta [1] {:bulk :enabled}) (with-meta '(1) {:bulk true})
+         (with-meta {:a 1} {:bulk true})])
+  => [false false false true true false false true false false])
+
+(require [std.lib.context.resource :as resource]
+         [std.lib.context.space :as space])
+
+^{:refer lang.core.impl/emit-options :id native-original-emission-context}
+(fact "retains the selected module and emission options without mutating the caller input"
+  (let [input {:lang :lua :library +library+ :module 'L.core
+               :layout :flat :emit {:code {:label true}}}
+        [stage grammar selected namespace options] (impl/emit-options input)]
+    [stage (:lang selected) (:id (:module options))
+     (Base/identical? grammar (:grammar selected))
+     (:layout options) (:emit options) (:module input)])
+  => [:staging :lua 'L.core true :flat {:code {:label true}} 'L.core])
+
+^{:refer lang.core.impl/emit-script-imports :id native-empty-script-imports}
+(fact "emits no import source for an empty native dependency selection"
+  (vec (impl/emit-script-imports
+         {} {} (impl/emit-options {:lang :lua :library +library+ :module 'L.core})))
   => [])
 
-^{:refer lang.core.impl/emit-script-deps}
-(fact "emits the dependency closure before its requested color function"
-  (let [book-value (deref +book+)
-        context (impl/emit-options
-                 {:book book-value :lang :js
-                  :module (get-in book-value [:modules 'demo.color])})
-        entry (book/get-code-entry book-value 'xt.lang.common-color/hex->rgb)]
-    (mapv (fn [source]
-            (str/includes? source "function hex__gtrgb"))
-          (impl/emit-script-deps [entry] {} context)))
-  => [true])
+^{:refer lang.core.impl/emit-script-join :id native-blank-line-boundaries}
+(fact "retains the native script join contract including empty sections"
+  [(impl/emit-script-join ["IMPORT"] ["DEPENDENCY"] "BODY")
+   (impl/emit-script-join [] [] "BODY")
+   (impl/emit-script-join [] [] "")]
+  => ["IMPORT\n\nDEPENDENCY\n\nBODY" "BODY" ""])
 
-^{:refer lang.core.impl/emit-script-join}
-(fact "joins imports definitions and expression with stable blank-line boundaries"
-  (impl/emit-script-join ["IMPORT"] ["DEPENDENCY"] "BODY")
-  => "IMPORT\n\nDEPENDENCY\n\nBODY")
+^{:refer lang.core.impl/clone-default-library :id native-effective-snapshot-clone}
+(fact "clones inherited source without retaining a parent or sharing later mutations"
+  (let [parent (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})
+        child (lib/library:create {:parent parent})
+        created (atom [parent child])]
+    (try
+      (lib/install-module! parent :lua 'parent.only {})
+      (let [clone (impl/with:library [child] (impl/clone-default-library))]
+        (swap! created conj clone)
+        (lib/install-module! parent :lua 'parent.later {})
+        (lib/install-module! clone :lua 'clone.only {})
+        [(:parent clone)
+         (set (lib/list-modules clone :lua))
+         (lib/get-module clone :lua 'parent.later)
+         (lib/get-module parent :lua 'clone.only)])
+      (finally
+        (doseq [library @created]
+          (lib/reset-all! library)
+          (reset! (:settings library) {}))
+        (reset! created []))))
+  => [nil #{'L.core 'parent.only 'clone.only} nil nil])
 
-^{:refer lang.core.impl/emit-script}
-(fact "emits the color call with its transitive target code closure"
-  (let [book-value (deref +book+)
-        source (impl/emit-script
-                '(color/hex->rgb "#45f981")
-                {:book book-value
-                 :lang :js
-                 :module (get-in book-value [:modules 'demo.color])})]
-    [(str/includes? source "function hex__gtrgb")
-     (str/includes? source "function hex__gtn")
-     (str/includes? source "hex__gtrgb(\"#45f981\")")])
+^{:refer lang.core.impl/default-library :id native-process-default-library}
+(fact "returns one resource-owned default and gives an explicit override priority"
+  (binding [resource/*resource-active* (atom {:global {} :namespace {} :shared {}})
+            impl/*library* nil]
+    (let [override (lib/library:create {})]
+      (try
+        (let [first (impl/default-library)
+              second (impl/default-library)]
+          [(Base/identical? first second)
+           (into {} (lib/get-snapshot first))
+           (Base/identical? override (impl/default-library override))])
+        (finally
+          (impl/default-library:reset)
+          (lib/reset-all! override)
+          (reset! (:settings override) {})
+          (reset! resource/*resource-active* {:global {} :namespace {} :shared {}})))))
+  => [true {} true])
+
+^{:refer lang.core.impl/default-library:reset :id native-default-reset-boundary}
+(fact "resets the resource idempotently and recreates a blank default without mutating an existing reference"
+  (binding [resource/*resource-active* (atom {:global {} :namespace {} :shared {}})
+            impl/*library* nil]
+    (let [original (impl/default-library)]
+      (try
+        (lib/install-book! original prep/+book-min+)
+        (let [stopped (impl/default-library:reset)
+              absent (impl/default-library:reset)
+              replacement (impl/default-library)]
+          [(Base/identical? original stopped) absent
+           (not (Base/identical? original replacement))
+           (into {} (lib/get-snapshot replacement))
+           (set (keys (lib/get-snapshot original)))])
+        (finally
+          (impl/default-library:reset)
+          (lib/reset-all! original)
+          (reset! (:settings original) {})
+          (reset! resource/*resource-active* {:global {} :namespace {} :shared {}})))))
+  => [true nil true {} #{:lua}])
+
+^{:refer lang.core.impl/runtime-library :id native-default-annex-library-precedence}
+(fact "uses the process default unless an annex Library or explicit binding takes precedence"
+  (binding [resource/*resource-active* (atom {:global {} :namespace {} :shared {}})
+            space/*spaces* (atom {})
+            impl/*library* nil]
+    (let [annex (lib/library:create {})
+          bound (lib/library:create {})
+          current (space/space)]
+      (try
+        (let [default (impl/default-library)
+              fallback (Base/identical? default (impl/runtime-library))]
+          (swap! (:state current) assoc :lang.annex {:instance {:library annex}})
+          [fallback
+           (Base/identical? annex (impl/runtime-library))
+           (impl/with:library [bound] (Base/identical? bound (impl/runtime-library)))])
+        (finally
+          (reset! (:state current) {})
+          (space/reset-spaces!)
+          (impl/default-library:reset)
+          (doseq [library [annex bound]]
+            (lib/reset-all! library)
+            (reset! (:settings library) {}))
+          (reset! resource/*resource-active* {:global {} :namespace {} :shared {}})))))
   => [true true true])
+
+^{:refer lang.core.impl/with:library :id native-library-binding-restoration}
+(fact "restores the outer Library after a normal return and an exceptional exit"
+  (let [outer (lib/library:create {})
+        inner (lib/library:create {})]
+    (try
+      (binding [impl/*library* outer]
+        [(impl/with:library [inner] (Base/identical? inner (impl/runtime-library)))
+         (Base/identical? outer (impl/runtime-library))
+         (try
+           (impl/with:library [inner] (throw (ex :test {})))
+           :missed-error
+           (catch error :caught))
+         (Base/identical? outer (impl/runtime-library))])
+      (finally
+        (doseq [library [outer inner]]
+          (lib/reset-all! library)
+          (reset! (:settings library) {})))))
+  => [true true :caught true])

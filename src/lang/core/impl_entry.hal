@@ -2,12 +2,15 @@
   (:config {:role :internal})
   (:require [lang.base.book :as book]
             [lang.base.emit-template :as impl-template]
-            [lang.base.emit-preprocess :as preprocess]
-            [lang.base.grammar-xtalk-system :as xtalk-system]
-            [lang.base.compiler :as compiler]
             [lang.base.emit :as emit]
-            [lang.base.emit-template :as template]
-            [lang.protocol.compiler :as protocol]))
+            [lang.base.emit-preprocess :as preprocess]
+            [lang.base.preprocess-base :as preprocess-base]
+            [lang.base.emit-rewrite :as rewrite]
+            [lang.base.grammar-xtalk-system :as xtalk-system]
+            [lang.base.provenance :as provenance]
+            [lang.base.util :as ut]
+            [std.lib.time :as time]
+            [std.lib.format.ansi :as ansi]))
 
 ;;;;
 ;;
@@ -229,25 +232,172 @@
 ;;    - layout can be specified
 ;;
 
-(do)
+(def ^:dynamic *cache-none* false)
 
-(do)
+(def ^:dynamic *cache-force* false)
 
-(do)
+(defmacro with:cache-none
+  "skips the cache"
+  {:added "4.0"}
+  [& body]
+  (apply list 'binding ['lang.core.impl-entry/*cache-none* true] body))
 
-(do)
+(defmacro with:cache-force
+  "forces the cache to update"
+  {:added "4.0"}
+  [& body]
+  (apply list 'binding ['lang.core.impl-entry/*cache-force* true] body))
 
-(do)
+(defn emit-entry-raw
+  "emits using the raw entry"
+  {:added "4.0"}
+  [grammar entry {:as mopts :keys [emit]}]
+  (if (not entry) (throw (ex :argument {} :ex/message "Entry cannot be null")))
+  (let [lang           (or (:lang mopts) (:lang entry))
+        book           (or (:book mopts)
+                           (when-let [snapshot (:snapshot mopts)] (book/book-from snapshot lang)))
+        modules        (or (:modules mopts)
+                           (:modules book)
+                           (get-in mopts [:snapshot lang :book :modules]))
+        reserved       (get-in grammar [:reserved (:op entry)])
+        entry          (if (and reserved modules)
+                         (impl-template/materialize-code-entry {:grammar grammar :lang lang :modules modules}
+                           entry
+                           (assoc mopts :lang lang))
+                         entry)
+        {:keys [form]} entry
+        form           (if (:transform emit) ((:transform emit) form mopts) form)
+        form           (if (= :python lang)
+                         (rewrite/rewrite-stage :staging form grammar (assoc mopts :entry entry))
+                         form)
+        mopts          (->
+                        mopts
+                        (assoc :entry (assoc entry :display :brief))
+                        (provenance/with-provenance
+                         {:lang/phase     :emit/entry
+                          :lang/subsystem :lang.core.impl-entry/emit-entry-raw
+                          :lang/form      form
+                          :lang/lang      lang
+                          :lang/module    (:module entry)
+                          :lang/namespace (:namespace entry)
+                          :lang/entry     (ut/entry-summary entry)}))]
+    (binding [preprocess-base/*macro-opts* mopts preprocess-base/*macro-grammar* grammar]
+      (try (emit/emit form grammar (:namespace entry) mopts)
+        (catch t
+          (do (println (str (:module entry)
+                         " - ["
+                         (:line entry)
+                         "] - "
+                         (:id entry)
+                         "
+"
+                         (ansi/red (time/now))))
+            (println form)
+            (ut/throw-with-context "tahto.core entry emit failed"
+              (:lang/provenance mopts)
+              t)))))))
 
-(do)
+(def +cached-emit-keys+
+  [:transform
+   :label
+   :trim])
 
-(do)
+(def +cached-keys+
+  [:layout :emit])
 
-(do)
+(def +emit-entry-cached+ (atom {}))
 
-(do)
+(defn emit-entry-cached-state
+  "Returns cache state for snapshot/restore; retained objects preserve identity."
+  []
+  (IDeref/deref +emit-entry-cached+))
 
-(do)
+(defn emit-entry-cached-reset
+  "Clears the cache or restores a previously captured state."
+  ([] (emit-entry-cached-reset {}))
+  ([state] (IReset/reset +emit-entry-cached+ state)))
+
+(defn emit-entry-cached-raw
+  "Original generated helper for lang.core.impl-entry/emit-entry-cached."
+  [{:keys [grammar entry mopts]}]
+  (emit-entry-raw grammar entry mopts))
+
+(defn emit-entry-cached
+  "Emits using the original recent-cache policy with actual object identity."
+  [{:keys [grammar entry mopts], :as obj} & args]
+  (let [k [(ut/sym-full entry) (select-keys mopts +cached-keys+)]
+        tag [(:lang mopts)
+             grammar
+             entry
+             (select-keys mopts +cached-keys+)
+             (qualified-keys mopts :lang)]
+        rec (get (IDeref/deref +emit-entry-cached+) k)
+        [old-lang old-grammar old-entry old-options old-qualified] (:tag
+                                                                     rec)
+        matches (and
+                  rec
+                  (= old-lang (:lang mopts))
+                  (Base/identical? old-grammar grammar)
+                  (Base/identical? old-entry entry)
+                  (= old-options (select-keys mopts +cached-keys+))
+                  (= old-qualified (qualified-keys mopts :lang)))]
+    (if (or *cache-force* (not matches))
+      (let [return (emit-entry-cached-raw obj)]
+        (swap! +emit-entry-cached+ assoc k {:tag tag, :return return})
+        return)
+      (:return rec))))
+
+(defn emit-entry-label
+  "emits the entry label"
+  {:added "4.0"}
+  [grammar entry]
+  (let [{:keys [prefix suffix]} (get-in grammar [:default :comment])]
+    (str prefix " " (ut/sym-full entry) " [" (:line entry) "] " suffix)))
+
+(defn emit-entry
+  "emits a given entry"
+  {:added "4.0"}
+  [grammar entry {:as mopts :keys [snapshot module emit]}]
+  (if (not (:suppress emit))
+    (let [mopts                      (or
+                                      (and
+                                       (not module)
+                                       snapshot
+                                       (let
+                                        [{:keys [lang module]} entry book (book/book-from snapshot lang)]
+                                        (assoc
+                                         mopts
+                                         :book
+                                         book
+                                         :modules
+                                         (:modules book)
+                                         :module
+                                         (get-in book [:modules module]))))
+                                      mopts)
+          {:keys [label trim cache]} emit
+          body                       (cond
+                                      (or *cache-none* (:static/no-cache entry) (= cache :none)) (emit-entry-raw grammar entry mopts)
+                                      :else                                                      (binding
+                                                                                                  [*cache-force* (or *cache-force* (= cache :force))] (emit-entry-cached {:entry entry :grammar grammar :mopts mopts})))
+          body                       (reduce
+                                      (fn
+                                       [body transform]
+                                       ((if (= :std.native.Var (Base/type transform)) (deref transform) transform)
+                                        body
+                                        {:entry entry :grammar grammar :mopts mopts}))
+                                      body
+                                      (-> emit :code :transforms :entry))
+          body                       (reduce
+                                      (fn
+                                       [body transform]
+                                       ((if (= :std.native.Var (Base/type transform)) (deref transform) transform)
+                                        body
+                                        {:entry entry :grammar grammar :mopts mopts}))
+                                      body
+                                      (get-in snapshot [(:lang mopts) :book :meta :transforms :entry]))
+          body                       (cond->> body label (str (emit-entry-label grammar entry) "
+") trim (trim))]
+      body)))
 
 (comment
   (-> (tahto.core/get-snapshot
@@ -264,56 +414,3 @@
   "Returns the fully qualified Book coordinate for one code entry."
   [entry]
   (symbol (str (:module entry)) (name (:id entry))))
-
-(defn emit-entry-raw
-  "Materializes a code entry once and emits its already-staged target form."
-  [grammar entry options]
-  (let [book-value (:book options)
-        lang (or (:lang options) (:lang entry))
-        selected (or (:selection book-value) {:grammar grammar})
-        modules (or (:modules options) (:modules book-value))
-        ;; Entry-local links (such as `-/hex->n`) resolve through the owning
-        ;; source module, never the module that requested this script.
-        module-value (get modules (:module entry))
-        reserved (get-in grammar [:reserved (:op entry)])
-        ;; `defn` source keeps its optional docstring and attributes.  The
-        ;; Foundation registration path formats those into the entry before
-        ;; hydration, so direct source registration must do the same here.
-        formatted (protocol/format-entry (compiler/grammar-entry-formatter)
-                                         entry selected options)
-        materialized
-        (if (and reserved modules)
-          (template/materialize-code-entry
-           {:grammar grammar :modules modules :lang lang}
-           formatted
-           (assoc options :lang lang :module module-value))
-          formatted)
-        ;; Native staging preserves protected reserved heads as data.  The
-        ;; compiler removes that marker immediately before target emission.
-        form (compiler/unwrap-protected-form (:form materialized))
-        emitted (emit/emit form grammar (:namespace materialized)
-                           (assoc options
-                                  :lang lang
-                                  :module module-value
-                                  :entry materialized))]
-    emitted))
-
-(defn emit-entry-label
-  "Returns the target-language comment label for one emitted entry."
-  [grammar entry]
-  (let [comment (get-in grammar [:default :comment])]
-    (str (:prefix comment) " " (entry-symbol entry)
-         " [" (:line entry) "] " (:suffix comment))))
-
-(defn emit-entry
-  "Emits one code entry, preserving the Foundation label and suppression hooks."
-  [grammar entry options]
-  (let [emit-options (or (:emit options) {})]
-    (if (:suppress emit-options)
-      nil
-      (let [body (emit-entry-raw grammar entry options)
-            labelled (if (:label emit-options)
-                       (str (emit-entry-label grammar entry) "\n" body)
-                       body)
-            trim (:trim emit-options)]
-        (if trim (trim labelled) labelled)))))

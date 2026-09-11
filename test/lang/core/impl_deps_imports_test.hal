@@ -1,6 +1,235 @@
 (ns lang.core.impl-deps-imports-test
-  (:use code.test)
-  (:require [lang.core.impl-deps-imports :as imports]))
+  (:require [lang.base.book :as b]
+            [lang.base.book-module :as module]
+            [lang.base.emit-prep-js-test :as prep-js]
+            [lang.base.emit-prep-lua-test :as prep-lua]
+            [lang.core.impl :as impl]
+            [lang.core.impl-deps :as deps]
+            [lang.core.impl-deps-imports :as deps-imports]
+            [lang.core.impl-entry :as entry]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap])
+  (:use code.test))
+
+(do)
+
+(do)
+
+(def +library-lua+
+  (doto (lib/library:create
+         {:snapshot (snap/snapshot {:lua {:id :lua
+                                          :book prep-lua/+book-min+}})})
+    (lib/install-module! :lua 'L.util
+                         {:import  '[["cjson" :as cjson]
+                                     ["socket" :as socket]]})
+    (lib/add-entry-single!
+     (entry/create-fragment
+      '(def$ cjson-read cjson.read)
+      {:lang :lua
+       :namespace 'L.util
+       :module 'L.util}))
+    (lib/add-entry-single!
+     (entry/create-fragment
+      '(def$ socket-read socket.read)
+      {:lang :lua
+       :namespace 'L.util
+       :module 'L.util}))
+    (lib/install-module! :lua 'L.app
+                         {:require '[[L.util :as ut]]})
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn read-json
+         [a]
+         (return (ut/cjson-read "{\"a\": 1}")))
+      {:lang :lua
+       :namespace 'L.app
+       :module 'L.app}
+      {}))
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn read-socket
+         [a]
+         (return (ut/socket-read)))
+      {:lang :lua
+       :namespace 'L.app
+       :module 'L.app}
+      {}))))
+
+(def +library-js+
+  (doto (lib/library:create
+         {:snapshot (snap/snapshot {:js {:id :js
+                                         :book prep-js/+book-min+}})})
+    (lib/install-module! :js 'JS.ui
+                         {:import  ' [["@measured/puck" :as [* Puck]]
+                                      ["@radix-ui/themes" :as [* Radix]
+                                       :bundle [["@radix-ui/themes/styles.css"]]]]})
+    (lib/add-entry-single!
+     (entry/create-fragment
+      '(def$ Button Radix.Button)
+      {:lang :js
+       :namespace 'JS.ui
+       :module 'JS.ui}))
+    (lib/add-entry-single!
+     (entry/create-fragment
+      '(def$ Puck Puck)
+      {:lang :js
+       :namespace 'JS.ui
+       :module 'JS.ui}))
+    (lib/install-module! :js 'JS.app
+                         {:require '[[JS.ui :as ui]]})
+    (lib/add-entry-single!
+     (entry/create-fragment
+      '(def$ Button ui/Button)
+      {:lang :js
+       :namespace 'JS.app
+       :module 'JS.app}))
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn App
+         []
+         (return
+          [:% -/Button
+           [:% ui/Puck]]))
+      {:lang :js
+       :namespace 'JS.app
+       :module 'JS.app}
+      {}))
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn AppRadix
+         []
+         (return
+          [:% ui/Button]))
+      {:lang :js
+       :namespace 'JS.app
+       :module 'JS.app}
+      {}))
+    ))
+
+^{:refer lang.core.impl-deps-imports/get-entry-imports :added "4.0"}
+(fact "gets all fragment imports from code entries"
+
+      (deps-imports/get-entry-imports
+       (map (fn [migration-argument-0] (b/get-fragment-entry (lib/get-book +library-js+ (keyword "js")) migration-argument-0))
+            (deps-imports/get-fragment-deps
+             (lib/get-book +library-js+ :js)
+             (first (deps/collect-script-entries
+                     (lib/get-book +library-js+ :js)
+                     ['JS.app/App])))))
+      => '{JS.ui/Puck {"@measured/puck" #{Puck}}, JS.ui/Button {"@radix-ui/themes" #{Radix}}})
+
+^{:refer lang.core.impl-deps-imports/get-namespace-imports :added "4.0"}
+(fact "merges imports for both fragment and code entries"
+
+      (deps-imports/get-namespace-imports
+       (concat
+        '{JS.ui/Puck {"@measured/puck" #{Puck}}}
+        '{JS.ui/Button {"@radix-ui/themes" #{Radix}}}))
+      => '{JS.ui {"@measured/puck" #{Puck}, "@radix-ui/themes" #{Radix}}})
+
+^{:refer lang.core.impl-deps-imports/get-fragment-deps :added "4.0"}
+(fact "gets all the fragment dependencies"
+
+      (deps-imports/get-fragment-deps
+       (lib/get-book +library-js+ :js)
+       (first (deps/collect-script-entries
+               (lib/get-book +library-js+ :js)
+               ['JS.app/App])))
+      => '#{JS.ui/Puck JS.app/Button JS.ui/Button})
+
+^{:refer lang.core.impl-deps-imports/format-namespace-imports :added "4.0"}
+(fact "formats a list of namespace imports into an import map"
+
+      (deps-imports/format-namespace-imports
+       (lib/get-book +library-js+ :js)
+       (deps-imports/get-namespace-imports
+        (concat
+         '{JS.ui/Puck {"@measured/puck" #{Puck}}}
+         '{JS.ui/Button {"@radix-ui/themes" #{Radix}}})))
+      => '{"@measured/puck" {:as [* Puck]},
+           "@radix-ui/themes" {:as [* Radix],
+                               :bundle {"@radix-ui/themes/styles.css" {}}}})
+
+^{:refer lang.core.impl-deps-imports/script-import-deps :added "4.0"}
+(fact "collect all native imports"
+
+      (deps-imports/script-import-deps
+       (lib/get-book +library-js+ :js)
+       (first (deps/collect-script-entries
+               (lib/get-book +library-js+ :js)
+               ['JS.app/App])))
+      => '{JS.ui {"@measured/puck" #{Puck}, "@radix-ui/themes" #{Radix}}}
+
+      (dissoc (lib/get-module +library-js+ :js 'JS.app)
+              :fragment :code)
+      => '{:require-impl nil,
+           :static nil,
+           :specialize {},
+           :includes #{},
+           :native-lu {},
+           :internal {JS.ui ui, JS.app -},
+           :implements [],
+           :lang :js,
+           :alias {},
+           :native {},
+           :link {ui JS.ui, - JS.app},
+           :id JS.app,
+           :display :default}
+
+      (dissoc (lib/get-module +library-js+ :js 'JS.ui)
+              :fragment :code)
+      => '{:require-impl nil,
+           :static nil,
+           :specialize {},
+           :includes #{},
+           :native-lu {Puck "@measured/puck",
+                       Radix "@radix-ui/themes"},
+           :internal {JS.ui -},
+           :implements [],
+           :lang :js,
+           :alias {Puck Puck, Radix Radix},
+           :native
+           {"@measured/puck" {:as [* Puck]},
+            "@radix-ui/themes"
+            {:as [* Radix], :bundle {"@radix-ui/themes/styles.css" {}}}},
+           :link {- JS.ui},
+           :id JS.ui,
+           :display :default})
+
+^{:refer lang.core.impl-deps-imports/script-imports :added "4.0"}
+(fact "gets the ns imports for a script"
+
+      (deps-imports/script-imports
+       (lib/get-book +library-js+ :js)
+       (first (deps/collect-script-entries
+               (lib/get-book +library-js+ :js)
+               ['JS.app/App])))
+      => '{"@measured/puck"   {:as [* Puck]},
+           "@radix-ui/themes" {:as [* Radix],
+                               :bundle {"@radix-ui/themes/styles.css" {}}}})
+
+^{:refer lang.core.impl-deps-imports/module-imports, :added "4.0"}
+(fact
+  "gets a modules imports as well as code links"
+  (deps-imports/module-imports (lib/get-book +library-js+ :js) 'JS.app)
+  =>
+  '{:native
+    {"@measured/puck" {:as [* Puck]},
+     "@radix-ui/themes"
+     {:as [* Radix], :bundle {"@radix-ui/themes/styles.css" {}}}},
+    :direct #{}})
+
+
+^{:refer lang.core.impl-deps-imports/module-code-deps, :added "4.0"}
+(do)
+
+(do)
+
+(do)
+
+(fact:global {:teardown [(doseq [value [+library-js+ +library-lua+]] (lib/reset-all! value) (reset! (:settings value) {}))]})
+
+(require [lang.core.impl-deps-imports :as imports])
 
 (def +app-entry+
   {:id 'main
@@ -96,12 +325,12 @@
       :direct #{'demo.dep}})
 
 ^{:refer lang.core.impl-deps-imports/module-imports}
-(fact "retains declared module links alongside code-derived module dependencies"
+(fact "reports code-derived dependencies without unused declared links"
   (let [book-value (assoc-in +fixture-book+
                              [:modules 'demo.app :link]
                              {'linked 'demo.link})]
     (:direct (imports/module-imports book-value 'demo.app)))
-  => #{'demo.dep 'demo.link})
+  => #{'demo.dep})
 
 ^{:refer lang.core.impl-deps-imports/module-code-deps}
 (fact "builds a transitive module dependency graph deterministically"
@@ -115,3 +344,26 @@
       {:all #{'demo.app 'demo.dep}
        :graph {'demo.app #{'demo.dep}
                'demo.dep #{}}}])
+
+^{:refer (quote tahto.core.impl-deps-imports/get-namespace-imports), :added "4.0"}
+(fact
+  "retains the prior staged namespace import assertion"
+  (imports/get-namespace-imports
+    (concat
+      '{JS.ui/Puck {"@measured/puck" #{Puck}}}
+      '{JS.ui/Button {"@radix-ui/themes" #{Radix}}}))
+  =>
+  '{JS.ui {"@measured/puck" #{Puck}, "@radix-ui/themes" #{Radix}}})
+^{:refer lang.core.impl-deps-imports/materialize-import-entry :id materialize-stale-imports}
+(fact "recomputes code import metadata even when stale dependencies are present"
+  (let [grammar {:reserved {:plain {:hydrate (fn [form grammar options] [{:hydrated true} 7])}}}
+        book {:lang :js :grammar grammar :modules {'demo {:id 'demo :lang :js :link {} :native {}}}}
+        stale {:op :plain :section :code :lang :js :module 'demo :id 'run
+               :form-input '(unused) :form '(old)
+               :deps-native {"stale" #{'Old}}}
+        fragment (assoc stale :section :fragment)
+        materialized (imports/materialize-import-entry book stale)]
+    [(select-keys materialized [:form :deps-native :hydrated])
+     (:deps-native stale)
+     (= fragment (imports/materialize-import-entry book fragment))])
+  => [{:form 7 :deps-native {} :hydrated true} {"stale" #{'Old}} true])

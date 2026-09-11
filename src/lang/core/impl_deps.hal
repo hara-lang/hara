@@ -1,12 +1,15 @@
-;; ============================================================================
-;; lang.core.impl-deps — target script dependency selection.
-;; ============================================================================
 (ns lang.core.impl-deps
   (:config {:role :internal})
-  (:require [lang.base.book :as book]
-            [lang.base.book-module :as module]
-            [lang.base.compiler :as compiler]
-            [lang.core.impl-deps-imports :as imports]))
+  (:require [lang.base.book :as b]
+            [lang.base.emit-preprocess :as preprocess]
+            [lang.base.emit-rewrite :as rewrite]
+            [lang.base.grammar-xtalk-system :as xtalk-system]
+            [lang.core.impl-deps-imports :as imports]
+            [lang.base.util :as ut]))
+
+;;
+;;
+;;
 
 (defn module-import-form
   "import form"
@@ -17,6 +20,18 @@
       name
       module
       opts)))
+
+(defn native-name-with-override
+  "applies native override to a native import name"
+  {:added "4.0"}
+  [name emit]
+  (if-let [override-map (when-let [override (:override emit)]
+                          (into {} (map (fn [[k v]]
+                                          [(if (symbol? k) (str k) k) v])
+                                        override)))]
+    (or (get override-map (if (symbol? name) (str name) name))
+        name)
+    name))
 
 (defn module-export-form
   "export form"
@@ -75,129 +90,103 @@
     ((if (= :std.native.Var (Base/type f)) (deref f) f) ptr)))
 
 (defn collect-script-natives
-  "Combines native imports contributed by selected code modules."
+  "gets native imported modules"
+  {:added "4.0"}
   [modules initial]
   (reduce
-   (fn [output module-value]
-     (reduce-kv
-      (fn [current key value]
-        (let [previous (get current key)]
-          (cond (nil? previous) (assoc current key value)
-                (= previous value) current
-                true
-                (throw
-                 (ex :conflict {:module (:id module-value)
-                                :key key :current previous :new value}
-                     :ex/message "Native imports disagree on the same name")))))
-      output
-      (or (:native module-value) {})))
-   (or initial {})
-   modules))
-
-(defn entry-symbol
-  "Returns the fully qualified code coordinate for one Book entry."
-  [entry]
-  (symbol (str (:module entry)) (name (:id entry))))
-
-(defn entry-dependencies
-  "Returns the exact, restaged code dependencies for one entry."
-  [book-value entry]
-  (book/get-code-deps book-value (entry-symbol entry)))
-
-(defn entry-sort-key
-  "Keeps dependency emission deterministic within one script request."
-  [entry]
-  [(or (:priority entry) 0)
-   (or (:line entry) 0)
-   (or (:time entry) 0)
-   (str (entry-symbol entry))])
-
-(defn order-script-entries
-  "Orders modules by dependencies, then entries by Foundation priority, line, and time."
-  [book-value entries]
-  (let [context (if (book/book? book-value) book-value (book/book book-value))
-        module-ids (deps-ordered context (set (map :module entries)))
-        indexes (zipmap module-ids (range 0 (count module-ids)))]
-    (vec (sort-by (juxt (fn [entry] (get indexes (:module entry)))
-                        :priority :line :time)
-                  entries))))
+    (fn [out {:keys [native id]}]
+      (reduce-kv
+        (fn [out k v]
+          (let [ov (get out k)]
+            (cond
+              (nil? ov) (assoc out k v)
+              (= ov v) out
+              :else (throw
+                      (ex
+                        :conflict
+                        {:ns id, :key k, :curr ov, :new v}
+                        :ex/message
+                        "Imports not of the same name")))))
+        out
+        native))
+    (or initial {})
+    modules))
 
 (defn collect-script-entries
-  "Collects a code closure and its full dependency-ordered module lookup."
-  [book-value symbol-ids]
-  (loop [pending (vec (sort-by str (if (symbol? symbol-ids)
-                                    [symbol-ids]
-                                    (or symbol-ids []))))
-         seen #{}
-         entries {}]
-    (if (empty? pending)
-      (let [ordered (order-script-entries book-value (vals entries))
-            context (if (book/book? book-value) book-value (book/book book-value))
-            module-ids (deps-ordered context (set (map :module ordered)))
-            module-lu
-            (reduce (fn [output index]
-                      (let [module-id (nth module-ids index)]
-                        (assoc output module-id
-                               {:index index
-                                :module (book/get-module book-value module-id)})))
-                    {}
-                    (range 0 (count module-ids)))]
-        [ordered module-lu])
-      (let [symbol-value (first pending)
-            remaining (vec (rest pending))]
-        (if (has? seen symbol-value)
-          (recur remaining seen entries)
-          (let [entry (book/get-code-entry book-value symbol-value)
-                dependencies (entry-dependencies book-value entry)]
-            (recur (into remaining (sort-by str dependencies))
-                   (conj seen symbol-value)
-                   (assoc entries symbol-value entry))))))))
+  "collects all entries"
+  {:added "4.0"}
+  [{:as book :keys [modules]} sym-ids]
+  (let [ids        ((fn [value] (if (or (coll? value) (form? value) (iter? value)) value [value]))
+                    sym-ids)
+        ids        (:all (deps-resolve book ids))
+        module-ids (set (map ut/sym-module ids))
+        module-lu  (->> (deps-ordered book module-ids)
+                        (map-indexed (fn [i id] [id {:index i :module (get modules id)}]))
+                        (into {}))
+        entries    (->>
+                    (map (partial b/get-code-entry book) (seq ids))
+                    (sort-by
+                     (fn
+                      [entry-value]
+                      [(:index (get module-lu (:module entry-value)))
+                       (:priority entry-value)
+                       (:line entry-value)
+                       (:time entry-value)
+                       (str (ut/sym-full entry-value))])))]
+    [entries module-lu]))
 
 (defn collect-script
-  "Collects the transformed form, code closure, and native imports for a script."
-  [book-value form options]
-  (let [selected (:selection book-value)
-        current-module (:module options)
-        context {:book book-value
-                 :modules (:modules book-value)
-                 :module current-module
-                 :lang (:lang options)
-                 :layout (or (:layout options) :flat)
-                 :emit (or (:emit options) {})}
-        result (compiler/compile (or (:compiler options) (compiler/compiler))
-                                 form selected context)
-        [entries _] (collect-script-entries book-value
-                                            (get-in result [:dependencies :code]))]
-    [(get-in result [:stages :staging])
-     entries
-     (imports/script-imports book-value entries)]))
+  "collect dependencies given a form and book"
+  {:added "4.0"}
+  [book form mopts]
+  (let [_ (when (not book)
+            (throw (ex :argument {} :ex/message "Book required.")))
+        input (preprocess/to-input form)
+        [form sym-ids] (preprocess/to-staging
+                         input
+                         (:grammar book)
+                         (:modules book)
+                         mopts)
+        form (rewrite/rewrite-stage
+               :staging
+               form
+               (:grammar book)
+               (assoc mopts :book book))
+        polyfill-sym-ids (-> form
+                          (xtalk-system/scan-xtalk (:grammar book))
+                          :ops
+                          (xtalk-system/xtalk-ops-polyfill-symbols
+                            (:grammar book)))
+        [entries module-lu] (collect-script-entries
+                              book
+                              (vec (concat sym-ids polyfill-sym-ids)))
+        natives (imports/script-imports book entries)]
+    [form entries natives]))
 
 (defn collect-script-summary
-  "Summarizes collected script dependencies without discarding their order."
+  "summaries the output of `collect-script`"
+  {:added "4.0"}
   [[form entries natives]]
-  [form (map entry-symbol entries) natives])
+  [form (map ut/sym-full entries) natives])
+
+;;
+;;
+;;
 
 (defn collect-module
-  "Collects lifecycle sections and dependency metadata for one complete module."
-  [book-value module-value]
-  (let [module-value (module/module-derived-view book-value module-value)
-        code (vec (sort-by entry-sort-key (vals (:code module-value))))
-        import-info (imports/module-imports book-value (:id module-value)
-                                             module-value)]
-    {:setup (setup-module-form book-value module-value)
-     :teardown (teardown-module-form book-value module-value)
-     :code code
-     :native (merge (or (:native module-value) {})
-                    (module/module-deps-native book-value module-value)
-                    (:native import-info))
-     :direct (:direct import-info)}))
-
-(defn native-name-with-override
-  "Applies an emit-level string or symbol native import override."
-  [name emit]
-  (let [overrides
-        (reduce-kv (fn [output key value]
-                     (assoc output (if (symbol? key) (str key) key) value))
-                   {}
-                   (or (:override emit) {}))]
-    (or (get overrides (if (symbol? name) (str name) name)) name)))
+  "collects information for the entire module"
+  {:added "4.0"}
+  [book
+   {:keys [native]
+    :as module}]
+  (let [setup    (setup-module-form book module)
+        teardown (teardown-module-form book module)
+        {:keys [direct
+                native]} (imports/module-imports book (:id module))
+        code    (->> (vals (:code module))
+                     (sort-by (juxt :priority :line :time)))]
+    {:setup    setup
+     :teardown teardown
+     :code     code
+     :native   native
+     :direct   direct}))
