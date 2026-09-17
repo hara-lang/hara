@@ -2,25 +2,46 @@ name: Hara source preflight
 
 on:
   workflow_call:
+    inputs:
+      native_source_ref:
+        description: Full hara-lang/hara-native commit SHA for source CI; empty requires the published release.
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   native:
-    name: Install exact Hara Native release
+    name: Install exact Hara Native host
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install the declared Hara Native release
+      - name: Install the declared Hara Native host
         shell: bash
+        env:
+          NATIVE_SOURCE_REF: ${{ inputs.native_source_ref }}
         run: |
           set -euo pipefail
           native_version="$(sed -nE 's/^[[:space:]]*:project\/native \{:version "([^"]+)"\}.*/\1/p' project.edn)"
           test -n "$native_version"
-          cargo install --locked --version "$native_version" --bin hara-native hara-native
+          if [[ -n "$NATIVE_SOURCE_REF" ]]; then
+            if [[ ! "$NATIVE_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+              echo '::error::native_source_ref must be a full lowercase commit SHA' >&2
+              exit 1
+            fi
+            printf 'Building hara-native %s from source commit %s\n' "$native_version" "$NATIVE_SOURCE_REF"
+            cargo install --locked \
+              --git https://github.com/hara-lang/hara-native \
+              --rev "$NATIVE_SOURCE_REF" \
+              --bin hara-native hara-native
+          else
+            # Release callers must use crates.io; never fall back to source.
+            cargo install --locked --version "$native_version" --bin hara-native hara-native
+          fi
           test "$(hara-native --version)" = "hara-native ${native_version}"
       - name: Save the native host for parallel source lanes
         run: cp "$(command -v hara-native)" hara-native
