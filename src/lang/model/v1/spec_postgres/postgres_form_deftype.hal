@@ -1,14 +1,748 @@
 (ns lang.model.v1.spec-postgres.postgres-form-deftype
-  (:config {:role :facade})
-  (:require [lang.model.v1.spec-postgres.postgres-deftype :as deftype]))
+  (:require [lang.model.v1.spec-postgres.postgres-common :as common]
+            [lang.model.v1.spec-postgres.postgres-common-tracker :as tracker]
+            [lang.model.v1.spec-postgres.postgres-form-defpartition :as form-defpartition]
+            [lang.base.emit-preprocess :as preprocess]
+            [lang.base.grammar-spec :as grammar-spec]
+            [std.lib.schema.base :as schema]
+            [lang.model.v1.spec-postgres.deftype.hydrate :as native-hydrate]))
 
-(intern-in
- [pg-deftype-ref-name deftype/pg-deftype-ref-name]
- [pg-deftype-format deftype/pg-deftype-format]
- [pg-deftype-hydrate deftype/pg-deftype-hydrate]
- [pg-deftype deftype/pg-deftype]
- [pg-deftype-uniques deftype/unique-outputs]
- [pg-deftype-primaries deftype/composite-primary-output]
- [pg-deftype-partition deftype/partition-output]
- [pg-deftype-foreigns deftype/foreign-outputs]
- [pg-deftype-indexes deftype/index-outputs])
+;;
+;; deftype
+;;
+
+
+
+(def pg-deftype-ref-name common/pg-deftype-ref-name)
+
+
+
+(defn pg-deftype-enum-col
+  "creates the enum column"
+  {:added "4.0"}
+  [col enum mopts]
+  (conj (vec (butlast col)) (common/pg-linked-token (:ns enum) mopts)))
+
+;;
+;;
+;;
+
+
+(defn pg-deftype-ref-link
+  "creates the ref entry for"
+  {:added "4.0"}
+  [col migration-map-param-3 migration-map-param-4]
+  (let [m migration-map-param-3
+        ns (get migration-map-param-3 :ns)
+        link (get migration-map-param-3 :link)
+        current (get migration-map-param-3 :current)
+        column (if (has? migration-map-param-3 :column)
+                 (get migration-map-param-3 :column)
+                 :id)
+        mopts migration-map-param-4
+        snapshot (get migration-map-param-4 :snapshot)]
+    (let [migration-map-value-1 link
+          lang (get migration-map-value-1 :lang)
+          module (get migration-map-value-1 :module)
+          section (get migration-map-value-1 :section)
+          id (get migration-map-value-1 :id)
+          [_ r-en] (common/pg-resolve-entry link mopts)
+          migration-map-value-2 (or
+                                  (get
+                                    (apply
+                                      hash-map
+                                      (if
+                                        (nil? (:form r-en))
+                                        nil
+                                        (nth (vec (:form r-en)) 2)))
+                                    column)
+                                  {:type :uuid})
+          r-ref migration-map-value-2
+          type (get migration-map-value-2 :type)]
+      [(pg-deftype-ref-name col m)
+       [(common/pg-type-alias type)]
+       [(list
+          (common/pg-base-token #{(name ns)} (:static/schema r-en))
+          #{(name column)})]])))
+
+(defn pg-deftype-ref-current
+  "creates the ref entry for"
+  {:added "4.0"}
+  [col migration-map-param-2 migration-map-param-3]
+  (let [m migration-map-param-2
+        current (get migration-map-param-2 :current)
+        column (if (has? migration-map-param-2 :column)
+                 (get migration-map-param-2 :column)
+                 :id)
+        mopts migration-map-param-3
+        snapshot (get migration-map-param-3 :snapshot)]
+    (let [migration-map-value-1 current
+          id (get migration-map-value-1 :id)
+          schema (get migration-map-value-1 :schema)
+          type (get migration-map-value-1 :type)]
+      [(pg-deftype-ref-name col m)
+       [(common/pg-type-alias type)]
+       [(list (list '. #{schema} #{id}) #{(name column)})]])))
+
+(defn pg-deftype-ref
+  "creates the ref entry"
+  {:added "4.0"}
+  [col migration-map-param-1 mopts]
+  (let [m migration-map-param-1
+        ns (get migration-map-param-1 :ns)
+        link (get migration-map-param-1 :link)
+        current (get migration-map-param-1 :current)]
+    (cond
+      current (pg-deftype-ref-current col m mopts)
+      :else (pg-deftype-ref-link col m mopts))))
+
+(defn pg-deftype-col-sql
+  "formats the sql on deftype"
+  {:added "4.0"}
+  [form sql]
+  (let [migration-map-value-1 sql
+        cascade (get migration-map-value-1 :cascade)
+        default (get migration-map-value-1 :default)
+        constraint (get migration-map-value-1 :constraint)
+        generated (get migration-map-value-1 :generated)
+        raw (get migration-map-value-1 :raw)
+        cargs (cond
+                (nil? constraint) []
+                (map? constraint) [:constraint
+                                   (symbol
+                                     (str/tag (:name constraint)))
+                                   :check
+                                   (list
+                                     'quote
+                                     (list (:check constraint)))]
+                :else [:check (list 'quote (list constraint))])]
+    (cond->
+      form
+      cascade
+      (conj :on-delete-cascade)
+      (not (nil? default))
+      (conj :default default)
+      generated
+      (conj
+        :generated
+        :always
+        :as
+        (list 'quote (list generated))
+        :stored)
+      raw
+      (concat raw)
+      :then
+      (concat cargs)
+      :then
+      vec)))
+
+(defn pg-deftype-col-fn
+  "formats the column on deftype"
+  {:added "4.0"}
+  [migration-argument-0 mopts]
+  (let [migration-argument-0-value migration-argument-0
+        col (first (drop 0 migration-argument-0-value))
+        migration-map-value-1 (first
+                                (drop 1 migration-argument-0-value))
+        m migration-map-value-1
+        type (get migration-map-value-1 :type)
+        primary (get migration-map-value-1 :primary)
+        scope (get migration-map-value-1 :scope)
+        sql (get migration-map-value-1 :sql)
+        required (get migration-map-value-1 :required)
+        unique (get migration-map-value-1 :unique)
+        enum (get migration-map-value-1 :enum)
+        ref (get migration-map-value-1 :ref)]
+    (let [sql (if (and (= type :ref) (:group ref))
+                (dissoc sql :cascade)
+                sql)
+          [col-name col-attrs ref-toks] (if
+                                          (= type :ref)
+                                          (pg-deftype-ref
+                                            col
+                                            (:ref m)
+                                            mopts)
+                                          [(str/snake-case
+                                             (str/tag col))
+                                           [(common/pg-type-alias
+                                              type)]])
+          col-attrs (cond->
+                      col-attrs
+                      (and primary (map? (:schema-primary mopts)))
+                      (conj :primary-key)
+                      (= type :enum)
+                      (pg-deftype-enum-col enum mopts)
+                      required
+                      (conj :not-null)
+                      unique
+                      (conj :unique)
+                      (and (= type :ref) (not (:group ref)))
+                      (conj :references ref-toks)
+                      sql
+                      (pg-deftype-col-sql sql))]
+      (vec (concat [#{col-name}] col-attrs)))))
+
+(defn pg-deftype-uniques
+  "collect unique keys on deftype"
+  {:added "4.0"}
+  [cols]
+  (let [groups (->>
+                 (keep
+                   (fn [[k {:keys [type sql ref]}]]
+                     (if (:unique sql)
+                       (if (vector? (:unique sql))
+                         (mapv
+                           (fn [s] [s {:key k, :type type, :ref ref}])
+                           (:unique sql))
+                         [[(:unique sql)
+                           {:key k, :type type, :ref ref}]])))
+                   cols)
+                 (mapcat identity)
+                 (group-by first)
+                 (map-vals (partial map second)))]
+    (mapv
+      (fn [keys]
+        (let [kcols (map
+                      (fn [migration-map-param-1]
+                        (let [key (get migration-map-param-1 :key)
+                              type (get migration-map-param-1 :type)
+                              ref (get migration-map-param-1 :ref)]
+                          (if (= :ref type)
+                            #{(pg-deftype-ref-name key ref)}
+                            #{(str/snake-case (name key))})))
+                      keys)]
+          (list '% [:unique (list 'quote kcols)])))
+      (vals groups))))
+
+(defn pg-deftype-primaries
+  "TODO"
+  {:added "4.0"}
+  [schema-primary]
+  (let [schema-primary (if (map? schema-primary)
+                         [schema-primary]
+                         schema-primary)]
+    (if (< 1 (count schema-primary))
+      [(list
+         :-
+         [:primary-key
+          (list
+            'quote
+            (map
+              (fn [migration-map-param-1]
+                (let [id (get migration-map-param-1 :id)
+                      type (get migration-map-param-1 :type)
+                      ref (get migration-map-param-1 :ref)]
+                  (if (= :ref type)
+                    (symbol (pg-deftype-ref-name id ref))
+                    (symbol (str/snake-case (name id))))))
+              schema-primary))])])))
+
+(defn pg-deftype-indexes
+  "create index statements"
+  {:added "4.0"}
+  [cols ttok]
+  (let [c-indexes (keep
+                    (fn [[k {:keys [type sql ref]}]]
+                      (let [migration-map-value-1 sql
+                            index (get migration-map-value-1 :index)]
+                        (if index
+                          (merge
+                            (if (true? index) {} index)
+                            {:key k, :type type, :ref ref}))))
+                    cols)
+        key-fn (fn [migration-map-param-2]
+                 (let [key (get migration-map-param-2 :key)
+                       type (get migration-map-param-2 :type)
+                       ref (get migration-map-param-2 :ref)]
+                   (if (= :ref type)
+                     #{(pg-deftype-ref-name key ref)}
+                     #{(str/snake-case (name key))})))
+        g-indexes (group-by :group c-indexes)
+        s-indexes (->>
+                    (get g-indexes nil)
+                    (mapv
+                      (fn [migration-map-param-3]
+                        (let [m migration-map-param-3
+                              using (get migration-map-param-3 :using)
+                              where (get migration-map-param-3 :where)]
+                          (seq
+                            (concat
+                              (list '%)
+                              (list
+                                (apply
+                                  vector
+                                  (seq
+                                    (concat
+                                      (list :create-index)
+                                      (list :on)
+                                      (list ttok)
+                                      (if using [:using using])
+                                      (list
+                                        (list
+                                          'quote
+                                          (list (key-fn m))))
+                                      (if
+                                        where
+                                        [\\ :where where])))))))))))
+        g-indexes (dissoc g-indexes nil)
+        _ (if (not-empty g-indexes)
+            (throw
+              (ex :postgres/deftype-invalid {} :ex/message "TODO")))]
+    s-indexes))
+
+
+
+(defn pg-deftype-foreign-groups
+  "collects foreign key groups"
+  {:added "4.0"}
+  [col-spec]
+  (->>
+    col-spec
+    (mapcat
+      (fn [[col {:keys [type ref foreign sql]}]]
+        (concat
+          (when (and (= :ref type) (:group ref))
+            [[(:group ref)
+              {:local-col (pg-deftype-ref-name col ref),
+               :remote-col (or (:column ref) :id),
+               :ns (:ns ref),
+               :link (:link ref),
+               :cascade (-> sql :cascade)}]])
+          (when foreign
+            (for
+              [[group f-spec] foreign]
+              [group
+               {:local-col
+                (if (= type :ref)
+                  (pg-deftype-ref-name col ref)
+                  (str/snake-case (name col))),
+                :remote-col (:column f-spec),
+                :ns (:ns f-spec),
+                :link (:link f-spec),
+                :cascade (-> sql :cascade)}])))))
+    (group-by first)
+    (map-vals (partial map second))))
+
+(defn pg-deftype-gen-constraint
+  "generates a foreign key constraint"
+  {:added "4.0"}
+  [sym migration-argument-1 mopts]
+  (let [migration-argument-1-value migration-argument-1
+        group (first (drop 0 migration-argument-1-value))
+        entries (first (drop 1 migration-argument-1-value))]
+    (let [table-name (str/snake-case (name sym))
+          c-name (str "fk_" table-name "_" (name group))
+          sample (first entries)
+          _ (when (not
+                    (if (= 1 (count entries))
+                      true
+                      (apply = (map :ns entries))))
+              (throw
+                (ex
+                  :postgres/deftype-invalid
+                  {:group group, :entries entries}
+                  :ex/message
+                  "All entries in a foreign group must point to same namespace")))
+          migration-map-value-1 sample
+          link (get migration-map-value-1 :link)
+          [_ r-en] (if link (common/pg-resolve-entry link mopts))
+          remote-schema (:static/schema r-en)
+          remote-table (name (:id link))
+          local-cols (map (comp symbol :local-col) entries)
+          remote-cols (map (comp symbol name :remote-col) entries)
+          remote-token (common/pg-base-token
+                         #{remote-table}
+                         remote-schema)
+          remote-refs (list 'quote (vec remote-cols))
+          refs-form (if (seq? remote-token)
+                      [(list remote-token remote-refs)]
+                      [remote-token remote-refs])
+          cascade (some :cascade entries)]
+      (list
+        '%
+        (cond->
+          (vec
+            (concat
+              [:constraint
+               (symbol c-name)
+               :foreign-key
+               (list 'quote local-cols)
+               :references]
+              refs-form))
+          cascade
+          (conj :on-delete-cascade))))))
+
+(defn pg-deftype-foreigns
+  "creates foreign key constraints"
+  {:added "4.0"}
+  [sym col-spec mopts]
+  (let [groups (pg-deftype-foreign-groups col-spec)]
+    (mapv
+      (fn [entry] (pg-deftype-gen-constraint sym entry mopts))
+      (seq groups))))
+
+(defn pg-deftype-spec-normalize
+  "normalizes the spec, inferring groups"
+  {:added "4.0"}
+  [col-spec]
+  (let [foreign-groups (->>
+                         col-spec
+                         (mapcat
+                           (fn [[_ {:keys [foreign]}]] (keys foreign)))
+                         set)]
+    (mapv
+      (fn [[k {:keys [type ref foreign], :as attrs}]]
+        (if (and
+              (= :ref type)
+              (not (:group ref))
+              (has? foreign-groups k))
+          [k (assoc-in attrs [:ref :group] k)]
+          [k attrs]))
+      col-spec)))
+
+(defn pg-deftype-partition
+  "creates partition by statement"
+  {:added "4.0"}
+  ([params] (pg-deftype-partition params []))
+  ([params col-spec]
+    (if-let [partition (:partition-by params)]
+      (let [[method cols] (cond
+                            (map? partition) [(:strategy partition)
+                                              (:columns partition)]
+                            (vector? partition) [(first partition)
+                                                 (rest partition)]
+                            :else (throw
+                                    (ex
+                                      :postgres/deftype-invalid
+                                      {:partition partition,
+                                       :col-spec col-spec}
+                                      :ex/message
+                                      "Not Valid Definition")))
+            col-map (into {} col-spec)
+            cols (apply
+                   list
+                   (vec
+                     (map
+                       (fn [col]
+                         (let [col-key (if (set? col) (first col) col)
+                               attrs (get col-map col-key)]
+                           (if (and (not attrs) (not (set? col)))
+                             (throw
+                               (ex
+                                 :postgres/deftype-invalid
+                                 {:column col,
+                                  :available (keys col-map)}
+                                 :ex/message
+                                 "Partition Column Not Found")))
+                           (hash-set
+                             (if attrs
+                               (if
+                                 (= (:type attrs) :ref)
+                                 (pg-deftype-ref-name
+                                   col-key
+                                   (:ref attrs))
+                                 (str/snake-case
+                                   (if
+                                     (string? col-key)
+                                     col-key
+                                     (name col-key))))
+                               (str/snake-case
+                                 (if
+                                   (string? col-key)
+                                   col-key
+                                   (name col-key)))))))
+                       cols)))]
+        (list :partition-by method (list 'quote cols))))))
+
+(defn pg-deftype
+  "creates a deftype statement"
+  {:added "4.0"}
+  [form]
+  (let [mopts (preprocess/macro-opts)
+        [mdefn [_ sym spec params]] (update
+                                      (grammar-spec/format-defn form)
+                                      1
+                                      vec)
+        params (if (seq? params) (first params) params)
+        migration-map-value-2 (meta sym)
+        final (get migration-map-value-2 :final)
+        existing (get migration-map-value-2 :existing)
+        schema (get migration-map-value-2 :static/schema)
+        schema-primary (get
+                         migration-map-value-2
+                         :static/schema-primary)
+        col-spec (mapv vec (partition 2 spec))
+        col-spec (pg-deftype-spec-normalize col-spec)
+        cols (mapv
+               (fn [migration-argument-0]
+                 (pg-deftype-col-fn
+                   migration-argument-0
+                   (assoc
+                     (or mopts {})
+                     :schema-primary
+                     schema-primary)))
+               col-spec)
+        ttok (common/pg-full-token sym schema)
+        tuniques (pg-deftype-uniques col-spec)
+        tprimaries (pg-deftype-primaries schema-primary)
+        tindexes (pg-deftype-indexes col-spec ttok)
+        tforeigns (pg-deftype-foreigns sym col-spec mopts)
+        tpartition (pg-deftype-partition params col-spec)
+        tcustom (:custom params)
+        tconstraints (->>
+                       (:constraints params)
+                       (mapv
+                         (fn [[k val]]
+                           (list
+                             '%
+                             [:constraint
+                              (symbol (str/tag k))
+                              :check
+                              (list 'quote (list val))]))))
+        tcomment (if (and (:doc mdefn) (not (str/blank? (:doc mdefn))))
+                   [[:comment :on :table ttok :is (:doc mdefn)]])
+        ccomments (keep
+                    (fn [[col attrs]]
+                      (if-let [doc (get-in attrs [:sql :comment])]
+                        [:comment
+                         :on
+                         :column
+                         (list '. ttok #{(str/snake-case (name col))})
+                         :is
+                         doc]))
+                    col-spec)
+        tpartition-default (if-let [default-part
+                                    (get-in
+                                      params
+                                      [:partition-by :default])]
+                             (let [migration-map-value-1 default-part
+                                   in (get migration-map-value-1 :in)
+                                   partition-name
+                                   (get migration-map-value-1 :name)
+                                   suffix
+                                   (or partition-name "$DEFAULT")
+                                   base-name (name sym)
+                                   part-name
+                                   (form-defpartition/pg-partition-name
+                                     base-name
+                                     suffix
+                                     [])
+                                   part-token
+                                   (if
+                                     in
+                                     (list '. #{in} #{part-name})
+                                     #{part-name})]
+                               [(if
+                                  (:unlogged params)
+                                  :create-unlogged-table
+                                  :create-table)
+                                :if-not-exists
+                                part-token
+                                :partition-of
+                                ttok
+                                :default]))]
+    (if (not existing)
+      (seq
+        (concat
+          (list 'do)
+          (if-not final [[:drop-table :if-exists ttok :cascade]] [])
+          (list
+            (apply
+              vector
+              (seq
+                (concat
+                  (list
+                    (if (:unlogged params)
+                      :create-unlogged-table
+                      :create-table))
+                  (list :if-not-exists)
+                  (list ttok)
+                  (list \()
+                  (list \\)
+                  (list
+                    (seq
+                      (concat
+                        (list \|)
+                        (list
+                          (vec
+                            (interpose
+                              (list :- ",\n")
+                              (concat
+                                cols
+                                tprimaries
+                                tuniques
+                                tconstraints
+                                tcustom
+                                tforeigns)))))))
+                  (list \\)
+                  (list \))
+                  tpartition))))
+          tindexes
+          tcomment
+          ccomments
+          (if tpartition-default [tpartition-default] [])))
+      "")))
+
+
+
+
+(defn pg-deftype-format-fragment
+  "parses the fragment contained by the symbol"
+  {:added "4.0"}
+  [esym]
+  (let [[esym & extras] (if (vector? esym) esym [esym])
+        extras (apply hash-map extras)
+        resolved (if (symbol? esym)
+                   (let [esym-ns (namespace esym)
+                         resolve-sym (if (or (nil? esym-ns)
+                                            (= "-" esym-ns))
+                                       (symbol (name esym))
+                                       esym)]
+                     (if (or (nil? esym-ns)
+                             (= "-" esym-ns))
+                       (Base/resolve (Base/namespace (ns-current)) resolve-sym)
+                       (Base/resolve resolve-sym)))
+                   nil)
+        form (deref
+               (or resolved
+                 (throw
+                   (ex
+                     :postgres/deftype-invalid
+                     {:input esym}
+                     :ex/message
+                     "Cannot resolve symbol."))))]
+    (->>
+      (partition 2 form)
+      (mapcat
+        (fn [[k attr]] [k
+                        (if-let [m (get extras k)]
+                          (merge-nested attr m)
+                          attr)])))))
+
+(defn pg-deftype-format-generated
+  "processes generated columns"
+  {:added "4.0"}
+  [migration-map-param-1]
+  (let [attrs migration-map-param-1
+        type (get migration-map-param-1 :type)
+        generated (get migration-map-param-1 :generated)]
+    (if generated
+      (let [raw-val (if (= type :enum)
+                      (list '++ generated (get-in attrs [:enum :ns]))
+                      generated)]
+        (-> attrs
+         (dissoc :generated)
+         (assoc :ignore true)
+         (assoc-in
+           [:sql :raw]
+           [:generated
+            :always
+            :as
+            (list 'quote (list raw-val))
+            :stored])))
+      attrs)))
+
+(defn pg-deftype-format-raw
+  "processes the type definition"
+  {:added "4.0"}
+  [spec migration-map-param-1]
+  (let [msym migration-map-param-1
+        raw (get migration-map-param-1 :raw)]
+    (let [cols (if (vector? raw)
+                 (mapcat
+                   (fn [e]
+                     (cond
+                       (symbol? e) (let [e-ns (namespace e)
+                                        resolve-sym (if (or (nil? e-ns)
+                                                           (= "-" e-ns))
+                                                      (symbol (name e))
+                                                      e)]
+                                    (deref
+                                     (if (or (nil? e-ns)
+                                             (= "-" e-ns))
+                                       (Base/resolve (Base/namespace (ns-current)) resolve-sym)
+                                       (Base/resolve resolve-sym))))
+                       (list? e) (eval e)
+                       :else e))
+                   raw))
+          raw-spec (concat cols spec)
+          sorted-spec (->>
+                        (partition 2 raw-spec)
+                        (map vec)
+                        (sort-by
+                          (fn [[k {:keys [priority]}]]
+                            (or priority 50)))
+                        (mapcat identity))]
+      [sorted-spec msym])))
+
+(defn pg-deftype-format
+  "formats an input form"
+  {:added "4.0"}
+  [form]
+  (let [[mdefn [op sym spec params]] (update
+                                       (grammar-spec/format-defn form)
+                                       1
+                                       vec)
+        [spec {:keys [prepend append track public], :as msym}] (pg-deftype-format-raw
+                                                                 spec
+                                                                 (meta
+                                                                   sym))
+        spec (->>
+               (concat
+                 (mapcat pg-deftype-format-fragment prepend)
+                 spec
+                 (mapcat pg-deftype-format-fragment append))
+               (partition 2)
+               (map vec)
+               (mapcat
+                 (fn [[k
+                       {:keys [type primary ref sql scope generated],
+                        :as attrs}]]
+                   (let [attrs (pg-deftype-format-generated attrs)
+                         migration-map-value-1 attrs
+                         type (get migration-map-value-1 :type)
+                         primary (get migration-map-value-1 :primary)
+                         ref (get migration-map-value-1 :ref)
+                         sql (get migration-map-value-1 :sql)
+                         scope (get migration-map-value-1 :scope)
+                         _ (or
+                             type
+                             (throw
+                               (ex
+                                 :postgres/deftype-invalid
+                                 {:attrs attrs}
+                                 :ex/message
+                                 "type cannot be null")))
+                         _ (if scope (schema/check-scope scope))
+                         scope (or
+                                 scope
+                                 (cond
+                                   primary :-/id
+                                   (= :ref type) :-/ref
+                                   :else :-/data))
+                         attrs (assoc attrs :scope scope)]
+                     [k attrs])))
+               vec)
+        track (if (vector? track) (first track) track)
+        track (if (symbol? track)
+                (let [track-ns (namespace track)
+                      resolve-sym (if (or (nil? track-ns)
+                                         (= "-" track-ns))
+                                    (symbol (name track))
+                                    track)]
+                  (deref
+                   (if (or (nil? track-ns)
+                           (= "-" track-ns))
+                     (Base/resolve (Base/namespace (ns-current)) resolve-sym)
+                     (Base/resolve resolve-sym))))
+                track)
+        fmeta {:static/tracker (if track (tracker/map->Tracker track)),
+               :static/public public,
+               :static/dbtype :table}
+        qmeta (qualified-keys msym)]
+    [(merge fmeta qmeta)
+     (list op (with-meta sym (merge msym fmeta qmeta)) spec params)]))
+
+;; Use the original Foundation hydration entrypoint. The native helper remains
+;; available as `native-hydrate/pg-deftype-hydrate` for isolated compatibility.
+(def pg-deftype-hydrate native-hydrate/pg-deftype-hydrate-original)

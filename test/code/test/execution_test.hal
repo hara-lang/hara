@@ -1,0 +1,205 @@
+(ns code.test.execution-test
+  (:require [code.test.execution :as execution]))
+
+^{:refer code.test.execution/run-fact}
+(Test/check
+ [{:name "fact hooks and assertions use the owning namespace and restore the caller"
+   :test (fn []
+    (let [before (execution/snapshot)
+          events (atom [])
+          owner (ns-current)
+          fact {:namespace owner :desc "namespace ownership" :meta {}
+                :before (fn [] (swap! events conj [:before (ns-current)]))
+                :function (fn [_]
+                  (swap! events conj [:body (ns-current)])
+                  [(Test/compare (ns-current) owner)])
+                :after (fn [] (swap! events conj [:after (ns-current)]))}]
+      (try
+        (execution/reset)
+        [(eval-in-ns (quote code.test.execution)
+           (fn [] [(:status (execution/run-fact fact {})) (ns-current)]))
+         (deref events)
+         (ns-current)]
+        (finally (execution/restore before)))))
+   :expected (quote [[:passed code.test.execution]
+                     [[:before code.test.execution-test]
+                      [:body code.test.execution-test]
+                      [:after code.test.execution-test]]
+                     code.test.execution-test])}])
+
+^{:refer code.test.execution/snapshot}
+(Test/check [{:name "snapshot retains the exact active journal"
+ :test (fn [] (let [before (execution/snapshot)]
+  (try (execution/restore {:token "saved" :events []})
+       (execution/snapshot)
+       (finally (execution/restore before)))))
+ :expected {:token "saved" :events []}}])
+
+^{:refer code.test.execution/restore}
+(Test/check [{:name "snapshot restore round trip preserves the enclosing evaluation"
+ :test (fn [] (let [before (execution/snapshot)]
+  (try (execution/reset)
+       (let [token (execution/begin) saved (execution/snapshot)]
+        (execution/reset)
+        (execution/restore saved)
+        [(= token (:token (execution/snapshot))) (= saved (execution/snapshot))
+         (:status (execution/finish token))])
+       (finally (execution/restore before)))))
+ :expected [true true :none]}])
+
+^{:refer code.test.execution/reset}
+(Test/check [{:name "reset is idempotent"
+ :test (fn [] (let [before (execution/snapshot)]
+  (try (execution/reset) (execution/begin)
+       [(execution/reset) (execution/reset) (execution/snapshot)]
+       (finally (execution/restore before)))))
+ :expected [nil nil nil]}])
+
+^{:refer code.test.execution/begin}
+(Test/check [{:name "begin rejects nesting and never reuses a consumed token"
+ :test (fn [] (let [before (execution/snapshot)]
+  (try (execution/reset)
+       (let [first-token (execution/begin)
+             nested (try (execution/begin) :missed (catch error :rejected))]
+        (execution/finish first-token)
+        (let [second-token (execution/begin)]
+         [nested (not= first-token second-token)
+          (try (execution/finish first-token) :missed (catch error :stale))
+          (:status (execution/finish second-token))]))
+       (finally (execution/restore before)))))
+ :expected [:rejected true :stale :none]}])
+
+^{:refer code.test.execution/check-report}
+(Test/check [{:name "check reports retain exact printable comparison evidence"
+ :test (fn [] (execution/check-report (Test/result "value" 42 42 (Test/compare 42 42))))
+ :expected {:passed true :actual "42" :expected "42" :failures 0}}])
+
+^{:refer code.test.execution/fact-report}
+(Test/check [{:name "fact reports project native checks without retaining their callbacks"
+ :test (fn [] (execution/fact-report
+  {:namespace 'fixture :desc "value" :status :passed :elapsed 0
+   :function (fn [] :not-portable)
+   :checks [(Test/result "value" 42 42 (Test/compare 42 42))]}))
+ :expected {:namespace 'fixture :desc "value" :status :passed :elapsed 0
+            :checks [{:passed true :actual "42" :expected "42" :failures 0}]}}])
+
+^{:refer code.test.execution/record}
+(Test/check [{:name "record preserves its result and records only inside an active scope"
+ :test (fn [] (let [before (execution/snapshot)
+                    result {:status :passed :checks []}]
+  (try (execution/reset)
+       [(= result (execution/record result))
+        (execution/snapshot)
+        (let [token (execution/begin)]
+         (execution/record result)
+         (:facts (execution/finish token)))]
+       (finally (execution/restore before)))))
+ :expected [true nil 1]}])
+
+^{:refer code.test.execution/run-fact}
+(Test/check [{:name "nested facts are recorded once in completion order"
+ :test (fn [] (let [before (execution/snapshot) calls (atom 0)
+                   inner {:namespace (ns-current) :desc "inner" :meta {}
+                          :function (fn [_] (swap! calls inc) [(Test/compare 42 42)])}
+                   outer {:namespace (ns-current) :desc "outer" :meta {}
+                          :function (fn [_] (execution/run-fact inner {}) [(Test/compare 2 2)])}]
+  (try (execution/reset)
+       (let [token (execution/begin) result (execution/run-fact outer {}) report (execution/finish token)]
+        [(:status result) (deref calls) (:checks report)
+         (vec (map :desc (:events report)))])
+       (finally (execution/restore before)))))
+ :expected [:passed 1 2 ["inner" "outer"]]}
+ {:name "empty and failing facts cannot produce passing outcomes"
+ :test (fn [] (let [before (execution/snapshot)]
+  (try (execution/reset)
+       (let [token (execution/begin)
+             empty (execution/run-fact {:namespace (ns-current) :desc "empty" :meta {} :function (fn [_] [])} {})
+             failed (execution/run-fact {:namespace (ns-current) :desc "failed" :meta {} :function (fn [_] [(Test/compare 1 2)])} {})
+             report (execution/finish token)]
+        [(:status empty) (:error empty) (:status failed) (:status report) (:checks report)])
+       (finally (execution/restore before)))))
+ :expected [:failed "Fact executed no assertions" :failed :failed 1]}])
+
+^{:refer code.test.execution/finish}
+(Test/check [{:name "finish consumes results and rejects reused tokens"
+ :test (fn [] (let [before (execution/snapshot)]
+  (try (execution/reset)
+       (let [token (execution/begin) report (execution/finish token)]
+        [report (execution/snapshot)
+         (try (execution/finish token) :missed (catch error :stale))])
+       (finally (execution/restore before)))))
+ :expected [{:report/version 1 :events [] :facts 0 :checks 0 :status :none} nil :stale]}])
+
+^{:refer code.test.execution/+journal+}
+(Test/check [{:name "journal atom owns the snapshot state"
+ :test (fn [] (let [before (execution/snapshot)]
+  (try (execution/restore {:token "owned" :events []})
+       (= (deref execution/+journal+) (execution/snapshot))
+       (finally (execution/restore before)))))
+ :expected true}])
+
+^{:refer code.test.execution/run-suite}
+(Test/check
+ [{:name "suite execution journals registered facts exactly once"
+   :test (fn []
+           (let [before (execution/snapshot)
+                 description (str (gensym "journal-suite-"))
+                 calls (atom 0)]
+             (try
+               (execution/reset)
+               (Test/register {:desc description :test (fn [] (swap! calls inc)) :expected 1})
+               (let [token (execution/begin)
+                     result (execution/run-suite {})
+                     report (execution/finish token)]
+                 [(:status result) (:facts report) (:checks report) (deref calls)])
+               (finally (Test/remove description) (execution/restore before)))))
+   :expected [:passed 1 1 1]}])
+
+^{:refer code.test.execution/record-checks}
+(Test/check
+ [{:name "primitive evidence includes failures and suppresses fact-owned checks"
+   :test (fn []
+           (let [before (execution/snapshot)
+                 failed (Test/result "failed" 1 2 (Test/compare 1 2))]
+             (try
+               (execution/reset)
+               (let [token (execution/begin)]
+                 (execution/record-checks [failed])
+                 (binding [execution/*fact-depth* 1] (execution/record-checks [failed]))
+                 (let [report (execution/finish token)]
+                   [(:status report) (:facts report) (:checks report)
+                    (get-in report [:events 0 :checks 0 :passed])]))
+               (finally (execution/restore before)))))
+   :expected [:failed 1 1 false]}
+  {:name "native check observer runs once and nested suite checks are not duplicated"
+   :test (fn []
+           (let [before (execution/snapshot)]
+             (try
+               (execution/reset)
+               (let [token (execution/begin)]
+                 (Test/check [{:name "observed" :test (fn [] 42) :expected 42}])
+                 (execution/run-fact {:namespace (ns-current) :desc "nested" :meta {}
+                                      :test (fn [] 3) :expected 3} {})
+                 (let [report (execution/finish token)]
+                   [(:status report) (:facts report) (:checks report)]))
+               (finally (execution/restore before)))))
+   :expected [:passed 2 2]}])
+
+^{:refer code.test.execution/*fact-depth*}
+(Test/check
+ [{:name "fact depth restores its baseline after dynamic scope"
+   :test (fn [] [execution/*fact-depth*
+                 (binding [execution/*fact-depth* 2] execution/*fact-depth*)
+                 execution/*fact-depth*])
+   :expected [0 2 0]}])
+
+^{:refer code.test.execution/fact-report}
+(Test/check
+ [{:name "tagged metadata is portable and its EDN representation round trips"
+   :test (fn []
+           (let [metadata {:tags #{:smoke}}
+                 report (execution/fact-report {:status :passed :meta metadata :checks []})]
+             [(:meta/source report)
+              (= metadata (Edn/read (:meta/source report)))
+              (has? report :meta)]))
+   :expected ["{:tags #{:smoke}}" true false]}])

@@ -1,24 +1,801 @@
 (ns lang.model.v1.spec-postgres.postgres-form-deftype-test
-  (:require [lang.model.v1.spec-postgres.postgres-form-deftype :as form]))
+  (:require [lang.model.v1.spec-postgres.postgres-common :as common]
+            [lang.model.v1.spec-postgres.postgres-form-deftype :refer :all]
+            [lang.base.book :as book]
+            [lang.core.library-snapshot :as snap]
+            [std.lib.schema :as schema])
+  (:use code.test))
 
-^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-ref-name}
-(Test/check [{:name "publishes the archived reference-name helper"
-              :test (fn [] (form/pg-deftype-ref-name 'owner))
-              :expected "owner_id"}])
+(def +fragment-sample+
+  [:a {:type :int} :b {:type :text}])
 
-^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-format}
-(Test/check [{:name "publishes the PostgreSQL table formatter"
-              :test (fn [] (:static/dbtype
-                            (first (form/pg-deftype-format
-                                    '(deftype Entry [id {:type :uuid :primary true}] {})))))
-              :expected :table}])
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-enum-col, :added "4.0"}
+(fact
+  "creates the enum column"
+  (let [migration-redef-var-0 (resolve 'common/pg-linked-token)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (fn [& _] '(:enum)))
+      (pg-deftype-enum-col [:col :attr] {} {})
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0))))
+  =>
+  '[:col (:enum)])
 
-^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-hydrate}
-(Test/check [{:name "publishes table hydration"
-              :test (fn [] (fn? form/pg-deftype-hydrate))
-              :expected true}])
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-ref-link, :added "4.0"}
+(fact
+  "creates the ref entry for"
+  (let [migration-redef-var-0 (resolve 'snap/get-book)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)
+        migration-redef-var-1 (resolve 'book/get-base-entry)
+        migration-redef-original-1 (deref migration-redef-var-1)
+        migration-redef-meta-1 (meta migration-redef-var-1)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (constantly {}))
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-1)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-1)))
+          migration-redef-meta-1)
+        (constantly
+          {:form [nil nil [:id {:type :uuid}]],
+           :static/schema "schema"}))
+      (pg-deftype-ref-link
+        :col
+        {:ns :User, :link {:id :User, :lang :postgres, :module :user}}
+        {})
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0)
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-1)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-1)))
+            migration-redef-meta-1)
+          migration-redef-original-1))))
+  =>
+  (satisfies
+    (fn [[n t r]] (and (= n "col_id") (= t [:uuid]) (vector? r)))))
 
-^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype}
-(Test/check [{:name "publishes the complete table emitter"
-              :test (fn [] (fn? form/pg-deftype))
-              :expected true}])
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-ref-current, :added "4.0"}
+(fact
+  "creates the ref entry for "
+  (pg-deftype-ref-current
+    :col
+    {:current {:id "id", :schema "schema", :type :uuid}}
+    {})
+  =>
+  '["col_id" [:uuid] [((. #{"schema"} #{"id"}) #{"id"})]])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-ref, :added "4.0"}
+(fact
+  "creates the ref entry"
+  (let [migration-redef-var-0 (resolve 'pg-deftype-ref-current)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)
+        migration-redef-var-1 (resolve 'pg-deftype-ref-link)
+        migration-redef-original-1 (deref migration-redef-var-1)
+        migration-redef-meta-1 (meta migration-redef-var-1)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (fn [& _] :current))
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-1)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-1)))
+          migration-redef-meta-1)
+        (fn [& _] :link))
+      [(pg-deftype-ref :col {:current {}} {})
+       (pg-deftype-ref :col {} {})]
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0)
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-1)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-1)))
+            migration-redef-meta-1)
+          migration-redef-original-1))))
+  =>
+  [:current :link])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-col-sql, :added "4.0"}
+(fact
+  "formats the sql on deftype"
+  (pg-deftype-col-sql [] {:cascade true, :default 1})
+  =>
+  [:on-delete-cascade :default 1]
+  (pg-deftype-col-sql [] {:generated '(* w h)})
+  =>
+  [:generated :always :as (list 'quote (list '(* w h))) :stored])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-col-fn, :added "4.0"}
+(fact
+  "formats the column on deftype"
+  (let [migration-redef-var-0 (resolve 'common/pg-type-alias)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (fn [x] x))
+      (pg-deftype-col-fn
+        [:col {:type :uuid, :primary true}]
+        {:schema-primary {}})
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0))))
+  =>
+  (contains [:uuid :primary-key])
+  (let [migration-redef-var-0 (resolve 'common/pg-type-alias)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (fn [x] x))
+      (pg-deftype-col-fn
+        [:col {:type :uuid, :sql {:generated true}}]
+        {})
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0))))
+  =>
+  (contains
+    [:uuid :generated :always :as (list 'quote (list true)) :stored])
+  (let [migration-redef-var-0 (resolve 'common/pg-type-alias)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (fn [x] x))
+      (pg-deftype-col-fn
+        [:col {:type :uuid, :sql {:generated :int}}]
+        {})
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0))))
+  =>
+  (contains
+    [:uuid :generated :always :as (list 'quote (list :int)) :stored])
+  (let [migration-redef-var-0 (resolve 'snap/get-book)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)
+        migration-redef-var-1 (resolve 'book/get-base-entry)
+        migration-redef-original-1 (deref migration-redef-var-1)
+        migration-redef-meta-1 (meta migration-redef-var-1)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (constantly {}))
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-1)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-1)))
+          migration-redef-meta-1)
+        (constantly
+          {:form [nil nil [:id {:type :uuid}]],
+           :static/schema "schema"}))
+      (set
+        (pg-deftype-col-fn
+          [:rev
+           {:type :ref,
+            :ref {:group :rev, :ns :Rev},
+            :sql {:cascade true}}]
+          {}))
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0)
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-1)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-1)))
+            migration-redef-meta-1)
+          migration-redef-original-1))))
+  =>
+  (satisfies (fn [s] (not (has? s :on-delete-cascade))))
+  (let [migration-redef-var-0 (resolve 'snap/get-book)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)
+        migration-redef-var-1 (resolve 'book/get-base-entry)
+        migration-redef-original-1 (deref migration-redef-var-1)
+        migration-redef-meta-1 (meta migration-redef-var-1)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (constantly {}))
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-1)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-1)))
+          migration-redef-meta-1)
+        (constantly
+          {:form [nil nil [:id {:type :uuid}]],
+           :static/schema "schema"}))
+      (set
+        (pg-deftype-col-fn
+          [:rev {:type :ref, :ref {:ns :Rev}, :sql {:cascade true}}]
+          {}))
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0)
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-1)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-1)))
+            migration-redef-meta-1)
+          migration-redef-original-1))))
+  =>
+  (satisfies (fn [s] (has? s :on-delete-cascade))))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-uniques, :added "4.0"}
+(fact
+  "collect unique keys on deftype"
+  (pg-deftype-uniques [[:col {:type :text, :sql {:unique true}}]])
+  =>
+  '[(% [:unique '(#{"col"})])])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-primaries, :added "4.1"}
+(fact
+  "extracts primary keys for table definition"
+  (pg-deftype-primaries [{:id :a, :type :int} {:id :b, :type :int}])
+  =>
+  [(list :- [:primary-key ''(a b)])])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-indexes, :added "4.0"}
+(fact
+  "create index statements"
+  (pg-deftype-indexes
+    [[:col {:type :text, :sql {:index true}}]]
+    "table")
+  =>
+  '[(% [:create-index :on "table" '(#{"col"})])])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-foreign-groups, :added "4.1"}
+(fact
+  "collects foreign key groups"
+  (pg-deftype-foreign-groups
+    [[:u {:type :ref, :ref {:group :g1, :ns :user, :link {:id :user}}}]
+     [:a
+      {:type :text,
+       :foreign {:g1 {:column :uid, :ns :user, :link {:id :user}}}}]])
+  =>
+  {:g1
+   '({:local-col "u_id",
+      :remote-col :id,
+      :ns :user,
+      :link {:id :user},
+      :cascade nil}
+      {:local-col "a",
+       :remote-col :uid,
+       :ns :user,
+       :link {:id :user},
+       :cascade nil})}
+  (pg-deftype-foreign-groups
+    [[:rev
+      {:type :ref,
+       :ref {:group :rev, :ns :Rev, :link {:id :Rev}},
+       :sql {:cascade true}}]])
+  =>
+  (contains {:rev (contains [(contains {:cascade true})])}))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-gen-constraint, :added "4.1"}
+(fact
+  "generates a foreign key constraint"
+  (pg-deftype-gen-constraint
+    'mytable
+    [:g1
+     [{:local-col "u_id",
+       :remote-col :id,
+       :ns :user,
+       :link {:id :users}}]]
+    {})
+  =>
+  '(%
+     [:constraint
+      fk_mytable_g1
+      :foreign-key
+      '(u_id)
+      :references
+      #{"users"}
+      '(id)])
+  (let [res (pg-deftype-gen-constraint
+              'RevLog
+              [:rev
+               [{:local-col "rev_id",
+                 :remote-col :id,
+                 :ns :Rev,
+                 :link {:id :Rev},
+                 :cascade true}]]
+              {})]
+    (some #{:on-delete-cascade} (second res)))
+  =>
+  :on-delete-cascade)
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-foreigns, :added "4.1"}
+(fact
+  "creates foreign key constraints"
+  (let [migration-redef-var-0 (resolve 'snap/get-book)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)
+        migration-redef-var-1 (resolve 'book/get-base-entry)
+        migration-redef-original-1 (deref migration-redef-var-1)
+        migration-redef-meta-1 (meta migration-redef-var-1)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (constantly {}))
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-1)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-1)))
+          migration-redef-meta-1)
+        (constantly
+          {:static/schema "s", :form [nil nil [:id {:type :uuid}]]}))
+      (pg-deftype-foreigns
+        't
+        [[:u
+          {:type :ref,
+           :ref {:group :g1, :ns :user, :link {:id :user}}}]
+         [:a
+          {:type :text,
+           :foreign
+           {:g1 {:column :uid, :ns :user, :link {:id :user}}}}]]
+        {})
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0)
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-1)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-1)))
+            migration-redef-meta-1)
+          migration-redef-original-1))))
+  =>
+  (satisfies
+    (fn [res]
+      (let [[op body] (first res) [_ name _ cols _ token rcols] body]
+        (and
+          (= op '%)
+          (= name 'fk_t_g1)
+          (= cols ''(u_id a))
+          (= token #{"user"})
+          (= rcols ''(id uid)))))))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-spec-normalize, :added "4.1"}
+(fact
+  "normalizes the spec, inferring groups"
+  (let [spec [[:class
+               {:foreign
+                {:rev {:ns :Rev, :column :class, :link {:id :Rev}}}}]
+              [:class-table
+               {:foreign
+                {:rev
+                 {:ns :Rev, :column :class-table, :link {:id :Rev}}}}]
+              [:rev {:type :ref, :ref {:ns :Rev, :link {:id :Rev}}}]]]
+    (second (last (pg-deftype-spec-normalize spec))))
+  =>
+  (contains {:ref (contains {:group :rev})}))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-partition, :added "4.1"}
+(do
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-partition,
+   :added "4.1"}
+ (fact
+  "creates partition by statement"
+  (pg-deftype-partition
+   {:partition-by [:range :abc-def]}
+   [[:abc-def {:type :time}]])
+  =>
+  '(:partition-by :range '(#{"abc_def"}))
+  (let
+   [colspec
+    [[:id
+      {:type :uuid,
+       :primary "default",
+       :sql {:default '(uuid-generate-v4)},
+       :scope :-/id}]
+     [:class
+      {:type :enum,
+       :required true,
+       :scope :-/info,
+       :primary "default",
+       :enum {:ns 'szndb.core.type-seed/EnumClassType},
+       :sql {:unique ["class"]}}]
+     [:class-table
+      {:type :enum,
+       :required true,
+       :scope :-/info,
+       :primary "primary",
+       :enum {:ns 'szndb.core.type-seed/EnumTableType},
+       :sql {:unique ["class"]}}]
+     [:class-ref
+      {:type :uuid,
+       :required true,
+       :sql {:unique ["class"]},
+       :scope :-/data}]
+     [:index
+      {:type :integer,
+       :required true,
+       :scope :-/info,
+       :sql {:default 0}}]
+     [:current {:type :map, :sql {:default "{}"}, :scope :-/data}]
+     [:op-created {:type :uuid, :scope :-/data}]
+     [:op-updated {:type :uuid, :scope :-/data}]
+     [:time-created {:type :time, :scope :-/data}]
+     [:time-updated {:type :time, :scope :-/data}]]]
+   (pg-deftype-partition
+    {:partition-by {:strategy :list, :columns [:class]}}
+    colspec))
+  =>
+  '(:partition-by :list '(#{"class"})))
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-partition,
+   :added "4.1",
+   :id :pg-deftype-partition-nested-0}
+ (fact
+  "pg-deftype-partition handles sets in column list"
+  (pg-deftype-partition {:partition-by [:list #{"class"}]} [])
+  =>
+  '(:partition-by :list '(#{"class"})))
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-partition,
+   :added "4.1",
+   :id :pg-deftype-partition-nested-1}
+ (fact
+  "pg-deftype-partition handles map format"
+  (pg-deftype-partition
+   {:partition-by {:strategy :list, :columns [:class]}}
+   [[:class {:type :text}]])
+  =>
+  '(:partition-by :list '(#{"class"})))
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-partition,
+   :added "4.1",
+   :id :pg-deftype-partition-nested-2}
+ (fact
+  "pg-deftype-partition should error if column is not found"
+  (pg-deftype-partition
+   {:partition-by {:strategy :list, :columns [:wrong-column]}}
+   [[:class {:type :text}]])
+  =>
+  (throws)))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype, :added "4.0"}
+(do
+ ^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype,
+   :added "4.0"}
+ (fact
+  "creates a deftype statement"
+  (let
+   [migration-redef-var-0
+    (resolve 'common/pg-full-token)
+    migration-redef-original-0
+    (deref migration-redef-var-0)
+    migration-redef-meta-0
+    (meta migration-redef-var-0)]
+   (try
+    (intern
+     (symbol (namespace (var-sym migration-redef-var-0)))
+     (with-meta
+      (symbol (name (var-sym migration-redef-var-0)))
+      migration-redef-meta-0)
+     (fn [s sch] (str sch "." s)))
+    (pg-deftype '(deftype ^{:static/schema "s"} t [] {}))
+    (finally
+     (intern
+      (symbol (namespace (var-sym migration-redef-var-0)))
+      (with-meta
+       (symbol (name (var-sym migration-redef-var-0)))
+       migration-redef-meta-0)
+      migration-redef-original-0))))
+  =>
+  '(do
+    [:drop-table :if-exists "s.t" :cascade]
+    [:create-table :if-not-exists "s.t" \( \\ (\| []) \\ \)]))
+ ^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype,
+   :added "4.0",
+   :id :pg-deftype-nested-0}
+ (fact
+  "pg-deftype supports unlogged option"
+  (let
+   [migration-redef-var-0
+    (resolve 'common/pg-full-token)
+    migration-redef-original-0
+    (deref migration-redef-var-0)
+    migration-redef-meta-0
+    (meta migration-redef-var-0)]
+   (try
+    (intern
+     (symbol (namespace (var-sym migration-redef-var-0)))
+     (with-meta
+      (symbol (name (var-sym migration-redef-var-0)))
+      migration-redef-meta-0)
+     (fn [s sch] (str sch "." s)))
+    (pg-deftype '(deftype ^{:static/schema "s"} t [] {:unlogged true}))
+    (finally
+     (intern
+      (symbol (namespace (var-sym migration-redef-var-0)))
+      (with-meta
+       (symbol (name (var-sym migration-redef-var-0)))
+       migration-redef-meta-0)
+      migration-redef-original-0))))
+  =>
+  '(do
+    [:drop-table :if-exists "s.t" :cascade]
+    [:create-unlogged-table :if-not-exists "s.t" \( \\ (\| []) \\ \)]))
+ ^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype,
+   :added "4.0",
+   :id :pg-deftype-nested-1}
+ (fact
+  "pg-deftype renders partition logic"
+  (let
+   [migration-redef-var-0
+    (resolve 'common/pg-full-token)
+    migration-redef-original-0
+    (deref migration-redef-var-0)
+    migration-redef-meta-0
+    (meta migration-redef-var-0)]
+   (try
+    (intern
+     (symbol (namespace (var-sym migration-redef-var-0)))
+     (with-meta
+      (symbol (name (var-sym migration-redef-var-0)))
+      migration-redef-meta-0)
+     (fn [s sch] (str sch "." s)))
+    (let
+     [form
+      '(deftype
+        ^{:static/schema "s"} t
+        [:class {:type :text}]
+        {:partition-by
+         {:strategy :list,
+          :columns [:class],
+          :default {:in "schema_type_impl", :name "$DEFAULT"}}})
+      res
+      (pg-deftype form)]
+     (last res))
+    (finally
+     (intern
+      (symbol (namespace (var-sym migration-redef-var-0)))
+      (with-meta
+       (symbol (name (var-sym migration-redef-var-0)))
+       migration-redef-meta-0)
+      migration-redef-original-0))))
+  =>
+  [:create-table
+   :if-not-exists
+   '(. #{"schema_type_impl"} #{"t__$DEFAULT"})
+   :partition-of
+   "s.t"
+   :default]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-format-fragment, :added "4.1"}
+(fact
+  "parses the fragment contained by the symbol"
+  (pg-deftype-format-fragment
+    'lang.model.v1.spec-postgres.postgres-form-deftype-test/+fragment-sample+)
+  =>
+  '(:a {:type :int} :b {:type :text})
+  (pg-deftype-format-fragment
+    ['lang.model.v1.spec-postgres.postgres-form-deftype-test/+fragment-sample+
+     :a
+     {:c :d}])
+  =>
+  '(:a {:type :int, :c :d} :b {:type :text}))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-format-generated, :added "4.1"}
+(fact
+  "processes generated columns"
+  (pg-deftype-format-generated {:type :int, :generated '(* 2 x)})
+  =>
+  {:type :int,
+   :ignore true,
+   :sql {:raw [:generated :always :as ''((* 2 x)) :stored]}}
+  (pg-deftype-format-generated
+    {:type :enum, :generated :A, :enum {:ns :E}})
+  =>
+  {:type :enum,
+   :enum {:ns :E},
+   :ignore true,
+   :sql {:raw [:generated :always :as ''((++ :A :E)) :stored]}})
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-format-raw, :added "4.1"}
+(fact
+  "processes the type definition"
+  (pg-deftype-format-raw
+    [:a {:type :int}]
+    {:raw
+     ['lang.model.v1.spec-postgres.postgres-form-deftype-test/+fragment-sample+]})
+  =>
+  (contains
+    ['(:a {:type :int} :b {:type :text} :a {:type :int})
+     (satisfies map?)])
+  (first
+    (pg-deftype-format-raw
+      [:a {:type :int, :priority 100} :b {:type :int, :priority 10}]
+      {:raw []}))
+  =>
+  [:b {:type :int, :priority 10} :a {:type :int, :priority 100}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-format, :added "4.0"}
+(fact
+  "formats an input form"
+  (pg-deftype-format '(deftype t [:a {:type :int}] {}))
+  =>
+  (satisfies vector?)
+  (let [migration-redef-var-0 (resolve 'common/pg-type-alias)
+        migration-redef-original-0 (deref migration-redef-var-0)
+        migration-redef-meta-0 (meta migration-redef-var-0)]
+    (try
+      (intern
+        (symbol (namespace (var-sym migration-redef-var-0)))
+        (with-meta
+          (symbol (name (var-sym migration-redef-var-0)))
+          migration-redef-meta-0)
+        (fn [x] x))
+      (let [[_ form] (pg-deftype-format
+                       '(deftype
+                          t
+                          [:a {:type :int, :generated true}]
+                          {}))]
+        (nth (nth form 2) 1))
+      (finally
+        (intern
+          (symbol (namespace (var-sym migration-redef-var-0)))
+          (with-meta
+            (symbol (name (var-sym migration-redef-var-0)))
+            migration-redef-meta-0)
+          migration-redef-original-0))))
+  =>
+  (contains
+    {:type :int,
+     :ignore true,
+     :sql (contains {:raw [:generated :always :as ''(true) :stored]})}))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-ref-name :id native-reference-names}
+(fact "reference names retain the original helper and explicit raw override"
+ [(pg-deftype-ref-name 'owner)
+  (pg-deftype-ref-name :account-owner {})
+  (pg-deftype-ref-name :account-owner {:raw "tenant_key"})]
+ => ["owner_id" "account_owner_id" "tenant_key"])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-hydrate :id original-hydration}
+(fact "the hydration entrypoint uses the Foundation schema representation"
+ (let [[metadata form]
+       (pg-deftype-hydrate ['deftype 'Record [:id {:type :uuid :primary true}] {}]
+                          {}
+                          {:module {:id 'demo.core
+                                    :static {:application ["audit"]
+                                             :all {:schema ["audit"]}}}})
+       seed (:static/schema-seed metadata)]
+  [(select-keys metadata [:static/schema :static/application :static/schema-primary])
+   (schema/schema? seed)
+   (:vec seed)
+   (select-keys (first (get-in seed [:tree :Record :id]))
+                [:type :order :primary])
+   form])
+ => [{:static/schema "audit"
+      :static/application ["audit"]
+      :static/schema-primary {:id :id :type :uuid}}
+     true
+     [:Record [:id {:type :uuid :primary true}]]
+     {:type :uuid :order 0 :primary true}
+     '(deftype Record [:id {:type :uuid :primary true}] {})])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-partition :id original-missing-column-input}
+(fact "the original empty map-format fixture is an invalid partition input"
+ (try
+  (pg-deftype-partition {:partition-by {:strategy :list :columns [:class]}} [])
+  (catch error (select-keys (ex-data error) [:ex/code :column :available])))
+ => {:ex/code :postgres/deftype-invalid :column :class :available []})
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype :id original-nested-column-input}
+(fact "the original nested-column fixture has no flat column pairs"
+ (try
+  (pg-deftype '(deftype t [[:class {:type :text}]]
+                       {:partition-by {:strategy :list :columns [:class]}}))
+  (catch error (select-keys (ex-data error) [:ex/code :column :available])))
+ => {:ex/code :postgres/deftype-invalid :column :class :available []})
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-format :id exact-default-scopes}
+(fact "table formatting preserves ordered columns and assigns original default scopes"
+ (let [[metadata form]
+       (pg-deftype-format '(deftype Row [id {:type :uuid :primary true}
+                                        label {:type :text}] {}))]
+  [metadata form])
+ => [{:static/tracker nil :static/public nil :static/dbtype :table}
+     '(deftype Row [id {:type :uuid :primary true :scope :-/id}
+                   label {:type :text :scope :-/data}] {})])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-deftype/pg-deftype-ref :id redefinition-failure-cleanup}
+(fact "failed reference dispatch restores the intercepted Var value and metadata"
+ (let [variable (var pg-deftype-ref-link)
+       original @variable metadata (meta variable)
+       result
+       (try
+        (intern 'lang.model.v1.spec-postgres.postgres-form-deftype
+                (with-meta 'pg-deftype-ref-link metadata)
+                (fn [col attrs opts]
+                  (throw (ex :migration/reference-failure {:column col}))))
+        (try
+         (pg-deftype-ref :owner {} {})
+         (catch error (select-keys (ex-data error) [:ex/code :column])))
+        (finally
+         (intern 'lang.model.v1.spec-postgres.postgres-form-deftype
+                 (with-meta 'pg-deftype-ref-link metadata) original)))]
+  [result (= original @variable) (= metadata (meta variable))])
+ => [{:ex/code :migration/reference-failure :column :owner} true true])

@@ -1,0 +1,193 @@
+(ns std.lib.schema
+  (:require [std.lib.collection :as coll]
+            [std.lib.schema.base :as base]
+            [std.lib.schema.impl :as impl]
+            [std.lib.schema.ref :as ref]))
+
+(intern-in impl/schema impl/schema? base/check-scope ref/with:ref-fn)
+
+(defn expand-scopes
+  "expand `*` keys into `-` keys"
+  {:added "4.0"}
+  [k]
+  (get base/+scope+ k))
+
+(defn linked-primary
+  "gets the linked primary column"
+  {:added "4.0"}
+  [tsch k schema]
+  (let [link (-> tsch k first :ref :link)
+        rid (keyword (name (:id link)))
+        rsch (get (:tree schema) rid)
+        [k [attrs]] (first
+                      (filter
+                        (fn [migration-argument-0]
+                          (let [migration-argument-0-value
+                                migration-argument-0
+                                k
+                                (first
+                                  (drop 0 migration-argument-0-value))
+                                [{:keys [primary], :as m}]
+                                (first
+                                  (drop 1 migration-argument-0-value))]
+                            (if primary [k m])))
+                        rsch))]
+    (if (nil? attrs)
+      (throw
+        (ex
+          :schema/invalid
+          {:link link, :key k, :tree rsch}
+          :ex/message
+          "Column not found"))
+      attrs)))
+
+(defn order-keys
+  "order keys given schema"
+  {:added "4.0"}
+  [tsch ks]
+  (sort-by (fn [k] (or (-> tsch k (first) :order) 2147483647)) ks))
+
+(defn get-defaults
+  "get defaults in the schema"
+  {:added "4.0"}
+  [tsch]
+  ((fn [migration-f migration-pred migration-map]
+     (reduce-kv
+       (fn [out k v]
+         (let [result (migration-f v)]
+           (if (migration-pred result) (assoc out k result) out)))
+       {}
+       migration-map))
+    (fn [migration-argument-0]
+      (let [migration-argument-0-value migration-argument-0
+            {:keys [sql]} (first (drop 0 migration-argument-0-value))]
+        (:default sql)))
+    (comp not nil?)
+    tsch))
+
+
+;;
+;; assertions
+;;
+
+(defn check-valid-columns
+  "check if columns are valid"
+  {:added "4.0"}
+  [tsch columns]
+  (let [diff (difference
+               (set (filter keyword? columns))
+               (set (keys tsch)))]
+    (if (empty? diff)
+      [true]
+      [false {:not-allowed diff, :valid (set (keys tsch))}])))
+
+(defn check-missing-columns
+  "check if columns are missing"
+  {:added "4.0"}
+  [tsch columns required-fn]
+  (let [required (set
+                   (keep
+                     (fn [migration-argument-0]
+                       (let [migration-argument-0-value migration-argument-0
+                             k (first
+                                 (drop 0 migration-argument-0-value))
+                             [attrs] (first
+                                       (drop
+                                         1
+                                         migration-argument-0-value))]
+                         (if (required-fn attrs) k)))
+                     (seq tsch)))
+        diff (difference required (set columns))]
+    (if (empty? diff)
+      [true]
+      [false {:missing diff, :required required}])))
+
+(defn check-fn-columns
+  "perform a check using the `:check` key\n \n   (schema/check-fn-columns -tsch- {:status 'a})\n   => {}"
+  {:added "4.0"}
+  [tsch data]
+  (let [checks ((fn [migration-f migration-pred migration-map]
+                  (reduce-kv
+                    (fn [out k v]
+                      (let [result (migration-f v)]
+                        (if (migration-pred result)
+                          (assoc out k result)
+                          out)))
+                    {}
+                    migration-map))
+                 (fn [migration-argument-0]
+                   (let [migration-argument-0-value migration-argument-0
+                         {:keys [check]} (first
+                                           (drop
+                                             0
+                                             migration-argument-0-value))]
+                     check))
+                 identity
+                 tsch)]
+    (->>
+      (seq data)
+      (keep
+        (fn [migration-argument-0]
+          (let [migration-argument-0-value migration-argument-0
+                k (first (drop 0 migration-argument-0-value))
+                v (first (drop 1 migration-argument-0-value))]
+            (if-let [check (get checks k)]
+              (if (not (try (check v) (catch error nil)))
+                [k
+                 {:key k,
+                  :value v,
+                  :check check,
+                  :message "Check failed for input"}])))))
+      (into {}))))
+
+(defn get-returning
+  "collects the returning ids and columns\n   \n   (->> (schema/get-returning -tsch-\n                       [:*/data :cache])\n        (map first))\n   => '(:id :status :name :cache :time-created :time-updated)"
+  {:added "4.0"}
+  [tsch returning]
+  (let [scope-ks (filter
+                   (fn [x] (and (keyword? x) (namespace x)))
+                   returning)
+        col-ks (set
+                 (filter
+                   (fn [x] (and (keyword? x) (nil? (namespace x))))
+                   returning))
+        [_ err] (check-valid-columns tsch col-ks)
+        _ (if err
+            (throw
+              (ex
+                :schema/invalid
+                (assoc err :data returning)
+                :ex/message
+                "Not valid.")))
+        union-fn (Z
+                   (fn [union-fn]
+                     (fn [s]
+                       (apply
+                         union
+                         (map
+                           (fn [k]
+                             (if (= "*" (namespace k))
+                               (union-fn (expand-scopes k))
+                               #{k}))
+                           s)))))
+        all-fn (union-fn scope-ks)]
+    (->>
+      (seq tsch)
+      (sort-by
+        (fn [migration-argument-0]
+          (let [migration-argument-0-value migration-argument-0
+                k (first (drop 0 migration-argument-0-value))
+                [{:keys [order]}] (first
+                                    (drop
+                                      1
+                                      migration-argument-0-value))]
+            [(or order 2147483647) k])))
+      (filter
+        (fn [migration-argument-0]
+          (let [migration-argument-0-value migration-argument-0
+                k (first (drop 0 migration-argument-0-value))
+                [{:keys [scope]}] (first
+                                    (drop
+                                      1
+                                      migration-argument-0-value))]
+            (or (all-fn scope) (col-ks k))))))))

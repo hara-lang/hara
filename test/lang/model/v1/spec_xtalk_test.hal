@@ -1,22 +1,119 @@
 (ns lang.model.v1.spec-xtalk-test
-  (:require [lang.base.registry :as registry]
-            [lang.model.v1.spec-xtalk :as model]))
+  (:require [lang.core.impl :as l]
+            [lang.model.v1.spec-xtalk :as x]
+            [lang.base.book :as book]
+            [lang.base.grammar :as grammar])
+  (:use code.test))
 
-^{:refer lang.model.v1.spec-xtalk/+language+}
-(Test/check
- [{:name "V1 XTalk is a versioned grammar/book model, not lang.model.xtalk"
-   :test (fn [] (let [catalog (model/catalog)
-                       selected (model/select catalog)]
-                 [model/+language+ model/+tag+ model/+version+ model/+grammar-version+
-                  (registry/versions catalog :xtalk)
-                  (:coordinate selected)
-                  (:coordinate model/+selection+)
-                  [(:lang model/+book+) (:parent model/+book+) (:version model/+book+)
-                   (get-in model/+book+ [:selection :coordinate])]
-                  (= model/+book+ model/+init+)
-                  (count (registry/list (model/install catalog)))]))
-   :expected [:xtalk :xtalk 1 1 [1]
-              {:grammar/id :xtalk :grammar/version 1 :grammar/release "foundation-v1" :grammar/facets []}
-              {:grammar/id :xtalk :grammar/version 1 :grammar/release "foundation-v1" :grammar/facets []}
-              [:xtalk nil 1 {:grammar/id :xtalk :grammar/version 1 :grammar/release "foundation-v1" :grammar/facets []}]
-              true 3]}])
+^{:refer lang.model.v1.spec-xtalk/CANARY :adopt true :added "4.0"}
+(fact "This is the cross language language"
+
+  (l/emit-as
+   :xtalk ['(fn [x y] (+ (. x [1]) 2 3))])
+  => "function (x,y){\n  x[1] + 2 + 3;\n}")
+
+^{:refer lang.model.v1.spec-xtalk/+features+}
+(fact "XTalk features preserve the original selected groups and xtalk overlay"
+ x/+features+
+ => (merge (grammar/build-min [:top-declare :coroutine :macro :macro-arrow :macro-let])
+           (grammar/build-xtalk)))
+
+^{:refer lang.model.v1.spec-xtalk/+grammar+}
+(fact "XTalk grammar keeps its distinct xt tag and assignment permissions"
+ [(:tag x/+grammar+) (:banned x/+grammar+) (:allow x/+grammar+)]
+ => [:xt #{:keyword} {:assign #{:symbol :vector :set}}])
+
+^{:refer lang.model.v1.spec-xtalk/+meta+}
+(fact "XTalk metadata is the original empty BookMeta value"
+ x/+meta+ => (book/book-meta {}))
+
+^{:refer lang.model.v1.spec-xtalk/+book+}
+(fact "XTalk creates a root Book retaining exact grammar and metadata values"
+ [(book/book? x/+book+) (:lang x/+book+) (:parent x/+book+) (:modules x/+book+)
+  (:merged x/+book+) (= (:grammar x/+book+) x/+grammar+) (= (:meta x/+book+) x/+meta+)]
+ => [true :xtalk nil {} #{:xtalk} true true])
+
+(require
+  [lang.core.impl :as init-impl]
+  [lang.core.library :as init-lib]
+  [lang.model.v1.spec-xtalk :as init-xtalk]
+  [std.lib.context.resource :as init-resource]
+  [std.lib.context.registry :as init-registry]
+  [std.lib.context.space :as init-space])
+
+^{:refer lang.model.v1.spec-xtalk/+init+, :id original-load-time-install}
+(fact
+  "the original model init installs the Book and runtime through the global Library and tears down deterministically"
+  (let [result init-xtalk/+init+
+        publications (vec
+                       (mapcat
+                         (fn [result]
+                           (let [publication (nth result 2)]
+                             (concat
+                               (first (:macros publication))
+                               (second (:macros publication))
+                               (:highlights publication))))
+                         [init-xtalk/+init+]))
+        library (init-impl/default-library)
+        outcome (try
+                  (let [stored (get-in
+                                 (init-lib/get-snapshot library)
+                                 [:xtalk :book])]
+                    [(vector? result)
+                     (count result)
+                     (set (keys (init-lib/get-snapshot library)))
+                     (:lang stored)
+                     (:parent stored)
+                     (=
+                       (nth result 2)
+                       (select-keys stored [:macros :highlights]))
+                     (=
+                       (nth result 1)
+                       (init-registry/registry-get :lang/xtalk))
+                     (mapv var-sym (first (:macros stored)))
+                     (Base/identical?
+                       library
+                       (init-impl/default-library))])
+                  (finally
+                    (doseq [v publications]
+                      (let [sym (var-sym v)]
+                        (intern
+                          (symbol (namespace sym))
+                          (with-meta
+                            (symbol (name sym))
+                            {:macro false})
+                          nil)))
+                    (intern 'lang.model.v1.spec-xtalk '+init+ nil)
+                    nil
+                    (init-resource/resource-stop :lang/lang.library)
+                    (init-resource/resource-stop :lang/lang.library)
+                    (init-space/reset-spaces!)
+                    (init-registry/reset-registry!)))]
+    [outcome
+     (init-resource/resource-active-get
+       :global
+       :lang/lang.library
+       :default
+       nil)
+     (set (init-registry/registry-list))
+     (every?
+       (fn [v] (= [nil {:macro false}] [(deref v) (meta v)]))
+       publications)
+     [init-xtalk/+init+]])
+  =>
+  [[true
+    3
+    #{:xtalk}
+    :xtalk
+    nil
+    true
+    true
+    '[lang.model.v1.spec-xtalk/def$.xt
+      lang.model.v1.spec-xtalk/defmacro.xt
+      lang.model.v1.spec-xtalk/!.xt
+      lang.model.v1.spec-xtalk/defptr.xt]
+    true]
+   nil
+   #{:null}
+   true
+   [nil]])

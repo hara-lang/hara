@@ -1,497 +1,232 @@
-;; ============================================================================
-;; lang.core.script-annex — tagged, reversible runtime contexts.
-;;
-;; The archive annex owned an independent runtime per source namespace and tag.
-;; This native port retains that geometry while compiling forms through the
-;; selected language book and the current IContext lifecycle.
-;; ============================================================================
 (ns lang.core.script-annex
-  (:require [code.test.context :as context]
-            [lang.core.library :as library]
-            [lang.core.runtime :as runtime]
-            [lang.core.script :as script]
-            [std.lib.component :as component]))
+  (:config {:role :internal})
+  (:require [lang.core.impl :as impl]
+            [lang.core.registry :as sreg]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap]
+            [lang.base.util :as ut]
+            [std.lib.component :as component]
+            [std.lib.context.registry :as reg]
+            [std.lib.context.space :as space]
+            [std.lib.context.resource :as resource]))
 
-(defstruct RuntimeAnnex [id library state])
+(defn rt-annex-string
+  "returns the annex string"
+  {:added "4.0"}
+  ([{:keys [runtimes]}]
+    (str
+      "#lang.annex "
+      (vec
+        (sort
+          (map (fn [[k rt]] [k (:lang rt)]) (seq (deref runtimes))))))))
 
-(def +annexes+ (atom {}))
+(do
+  (defstruct ^{:open true} RuntimeAnnex [id registry runtimes library])
+  (extend-type
+    RuntimeAnnex
+    IDisplay
+    (display [annex] (rt-annex-string annex))))
 
-(defn current-namespace-symbol
-  []
-  (symbol (str (ns-current))))
+(defn rt-annex?
+  "checks that object is an annex"
+  {:added "4.0"}
+  ([obj]
+   (instance? RuntimeAnnex obj)))
 
-(defn coordinate
-  [namespace tag]
-  [namespace tag])
+(defn rt-annex:create
+  "creates an annex object
+   
+   
+   (annex/rt-annex:create {})
+   => annex/rt-annex?"
+  {:added "4.0"}
+  ([{:keys [id] :as m}]
+   (let [runtimes (atom {})
+         registry (atom {})
+         library  (lib/library {:parent #'impl/default-library})]
+     (map->RuntimeAnnex (merge m {:library library
+                                  :registry registry
+                                  :runtimes runtimes})))))
 
-(defn annex?
-  "Returns true when value owns one child Library and tagged runtime state."
-  [value]
-  (instance? lang.core.script-annex/RuntimeAnnex value))
+(def +init-annex+
+ [(resource/spec-add
+    {:type :tahto/lang.rt.annex,
+     :config {},
+     :instance
+     {:create rt-annex:create, :setup identity, :teardown identity}})
+  (reg/registry-install
+    :lang.annex
+    {:config {}, :rt {:default {:resource :tahto/lang.rt.annex}}})])
 
-(defn annex-create
-  "Creates one namespace-owned RuntimeAnnex inheriting the default Library."
-  [namespace]
-  (lang.core.script-annex/RuntimeAnnex
-   namespace
-   (library/library-create {:id [:annex namespace]
-                            :parent (library/default-library)})
-   (atom {:registry {} :runtimes {}})))
 
-(defn annex-existing
-  "Returns one existing namespace-owned RuntimeAnnex without creating state."
-  [namespace]
-  (get (deref +annexes+) namespace))
 
-(defn annex-in
-  "Returns one namespace-owned RuntimeAnnex, creating it exactly once."
-  [namespace]
-  (let [current (annex-existing namespace)]
-    (if current
-      (do
-        (library/namespace-library-register! namespace (:library current))
-        current)
-      (let [created (annex-create namespace)]
-        (swap! +annexes+
-               (fn [annexes]
-                 (if (get annexes namespace)
-                   annexes
-                   (assoc annexes namespace created))))
-        (let [current (annex-existing namespace)]
-          (library/namespace-library-register! namespace (:library current))
-          current)))))
+(defn annex-current
+  "gets the current annex. May not exist\n \n   (annex/annex-current)\n   => any?"
+  {:added "4.0"}
+  ([] (annex-current (ns-current)))
+  ([ns]
+    (let [{:keys [state], :as sp} (space/space ns)
+          rec (:lang.annex (deref state))]
+      (if rec (:instance rec)))))
 
-(defn annex-library-in
-  "Returns the namespace-owned child Library, inheriting the default Library."
-  [namespace]
-  (:library (annex-in namespace)))
+(defn annex-reset
+  "resets the current annex"
+  {:added "4.0"}
+  ([] (annex-reset (ns-current)))
+  ([ns]
+    (let [sp (space/space ns)]
+      (let [previous-instance (:instance
+                                (get (deref (:state sp)) :lang.annex))]
+        (std.lib.context.space/space:rt-stop sp :lang.annex)
+        previous-instance))))
 
-(defn annex-library
-  "Returns the child Library owned by the current source namespace."
-  []
-  (annex-library-in (current-namespace-symbol)))
+(defn get-annex
+  "gets the current annex in the namespace"
+  {:added "4.0"}
+  ([] (get-annex (ns-current)))
+  ([ns]
+    (let [{:keys [state], :as sp} (space/space ns)
+          check (or
+                  (:lang.annex (deref state))
+                  (space/space:context-set
+                    sp
+                    :lang.annex
+                    :default
+                    {}))]
+      (space/space:rt-start sp :lang.annex))))
 
-(defn annex-snapshot
-  "Captures tagged runtime registration and live-runtime state."
-  []
-  (let [annexes (deref +annexes+)]
-    {:registry
-     (reduce-kv
-      (fn [output namespace current]
-        (reduce-kv (fn [output tag record]
-                     (assoc output (coordinate namespace tag) record))
-                   output
-                   (:registry (deref (:state current)))))
-      {}
-      annexes)
-     :runtimes
-     (reduce-kv
-      (fn [output namespace current]
-        (reduce-kv (fn [output tag instance]
-                     (assoc output (coordinate namespace tag) instance))
-                   output
-                   (:runtimes (deref (:state current)))))
-      {}
-      annexes)
-     :libraries
-     (reduce-kv (fn [output namespace current]
-                  (assoc output namespace
-                         (library/library-raw-snapshot (:library current))))
-                {}
-                annexes)
-     :active
-     (reduce-kv
-      (fn [output namespace current]
-        (reduce-kv (fn [output tag instance]
-                     (if (component/started? instance)
-                       (conj output (coordinate namespace tag))
-                       output))
-                   output
-                   (:runtimes (deref (:state current)))))
-      #{}
-      annexes)}))
+(defn clear-annex
+  "clears all runtimes in the annex"
+  {:added "4.0"}
+  ([] (clear-annex (ns-current)))
+  ([ns]
+    (let [{:keys [runtimes]} (get-annex ns)]
+      (swap-return!
+        runtimes
+        (fn [m] [(map-vals
+                   (fn [value]
+                     (if (Base/supports-method? IComponent 'stop value)
+                       (std.lib.component/stop value)
+                       value))
+                   m)
+                 {}])))))
 
-(defn annex-restore!
-  "Restores a tagged runtime snapshot, stopping superseded live runtimes."
-  [snapshot]
-  (let [snapshot (or snapshot {})
-        desired-runtimes (or (:runtimes snapshot) {})
-        desired-registry (or (:registry snapshot) {})
-        active (or (:active snapshot) #{})
-        library-snapshots (or (:libraries snapshot) {})
-        existing (deref +annexes+)
-        namespaces (set (concat (keys library-snapshots)
-                                (map first (keys desired-registry))
-                                (map first (keys desired-runtimes))))]
-    (reduce-kv
-     (fn [_ _ current]
-       (reduce-kv (fn [_ _ instance]
-                    (runtime/rt-stop instance))
-                  nil
-                  (:runtimes (deref (:state current))))
-       (library/library-reset! (:library current)))
-     nil
-     existing)
-    (library/namespace-library-reset!)
-    (reset! +annexes+
-            (reduce
-             (fn [output namespace]
-               (let [current (or (get existing namespace)
-                                 (annex-create namespace))
-                     registry
-                     (reduce-kv (fn [output coordinate-value record]
-                                  (if (= namespace (first coordinate-value))
-                                    (assoc output (second coordinate-value) record)
-                                    output))
-                                {}
-                                desired-registry)
-                     runtimes
-                     (reduce-kv (fn [output coordinate-value instance]
-                                  (if (= namespace (first coordinate-value))
-                                    (assoc output (second coordinate-value) instance)
-                                    output))
-                                {}
-                                desired-runtimes)]
-                 (library/library-restore! (:library current)
-                                            (get library-snapshots namespace))
-                 (reset! (:state current) {:registry registry :runtimes runtimes})
-                 (assoc output namespace current)))
-             {}
-             (sort-by str namespaces)))
-    (reduce-kv
-     (fn [_ namespace current]
-       (library/namespace-library-register! namespace (:library current)))
-     nil
-     (deref +annexes+))
-    (reduce (fn [_ coordinate-value]
-              (let [instance (runtime-in (first coordinate-value)
-                                         (second coordinate-value))]
-                (if instance (runtime/rt-start instance))))
-            nil
-            active)
-    (annex-snapshot)))
+(defn get-annex-library
+  "gets the current annex library
+ 
+   (annex/get-annex-library (h/ns-sym))
+   => lib/library?"
+  {:added "4.0"}
+  ([ns]
+   (:library (get-annex ns))))
 
-(defn annex-reset!
-  "Stops and removes all tagged runtime state idempotently."
-  []
-  (annex-restore! nil))
+(defn get-annex-book
+  "gets the current book in the annex\n  \n   (annex/get-annex-book (h/ns-sym) :lua)\n   => book/book?"
+  {:added "4.0"}
+  ([ns lang]
+    (let [curr (:library (get-annex ns))]
+      (or
+        (snap/get-book (deref (:instance curr)) lang)
+        (let [default-lib (impl/default-library)
+              book (or
+                     (lib/get-book default-lib lang)
+                     (do
+                       (when-let [book-ns (sreg/registry-book-ns lang)]
+                         (eval (list 'require (list 'quote book-ns))))
+                       (lib/get-book default-lib lang))
+                     (throw
+                       (ex
+                         :lang/script-annex
+                         {:lang lang,
+                          :available
+                          (map first (sreg/registry-book-list))}
+                         :ex/message
+                         "Book not found")))]
+          (lib/add-book! curr (assoc book :modules {})))))))
 
-(defn register-tag-in
-  [namespace tag lang runtime-id config]
-  (let [current (annex-in namespace)
-        previous (get-in (deref (:state current)) [:registry tag])
-        record {:namespace namespace
-                :tag tag
-                :lang lang
-                :runtime (or runtime-id :default)
-                :config (or config {})}]
-    (swap! (:state current) assoc-in [:registry tag] record)
-    [previous lang]))
+(defn add-annex-runtime
+  "adds a runtime to the annex"
+  {:added "4.0"}
+  [ns tag rt]
+  (let [{:keys [registry runtimes]} (get-annex ns)]
+    (swap-return!
+      runtimes
+      (fn [m]
+        (let [curr (get m tag)
+              _ (if curr
+                  ((fn [value]
+                     (if (Base/supports-method? IComponent 'stop value)
+                       (std.lib.component/stop value)
+                       value))
+                    curr))]
+          [[curr rt] (assoc m tag rt)])))))
 
-(defn register-tag
-  [tag lang runtime-id config]
-  (register-tag-in (current-namespace-symbol) tag lang runtime-id config))
+(defn get-annex-runtime
+  "gets the annex rutime"
+  {:added "4.0"}
+  [ns tag]
+  (let [{:keys [runtimes]} (get-annex ns)] (get (deref runtimes) tag)))
 
-(defn deregister-tag-in
-  [namespace tag]
-  (let [current (annex-existing namespace)
-        previous (if current
-                   (get-in (deref (:state current)) [:registry tag]))]
-    (if current
-      (swap! (:state current) update :registry dissoc tag))
-    previous))
+(defn remove-annex-runtime
+  "removes the annex runtime"
+  {:added "4.0"}
+  [ns tag]
+  (let [{:keys [runtimes]} (get-annex ns)]
+    (swap-return!
+      runtimes
+      (fn [m]
+        (let [curr (get m tag)
+              _ (if curr
+                  ((fn [value]
+                     (if (Base/supports-method? IComponent 'stop value)
+                       (std.lib.component/stop value)
+                       value))
+                    curr))]
+          [curr (dissoc m tag)])))))
 
-(defn deregister-tag
-  [tag]
-  (deregister-tag-in (current-namespace-symbol) tag))
+(defn register-annex-tag
+  "registers a config for the tag"
+  {:added "4.0"}
+  [ns tag lang runtime config]
+  (let [{:keys [registry]} (get-annex ns)]
+    (swap-return!
+      registry
+      (fn [m] [[(get m tag) lang]
+               (assoc
+                 m
+                 tag
+                 {:lang lang, :runtime runtime, :config config})]))))
 
-(defn tag-info-in
-  [namespace tag]
-  (let [current (annex-existing namespace)]
-    (if current (get-in (deref (:state current)) [:registry tag]))))
-
-(defn tag-info
-  [tag]
-  (tag-info-in (current-namespace-symbol) tag))
-
-(defn runtime-in
-  [namespace tag]
-  (let [current (annex-existing namespace)]
-    (if current (get-in (deref (:state current)) [:runtimes tag]))))
-
-(defn get-runtime
-  [tag]
-  (runtime-in (current-namespace-symbol) tag))
+(defn deregister-annex-tag
+  "removes the config for the tag"
+  {:added "4.0"}
+  [ns tag]
+  (let [{:keys [registry]} (get-annex ns)]
+    (swap-return! registry (fn [m] [(get m tag) (dissoc m tag)]))))
 
 (defn start-runtime
-  [lang runtime-id config]
-  (script/start-runtime lang runtime-id config))
+  "starts the runtime in the annex"
+  {:added "4.0"}
+  [lang runtime config]
+  (let [ctx (ut/lang-context lang)
+        {:keys [resource], :as reg} (reg/registry-rt ctx runtime)
+        spec (resource/spec-get resource)
+        {:keys [instance]} spec]
+    (-> ((:create instance)
+          (merge (:config reg) {:lang lang, :runtime runtime} config))
+     ((:setup instance)))))
 
 (defn same-runtime?
-  [instance lang runtime-id config]
-  (= (select-keys instance [:lang :runtime :layout :emit])
-     (select-keys (merge {:lang lang :runtime (or runtime-id :default)}
-                         (or config {}))
-                  [:lang :runtime :layout :emit])))
-
-(defn add-runtime-in
-  [namespace tag instance]
-  (let [current (annex-in namespace)
-        previous (get-in (deref (:state current)) [:runtimes tag])]
-    (if previous (runtime/rt-stop previous))
-    (swap! (:state current) assoc-in [:runtimes tag] instance)
-    [previous instance]))
-
-(defn remove-runtime-in
-  [namespace tag]
-  (let [current (annex-existing namespace)
-        previous (if current (get-in (deref (:state current)) [:runtimes tag]))]
-    (if previous (runtime/rt-stop previous))
-    (if current
-      (swap! (:state current) update :runtimes dissoc tag))
-    previous))
-
-(defn start-tag-in
-  [namespace tag]
-  (let [record (tag-info-in namespace tag)]
-    (if (nil? record)
-      (throw (ex :dependency {:namespace namespace :tag tag}
-                 :ex/message "Script annex tag is not registered"))
-      (let [lang (:lang record)
-            runtime-id (:runtime record)
-            config (:config record)
-            module (or (:module config) namespace)
-            previous (runtime-in namespace tag)]
-        (if (and previous
-                 (same-runtime? previous lang runtime-id
-                                (assoc config :module module)))
-          [previous previous]
-          (let [_ (if previous (runtime/rt-stop previous))
-                current (annex-library-in namespace)
-                started (library/with:library [current]
-                          (script/configure-module lang module config namespace)
-                          (script/start-runtime lang runtime-id
-                                                (assoc config :module module)))]
-            (swap! (:state (annex-in namespace)) assoc-in [:runtimes tag] started)
-            [previous started]))))))
-
-(defn start-tag
-  [tag]
-  (start-tag-in (current-namespace-symbol) tag))
-
-(defn stop-tag-in
-  [namespace tag]
-  (remove-runtime-in namespace tag))
-
-(defn stop-tag
-  [tag]
-  (stop-tag-in (current-namespace-symbol) tag))
-
-(defn restart-tag-in
-  [namespace tag]
-  (do
-    (stop-tag-in namespace tag)
-    (start-tag-in namespace tag)))
-
-(defn restart-tag
-  [tag]
-  (restart-tag-in (current-namespace-symbol) tag))
-
-(defn namespace-tags
-  [state namespace]
-  (reduce-kv
-   (fn [out key value]
-     (if (= namespace (first key))
-       (conj out (second key))
-       out))
-   #{}
-   state))
-
-(defn status-in
-  [namespace]
-  (let [current (annex-existing namespace)
-        state (if current (deref (:state current)) {:registry {} :runtimes {}})]
-    {:registered (set (keys (:registry state)))
-     :active (set (keys (:runtimes state)))}))
-
-(defn status
-  []
-  (status-in (current-namespace-symbol)))
-
-(defn start-all-in
-  [namespace]
-  (reduce (fn [out tag]
-            (assoc out tag (start-tag-in namespace tag)))
-          {}
-          (:registered (status-in namespace))))
-
-(defn start-all
-  []
-  (start-all-in (current-namespace-symbol)))
-
-(defn stop-all-in
-  [namespace]
-  (reduce (fn [out tag]
-            (assoc out tag (stop-tag-in namespace tag)))
-          {}
-          (:active (status-in namespace))))
-
-(defn stop-all
-  []
-  (stop-all-in (current-namespace-symbol)))
-
-(defn restart-all-in
-  [namespace]
-  (do
-    (stop-all-in namespace)
-    (start-all-in namespace)))
-
-(defn restart-all
-  []
-  (restart-all-in (current-namespace-symbol)))
-
-(defn clear-in
-  [namespace]
-  (do
-    (stop-all-in namespace)
-    (let [current (annex-existing namespace)]
-      (if current
-        (library/library-reset! (:library current))))
-    (swap! +annexes+ dissoc namespace)
-    (library/namespace-library-remove! namespace)
-    (status-in namespace)))
-
-(defn clear
-  []
-  (clear-in (current-namespace-symbol)))
-
-(defn eval-tag-in
-  [namespace tag form]
-  (let [record (tag-info-in namespace tag)
-        instance (runtime-in namespace tag)]
-    (if (nil? record)
-      (throw (ex :dependency {:namespace namespace :tag tag}
-                 :ex/message "Script annex tag is not registered"))
-      (if (nil? instance)
-        (throw (ex :dependency {:namespace namespace :tag tag}
-                   :ex/message "Script annex tag is not started"))
-        (let [config (:config record)
-              module (or (:module config) namespace)
-              source (library/with:library [(annex-library-in namespace)]
-                       (script/compile-form (:lang record) module form))]
-          (runtime/rt-raw-eval instance source))))))
-
-(defn eval-tag
-  [tag form]
-  (eval-tag-in (current-namespace-symbol) tag form))
-
-(defn script-test-mode?
-  "Returns whether runner-mode test configuration suppresses runtime startup."
-  [config]
-  (if (and (:test-mode config)
-           (not context/*eval-mode*))
-    true
-    false))
-
-(defn script-test-in
-  "Configures one namespace child-Library script and starts it outside runner test mode."
-  [namespace lang module config]
-  (let [config (or config {})
-        current (annex-library-in namespace)]
-    (library/with:library [current]
-      (script/setup lang module config true namespace)
-      (if (or script/*loading-module*
-              (script-test-mode? config))
-        nil
-        (script/start-script lang module config)))))
-
-(defn script-test-form
-  "Builds namespace-annex script setup for the l/script- declaration macro."
-  [namespace lang options]
-  (let [[module config] (script/script-options namespace options)]
-    (list 'lang.core.script-annex/script-test-in
-          (list 'quote namespace)
-          (list 'quote lang)
-          (list 'quote module)
-          (list 'quote config))))
-
-(defmacro script-
-  "Declares source in the caller's namespace child Library with ordinary eager startup."
-  [lang & options]
-  (let [namespace-symbol (symbol (str (:ns &env)))]
-    (script/script-intern-macros! namespace-symbol lang)
-    (script-test-form namespace-symbol lang options)))
-
-(defn script-ext-in
-  "Registers one tagged annex script and starts it unless runner test mode suppresses it."
-  [namespace coordinate-value config]
-  (let [tag (first coordinate-value)
-        lang (second coordinate-value)
-        config (or config {})
-        runtime-id (or (:runtime config) :default)]
-    (register-tag-in namespace tag lang runtime-id config)
-    (if (script-test-mode? config)
-      nil
-      (start-tag-in namespace tag))))
-
-(defn script-ext-form
-  [namespace coordinate-value config]
-  (list 'lang.core.script-annex/script-ext-in
-        (list 'quote namespace)
-        (list 'quote coordinate-value)
-        (list 'quote (or config {}))))
-
-(defn script-eval-form
-  [namespace tag body]
-  (if (vector? tag)
-    (list 'lang.core.script-annex/eval-tag-in
-          (list 'quote namespace)
-          (first tag)
-          (list 'quote body))
-    nil))
-
-(defmacro script+
-  [coordinate-value & options]
-  (let [namespace-symbol (symbol (str (:ns &env)))]
-    (script/script-intern-macros! namespace-symbol (second coordinate-value))
-    (script-ext-form
-     namespace-symbol
-     coordinate-value
-     (if (empty? options) {} (first options)))))
-
-(defmacro !
-  [tag body]
-  (script-eval-form
-   (symbol (str (:ns &env)))
-   tag
-   body))
-
-;; Archive lang.core convenience surface, kept here so lang.core stays a
-;; publication-only facade under the current namespace-role geometry.
-(defn annex:start
-  ([tag] (start-tag tag))
-  ([tag namespace] (start-tag-in namespace tag)))
-
-(defn annex:get
-  ([tag] (get-runtime tag))
-  ([tag namespace] (runtime-in namespace tag)))
-
-(defn annex:stop
-  ([tag] (stop-tag tag))
-  ([tag namespace] (stop-tag-in namespace tag)))
-
-(defn annex:start-all
-  ([] (start-all))
-  ([namespace] (start-all-in namespace)))
-
-(defn annex:stop-all
-  ([] (stop-all))
-  ([namespace] (stop-all-in namespace)))
-
-(defn annex:restart-all
-  ([] (restart-all))
-  ([namespace] (restart-all-in namespace)))
-
-(defn annex:list
-  ([] (status))
-  ([namespace] (status-in namespace)))
+  "checks that one runtime is the same as another"
+  {:added "4.0"}
+  [rt lang runtime config]
+  (let [ctx (ut/lang-context lang)
+        reg (reg/registry-rt ctx runtime)
+        ckeys [:lang :runtime :layout :emit]
+        new-conf (-> (merge (:config reg)
+                            {:lang lang
+                             :runtime runtime}
+                            config)
+                     (select-keys ckeys))
+        old-conf (select-keys rt ckeys)]
+    (= new-conf old-conf)))

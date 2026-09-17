@@ -1,463 +1,697 @@
 (ns lang.model.v1.spec-postgres.postgres-common
-  (:require [lang.base.emit :as emit]
-            [lang.base.emit-template :as template]
+  (:require [lang.base.book :as book]
+            [lang.base.emit-common :as common]
             [lang.base.grammar-spec :as grammar-spec]
+            [lang.base.emit-template :as impl-template]
+            [lang.core.library-snapshot :as snap]
+            [lang.core.pointer :as ptr]
             [lang.base.util :as ut]
             [lang.model.v1.spec-postgres.postgres-tf :as tf]))
 
+;;
+;; type alias
+;;
+
 (def +pg-query-alias+
   {:neq '(:- "!=")
-   :gt '(:- ">")
+   :gt  '(:- ">")
    :gte '(:- ">=")
-   :lt '(:- "<")
+   :lt  '(:- "<")
    :lte '(:- "<=")
-   :eq '(:- "=")})
+   :eq  '(:- "=")})
 
 (def +pg-type-alias+
-  {:map :jsonb
-   :array :jsonb
-   :long :bigint
-   :enum :text
-   :image :jsonb
-   :time :bigint})
+  '{:map    :jsonb
+    :array  :jsonb
+    :long   :bigint
+    :enum   :text
+    :image  :jsonb
+    :time   :bigint})
 
 (defn pg-type-alias
-  "Returns the archived PostgreSQL type alias when one is defined."
-  [value]
-  (or (get +pg-type-alias+ value) value))
+  "gets the type alias"
+  {:added "4.0"}
+  [type]
+  (or (get +pg-type-alias+ type) type))
 
 (defn pg-deftype-ref-name
-  "Constructs a default reference column name."
-  ([column]
-   (str (name column) "_id"))
-  ([column options]
-   (or (:raw options) (str (name column) "_id"))))
+  "gets the ref name"
+  {:added "4.0"}
+  ([column] (str (name column) "_id"))
+  ([col {:keys [raw]}]
+    (if raw raw (str/snake-case (str (str/tag col) "_id")))))
 
 (defn pg-sym-meta
-  "Normalizes historical PostgreSQL declaration metadata."
-  [symbol]
-  (let [metadata (or (meta symbol) {})
-        return-type (or (get metadata :-) [:jsonb])
-        language (or (:static/language metadata) (:%% metadata) :default)
-        props (or (:static/props metadata) (:props metadata) [])]
-    (assoc (dissoc metadata :%% :props)
-           :- return-type
-           :static/return return-type
-           :static/language language
-           :static/props props)))
+  "returns the sym meta"
+  {:added "4.0"}
+  [sym]
+  (let [migration-map-value-1 (or (meta sym) {})
+        msym migration-map-value-1
+        props (if (has? migration-map-value-1 :props)
+                (get migration-map-value-1 :props)
+                [])
+        dbtype (get migration-map-value-1 :dbtype)
+        return (if (has? migration-map-value-1 :-)
+                 (get migration-map-value-1 :-)
+                 [:jsonb])
+        language (if (has? migration-map-value-1 :%%)
+                   (get migration-map-value-1 :%%)
+                   :default)]
+    (assoc
+      (dissoc (or msym {}) :%% :props)
+      :-
+      return
+      :static/return
+      return
+      :static/language
+      language
+      :static/props
+      props)))
 
 (defn pg-format
-  "Formats a declaration and copies normalized metadata to its symbol."
-  [form]
-  (let [op (first form)
-        symbol (second form)
-        metadata (pg-sym-meta symbol)
-        next-symbol (IObjType/with-meta symbol metadata)]
-    [metadata (apply list op next-symbol (drop 2 form))]))
+  "formats a form, extracting static components"
+  {:added "4.0"}
+  [[op sym & body]]
+  (let [msym (pg-sym-meta sym)]
+    [msym
+     (apply list op (with-meta sym msym) body)]))
 
 (defn pg-policy-format
-  "Formats a policy declaration and records its derived policy coordinates."
+  "TODO"
+  {:added "4.0"}
   [form]
-  (let [formatted (grammar-spec/format-defn form)
-        definition-metadata (first formatted)
-        normalized (second formatted)
-        op (first normalized)
-        symbol (second normalized)
-        table-binding (nth normalized 2)
-        table (if (vector? table-binding) (first table-binding) table-binding)
-        doc (:doc definition-metadata)
-        policy-name (str symbol " - " doc)
-        parts (if (and (string? table) (str/includes? table "."))
-                (str/split table ".")
-                nil)
-        schema (if parts (first parts) nil)
-        table-name (if parts (second parts) table)
-        metadata (merge definition-metadata
-                        {:static/policy-name policy-name
-                         :static/policy-table table-name
-                         :static/policy-schema schema})
-        next-symbol (IObjType/with-meta symbol metadata)]
-    [metadata (list op next-symbol (:doc definition-metadata)
-                    table-binding (nth normalized 3))]))
+  (let [[mdefn [op sym [table] policy]] (update
+                                          (grammar-spec/format-defn
+                                            form)
+                                          1
+                                          vec)
+        mname (str sym " - " (:doc mdefn))
+        [mschema mtable] (if-let [v (resolve table)]
+                           [nil (str (:id (deref v)))]
+                           (str/split (str table) (regexp "\\.")))
+        msym (assoc
+               (meta sym)
+               :static/policy-name
+               mname
+               :static/policy-table
+               mtable
+               :static/policy-schema
+               mschema)]
+    [(merge mdefn msym)
+     (list op (with-meta sym msym) (:doc mdefn) [table] policy)]))
 
 (defn pg-hydrate-module-static
-  "Extracts schema and application metadata from a portable module record."
+  "gets the static module"
+  {:added "4.0"}
   [module]
-  (let [static (or (:static module) {})
-        all (:all static)
-        schemas (or (:schema all) [])
-        schema (if (> (count schemas) 0) (first schemas) nil)
-        schema (or schema (:schema module))
-        application (or (:application static) (:application module))]
-    (merge (if schema {:static/schema schema} {})
-           (if application {:static/application application} {}))))
+  (let [{:keys [static]} module
+        {:keys [application all]} static
+        {:keys [schema]} all]
+    {:static/schema (first schema)
+     :static/application application}))
 
 (defn pg-hydrate
-  "Adds module-level static metadata to a formatted declaration."
-  [form grammar context]
-  (let [static (pg-hydrate-module-static (:module context))
-        symbol (second form)
-        next-symbol (IObjType/with-meta symbol
-                                       (merge (or (meta symbol) {}) static))]
-    [static (apply list (first form) next-symbol (drop 2 form))]))
+  "hydrate function for top level entries"
+  {:added "4.0"}
+  [[op sym & body] grammar mopts]
+  (let [reserved (qualified-keys
+                   (get-in grammar [:reserved op])
+                   :static)
+        static (merge
+                 (pg-hydrate-module-static (:module mopts))
+                 reserved)]
+    [static
+     (apply list op (with-meta sym (merge (meta sym) static)) body)]))
 
 (defn pg-current-module-link?
-  "Returns true when a link points at the active PostgreSQL module."
-  [current-module link]
-  (let [module-id (if (map? current-module) (:id current-module) current-module)]
-    (and module-id
-         (:module link)
-         (= module-id (:module link)))))
+  "checks whether a link points to the active module"
+  {:added "4.1"}
+  [current-module {:keys [module]}]
+  (and current-module
+       module
+       (= (:id current-module) module)))
 
 (defn pg-link-symbol
-  "Creates the fully-qualified symbol used to resolve a PostgreSQL link."
-  [link]
-  (if (and (:module link) (:id link))
-    (ut/sym-full (:module link) (:id link))
-    nil))
+  "creates a fully qualified symbol for a link"
+  {:added "4.1"}
+  [{:keys [module id]}]
+  (when (and module id)
+    (ut/sym-full (symbol (name module))
+                 (symbol (name id)))))
 
 (defn pg-resolve-entry
-  "Resolves a PostgreSQL link against the active module or supplied book.
-
-   Native Hara books carry materialized entries directly in `:modules`; the
-   resolver preserves the Foundation return shape of `[book entry]` while
-   allowing an active module entry to take precedence over its snapshot."
-  [link mopts]
-  (let [lang (or (:lang mopts) (:lang link) :postgres)
-        snapshot (:snapshot mopts)
-        snapshot-value (get snapshot lang)
-        source-book (or (:book mopts)
-                        (get-in snapshot [lang :book])
-                        (if (and (map? snapshot-value)
-                                 (:modules snapshot-value))
-                          snapshot-value
-                          nil))
-        current-module (:module mopts)
-        current-entry (if (and current-module
-                               (pg-current-module-link? current-module link))
-                        (get-in current-module [:code (:id link)])
-                        nil)
-        book-module (if source-book
-                      (get-in source-book [:modules (:module link)])
-                      nil)
-        snapshot-entry (if book-module
-                         (or (get-in book-module [:code (:id link)])
-                             (get-in book-module [:header (:id link)]))
-                         nil)
-        entry (or current-entry snapshot-entry)
-        entry (if (and source-book entry (:form-input entry))
-                (template/materialize-code-entry
-                 source-book
-                 entry
-                 {:lang lang
-                  :module (or current-module book-module)})
-                entry)]
-    [source-book entry]))
+  "resolves a postgres link against the live module first, then the snapshot book, then vars"
+  {:added "4.1"}
+  [link {:keys [book snapshot module lang] :as _mopts}]
+  (let [lang          (or lang
+                          (:lang link)
+                          :postgres)
+        book          (or book
+                          (and snapshot
+                               (snap/get-book snapshot lang)))
+        normalize-entry (fn [entry]
+                          (cond (nil? entry) nil
+                                (book/book-entry? entry) entry
+                                (or (:context entry)
+                                    (:context/fn entry))
+                                (ptr/get-entry entry)
+                                :else entry))
+        module-id      (or (:id module) module)
+        current-entry  (or (when (and book
+                                      module-id
+                                      (pg-current-module-link? module link))
+                             (some-> (book/get-code-entry-view book
+                                                               (ut/sym-full module-id
+                                                                            (:id link)))
+                                     normalize-entry))
+                           (when-let [entry (and (pg-current-module-link? module link)
+                                                 (get-in module [:code (:id link)]))]
+                             (when (map? entry)
+                               (normalize-entry entry))))
+        snapshot-entry (some->> (and book
+                                     (book/get-base-entry book
+                                                          (:module link)
+                                                          (:id link)
+                                                          (:section link)))
+                                normalize-entry)
+        resolved-entry (some-> link
+                               pg-link-symbol
+                               resolve
+                               deref
+                               normalize-entry)
+        complete?     (fn [entry]
+                        (or (:static/schema-seed entry)
+                            (:static/schema-primary entry)
+                            (:static/application entry)))
+        materialize   (fn [entry entry-module]
+                        (cond (nil? entry) nil
+                              (complete? entry) entry
+                              (nil? book) entry
+                              :else
+                              (impl-template/materialize-code-entry book
+                                                                    (dissoc entry :static/code.cache)
+                                                                    {:lang lang
+                                                                     :module (or entry-module
+                                                                                 (get-in book [:modules (:module entry)]))})))
+        current-entry (materialize current-entry module)
+        snapshot-entry (materialize snapshot-entry
+                                    (get-in book [:modules (:module link)]))
+        entry         (or (and current-entry
+                               (complete? current-entry)
+                               current-entry)
+                          (and snapshot-entry
+                               (complete? snapshot-entry)
+                               snapshot-entry)
+                          resolved-entry
+                          snapshot-entry
+                          current-entry)]
+    [book entry]))
 
 (defn pg-string
-  "Constructs a PostgreSQL single-quoted string literal."
-  [value]
-  (let [value (str value)]
-    (str "'" (str/replace value "'" "''") "'")))
+  "constructs a pg string"
+  {:added "4.0"}
+  [s]
+  (RegExp/replace
+    (regexp "\\\\\\\\")
+    (RegExp/replace
+      (regexp "\\\\\\\"")
+      (RegExp/replace
+        (regexp "\\\"$")
+        (RegExp/replace
+          (regexp "^\\\"")
+          (RegExp/replace (regexp "'") (pr-str s) "''")
+          "'")
+        "'")
+      "\"")
+    "\\"))
 
 (defn pg-uuid
-  "Constructs a UUID SQL literal."
-  [value]
-  (str "'" value "'::uuid"))
-
-(defn pg-set
-  "Emits the archived PostgreSQL set literal form."
-  [values grammar context]
-  (cond
-    (> (count values) 1)
-    (if (every? symbol? values)
-      (emit/*emit-fn* (tf/pg-tf-js [nil values]) grammar context)
-      (throw (ex :syntax {:value values}
-                 :ex/message "PostgreSQL set values must be symbols")))
-
-    :else
-    (let [value (first values)]
-      (cond
-        (string? value) (str "\"" value "\"")
-        (and (symbol? value)
-             (str/includes? (str value) "-"))
-        (emit/*emit-fn* (tf/pg-tf-js [nil values]) grammar context)
-        :else
-        (throw (ex :syntax {:value values}
-                   :ex/message "PostgreSQL set value is not allowed"))))))
-
-(defn pg-array
-  "Emits a PostgreSQL ARRAY expression from an operator form."
-  [form grammar context]
-  (str "ARRAY["
-       (str/join "," (map (fn [value]
-                            (emit/*emit-fn* value grammar context))
-                          (rest form)))
-       "]"))
-
-(defn pg-invoke-typecast
-  "Emits the historical keyword-invocation typecast form."
-  [form grammar context]
-  (let [value (last form)
-        types (str/join
-               " "
-               (map (fn [entry]
-                     (cond
-                       (keyword? entry) (str/upper (name entry))
-                       (or (list? entry) (vector? entry)) (str entry)
-                       :else (emit/*emit-fn* entry grammar context)))
-                    (butlast form)))]
-    (str "(" (emit/*emit-fn* value grammar context) ")::" types)))
-
-(defn pg-typecast
-  "Emits the `++` PostgreSQL typecast operator."
-  [form grammar context]
-  (pg-invoke-typecast (concat (drop 2 form) [(second form)]) grammar context))
+  "constructs a pg uuid"
+  {:added "4.0"}
+  [u]
+  (str "'" (str u) "'::uuid"))
 
 (defn pg-map
-  "Emits a PostgreSQL JSONB object through the portable transform."
-  [value grammar context]
-  (emit/*emit-fn* (tf/pg-tf-js [nil value]) grammar context))
+  "creates a postgres json object"
+  {:added "4.0"}
+  [m grammar mopts]
+  (common/*emit-fn* (tf/pg-tf-js [nil m]) grammar mopts))
+
+(defn pg-set
+  "makes a set object"
+  {:added "4.0"}
+  [e grammar mopts]
+  (cond
+    (< 1 (count e)) (if (every? symbol? e)
+                      (common/*emit-fn*
+                        (tf/pg-tf-js [nil e])
+                        grammar
+                        mopts)
+                      (throw
+                        (ex
+                          :generic
+                          {:value e}
+                          :ex/message
+                          "Not Allowed")))
+    :else (let [v (first e)]
+            (cond
+              (string? v) (str "\"" v "\"")
+              (and (symbol? v) (re-find (regexp "\\w-\\w+") (str v))) (common/*emit-fn*
+                                                                        (tf/pg-tf-js
+                                                                          [nil
+                                                                           e])
+                                                                        grammar
+                                                                        mopts)
+              :else (throw
+                      (ex
+                        :generic
+                        {:value e}
+                        :ex/message
+                        "Not Allowed"))))))
+
+(defn pg-array
+  "creates an array object\n \n   (common/pg-array '(array 1 2 3 4 5)\n                    g/+grammar+\n                    {})\n   => \"ARRAY[1,2,3,4,5]\""
+  {:added "4.0"}
+  [[_ & arr] grammar mopts]
+  (let [str-array (common/emit-array
+                    arr
+                    grammar
+                    mopts
+                    common/*emit-fn*)]
+    (str "ARRAY[" (str/join "," str-array) "]")))
+
+
+(defn pg-invoke-typecast
+  "emits a typecast call"
+  {:added "4.0"}
+  [form grammar mopts]
+  (let [val (last form)
+        types (str/join
+                ""
+                (map
+                  (fn [v]
+                    (cond
+                      (keyword? v) (str/upper (str/tag v))
+                      (or
+                        (and (form? v) (not= '. (first v)))
+                        (vector? v)) (str/tag v)
+                      :else (common/*emit-fn* v grammar mopts)))
+                  (butlast form)))]
+    (str "(" (common/*emit-fn* val grammar mopts) ")" "::" types)))
+
+(defn pg-typecast
+  "creates a typecast"
+  {:added "4.0"}
+  [[_ sym & args] grammar mopts]
+  (pg-invoke-typecast (concat args [sym]) grammar mopts))
 
 (defn pg-do-assert
-  "Expands the archived `do:assert` form through the native JSONB assertion emitter."
-  [form grammar context]
-  (let [check (second form)
-        tag-data (nth form 2)
-        tag (first tag-data)
-        data (second tag-data)
-        detail (if (map? data)
-                  (merge {:status "error" :tag tag} data)
-                  {:status "error" :tag tag :data data})]
-    (str "IF NOT (" (emit/*emit-fn* check grammar context) ") THEN\n"
-         "  RAISE EXCEPTION USING DETAIL = (" (pg-map detail grammar context)
-         ")::TEXT, MESSAGE = " (pg-string (str tag)) ";\n"
-         "END IF")))
+  "creates an assert form"
+  {:added "4.0"}
+  [[_ chk [tag data]] grammar mopts]
+  (common/*emit-fn* (tf/pg-tf-assert [nil chk [tag data]])
+                    grammar mopts))
+
+;;
+;; type tokens
+;;
 
 (defn pg-base-token
-  "Constructs a schema-qualified portable token."
-  [token schema]
-  (let [token (if (set? token) token #{token})
-        schema (if (string? schema) #{schema} schema)]
-    (if (and schema (not= schema #{"public"}))
-      (list '. schema token)
-      token)))
+  "creates a base token"
+  {:added "4.0"}
+  [tok schtok]
+  (let [schtok (if (string? schtok) #{schtok} schtok)]
+    (if (and schtok (not= schtok #{"public"}))
+      (list '. schtok tok)
+      tok)))
 
 (defn pg-full-token
-  "Constructs a schema-qualified type or enum token."
-  [token schema]
-  (pg-base-token #{(str/replace (str token) "." "_")} schema))
+  "creates a full token (for types and enums)"
+  {:added "4.0"}
+  [tok schtok]
+  (let [tok #{(RegExp/replace (regexp "\\.") (str/tag tok) "_")}]
+    (pg-base-token tok schtok)))
+
+;;
+;; linked symbol (defn and deftype)
+;;
 
 (defn pg-entry-literal
-  "Returns the schema and id literal for an entry map."
+  "creates an entry literal"
+  {:added "4.0"}
   [entry]
-  (str (:static/schema entry) "." (:id entry)))
+  (let [{:keys [op id], schema :static/schema} entry]
+    (str schema "." id)))
 
 (defn pg-entry-token
-  "Returns a portable token for an entry map."
+  "gets the entry token"
+  {:added "4.0"}
   [entry]
-  (let [op (:op entry)
-        id (:id entry)
-        schema (:static/schema entry)
-        token (cond (= op 'defn) (symbol (str id))
-                    (= op 'def) #{(str id)}
-                    :else #{(str id)})]
-    (if (= op 'defconst)
-      (let [tail (last (:form entry))
-            candidate (if (map? tail) (:id tail) tail)]
-        (if (and (list? candidate)
-                 (= 'quote (first candidate)))
-          (second candidate)
-          candidate))
-      (pg-base-token token schema))))
+  (let [{:keys [op id], schema :static/schema} entry]
+    (cond
+      (= op 'defconst) (:id (last (:form entry)))
+      :else (pg-base-token
+              (case
+                op
+                def
+                #{(str id)}
+                defn
+                (symbol (str id))
+                deftype
+                #{(str id)}
+                defenum
+                #{(str id)}
+                defrole
+                #{(str id)}
+                (symbol (str id)))
+              schema))))
 
 (defn pg-linked-token
-  "Returns a linked token from a resolved entry or symbol."
-  [value options]
-  (cond
-    (map? value) (pg-entry-token value)
-    (symbol? value)
-    (let [[module id] (ut/sym-pair value)
-          link (if module {:module module :id id} nil)
-          resolved (if link (pg-resolve-entry link options) [nil nil])
-          entry (second resolved)]
-      (if entry
-        (if (= :fragment (:section entry))
-          (or (:form-input entry) (:form entry))
-          (pg-entry-token entry))
-        (pg-base-token #{(name value)} (namespace value))))
-    :else value))
+  "gets the linked token given symbol"
+  {:added "4.0"}
+  [sym mopts]
+  (let [{:keys [lang snapshot]} mopts
+        book (snap/get-book snapshot lang)
+        [sym-module sym-id] (ut/sym-pair sym)
+        {:keys [section], :as e} (or
+                                   (book/get-code-entry-view book sym)
+                                   (get-in
+                                     (book/get-module book sym-module)
+                                     [:fragment sym-id])
+                                   (throw
+                                     (ex
+                                       :generic
+                                       {:input sym,
+                                        :module sym-module,
+                                        :sym-id sym-id,
+                                        :opts mopts}
+                                       :ex/message
+                                       "Token Not found.")))]
+    (case section :fragment (:form e) :code (pg-entry-token e))))
 
 (defn pg-linked
-  "Emits a linked token through the active emitter."
-  [symbol grammar context]
-  (emit/*emit-fn* (pg-linked-token symbol context) grammar context))
+  "emits the linked symbol"
+  {:added "4.0"}
+  [sym grammar opts]
+  (common/*emit-fn* (pg-linked-token sym opts) grammar opts))
 
 (defn block-do-block
-  "Builds the archived PL/pgSQL DO block form."
+  "initates do block"
+  {:added "4.0"}
   [form]
-  [:do :$$ \\ :begin \\ (list \| form) \\ :end \; \\ :$$ :language "plpgsql" \;])
+  (apply
+    vector
+    (seq
+      (concat
+        (list :do)
+        (list :$$)
+        (list \\)
+        (list :begin)
+        (list \\)
+        (list (seq (concat (list \|) (list form))))
+        (list \\)
+        (list :end)
+        (list \;)
+        (list \\)
+        (list :$$)
+        (list :language)
+        (list "plpgsql")
+        (list \;)))))
 
 (defn block-do-suppress
-  "Builds a PL/pgSQL DO block that suppresses exceptions."
+  "initates suppress block"
+  {:added "4.0"}
   [form]
-  [:do :$$ \\ :begin \\ (list \| form) \\ :exception :when-others-then
-   \\ :end \; \\ :$$ :language "plpgsql" \;])
+  (apply
+    vector
+    (seq
+      (concat
+        (list :do)
+        (list :$$)
+        (list \\)
+        (list :begin)
+        (list \\)
+        (list (seq (concat (list \|) (list form))))
+        (list \\)
+        (list :exception)
+        (list :when-others-then)
+        (list \\)
+        (list :end)
+        (list \;)
+        (list \\)
+        (list :$$)
+        (list :language)
+        (list "plpgsql")
+        (list \;)))))
 
 (defn block-loop-block
-  "Builds a PL/pgSQL loop block form."
-  [& forms]
-  [:loop \\ (list \| (apply list 'do forms)) \\ :end-loop])
+  "emits loop block"
+  {:added "4.0"}
+  [_ & forms]
+  (apply
+    vector
+    (seq
+      (concat
+        (list :loop)
+        (list \\)
+        (list
+          (seq
+            (concat (list \|) (list (seq (concat (list 'do) forms))))))
+        (list \\)
+        (list :end-loop)))))
 
 (defn block-while-block
-  "Builds a PL/pgSQL while block form."
+  "emits while block"
+  {:added "4.0"}
   [condition & forms]
-  [:while condition :loop \\ (list \| (apply list 'do forms)) \\ :end-loop \;])
+  (apply
+    vector
+    (seq
+      (concat
+        (list :while)
+        (list condition)
+        (list :loop)
+        (list \\)
+        (list
+          (seq
+            (concat (list \|) (list (seq (concat (list 'do) forms))))))
+        (list \\)
+        (list :end-loop)
+        (list \;)))))
 
 (defn block-case-block
-  "Builds a PL/pgSQL CASE block form."
-  [value & clauses]
-  (let [pairs (partition 2 clauses)
-        body (mapcat
-              (fn [pair]
-                (let [check (first pair)
-                      form (second pair)]
-                  (if (= :else check)
-                    [:else (list :% form) \\]
-                    [:when (list :% check) :then (list :% form) \\])))
-              pairs)]
-    (list '% (vec (concat [:case value \\]
-                          [(apply list \| body)]
-                          [:end])))))
+  "emits case block"
+  {:added "4.0"}
+  [value & args]
+  (let [args (partition 2 args)
+        block (mapcat
+                (fn [[chk body]]
+                  (if (= :else chk)
+                    [:ELSE (list :% body) \\]
+                    [:WHEN (list :% chk) :THEN (list :% body) \\]))
+                args)]
+    (list
+      '%
+      (vec (concat [:case value \\] [(apply list \| block)] [:end])))))
+
+
+;;
+;; defenum
+;;
 
 (defn pg-defenum
-  "Expands an archived enum declaration into an idempotent DO block form."
-  [form]
-  (let [symbol (second form)
-        values (nth form 2)
-        metadata (or (meta symbol) {})
-        token (pg-full-token symbol (:static/schema metadata))
-        values-form (if (and (list? values)
-                             (= '!:eval (first values)))
-                      (list '!:eval
-                            (list 'list
-                                  (list 'quote 'quote)
-                                  (list 'map 'str (second values))))
-                      (list 'quote (map str values)))]
-    [:do :$$
-     \\ :begin
-     \\ (list \| (list 'do [:create-type token :as-enum values-form]))
-     \\ :exception :when-others-then
-     \\ :end \;
-     \\ :$$ :language "plpgsql" \;]))
+  "defenum block"
+  {:added "4.0"}
+  [[_ sym array]]
+  (let [{schema :static/schema} (meta sym)
+        ttok (pg-full-token sym schema)
+        vals (if (and (form? array) (= '!:eval (first array)))
+               (list
+                 '!:eval
+                 (list
+                   'list
+                   (list 'quote 'quote)
+                   (list 'map 'str/tag (second array))))
+               (list 'quote (map str/tag (seq array))))]
+    (apply
+      vector
+      (seq
+        (concat
+          (list :do)
+          (list :$$)
+          (list \\)
+          (list :begin)
+          (list \\)
+          (list
+            (seq
+              (concat
+                (list \|)
+                (list
+                  (seq
+                    (concat
+                      (list 'do)
+                      (list
+                        (apply
+                          vector
+                          (seq
+                            (concat
+                              (list :create-type)
+                              (list ttok)
+                              (list :as-enum)
+                              (list vals)))))))))))
+          (list \\)
+          (list :exception)
+          (list :when-others-then)
+          (list \\)
+          (list :end)
+          (list \;)
+          (list \\)
+          (list :$$)
+          (list :language)
+          (list "plpgsql")
+          (list \;))))))
+
+;;
+;; defindex
+;;
 
 (defn pg-defindex
-  "Expands an archived defindex declaration into a CREATE INDEX section."
-  [form]
-  (let [formatted (grammar-spec/format-defn form)
-        normalized (second formatted)
-        symbol (second normalized)
-        binding (nth normalized 2)
-        table (first binding)
-        columns (rest binding)
-        body (drop 3 normalized)]
-    (vec (concat [:create-index :if-not-exists symbol
-                  :on table (list 'quote (list (vec columns)))]
-                 body
-                 [\;]))))
+  "defindex block"
+  {:added "4.0"}
+  [[_ sym doc? attr? [table & cols] & body :as form]]
+  (let [[{:keys [doc], :as mdefn} [_ sym [table & cols] & body]] (update
+                                                                   (grammar-spec/format-defn
+                                                                     form)
+                                                                   1
+                                                                   vec)]
+    (vec
+      (concat
+        [:create-index
+         :if-not-exists
+         sym
+         :on
+         table
+         (list 'quote (list (vec cols)))]
+        body
+        [\;]))))
+
+;;
+;; defpolicy
+;;
 
 (defn pg-defpolicy
-  "Expands an archived defpolicy declaration into drop/create sections."
-  [form]
-  (let [formatted (grammar-spec/format-defn form)
-        normalized (second formatted)
-        symbol (second normalized)
-        binding (nth normalized 2)
-        table (first binding)
-        body (nth normalized 3)
-        definition-metadata (first formatted)
-        name (str symbol " - " (:doc definition-metadata))]
-    (list 'do
-          [:drop-policy-if-exists #{name} :on table]
-          (vec (concat [:create-policy #{name} :on table \\] body)))))
+  "defpolicy block"
+  {:added "4.0"}
+  [[_ sym doc? attr? [table] body :as form]]
+  (let [[{:keys [doc], :as mdefn} [_ sym [table] body]] (update
+                                                          (grammar-spec/format-defn
+                                                            form)
+                                                          1
+                                                          vec)]
+    (list
+      'do
+      [:drop-policy-if-exists #{(str sym " - " doc)} :on table]
+      (vec
+        (concat
+          [:create-policy #{(str sym " - " doc)} :on table \\]
+          body)))))
+
+;;
+;; defpublication
+;;
 
 (defn pg-publication-format
-  "Formats a publication declaration."
+  "formats publication"
+  {:added "4.0"}
   [form]
-  (let [formatted (grammar-spec/format-defn form)
-        metadata (first formatted)
-        normalized (second formatted)]
-    [(merge metadata (or (meta (second normalized)) {}))
-     normalized]))
+  (let [[mdefn [op sym args body]] (update
+                                     (grammar-spec/format-defn form)
+                                     1
+                                     vec)]
+    [(merge mdefn (meta sym))
+     (list op (with-meta sym (meta sym)) (:doc mdefn) args body)]))
 
 (defn pg-defpublication
-  "Expands an archived publication declaration."
-  [form]
-  (let [formatted (grammar-spec/format-defn form)
-        normalized (second formatted)
-        symbol (second normalized)
-        args (nth normalized 2)
-        body (if (> (count normalized) 3) (nth normalized 3) [])]
-    (list 'do
-          [:drop-publication-if-exists symbol]
-          (vec (concat [:create-publication symbol]
-                       (if (or (= 0 (count args)) (= args [:all]))
-                         [:for :all :tables]
-                         [:for :table (list 'quote args)])
-                       body)))))
+  "defpublication block"
+  {:added "4.0"}
+  [[_ sym doc? attr? args body :as form]]
+  (let [[{:keys [doc], :as mdefn} [_ sym args body]] (update
+                                                       (grammar-spec/format-defn
+                                                         form)
+                                                       1
+                                                       vec)]
+    (list
+      'do
+      [:drop-publication-if-exists sym]
+      (vec
+        (concat
+          [:create-publication sym]
+          (cond
+            (or (empty? args) (= args [:all])) [:for :all :tables]
+            :else [:for :table (list 'quote args)])
+          body)))))
+
+;;
+;; defsubscription
+;;
 
 (defn pg-subscription-format
-  "Formats a subscription declaration."
+  "formats subscription"
+  {:added "4.0"}
   [form]
-  (let [formatted (grammar-spec/format-defn form)
-        metadata (first formatted)
-        normalized (second formatted)]
-    [(merge metadata (or (meta (second normalized)) {}))
-     normalized]))
+  (let [[mdefn [op sym args body]] (update
+                                     (grammar-spec/format-defn form)
+                                     1
+                                     vec)]
+    [(merge mdefn (meta sym))
+     (list op (with-meta sym (meta sym)) (:doc mdefn) args body)]))
 
 (defn pg-defsubscription
-  "Expands an archived subscription declaration."
-  [form]
-  (let [formatted (grammar-spec/format-defn form)
-        normalized (second formatted)
-        symbol (second normalized)
-        args (nth normalized 2)
-        connection (first args)
-        publication (second args)
-        body (nth normalized 3)]
-    (list 'do
-          [:drop-subscription-if-exists symbol]
-          (vec (concat [:create-subscription symbol
-                        :connection connection
-                        :publication publication]
-                       body)))))
+  "defsubscription block"
+  {:added "4.0"}
+  [[_ sym doc? attr? [conn pub] body :as form]]
+  (let [[{:keys [doc], :as mdefn} [_ sym [conn pub] body]] (update
+                                                             (grammar-spec/format-defn
+                                                               form)
+                                                             1
+                                                             vec)]
+    (list
+      'do
+      [:drop-subscription-if-exists sym]
+      (vec
+        (concat
+          [:create-subscription sym :connection conn :publication pub]
+          body)))))
+
+;;
+;; deftrigger
+;;
 
 (defn pg-deftrigger
-  "Expands an archived trigger declaration."
-  [form]
-  (let [formatted (grammar-spec/format-defn form)
-        normalized (second formatted)
-        symbol (second normalized)
-        binding (nth normalized 2)
-        table (first binding)
-        body (nth normalized 3)
-        return (or (:static/return (meta symbol))
-                   (get (meta symbol) :-)
-                   [])]
-    (list 'do
-          [:drop-trigger-if-exists symbol :on table]
-          (vec (concat [:create-trigger symbol]
-                       return
-                       [:on table \\]
-                       body)))))
+  "TODO"
+  {:added "4.0"}
+  [[_ sym doc? attr? [table] body :as form]]
+  (let [[{:keys [doc], :as mdefn} [_ sym [table] body]] (update
+                                                          (grammar-spec/format-defn
+                                                            form)
+                                                          1
+                                                          vec)
+        {return :static/return} (meta sym)]
+    (list
+      'do
+      [:drop-trigger-if-exists sym :on table]
+      (vec (concat [:create-trigger sym] return [:on table \\] body)))))
 
 (defn pg-defblock
-  "Creates a generic PostgreSQL DDL block from declaration metadata."
-  [form]
-  (let [symbol (second form)
-        metadata (or (meta symbol) {})
-        schema (:static/schema metadata)
-        token (pg-full-token symbol schema)
-        return (or (:static/return metadata) (get metadata :-) [])
-        body (nth form 2)]
-    (list 'do (vec (concat [:create] return [token] body)))))
+  "creates generic defblock"
+  {:added "4.0"}
+  [[_ sym array]]
+  (let [{schema :static/schema, return :static/return} (meta sym)
+        ttok (pg-full-token sym schema)]
+    (seq
+      (concat
+        (list 'do)
+        (list
+          (apply
+            vector
+            (seq (concat (list :create) return (list ttok) array))))))))

@@ -1,24 +1,245 @@
 (ns lang.model.v1.spec-postgres.postgres-form-defn-test
-  (:require [lang.model.v1.spec-postgres.postgres-form-defn :as form]))
+  (:require [lang.model.v1.spec-postgres.postgres-form-defn :as native]
+            [lang.model.v1.spec-postgres.postgres-form-let :as form-let]
+            [lang.base.emit :as emit]
+            [lang.base.emit-common :as ec])
+  (:use code.test))
 
-^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defn-format}
-(Test/check [{:name "publishes the Foundation function formatter"
-              :test (fn [] (:static/return
-                            (first (form/pg-defn-format
-                                    '(defn demo {:- [:text]} [:text value] value)))))
-              :expected [:text]}])
+^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defn-format, :id :typed-input-contract}
+(fact
+  "formatter retains typed inputs, return type, props and default values"
+  (let [out (native/pg-defn-format
+              '(defn sales-tax
+                 {:- [:real], :props [:immutable]}
+                 [:real subtotal :real fraction := 0.06]
+                 (return (* fraction subtotal))))
+        metadata (first out)]
+    [(:static/return metadata)
+     (:static/language metadata)
+     (:static/props metadata)
+     (get-in metadata [:static/input 0 :symbol])
+     (get-in metadata [:static/input 0 :modifiers])
+     (get-in metadata [:static/input 1 :symbol])
+     (get-in metadata [:static/input 1 :value])
+     (meta (second (second out)))])
+  =>
+  [[:real]
+   :default
+   [:immutable]
+   'subtotal
+   [:real]
+   'fraction
+   0.06
+   '{:static/input
+     [{:symbol subtotal, :modifiers [:real]}
+      {:symbol fraction,
+       :modifiers [:real],
+       :force true,
+       :value 0.06,
+       :assign true}],
+     :static/language :default,
+     :static/props [:immutable],
+     :static/return [:real],
+     :- [:real],
+     :doc ""}])
 
-^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defnformat}
-(Test/check [{:name "retains the archived formatter alias"
-              :test (fn [] (= form/pg-defnformat form/pg-defn-format))
-              :expected true}])
+^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defnformat, :id :formatter-alias}
+(fact
+  "the formatter alias refers to the same callable"
+  (= native/pg-defnformat native/pg-defn-format)
+  =>
+  true)
 
-^{:refer lang.model.v1.spec-postgres.postgres-form-defn/+pg-defnlang-types+}
-(Test/check [{:name "publishes language tags for PostgreSQL functions"
-              :test (fn [] (get-in form/+pg-defnlang-types+ [:js :tag]))
-              :expected "plv8"}])
+^{:refer lang.model.v1.spec-postgres.postgres-form-defn/+pg-defnlang-types+, :id :language-table}
+(fact
+  "all original language tags and the existing postgres extension remain available"
+  native/+pg-defnlang-types+
+  =>
+  {:default {:tag "plpgsql", :lang :postgres},
+   :postgres {:tag "plpgsql", :lang :postgres},
+   :sql {:tag "sql", :lang :postgres},
+   :js {:tag "plv8", :lang :js},
+   :python {:tag "plpython3u"},
+   :lua {:tag "pllua"}})
 
-^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defn}
-(Test/check [{:name "publishes the complete PostgreSQL function emitter"
-              :test (fn [] (fn? form/pg-defn))
-              :expected true}])
+^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defn, :id :default-block-form}
+(fact
+  "default functions compose the original schema, body and property forms"
+  (binding [ec/*emit-fn* (fn [value grammar opts]
+                           (if (vector? value) value (str/tag value)))]
+    (native/pg-defn
+      '(defn ^{:- [:real], :static/schema "audit", :static/props [:immutable]} f []
+         (return 1))
+      (emit/default-grammar
+        {:default {:invoke {:type {:uppercase true}}}})
+      {}))
+  =>
+  '[:create-or-replace
+    :function
+    (:- "\"audit\".f()")
+    :returns
+    (:- "REAL")
+    :as
+    :$$
+    \\
+    :begin
+    \\
+    (\| (do (return 1)))
+    \\
+    :end
+    \;
+    \\
+    :$$
+    :language
+    (% "plpgsql")
+    :immutable
+    \;])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defn, :id :python-language-form}
+(fact
+  "Python bodies delegate through the language emitter and track only input symbols"
+  (binding [ec/*emit-fn* (fn [value grammar opts]
+                           (if (vector? value)
+                             [value (deref form-let/*input-syms*)]
+                             (str/tag value)))]
+    (native/pg-defn
+      '(defn ^{:- [:real], :static/language :python} f [:real subtotal]
+         (return subtotal))
+      (emit/default-grammar
+        {:default {:invoke {:type {:uppercase true}, :reversed true}}})
+      {}))
+  =>
+  ['[:create-or-replace
+     :function
+     (:- "f(subtotal REAL)")
+     :returns
+     (:- "REAL")
+     :as
+     :$$
+     \\
+     \\
+     (\| (!:lang {:lang :python} (do (return subtotal))))
+     \\
+     \\
+     :$$
+     :language
+     (% "plpython3u")
+     \;]
+   '#{subtotal}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defn, :id :sql-expression-control}
+(fact
+  "SQL mode wraps one scalar expression and rejects multiple expressions"
+  (binding [ec/*emit-fn* (fn [value grammar opts]
+                           (if (vector? value) value (str/tag value)))]
+    [(native/pg-defn
+       '(defn ^{:- [:real], :static/language :sql} f [] 1)
+       (emit/default-grammar
+         {:default {:invoke {:type {:uppercase true}}}})
+       {})
+     (try
+       (native/pg-defn
+         '(defn ^{:- [:real], :static/language :sql} f [] 1 2)
+         (emit/default-grammar
+           {:default {:invoke {:type {:uppercase true}}}})
+         {})
+       (catch error (ex-message error)))])
+  =>
+  ['[:create-or-replace
+     :function
+     (:- "f()")
+     :returns
+     (:- "REAL")
+     :as
+     :$$
+     \\
+     \\
+     (\| (!:lang {:lang :postgres} (do [:select 1])))
+     \\
+     \\
+     :$$
+     :language
+     (% "sql")
+     \;]
+   "Not an sql expression"])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defn, :id :emitter-scope-restore}
+(fact
+  "failed final emission restores the caller's input-symbol scope"
+  (binding [form-let/*input-syms* (atom '#{i-outer})
+            ec/*emit-fn* (fn [value grammar opts]
+                           (if (vector? value)
+                             (throw
+                               (ex
+                                 :migration/defn
+                                 {}
+                                 :ex/message
+                                 "emitter failed"))
+                             (str/tag value)))]
+    [(try
+       (native/pg-defn
+         '(defn ^{:- [:real]} f [] 1)
+         (emit/default-grammar {})
+         {})
+       (catch error (ex-message error)))
+     (deref form-let/*input-syms*)])
+  =>
+  ["emitter failed" '#{i-outer}])
+
+(ns lang.model.v1.spec-postgres.postgres-form-defn-test
+  (:require [lang.model.v1.spec-postgres.postgres-form-defn :as native])
+  (:use code.test))
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defn-format, :id :original-symbol-metadata}
+(fact
+  "symbol metadata follows the original path and documentation stays on the entry"
+  (let [out (native/pg-defn-format
+              '(defn ^{:- [:real], :%% :python, :note "symbol"} tax
+                 "doc"
+                 [:real amount]
+                 (return amount)))]
+    [(first out) (meta (second (second out))) (second out)])
+  =>
+  '[{:doc "doc",
+     :- [:real],
+     :note "symbol",
+     :static/return [:real],
+     :static/language :python,
+     :static/props [],
+     :static/input [{:modifiers [:real], :symbol amount}]}
+    {:- [:real],
+     :note "symbol",
+     :static/return [:real],
+     :static/language :python,
+     :static/props [],
+     :static/input [{:modifiers [:real], :symbol amount}]}
+    (defn tax [:real amount] (return amount))])
+
+^{:refer lang.model.v1.spec-postgres.postgres-form-defn/pg-defn-format, :id :native-attribute-precedence}
+(fact
+  "existing native attribute maps override symbol shorthand without losing other fields"
+  (let [out (native/pg-defn-format
+              '(defn ^{:- [:int], :%% :python, :note "symbol"} tax
+                 "doc"
+                 {:- [:real], :%% :sql, :props [:immutable]}
+                 []
+                 (return 1)))]
+    [(first out) (meta (second (second out))) (second out)])
+  =>
+  '[{:static/language :sql,
+     :static/input [],
+     :- [:real],
+     :static/props [:immutable],
+     :note "symbol",
+     :%% :sql,
+     :static/return [:real],
+     :doc "doc",
+     :props [:immutable]}
+    {:doc "doc",
+     :- [:real],
+     :note "symbol",
+     :static/return [:real],
+     :static/language :sql,
+     :static/props [:immutable],
+     :static/input []}
+    (defn tax [] (return 1))])

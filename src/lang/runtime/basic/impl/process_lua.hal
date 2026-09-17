@@ -43,8 +43,19 @@
 
       :else body)))
 
+(defn default-body-transform
+  "Returns the final Lua body value while keeping inline definitions local."
+  [input options]
+  (let [forms (runtime/return-format
+                (runtime/normalize-body-forms input options)
+                (quote #{:- := var local def defn break throw}))]
+    (list (quote do)
+          (apply list (quote defn) (with-meta (quote OUT-FN) {:inner true}) [] forms)
+          (list (quote return) (list (quote OUT-FN))))))
+
 (def +lua-basic-script-emit+
-  {:code {:transforms {:entry [lua-basic-script-globalize-entry]}}})
+  {:body {:transform default-body-transform}
+   :code {:transforms {:entry [lua-basic-script-globalize-entry]}}})
 
 (def +lua-oneshot-config+
   (common/set-context-options
@@ -70,21 +81,21 @@
               :response [[:lang/node-response 1]]}}))
 
 (def +lua-oneshot+
-  (runtime/install-type
+  (runtime/install-type!
    :lua :oneshot
    {:type :lang/rt.oneshot
     :instance {:create oneshot/rt-oneshot:create
                :raw-eval oneshot/raw-eval-oneshot}}))
 
 (def +lua-verify+
-  (runtime/install-type
+  (runtime/install-type!
    :lua :verify
    {:type :lang/rt.verify
     :instance {:create oneshot/rt-oneshot:create
                :raw-eval verify/raw-eval-verify}}))
 
 (def +lua-basic+
-  (runtime/install-type
+  (runtime/install-type!
    :lua :basic
    {:type :lang/rt.basic
     :config {:layout :full}

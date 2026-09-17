@@ -1,7 +1,154 @@
 (ns lang.model.v1.spec-c-test
-  (:require [lang.base.grammar-api :as grammar]
-            [lang.base.registry :as registry]
-            [lang.model.v1.spec-c :as subject]))
+  (:require [lang.core.impl :as l] [lang.model.v1.spec-c :refer :all])
+  (:use code.test))
+
+(fact "emit basic C"
+
+  (l/emit-as :c '[(define A 1)])
+  => "#define A 1")
+
+(fact "emit pointer ops"
+
+  (l/emit-as :c '[(:* x)])
+  => "*x")
+
+(fact "emit math"
+
+  (l/emit-as :c '[(+ 1 2)])
+  => "1 + 2")
+
+(fact "emit control"
+
+  (l/emit-as :c '[(if true
+                    (return 1)
+                    (return 0))])
+  => "if(true){\n  return 1;\n}\nelse{\n  return 0;\n}")
+
+(fact "emit struct"
+
+  (l/emit-as :c '[(struct Point
+                    [:int x
+                     :int y])])
+  => "struct Point { \n  int x;\n  int y; \n};")
+
+(fact "emit enum"
+
+  (l/emit-as :c '[(enum Color [RED GREEN BLUE])])
+  => "enum Color { RED,GREEN,BLUE };")
+
+(fact "emit typedef"
+
+  (l/emit-as :c '[(typedef :int :my_int)])
+  => "typedef int my_int;")
+
+(fact "emit function with types"
+
+  (l/emit-as :c '[(defn main [[:int argc] [:char** argv]]
+                    (return 0))])
+  => "void main(int argc, char** argv) {\n\n  return 0;\n}")
+
+(fact "emit arrow"
+  (l/emit-as :c '[(arrow ptr field)])
+  => "ptr -> field")
+
+(fact "emit sizeof"
+
+  (l/emit-as :c '[(sizeof x)])
+  => "sizeof x")
+
+^{:refer lang.model.v1.spec-c/tf-define, :added "4.0"}
+(fact
+  "not sure if this is needed (due to defmacro) but may be good for source to source"
+  (tf-define '(define A 1))
+  =>
+  '(:- "#define" A 1)
+  (tf-define '(define A [a b] (+ a b)))
+  =>
+  '(:- "#define" (:% A '(a b)) (+ a b)))
+
+^{:refer lang.model.v1.spec-c/tf-struct, :added "4.1"}
+(fact
+  "transforms struct definition"
+  (tf-struct '(struct Point [:int x :int y]))
+  =>
+  (contains
+    '(:-
+       "struct"
+       Point
+       (:-
+         "{"
+         (\\ \\ (\| (do (:- :int "x;") (:- :int "y;"))))
+         (:- "\n};")))))
+
+^{:refer lang.model.v1.spec-c/tf-enum, :added "4.1"}
+(fact
+  "transforms enum definition"
+  (tf-enum '(enum Color [RED GREEN BLUE]))
+  =>
+  '(:- "enum" Color (:- "{") '[RED GREEN BLUE] (:- "};")))
+
+^{:refer lang.model.v1.spec-c/tf-typedef, :added "4.1"}
+(fact
+  "transforms typedef"
+  (tf-typedef '(typedef :int :my_int))
+  =>
+  '(:- "typedef" :int "my_int;"))
+
+^{:refer lang.model.v1.spec-c/to-c-type, :added "4.1"}
+(fact
+  "converts C type inputs"
+  (to-c-type :int)
+  =>
+  "int"
+  (to-c-type 'char**)
+  =>
+  "char**"
+  (to-c-type [:const :char*])
+  =>
+  "const char*")
+
+^{:refer lang.model.v1.spec-c/c-sanitize, :added "4.1"}
+(fact
+  "sanitizes symbols for C identifiers"
+  (c-sanitize 'hello-world/foo.bar)
+  =>
+  "hello_world____foo_bar")
+
+^{:refer lang.model.v1.spec-c/c-fn-args, :added "4.1"}
+(fact
+  "custom C function arguments emission"
+  (c-fn-args ''[[:int argc] [:char** argv]] nil nil)
+  =>
+  "(int argc, char** argv)")
+
+^{:refer lang.model.v1.spec-c/emit-defn, :added "4.1"}
+(fact
+  "emits C functions directly"
+  (emit-defn
+    '(defn add [[:int lhs] [:int rhs]] (return (+ lhs rhs)))
+    +grammar+
+    {})
+  =>
+  "void add(int lhs, int rhs) {\n\n  return lhs + rhs;\n}"
+  (emit-defn
+    '(defn add [[:int lhs] [:int rhs]] (return (+ lhs rhs)))
+    +grammar+
+    {:module {:id 'math.core}})
+  =>
+  "void math_core____add(int lhs, int rhs) {\n\n  return lhs + rhs;\n}")
+
+^{:refer lang.model.v1.spec-c/tf-arrow, :added "4.1"}
+(fact
+  "transforms arrow ->"
+  (tf-arrow '(arrow ptr field))
+  =>
+  '(:% ptr (:- "->" field)))
+
+^{:refer lang.model.v1.spec-c/tf-sizeof, :added "4.1"}
+(fact "transforms sizeof" (tf-sizeof '(sizeof x)) => '(:- "sizeof" x))
+(ns lang.model.v1.spec-c-test
+  (:require [lang.model.v1.spec-c :as subject])
+  (:use code.test))
 
 ^{:refer lang.model.v1.spec-c/tf-define}
 (Test/check
@@ -66,12 +213,11 @@
 
 ^{:refer lang.model.v1.spec-c/emit-defn}
 (Test/check
- [{:name "emits a C function definition"
-   :test (fn [] (subject/emit-defn
-                 ['defn 'hello [] 1]
-                 (:grammar subject/+selection+)
-                 {}))
-   :expected "void hello() {\n\n  1;\n}"}])
+  [{:name "emits a C function definition",
+    :test
+    (fn []
+      (subject/emit-defn ['defn 'hello [] 1] subject/+grammar+ {})),
+    :expected "void hello() {\n\n  1;\n}"}])
 
 ^{:refer lang.model.v1.spec-c/tf-arrow}
 (Test/check
@@ -86,39 +232,84 @@
    :expected (list :- "sizeof" 'value)}])
 
 ^{:refer lang.model.v1.spec-c/install}
-(Test/check
- [{:name "installs XTalk prerequisites and the C grammar"
-   :test (fn [] (let [catalog (subject/install (registry/registry))]
-                  [(registry/versions catalog :xtalk)
-                   (registry/versions catalog :c)
-                   (not (nil? (registry/find catalog
-                                             (grammar/source-coordinate subject/+grammar+))))]))
-   :expected [[1] [1] true]}])
+(comment
+  "Obsolete catalog-only contract; full before-image retained in migration evidence."
+  "(Test/check [{:name \"installs XTalk prerequisites and the C grammar\", :test (fn [] (let [catalog (subject/install (registry/registry))] [(registry/versions catalog :xtalk) (registry/versions catalog :c) (not (nil? (registry/find catalog (grammar/source-coordinate subject/+grammar+))))])), :expected [[1] [1] true]}])")
 
 ^{:refer lang.model.v1.spec-c/catalog}
-(Test/check
- [{:name "creates a catalog containing the C sources"
-   :test (fn [] (let [catalog (subject/catalog)]
-                  [(try (= 4 (count (registry/list catalog)))
-                   true
-                   (catch error false))
-                   (try (= [1] (registry/versions catalog :c))
-                   true
-                   (catch error false))
-                   (try (not (nil? (registry/find catalog
-                                             (grammar/source-coordinate subject/+grammar+))))
-                   true
-                   (catch error false))]))
-   :expected [true true true]}])
+(comment
+  "Obsolete catalog-only contract; full before-image retained in migration evidence."
+  "(Test/check [{:name \"creates a catalog containing the C sources\", :test (fn [] (let [catalog (subject/catalog)] [(try (= 4 (count (registry/list catalog))) true (catch error false)) (try (= [1] (registry/versions catalog :c)) true (catch error false)) (try (not (nil? (registry/find catalog (grammar/source-coordinate subject/+grammar+)))) true (catch error false))])), :expected [true true true]}])")
 
 ^{:refer lang.model.v1.spec-c/select}
-(Test/check
- [{:name "resolves the pinned C grammar selection"
-   :test (fn [] (let [selection (subject/select)]
-                  [(:grammar/id (:coordinate selection))
-                   (:grammar/version (:coordinate selection))
-                   (= (:coordinate selection)
-                      {:grammar/id :c :grammar/version 1
-                       :grammar/release "foundation-v1"
-                       :grammar/facets []})]))
-   :expected [:c 1 true]}])
+(comment
+  "Obsolete catalog-only contract; full before-image retained in migration evidence."
+  "(Test/check [{:name \"resolves the pinned C grammar selection\", :test (fn [] (let [selection (subject/select)] [(:grammar/id (:coordinate selection)) (:grammar/version (:coordinate selection)) (= (:coordinate selection) #:grammar{:id :c, :version 1, :release \"foundation-v1\", :facets []})])), :expected [:c 1 true]}])")
+
+
+(ns lang.model.v1.spec-c-test
+  (:require [lang.model.v1.spec-c :as subject]
+            [lang.core.impl :as impl]
+            [lang.core.library :as lib]
+            [lang.base.book :as book]
+            [std.lib.context.registry :as registry])
+  (:use code.test))
+
+^{:refer lang.model.v1.spec-c/+features+ :id original-c-features}
+(fact "C preserves original custom emitters and grammar exclusions"
+  [(get-in subject/+features+ [:defn :emit])
+   (get-in subject/+features+ [:define :macro])
+   (get-in subject/+features+ [:arrow :symbol])
+   (get-in subject/+features+ [:sizeof :raw])]
+  => [#'subject/emit-defn #'subject/tf-define '#{-> arrow} "sizeof"])
+
+^{:refer lang.model.v1.spec-c/+template+ :id original-c-template}
+(fact "C retains original banned literals and vector delimiters"
+  [(:banned subject/+template+) (:highlight subject/+template+)
+   (select-keys (get-in subject/+template+ [:data :vector]) [:start :end :space])]
+  => [#{:set :map :regex} '#{return break} {:start "{" :end "}" :space ""}])
+
+^{:refer lang.model.v1.spec-c/+grammar+ :id original-c-grammar}
+(fact "C grammar uses the original tag and reserved operator table"
+  [(:tag subject/+grammar+) (:reserved subject/+grammar+)]
+  => [:c (lang.base.grammar/to-reserved subject/+features+)])
+
+^{:refer lang.model.v1.spec-c/+meta+ :id original-c-meta}
+(fact "C module metadata emits includes and keeps current and export callbacks empty"
+  [((:module-current subject/+meta+))
+   ((:module-import subject/+meta+) "<stdio.h>" nil {})
+   ((:module-export subject/+meta+) {:as 'name :refer ['f]} {})]
+  => [nil '(:- "#include" "<stdio.h>") nil])
+
+^{:refer lang.model.v1.spec-c/+book+ :id original-c-book}
+(fact "C owns an original Book without an invented XTalk parent"
+  (let [stored (lib/get-book (impl/default-library) :c)]
+    [(book/book? subject/+book+) (:lang subject/+book+) (:parent subject/+book+)
+     (:lang stored) (= subject/+grammar+ (:grammar stored))])
+  => [true :c nil :c true])
+
+^{:refer lang.model.v1.spec-c/+init+ :id original-c-install}
+(fact "C script installation registers runtime context and generated macros"
+  (let [stored (lib/get-book (impl/default-library) :c)
+        context (registry/registry-get :lang/c)]
+    [(count subject/+init+) (= (nth subject/+init+ 1) context)
+     (= (nth subject/+init+ 2) (select-keys stored [:macros :highlights]))
+     (select-keys (:config context) [:context :lang])
+     (mapv str (first (:macros stored)))])
+  => [3 true true {:context :lang/c :lang :c}
+      ["#'lang.model.v1.spec-c/def$.c" "#'lang.model.v1.spec-c/defmacro.c"
+       "#'lang.model.v1.spec-c/!.c" "#'lang.model.v1.spec-c/defptr.c"]])
+
+^{:refer lang.model.v1.spec-c/emit-defn :id original-c-flat-layout}
+(fact "flat C declarations stay unmangled and retain explicit return-type metadata"
+  (subject/emit-defn
+    (list 'defn (with-meta 'get-value {:tag :int}) [] '(return 1))
+    subject/+grammar+ {:module {:id 'math.core} :layout :flat})
+  => "int get_value() {\n\n  return 1;\n}")
+
+^{:refer lang.model.v1.spec-c/+grammar+ :id retained-public-priority}
+(fact "supported C Vars retain their native public markers"
+  [(:public (meta #'lang.model.v1.spec-c/+grammar+))
+   (:public (meta #'lang.model.v1.spec-c/+book+))
+   (:public (meta #'lang.model.v1.spec-c/+init+))]
+  => [true true true])

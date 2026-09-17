@@ -1,0 +1,105 @@
+(ns code.test.interactive-transport
+  (:config {:role :internal})
+  (:require [code.test.resp :as resp]))
+
+(defn hello-metadata
+  "Decodes the flat HELLO metadata and requires report-capable protocol four."
+  [hello]
+  (let [metadata (loop [remaining hello output {}]
+                   (if (empty? remaining) output
+                     (do
+                       (when (< (count remaining) 2)
+                         (throw (ex :io {} :ex/message "Malformed RESP HELLO")))
+                       (recur (vec (drop 2 remaining))
+                              (assoc output (first remaining) (second remaining))))))]
+    (when (not (and (= "HARA" (get metadata "SERVER"))
+                    (= "4" (get metadata "PROTOCOL"))
+                    (= "1" (get metadata "EVAL-REPORT"))))
+      (throw (ex :dependency {} :ex/message "Server lacks evaluation report protocol 1")))
+    metadata))
+
+(defn endpoint
+  "Reads a loopback endpoint only from the newly owned child's stdout."
+  [stream deadline]
+  (loop [buffer (Bytes/new)]
+    (if-let [newline (first (filter (fn [index] (= 10 (bytes/get buffer index)))
+                                   (range (bytes/count buffer))))]
+      (let [line (str/trim (str/decode-utf8 (bytes/slice buffer 0 newline)))]
+        (if (str/starts-with? line "HARA RESP ")
+          (let [parts (str/split (subs line 10) ":")
+                host (first parts) port (parse-long (second parts))]
+            (when (not (and (= host "127.0.0.1") (> port 0) (<= port 65535)))
+              (throw (ex :io {} :ex/message "Invalid owned server endpoint")))
+            {:host host :port port})
+          (recur (bytes/slice buffer (inc newline)))))
+      (let [remaining (- deadline (time-ms))]
+        (when (<= remaining 0)
+          (throw (ex :timeout {} :ex/message "Hara child did not publish an endpoint")))
+        (let [chunk (IDerefTimeout/deref-timeout (IStream/next stream) remaining :timeout)]
+          (when (or (= chunk :timeout) (nil? chunk))
+            (throw (ex :io {} :ex/message "Hara child failed before publishing an endpoint")))
+          (recur (resp/append-bytes buffer chunk)))))))
+
+(defn close
+  "Idempotently closes only this transport's socket and child process."
+  [transport]
+  (when (cas! (:closed transport) false true)
+    (try
+      (when (deref (:socket transport)) (Socket/close (deref (:socket transport))))
+      (finally
+        (when (Process/alive? (:process transport)) (Process/kill (:process transport))))))
+  nil)
+
+(defn request
+  "Evaluates exact source once and returns separate display, report, and error fields."
+  [transport form]
+  (when (deref (:closed transport))
+    (throw (ex :state {} :ex/message "Interactive transport is closed")))
+  (let [id (str "TEST-" (swap! (:counter transport) inc))
+        deadline (+ (time-ms) (:timeout transport))]
+    (Socket/send (deref (:socket transport))
+      (resp/encode ["EVAL" id (:source form) "FILE" (:file form)
+                    "LINE" (str (get-in form [:start :line]))
+                    "COLUMN" (str (get-in form [:start :column])) "REPORT" "1"]))
+    (loop [response {}]
+      (let [frame (resp/receive (:stream transport) (:buffer transport) deadline)
+            kind (first frame)]
+        (when (not= id (second frame))
+          (throw (ex :io {} :ex/message "RESP response id mismatch")))
+        (cond
+          (= kind "TEST_REPORT")
+          (do
+            (when (has? response :report)
+              (throw (ex :io {} :ex/message "Duplicate evaluation report")))
+            (recur (assoc response :report (Json/read (nth frame 2)))))
+          (= kind "RESULT") (recur (assoc response :value (nth frame 2)))
+          (= kind "ERROR") (recur (assoc response :error (vec (drop 2 frame))))
+          (= kind "DONE")
+          (cond
+            (:error response) response
+            (not= "OK" (nth frame 2)) (assoc response :error ["EVAL_ERROR" "Unsuccessful DONE"])
+            (not (has? response :report)) (assoc response :error ["REPORT_ERROR" "Missing evaluation report"])
+            :else response)
+          :else (throw (ex :io {:frame frame} :ex/message "Unexpected RESP evaluation frame")))))))
+
+(defn open
+  "Starts a fresh child with the supplied argv, never discovers or attaches cached servers.
+   The caller supplies a headless command using port zero. Partial startup is torn down."
+  [options]
+  (let [process (Process/spawn (:command options) (select-keys options [:cwd :env]))
+        timeout (or (:timeout options) 180000)
+        transport {:process process :socket (atom nil) :closed (atom false)
+                   :counter (atom 0) :buffer (atom (Bytes/new)) :timeout timeout}]
+    (try
+      (let [address (endpoint (Process/stdout-stream process)
+                             (+ (time-ms) (or (:startup-timeout options) 30000)))
+            socket (Socket/connect (:host address) (:port address) {} (fn [_ _] nil))
+            _ (reset! (:socket transport) socket)
+            transport (assoc transport :stream (Socket/receive-stream socket))]
+        (Socket/send socket (resp/encode ["HELLO" "4" "CLIENT" "CODE.TEST"]))
+        (hello-metadata (resp/receive (:stream transport) (:buffer transport) (+ (time-ms) timeout)))
+        (assoc transport :evaluate (fn [form] (request transport form))
+                         :close (fn [] (close transport))))
+      (catch error
+        (do (close transport)
+            (throw error))))))

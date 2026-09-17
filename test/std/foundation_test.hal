@@ -714,21 +714,43 @@
 
 ^{:refer std.foundation/defonce}
 (Test/check
-  [{:name "does not replace an existing Var root"
-   :test (fn []
-           (do
-             (std.foundation/defonce retained-value (atom 1))
-             (swap! retained-value inc)
-             (std.foundation/defonce retained-value (atom 99))
-             (deref retained-value)))
-   :expected 2}
-  {:name "expands through the non-loading Base resolver"
-   :test (fn []
-           (std.foundation/macroexpand-1
-            '(std.foundation/defonce expanded-value 42)))
-   :expected '(if (Base/resolve (quote std.foundation-test/expanded-value))
-                  (Base/resolve (quote std.foundation-test/expanded-value))
-                  (Runtime/eval (quote (def expanded-value 42))))}])
+  [{:name
+    "does not replace an existing Var root and restores mutable fixture state",
+    :test
+    (fn []
+      (do
+        (std.foundation/defonce retained-value (atom 1))
+        (let [before (deref retained-value)]
+          (try
+            (reset! retained-value 1)
+            (swap! retained-value inc)
+            (std.foundation/defonce retained-value (atom 99))
+            (deref retained-value)
+            (finally (reset! retained-value before)))))),
+    :expected 2}
+   {:name
+    "expands through the non-loading Base resolver without detached evaluation",
+    :test
+    (fn []
+      (std.foundation/macroexpand-1
+        '(std.foundation/defonce expanded-value 42))),
+    :expected
+    '(if (Base/resolve 'std.foundation-test/expanded-value)
+       (Base/resolve 'std.foundation-test/expanded-value)
+       (def expanded-value 42))}
+   {:name
+    "initializer resolves caller functions and captures lexical bindings",
+    :test
+    (fn []
+      (let [offset 40]
+        (std.foundation/defonce
+          caller-context-value
+          (+ offset (identity 2)))
+        (std.foundation/defonce
+          caller-context-value
+          (throw (ex :unexpected-initializer {})))
+        caller-context-value)),
+    :expected 42}])
 
 ^{:refer std.foundation/meta}
 (Test/check
@@ -1251,7 +1273,24 @@
    :expected {:b 2}}
   {:name "returns nil when removing from nil"
    :test (fn [] (std.foundation/dissoc nil :a))
-   :expected nil}])
+   :expected nil}
+  {:name "zero keys preserve the original map object and metadata"
+   :test (fn []
+           (let [m (with-meta {:a 1} {:source :retained})
+                 f (var std.foundation/dissoc)]
+             [(f m) (Base/identical? m (f m)) (meta (f m))]))
+   :expected [{:a 1} true {:source :retained}]}
+  {:name "zero keys preserve nil and set values"
+   :test (fn [] [(std.foundation/dissoc nil) (std.foundation/dissoc #{:a :b})])
+   :expected [nil #{:a :b}]}
+  {:name "apply accepts an empty key sequence through the Foundation Var"
+   :test (fn [] [(apply (var std.foundation/dissoc) {:a 1} [])
+                 (apply (var std.foundation/dissoc) nil [])])
+   :expected [{:a 1} nil]}
+  {:name "duplicate and missing keys retain the existing removal semantics"
+   :test (fn [] [(std.foundation/dissoc {:a 1 :b 2} :absent :a :a)
+                 (std.foundation/dissoc nil :a :b)])
+   :expected [{:b 2} nil]}])
 
 ^{:refer std.foundation/deref}
 (Test/check
@@ -1556,10 +1595,31 @@
 (Test/check [])
 
 ^{:refer std.foundation/sort}
-(Test/check [])
+(Test/check
+ [{:name "sorts by comparison and preserves equal-value order"
+   :test (fn []
+           [(std.foundation/sort [3 1 2])
+            (std.foundation/sort
+             (fn [left right] (std.foundation/compare right left))
+             [1 3 2])
+            (std.foundation/sort
+             (fn [left right]
+               (std.foundation/compare
+                (std.foundation/second left)
+                (std.foundation/second right)))
+             [[:first 1] [:second 1] [:third 0]])])
+   :expected [[1 2 3]
+              [3 2 1]
+              [[:third 0] [:first 1] [:second 1]]]}])
 
 ^{:refer std.foundation/sort-by}
-(Test/check [])
+(Test/check
+ [{:name "sorts values by a key and keeps ties stable"
+   :test (fn []
+           (std.foundation/sort-by
+            std.foundation/second
+            [[:first 2] [:second 1] [:third 1]]))
+   :expected [[:second 1] [:third 1] [:first 2]]}])
 
 ^{:refer std.foundation/drop-last}
 (Test/check [])
@@ -2104,3 +2164,39 @@
            (let [expanded (macroexpand-1 '(delay (first-step) (last-step)))]
              [(= (resolve (first expanded)) (resolve 'Base/delay)) (rest expanded)]))
    :expected [true '((fn [] (first-step) (last-step)))]}])
+
+^{:refer std.foundation/*sep*}
+(Test/check
+ [{:name "tree separator bindings nest and restore after errors"
+   :test (fn []
+           [*sep*
+            (binding [std.foundation/*sep* "."]
+              [*sep* (binding [std.foundation/*sep* "|"] *sep*) *sep*])
+            (try (binding [std.foundation/*sep* "-"]
+                   (throw (ex :test/separator {} :ex/message "restore")))
+                 (catch error (ex-message error)))
+            *sep*])
+   :expected ["/" ["." "|" "."] "restore" "/"]}])
+
+^{:refer std.foundation/conditional-thread-form}
+(Test/check
+ [{:name "conditional threading expands each continuation once"
+   :test (fn []
+           (mapv
+             (fn [last?]
+               (let [calls (atom 0)
+                     expansion (std.foundation/conditional-thread-form 'start
+                                 '[true inc true inc true inc true inc true inc true final-step] last?)]
+                 (postwalk (fn [form] (when (= form 'final-step) (swap! calls inc)) form) expansion)
+                 (deref calls)))
+             [false true]))
+   :expected [1 1]}
+  {:name "conditional threading evaluates value and conditions once in order"
+   :test (fn []
+           (let [events (atom [])
+                 result (cond-> (do (swap! events conj :value) 2)
+                          (do (swap! events conj :first) true) (+ 3)
+                          (do (swap! events conj :second) false) (* 100)
+                          (do (swap! events conj :third) true) (* 4))]
+             [result (deref events)]))
+   :expected [20 [:value :first :second :third]]}])

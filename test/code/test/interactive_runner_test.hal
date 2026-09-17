@@ -1,0 +1,56 @@
+(ns code.test.interactive-runner-test
+  (:require [code.test.interactive-runner :as runner]
+            [code.test.report :as report]))
+
+^{:refer code.test.interactive-runner/native-only?}
+(Test/check
+ [{:name "primitive files are explicit unit-only, mixed facts still require interaction"
+   :test (fn []
+           (mapv runner/native-only?
+             ["(ns x) (Test/check [])"
+              "(ns x) (Test/register {:desc \"x\"})"
+              "(ns x (:use code.test)) (fact \"x\" 1 => 1)"
+              "(ns x) (Test/check []) (t/fact \"x\" 1 => 1)"
+              "(ns x (:use code.test))"]))
+   :expected [true true false false false]}])
+
+^{:refer code.test.interactive-runner/run-selected}
+(Test/check
+ [{:name "empty selection fails and primitive-only selection is explicitly accounted for"
+   :test (fn []
+           (let [root (deref (File/temp-directory "." {:prefix "hara-interactive-native-"}))
+                 file (File/join root "primitive.hal")
+                 output (report/report-path root {})
+                 options {:root (OS/cwd) :report/root root :report/name "latest.edn"}]
+             (try
+               (deref (File/write file (str/encode-utf8 "(ns fixture.primitive) (Test/check [])")))
+               (let [empty-result (runner/run-selected [] options)
+                     result (runner/run-selected [file] options)
+                     saved (report/read output)]
+                 [(:status empty-result) (:status result) (:interactive result) (:native-only result)
+                  (:status (first (:files result))) (:records saved)])
+               (finally
+                 (doseq [path [file output (File/join root ".hara/test") (File/join root ".hara") root]]
+                   (deref (File/delete path {:missing-ok? true})))))))
+   :expected [:failed :passed 0 1 :native-only []]}
+  {:name "read and assertion failures persist alongside later cold/warm success"
+   :test (fn []
+           (let [root (deref (File/temp-directory "." {:prefix "hara-interactive-files-"}))
+                 bad (File/join root "bad.hal") good (File/join root "good.hal")
+                 output (report/report-path root {})
+                 options {:root (OS/cwd) :report/root root :report/name "latest.edn" :timeout 10000
+                          :executable (or (OS/getenv "HARA_NATIVE_TEST_EXECUTABLE")
+                                          (str (OS/cwd) "/../hara-native/core/rust/target/release/hara-native"))}]
+             (try
+               (deref (File/write bad (str/encode-utf8 "(ns fixture.bad (:use code.test)) (fact \"bad\" 1 => 2)")))
+               (deref (File/write good (str/encode-utf8 "(ns fixture.good (:use code.test)) (fact \"good\" 42 => 42)")))
+               (let [result (runner/run-selected [(File/join root "missing.hal") bad good] options)
+                     saved (report/read output)]
+                 [(:status result) (:interactive result) (:native-only result)
+                  (mapv :status (:files result)) (count (:records saved))
+                  (:status saved)
+                  (mapv :pass (:records saved))])
+               (finally
+                 (doseq [path [bad good output (File/join root ".hara/test") (File/join root ".hara") root]]
+                   (deref (File/delete path {:missing-ok? true})))))))
+   :expected [:failed 3 0 [:failed :failed :passed] 6 :failed [:cold :cold :cold :cold :warm :warm]]}])

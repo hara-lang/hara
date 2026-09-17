@@ -1,32 +1,165 @@
-(ns lang.core.script-def-test
-  (:use code.test)
-  (:require [lang.core.script-def :as script-def]))
+(ns lang.core.script-def-test (:require [lang.core.script-def :refer :all]) (:use code.test))
 
-^{:refer lang.core.script-def/sym-default-inverse-str}
-(fact "template symbols convert only underscore separators"
+^{:refer lang.core.script-def/tmpl-entry, :added "4.0"}
+(fact
+  "historical script-def tmpl-entry"
+  (with-template-meta
+    {:type :fragment, :tag "js"}
+    (tmpl-entry '[createObject create]))
+  =>
+  '(def$.js createObject create)
+  (with-template-meta
+    {:type :fragment, :base "Webassembly", :prefix "ws-", :tag "js"}
+    (tmpl-entry 'compile))
+  =>
+  '(def$.js ws-compile Webassembly.compile))
+
+^{:refer lang.core.script-def/tmpl-macro, :added "4.0"}
+(fact
+  "historical script-def tmpl-macro"
+  (with-template-meta
+    {:tag "js"}
+    (tmpl-macro '[length [arr] {:property true, :tag "js"}]))
+  =>
+  '(defmacro.js length ([obj] (std.foundation/list '. obj 'length)))
+  (with-template-meta
+    '{:tag "js", :subtree [auth]}
+    (tmpl-macro '[length [arr] {:property true}]))
+  =>
+  '(defmacro.js
+     length
+     ([obj] (std.foundation/list '. obj 'auth 'length)))
+  (with-template-meta {:tag "js"} (tmpl-macro '[forEach [f]]))
+  =>
+  '(defmacro.js
+     forEach
+     ([obj f]
+       (std.foundation/list '. obj (std.foundation/list 'forEach f))))
+  (with-template-meta
+    {:tag "js"}
+    (tmpl-macro '[concat [arr] {:vargs arrs}]))
+  =>
+  '(defmacro.js
+     concat
+     ([obj arr & [:as arrs]]
+       (std.foundation/list
+         '.
+         obj
+         (std.foundation/apply std.foundation/list 'concat arr arrs))))
+  (with-template-meta
+    {:tag "js"}
+    (tmpl-macro '[includes [val] {:optional [startIdx]}]))
+  =>
+  '(defmacro.js
+     includes
+     ([obj val & [startIdx :as oargs]]
+       (std.foundation/list
+         '.
+         obj
+         (std.foundation/apply
+           std.foundation/list
+           'includes
+           val
+           (std.foundation/vec
+             (std.foundation/take
+               (std.foundation/count oargs)
+               [startIdx]))))))
+  (with-template-meta
+    {:tag "js"}
+    (tmpl-macro '[splice [start] {:optional [count e], :vargs es}]))
+  =>
+  '(defmacro.js
+     splice
+     ([obj start & [count e & [:as es] :as targs]]
+       (std.foundation/list
+         '.
+         obj
+         (std.foundation/apply
+           std.foundation/list
+           'splice
+           start
+           (std.foundation/vec
+             (std.foundation/concat
+               (std.foundation/take
+                 (std.foundation/-
+                   (std.foundation/count targs)
+                   (std.foundation/count es))
+                 [count e])
+               es)))))))
+
+(require [lang.core.script-def :as script-def])
+^{:refer lang.core.script-def/sym-default-inverse-str, :id :native-sym-default-inverse-str}
+(fact
+  "template symbols convert only underscore separators"
   [(script-def/sym-default-inverse-str 'create_object)
    (script-def/sym-default-inverse-str 'create-object)]
-  => ["create-object" "create-object"])
+  =>
+  ["create-object" "create-object"])
 
-^{:refer lang.core.script-def/tmpl-entry}
-(fact "script-def preserves Foundation entry template semantics"
-  (let [entry-a (std.foundation/with-template-meta {:type :fragment :tag "js"}
+^{:refer lang.core.script-def/tmpl-entry, :id :native-tmpl-entry}
+(fact
+  "script-def preserves Foundation entry template semantics"
+  (let [entry-a (std.foundation/with-template-meta
+                  {:type :fragment, :tag "js"}
                   (script-def/tmpl-entry '[createObject create]))
-        entry-b (std.foundation/with-template-meta {:type :fragment
-                                                     :base "Webassembly"
-                                                     :prefix "ws-"
-                                                     :tag "js"}
+        entry-b (std.foundation/with-template-meta
+                  {:type :fragment,
+                   :base "Webassembly",
+                   :prefix "ws-",
+                   :tag "js"}
                   (script-def/tmpl-entry 'compile))]
     [entry-a entry-b])
-  => '[(def$.js createObject create)
-       (def$.js ws-compile Webassembly.compile)])
+  =>
+  '[(def$.js createObject create)
+    (def$.js ws-compile Webassembly.compile)])
 
-^{:refer lang.core.script-def/tmpl-macro}
-(fact "script-def preserves standalone property macro metadata"
-  (let [macro-form (std.foundation/with-template-meta {:tag "js"}
+^{:refer lang.core.script-def/tmpl-macro, :id :native-tmpl-macro}
+(fact
+  "script-def preserves standalone property macro metadata"
+  (let [macro-form (std.foundation/with-template-meta
+                     {:tag "js"}
                      (script-def/tmpl-macro
-                      '[length [arr] {:property true :tag "js"}]))
+                       '[length [arr] {:property true, :tag "js"}]))
         macro-symbol (second macro-form)]
-    [(first macro-form) macro-symbol
+    [(first macro-form)
+     macro-symbol
      (boolean (:standalone (meta macro-symbol)))])
-  => '[defmacro.js length true])
+  =>
+  '[defmacro.js length true])
+
+^{:refer lang.core.script-def/tmpl-macro :id :exact-standalone-metadata}
+(fact "preserves exact standalone property defaults and method argument metadata"
+ [(let [form (with-template-meta '{:tag "js" :inst "thing" :prefix "get-" :subtree [auth]}
+               (tmpl-macro '[length [] {:property true :empty {}}]))]
+    [(second form) (:standalone (meta (second form)))])
+  (let [form (with-template-meta {:tag "js" :inst "target" :prefix "call-"}
+               (tmpl-macro '[[push_item pushItem] [item] {:optional [limit] :vargs more}]))]
+    [(second form) (:standalone (meta (second form)))])]
+ => '[[get-length (quote (fn:> [(or thing {})] (. (or thing {}) length)))]
+      [call-push-item (quote (fn:> [target item limit ...more] (. target (pushItem item limit ...more))))]])
+
+^{:refer lang.core.script-def/tmpl-macro :id :generated-wrapper-execution}
+(fact "executes property required optional variadic and combined wrappers"
+ (mapv
+  (fn [[options template arguments]]
+   (let [form (with-template-meta options (tmpl-macro template))
+         wrapper (eval (cons 'fn (drop 2 form)))]
+    (apply wrapper arguments)))
+  '[[{:tag "js" :subtree [auth]} [length [] {:property true}] [object]]
+    [{:tag "js"} [forEach [f]] [object callback]]
+    [{:tag "js"} [includes [value] {:optional [startIdx]}] [object false]]
+    [{:tag "js"} [includes [value] {:optional [startIdx]}] [object false nil]]
+    [{:tag "js"} [concat [arr] {:vargs arrs}] [object first]]
+    [{:tag "js"} [concat [arr] {:vargs arrs}] [object first second third]]
+    [{:tag "js"} [splice [start] {:optional [count e] :vargs es}] [object 0]]
+    [{:tag "js"} [splice [start] {:optional [count e] :vargs es}] [object 0 1]]
+    [{:tag "js"} [splice [start] {:optional [count e] :vargs es}] [object 0 1 false nil extra]]])
+ => '[(. object auth length)
+      (. object (forEach callback))
+      (. object (includes false))
+      (. object (includes false nil))
+      (. object (concat first))
+      (. object (concat first second third))
+      (. object (splice 0))
+      (. object (splice 0 1))
+      (. object (splice 0 1 false nil extra))])

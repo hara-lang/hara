@@ -1,238 +1,878 @@
 (ns lang.model.v1.spec-postgres.postgres-common-test
-  (:require [lang.base.emit :as emit]
-            [lang.model.v1.spec-postgres.postgres-common :as common]))
+  (:require [lang.model.v1.spec-postgres.postgres-common :as common]
+            [lang.base.emit-common :as emit-common])
+  (:use code.test))
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-type-alias, :added "4.0"}
+(fact
+  "gets the type alias"
+  (common/pg-type-alias :long)
+  =>
+  :bigint
+  (common/pg-type-alias :numeric)
+  =>
+  :numeric)
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-deftype-ref-name, :added "4.1"}
+(fact
+  "gets the ref name"
+  (common/pg-deftype-ref-name :user {:raw "user_id"})
+  =>
+  "user_id"
+  (common/pg-deftype-ref-name :user {})
+  =>
+  "user_id")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-sym-meta, :added "4.0"}
+(fact
+  "returns the sym meta"
+  (common/pg-sym-meta
+    (with-meta
+      'hello
+      {:- [:int], :%% :default, :props [:immutable :parallel-safe]}))
+  =>
+  {:- [:int],
+   :static/return [:int],
+   :static/language :default,
+   :static/props [:immutable :parallel-safe]})
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-format, :added "4.0"}
+(fact
+  "formats a form, extracting static components"
+  (common/pg-format '(def ^{:- [:int]} hello 1))
+  =>
+  (satisfies vector?))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-policy-format, :added "4.0"}
+(fact
+  "formats a policy definition"
+  (common/pg-policy-format '(defpolicy hello [table] ()))
+  =>
+  '[{:doc "",
+     :static/policy-name "hello - ",
+     :static/policy-table nil,
+     :static/policy-schema "table"}
+    (defpolicy hello "" [table] ())])
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-hydrate-module-static, :added "4.0"}
+(fact
+  "gets the static module"
+  (common/pg-hydrate-module-static
+    {:static {:application "app", :all {:schema ["schema"]}}})
+  =>
+  {:static/schema "schema", :static/application "app"})
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-hydrate, :added "4.0"}
+(fact
+  "hydrate function for top level entries"
+  (common/pg-hydrate
+    '(defn foo [] 1)
+    {}
+    {:module
+     {:static {:application "app", :all {:schema ["schema"]}}}})
+  =>
+  (satisfies vector?))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-string, :added "4.0"}
+(fact
+  "constructs a pg string"
+  (common/pg-string "hello")
+  =>
+  "'hello'"
+  (common/pg-string "'hello'")
+  =>
+  "'''hello'''")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-uuid, :added "4.1"}
+(fact "constructs a pg uuid" (common/pg-uuid "123") => "'123'::uuid")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-map, :added "4.0"}
+(fact
+  "creates a postgres json object"
+  (binding [emit-common/*emit-fn* (fn [& _] "jsonb")]
+    (common/pg-map {:a 1} nil nil))
+  =>
+  "jsonb")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-set, :added "4.0"}
+(fact
+  "makes a set object"
+  (common/pg-set #{"hello"} nil {})
+  =>
+  "\"hello\"")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-array, :added "4.0"}
+(fact
+  "creates an array object"
+  (let [original-emit-array (deref #'emit-common/emit-array)]
+    (try
+      (Runtime/intern
+        'lang.base.emit-common
+        'emit-array
+        (fn [& _] ["1" "2"]))
+      (do (common/pg-array '(array 1 2) nil nil))
+      (finally
+        (Runtime/intern
+          'lang.base.emit-common
+          'emit-array
+          original-emit-array))))
+  =>
+  "ARRAY[1,2]")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-invoke-typecast, :added "4.0"}
+(fact
+  "emits a typecast call"
+  (binding [emit-common/*emit-fn* (fn [x & _] (str x))]
+    (common/pg-invoke-typecast '(:int val) nil nil))
+  =>
+  "(val)::INT")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-typecast, :added "4.0"}
+(fact
+  "creates a typecast"
+  (binding [emit-common/*emit-fn* (fn [x & _] (str x))]
+    (common/pg-typecast '(++ val :int) nil nil))
+  =>
+  "(val)::INT")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-do-assert, :added "4.0"}
+(fact
+  "creates an assert form"
+  (binding [emit-common/*emit-fn* (fn [& _] "assert")]
+    (common/pg-do-assert '(do:assert true [:tag {}]) nil nil))
+  =>
+  "assert")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-base-token, :added "4.0"}
+(fact
+  "creates a base token"
+  (common/pg-base-token #{"hello"} "schema")
+  =>
+  '(. #{"schema"} #{"hello"}))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-full-token, :added "4.0"}
+(fact
+  "creates a full token (for types and enums)"
+  (common/pg-full-token "hello" "schema")
+  =>
+  '(. #{"schema"} #{"hello"}))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-entry-literal, :added "4.0"}
+(fact
+  "creates an entry literal"
+  (common/pg-entry-literal
+    {:static/schema "schema", :id "id", :op 'defn})
+  =>
+  "schema.id")
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-entry-token, :added "4.0"}
+(fact
+  "gets the entry token"
+  (common/pg-entry-token
+    {:static/schema "schema", :id "id", :op 'defn})
+  =>
+  '(. #{"schema"} id))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/block-do-block, :added "4.0"}
+(fact
+  "initates do block"
+  (common/block-do-block '[(+ 1 2 3) \;])
+  =>
+  '[:do
+    :$$
+    \\
+    :begin
+    \\
+    (\| [(+ 1 2 3) \;])
+    \\
+    :end
+    \;
+    \\
+    :$$
+    :language
+    "plpgsql"
+    \;])
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/block-do-suppress, :added "4.0"}
+(fact
+  "initates suppress block"
+  (common/block-do-suppress '[(+ 1 2 3) \;])
+  =>
+  '[:do
+    :$$
+    \\
+    :begin
+    \\
+    (\| [(+ 1 2 3) \;])
+    \\
+    :exception
+    :when-others-then
+    \\
+    :end
+    \;
+    \\
+    :$$
+    :language
+    "plpgsql"
+    \;])
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/block-loop-block, :added "4.0"}
+(fact
+  "emits loop block"
+  (common/block-loop-block '_ '(+ 1 2 3) '(+ 4 5 6))
+  =>
+  '[:loop \\ (\| (do (+ 1 2 3) (+ 4 5 6))) \\ :end-loop])
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/block-while-block, :added "4.1"}
+(fact
+  "emits while block"
+  (common/block-while-block '(= 1 1) '(do-something))
+  =>
+  '[:while (= 1 1) :loop \\ (\| (do (do-something))) \\ :end-loop \;])
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/block-case-block, :added "4.0"}
+(fact
+  "emits case block"
+  (common/block-case-block
+    'type
+    "object"
+    '(from-object x)
+    "string"
+    '(from-string x))
+  =>
+  '(%
+     [:case
+      type
+      \\
+      (\|
+        :WHEN
+        (:% "object")
+        :THEN
+        (:% (from-object x))
+        \\
+        :WHEN
+        (:% "string")
+        :THEN
+        (:% (from-string x))
+        \\)
+      :end]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defenum, :added "4.0"}
+(fact
+  "defenum block"
+  (common/pg-defenum
+    '(defenum ^{:static/schema "schema"} hello [:a :b :c]))
+  =>
+  '[:do
+    :$$
+    \\
+    :begin
+    \\
+    (\|
+      (do
+        [:create-type
+         (. #{"schema"} #{"hello"})
+         :as-enum
+         '("a" "b" "c")]))
+    \\
+    :exception
+    :when-others-then
+    \\
+    :end
+    \;
+    \\
+    :$$
+    :language
+    "plpgsql"
+    \;]
+  (common/pg-defenum
+    '(defenum
+       ^{:static/schema "schema"} hello
+       (!:eval (postgres.entity/class-types "app"))))
+  =>
+  '[:do
+    :$$
+    \\
+    :begin
+    \\
+    (\|
+      (do
+        [:create-type
+         (. #{"schema"} #{"hello"})
+         :as-enum
+         (!:eval
+           (list
+             'quote
+             (map str/tag (postgres.entity/class-types "app"))))]))
+    \\
+    :exception
+    :when-others-then
+    \\
+    :end
+    \;
+    \\
+    :$$
+    :language
+    "plpgsql"
+    \;])
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defindex, :added "4.0"}
+(fact
+  "defindex block"
+  (common/pg-defindex '(defindex hello [table cols] body))
+  =>
+  '[:create-index :if-not-exists hello :on table '([cols]) body \;])
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defpolicy, :added "4.0"}
+(fact
+  "defpolicy block"
+  (common/pg-defpolicy '(defpolicy hello [table] ()))
+  =>
+  '(do
+     [:drop-policy-if-exists #{"hello - "} :on table]
+     [:create-policy #{"hello - "} :on table \\]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-publication-format, :added "4.1"}
+(fact
+  "formats publication"
+  (common/pg-publication-format '(defpublication pub [:all]))
+  =>
+  (satisfies vector?))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defpublication, :added "4.1"}
+(fact
+  "defpublication block"
+  (common/pg-defpublication '(defpublication pub [:all]))
+  =>
+  '(do
+     [:drop-publication-if-exists pub]
+     [:create-publication pub :for :all :tables]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-subscription-format, :added "4.1"}
+(fact
+  "formats subscription"
+  (common/pg-subscription-format '(defsubscription sub [conn pub] {}))
+  =>
+  (satisfies vector?))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defsubscription, :added "4.1"}
+(fact
+  "defsubscription block"
+  (common/pg-defsubscription '(defsubscription sub ["conn" "pub"] {}))
+  =>
+  '(do
+     [:drop-subscription-if-exists sub]
+     [:create-subscription sub :connection "conn" :publication "pub"]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-deftrigger, :added "4.0"}
+(fact
+  "deftrigger block"
+  (common/pg-deftrigger '(deftrigger hello [table] ()))
+  =>
+  '(do
+     [:drop-trigger-if-exists hello :on table]
+     [:create-trigger hello :on table \\]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defblock, :added "4.0"}
+(fact
+  "creates generic defblock"
+  (common/pg-defblock
+    '(def ^{:static/return [:index], :static/schema "scratch"} hello
+      []))
+  =>
+  '(do [:create :index (. #{"scratch"} #{"hello"})]))
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-string} (fact "string escaping agrees with the immutable Foundation helper" (mapv common/pg-string ["hello" "can't" "a\\b" "a\nb" "a\"b"]) => ["'hello'" "'can''t'" "'a\\b'" "'a\\nb'" "'a\"b'"])
+
+(ns lang.model.v1.spec-postgres.postgres-common-test
+ (:require [lang.model.v1.spec-postgres.postgres-common :as common]
+           [lang.base.book :as book] [lang.core.library-snapshot :as snap]
+           [lang.base.emit-common :as emit-common]) (:use code.test))
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-current-module-link?}
+(fact "links compare against the active BookModule id and retain nil branches"
+ [(common/pg-current-module-link? (book/book-module {:lang :postgres :id 'M}) {:module 'M})
+  (common/pg-current-module-link? {:id 'M} {:module 'N})
+  (common/pg-current-module-link? nil {:module 'M})
+  (common/pg-current-module-link? {:id 'M} {})]
+ => [true false nil nil])
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-link-symbol}
+(fact "link symbols require both coordinates"
+ [(common/pg-link-symbol {:module 'M :id 'call})
+  (common/pg-link-symbol {:module :M :id :call})
+  (common/pg-link-symbol {:module 'M}) (common/pg-link-symbol nil)]
+ => '[M/call M/call nil nil])
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-resolve-entry}
+(fact "book materialized entries precede module fallback and snapshots retain entries"
+ (let [e {:id 'call :module 'M :lang :postgres :section :code :op 'defn :static/application :book}
+       live (assoc e :static/application :live)
+       module (book/book-module {:lang :postgres :id 'M :code {'call e}})
+       b (book/book {:lang :postgres :grammar {:fixture true} :meta {:fixture true} :modules {'M module}})
+       snapshot (snap/snapshot {:postgres {:id :postgres :book b}})
+       link {:lang :postgres :module 'M :id 'call :section :code}]
+  [(second (common/pg-resolve-entry link {:module {:id 'M :code {'call live}}}))
+   (second (common/pg-resolve-entry link {:book b :module {:id 'M :code {'call live}}}))
+   (second (common/pg-resolve-entry link {:snapshot snapshot}))
+   (common/pg-resolve-entry {:module 'Absent :id 'missing} {})])
+ => [{:id 'call :module 'M :lang :postgres :section :code :op 'defn :static/application :live}
+     {:id 'call :module 'M :lang :postgres :section :code :op 'defn :static/application :book}
+     {:id 'call :module 'M :lang :postgres :section :code :op 'defn :static/application :book}
+     [nil nil]])
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-linked-token}
+(fact "linked code tokens use snapshot entries and missing code throws"
+ (let [e {:id 'call :module 'M :lang :postgres :section :code :op 'defn :static/schema "audit"}
+       module (book/book-module {:lang :postgres :id 'M :code {'call e} :fragment {'frag {:form 'fragment}}})
+       b (book/book {:lang :postgres :grammar {:fixture true} :meta {:fixture true} :modules {'M module}})
+       opts {:lang :postgres :snapshot (snap/snapshot {:postgres {:id :postgres :book b}})}]
+  [(common/pg-linked-token 'M/call opts)
+   (try (common/pg-linked-token 'M/missing opts) (catch error (ex-message error)))
+   (try (common/pg-linked-token 'M/frag opts) (catch error (ex-message error)))])
+ => ['(. #{"audit"} call) "ENTRY NOT FOUND" "ENTRY NOT FOUND"])
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-linked}
+(fact "linked emission receives the resolved token and original options"
+ (let [e {:id 'call :module 'M :lang :postgres :section :code :op 'defn :static/schema "audit"}
+       b (book/book {:lang :postgres :grammar {:fixture true} :meta {:fixture true}
+                     :modules {'M (book/book-module {:lang :postgres :id 'M :code {'call e}})}})
+       opts {:lang :postgres :snapshot (snap/snapshot {:postgres {:id :postgres :book b}})}]
+  (binding [emit-common/*emit-fn* (fn [form grammar options] [form (= grammar {:marker :grammar}) (= options opts)])]
+   (common/pg-linked 'M/call {:marker :grammar} opts)))
+ => ['(. #{"audit"} call) true true])
+
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/+pg-query-alias+}
+(fact "query aliases retain each original operator"
+ common/+pg-query-alias+
+ => {:neq '(:- "!=") :gt '(:- ">") :gte '(:- ">=") :lt '(:- "<") :lte '(:- "<=") :eq '(:- "=")})
+^{:refer lang.model.v1.spec-postgres.postgres-common/+pg-type-alias+}
+(fact "type aliases retain the full original mapping"
+ common/+pg-type-alias+
+ => {:map :jsonb :array :jsonb :long :bigint :enum :text :image :jsonb :time :bigint})
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-deftype-ref-name}
+(fact "retained shorthand and original explicit options keep their own contracts"
+ [(common/pg-deftype-ref-name 'user-name)
+  (common/pg-deftype-ref-name 'user-name {})
+  (common/pg-deftype-ref-name 'user-name {:raw "custom"})]
+ => ["user-name_id" "user_name_id" "custom"])
+
+(ns lang.model.v1.spec-postgres.postgres-common-test
+  (:require [lang.base.emit-common :as emit]
+            [lang.base.book :as book]
+            [lang.core.library-snapshot :as snap]
+            [lang.model.v1.spec-postgres.postgres-common :as common])
+  (:use code.test))
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-type-alias}
-(Test/check [{:name "maps Foundation logical types to PostgreSQL types"
-              :test (fn [] [(common/pg-type-alias :map)
-                            (common/pg-type-alias :numeric)])
-              :expected [:jsonb :numeric]}])
+(fact
+  "maps Foundation logical types to PostgreSQL types"
+  ((fn [] [(common/pg-type-alias :map)
+           (common/pg-type-alias :numeric)]))
+  =>
+  [:jsonb :numeric])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-deftype-ref-name}
-(Test/check [{:name "constructs default and raw reference names"
-              :test (fn [] [(common/pg-deftype-ref-name 'user)
-                            (common/pg-deftype-ref-name 'user {:raw "uid"})])
-              :expected ["user_id" "uid"]}])
+(fact
+  "constructs default and raw reference names"
+  ((fn [] [(common/pg-deftype-ref-name 'user)
+           (common/pg-deftype-ref-name 'user {:raw "uid"})]))
+  =>
+  ["user_id" "uid"])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-sym-meta}
-(Test/check [{:name "normalizes PostgreSQL symbol metadata"
-              :test (fn [] (common/pg-sym-meta (IObjType/with-meta 'entry
-                                                 {:- [:int] :%% :sql :props [:immutable]})))
-              :expected {:- [:int] :static/return [:int]
-                         :static/language :sql :static/props [:immutable]}}])
+(fact
+  "normalizes PostgreSQL symbol metadata"
+  ((fn []
+     (common/pg-sym-meta
+       (IObjType/with-meta
+         'entry
+         {:- [:int], :%% :sql, :props [:immutable]}))))
+  =>
+  {:- [:int],
+   :static/return [:int],
+   :static/language :sql,
+   :static/props [:immutable]})
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-format}
-(Test/check [{:name "formats a declaration with normalized symbol metadata"
-              :test (fn [] (second (common/pg-format '(def entry 1))))
-              :expected '(def entry 1)}])
+(fact
+  "formats a declaration with normalized symbol metadata"
+  ((fn [] (second (common/pg-format '(def entry 1)))))
+  =>
+  '(def entry 1))
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-policy-format}
-(Test/check [{:name "retains policy coordinates"
-              :test (fn [] (first (common/pg-policy-format '(defpolicy hello [audit.Log] ()))))
-              :expected {:doc "" :static/policy-name "hello - "
-                         :static/policy-table 'audit.Log :static/policy-schema nil}}])
+(fact
+  "retains policy coordinates"
+  ((fn []
+     (first
+       (common/pg-policy-format '(defpolicy hello [audit.Log] ())))))
+  =>
+  {:doc "",
+   :static/policy-name "hello - ",
+   :static/policy-table "Log",
+   :static/policy-schema "audit"})
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-hydrate-module-static}
-(Test/check [{:name "extracts module schema and application metadata"
-              :test (fn [] (common/pg-hydrate-module-static
-                            {:static {:all {:schema ["audit"]}
-                                      :application :app/demo}}))
-              :expected {:static/schema "audit" :static/application :app/demo}}])
+(fact
+  "extracts module schema and application metadata"
+  ((fn []
+     (common/pg-hydrate-module-static
+       {:static {:all {:schema ["audit"]}, :application :app/demo}})))
+  =>
+  {:static/schema "audit", :static/application :app/demo})
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-hydrate}
-(Test/check [{:name "adds module metadata to a declaration"
-              :test (fn [] (common/pg-hydrate '(def entry 1) {} {:module {:schema "audit"}}))
-              :expected [{:static/schema "audit"} '(def entry 1)]}])
+(fact
+  "adds module metadata to a declaration"
+  ((fn []
+     (common/pg-hydrate
+       '(def entry 1)
+       {}
+       {:module {:schema "audit"}})))
+  =>
+  [{:static/schema nil, :static/application nil} '(def entry 1)])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-current-module-link?}
-(Test/check [{:name "recognizes links into the active module"
-              :test (fn [] (let [value [(common/pg-current-module-link? {:id 'demo}
-                                                               {:module 'demo})
-                            (common/pg-current-module-link? {:id 'demo}
-                                                               {:module 'other})]]
-                             value))
-              :expected [true false]}])
+(fact
+  "recognizes links into the active module"
+  ((fn []
+     (let [value [(common/pg-current-module-link?
+                    {:id 'demo}
+                    {:module 'demo})
+                  (common/pg-current-module-link?
+                    {:id 'demo}
+                    {:module 'other})]]
+       value)))
+  =>
+  [true false])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-link-symbol}
-(Test/check [{:name "constructs a qualified link symbol"
-              :test (fn [] (common/pg-link-symbol {:module 'audit :id 'Log}))
-              :expected 'audit/Log}])
+(fact
+  "constructs a qualified link symbol"
+  ((fn [] (common/pg-link-symbol {:module 'audit, :id 'Log})))
+  =>
+  'audit/Log)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-resolve-entry}
-(Test/check [{:name "resolves entries from active modules and direct snapshots"
-              :test (fn [] (let [[book entry] (common/pg-resolve-entry
-                                                {:module 'demo :id 'Log}
-                                                {:module {:id 'demo
-                                                          :code {'Log {:id 'Log :section :code}}}})
-                                       [snapshot-book snapshot-entry] (common/pg-resolve-entry
-                                                                       {:module 'demo :id 'Log}
-                                                                       {:snapshot {:postgres
-                                                                                   {:modules
-                                                                                    {'demo {:code
-                                                                                            {'Log {:id 'Log :section :code}}}}}}})]
-                             [(nil? book) (:id entry) (:section entry)
-                              (map? snapshot-book) (:id snapshot-entry)]))
-              :expected [true 'Log :code true 'Log]}])
+(fact
+  "resolves entries from active modules and direct snapshots"
+  (let [e {:id 'Log, :section :code}
+        b (book/book
+            {:lang :postgres,
+             :grammar {:fixture true},
+             :meta {:fixture true},
+             :modules
+             {'demo
+              (book/book-module
+                {:lang :postgres, :id 'demo, :code {'Log e}})}})
+        [current-book entry] (common/pg-resolve-entry
+                               {:module 'demo,
+                                :id 'Log,
+                                :section :code}
+                               {:module {:id 'demo, :code {'Log e}}})
+        [snapshot-book snapshot-entry] (common/pg-resolve-entry
+                                         {:module 'demo,
+                                          :id 'Log,
+                                          :section :code}
+                                         {:snapshot
+                                          (snap/snapshot
+                                            {:postgres
+                                             {:id :postgres,
+                                              :book b}})})]
+    [(nil? current-book)
+     (:id entry)
+     (:section entry)
+     (book/book? snapshot-book)
+     (:id snapshot-entry)])
+  =>
+  [true 'Log :code true 'Log])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-string}
-(Test/check [{:name "quotes and escapes PostgreSQL strings"
-              :test (fn [] (common/pg-string "can't"))
-              :expected "'can''t'"}])
+(fact
+  "quotes and escapes PostgreSQL strings"
+  ((fn [] (common/pg-string "can't")))
+  =>
+  "'can''t'")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-uuid}
-(Test/check [{:name "emits a UUID cast"
-              :test (fn [] (common/pg-uuid "123"))
-              :expected "'123'::uuid"}])
+(fact
+  "emits a UUID cast"
+  ((fn [] (common/pg-uuid "123")))
+  =>
+  "'123'::uuid")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-map}
-(Test/check [{:name "delegates JSONB object emission to the transform"
-              :test (fn [] (binding [emit/*emit-fn* (fn [_ _ _] "JSONB")]
-                             (common/pg-map {:status "ok"} {} {})))
-              :expected "JSONB"}])
+(fact
+  "delegates JSONB object emission to the transform"
+  ((fn []
+     (binding [emit/*emit-fn* (fn [_ _ _] "JSONB")]
+       (common/pg-map {:status "ok"} {} {}))))
+  =>
+  "JSONB")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-set}
-(Test/check [{:name "emits singleton and symbolic set values"
-              :test (fn [] [(common/pg-set ["open"] {} {})
-                            (binding [emit/*emit-fn* (fn [_ _ _] "JSONB")]
-                              (common/pg-set ['open 'closed] {} {}))])
-              :expected ["\"open\"" "JSONB"]}])
+(fact
+  "emits singleton and symbolic set values"
+  ((fn [] [(common/pg-set ["open"] {} {})
+           (binding [emit/*emit-fn* (fn [_ _ _] "JSONB")]
+             (common/pg-set ['open 'closed] {} {}))]))
+  =>
+  ["\"open\"" "JSONB"])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-array}
-(Test/check [{:name "emits array elements through the active emitter"
-              :test (fn [] (binding [emit/*emit-fn* (fn [value _ _] (str value))]
-                             (common/pg-array '(array 1 2 3) {} {})))
-              :expected "ARRAY[1,2,3]"}])
+(fact
+  "emits array elements through the active emitter"
+  ((fn []
+     (binding [emit/*emit-fn* (fn [value _ _] (str value))]
+       (common/pg-array '(array 1 2 3) {} {}))))
+  =>
+  "ARRAY[1,2,3]")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-invoke-typecast}
-(Test/check [{:name "emits a keyword invocation typecast"
-              :test (fn [] (binding [emit/*emit-fn* (fn [value _ _] (str value))]
-                             (common/pg-invoke-typecast '(text value) {} {})))
-              :expected "(value)::text"}])
+(fact
+  "emits a keyword invocation typecast"
+  ((fn []
+     (binding [emit/*emit-fn* (fn [value _ _] (str value))]
+       (common/pg-invoke-typecast '(text value) {} {}))))
+  =>
+  "(value)::text")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-typecast}
-(Test/check [{:name "emits the plus-plus typecast form"
-              :test (fn [] (let [value (binding [emit/*emit-fn* (fn [value _ _] (str value))]
-                                             (common/pg-typecast '(++ value text) {} {}))]
-                             value))
-              :expected "(value)::text"}])
+(fact
+  "emits the plus-plus typecast form"
+  ((fn []
+     (let [value (binding [emit/*emit-fn* (fn
+                                            [value _ _]
+                                            (str value))]
+                   (common/pg-typecast '(++ value text) {} {}))]
+       value)))
+  =>
+  "(value)::text")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-do-assert}
-(Test/check [{:name "delegates do-assert to the JSONB assertion transform"
-              :test (fn [] (binding [emit/*emit-fn* (fn [_ _ _] "ASSERT")]
-                             (common/pg-do-assert
-                              '(do:assert (= value 1) [:bad {:value value}]) {} {})))
-              :expected "IF NOT (ASSERT) THEN\n  RAISE EXCEPTION USING DETAIL = (ASSERT)::TEXT, MESSAGE = ':bad';\nEND IF"}])
+(fact
+  "delegates do-assert to the JSONB assertion transform"
+  ((fn []
+     (binding [emit/*emit-fn* (fn [_ _ _] "ASSERT")]
+       (common/pg-do-assert
+         '(do:assert (= value 1) [:bad {:value value}])
+         {}
+         {}))))
+  =>
+  "ASSERT")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-base-token}
-(Test/check [{:name "qualifies non-public tokens"
-              :test (fn [] [(common/pg-base-token #{"hello"} "schema")
-                            (common/pg-base-token #{"hello"} "public")])
-              :expected [(list '. #{"schema"} #{"hello"}) #{"hello"}]}])
+(fact
+  "qualifies non-public tokens"
+  ((fn [] [(common/pg-base-token #{"hello"} "schema")
+           (common/pg-base-token #{"hello"} "public")]))
+  =>
+  [(list '. #{"schema"} #{"hello"}) #{"hello"}])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-full-token}
-(Test/check [{:name "normalizes dotted type tokens"
-              :test (fn [] (common/pg-full-token 'hello.world "schema"))
-              :expected (list '. #{"schema"} #{"hello_world"})}])
+(fact
+  "normalizes dotted type tokens"
+  ((fn [] (common/pg-full-token 'hello.world "schema")))
+  =>
+  (list '. #{"schema"} #{"hello_world"}))
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-entry-literal}
-(Test/check [{:name "renders an entry coordinate"
-              :test (fn [] (common/pg-entry-literal {:static/schema "audit" :id 'Log}))
-              :expected "audit.Log"}])
+(fact
+  "renders an entry coordinate"
+  ((fn []
+     (common/pg-entry-literal {:static/schema "audit", :id 'Log})))
+  =>
+  "audit.Log")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-entry-token}
-(Test/check [{:name "renders declaration and constant entry tokens"
-              :test (fn [] [(common/pg-entry-token {:op 'deftype :id 'Log :static/schema "audit"})
-                            (common/pg-entry-token {:op 'defconst :id 'value
-                                                    :form '(defconst value table {:id 'Log})
-                                                    :static/schema "audit"})])
-              :expected [(list '. #{"audit"} #{"Log"}) 'Log]}])
+(fact
+  "renders declaration and constant entry tokens"
+  ((fn [] [(common/pg-entry-token
+             {:op 'deftype, :id 'Log, :static/schema "audit"})
+           (common/pg-entry-token
+             {:op 'defconst,
+              :id 'value,
+              :form '(defconst value table {:id 'Log}),
+              :static/schema "audit"})]))
+  =>
+  [(list '. #{"audit"} #{"Log"}) ''Log])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-linked-token}
-(Test/check [{:name "renders linked symbols without a snapshot and resolves active entries"
-              :test (fn [] [(common/pg-linked-token 'audit/Log {})
-                            (common/pg-linked-token
-                             'demo/Log
-                             {:module {:id 'demo
-                                       :code {'Log {:id 'Log :op 'deftype
-                                                    :static/schema "audit"}}}})])
-              :expected [(list '. #{"audit"} #{"Log"})
-                         (list '. #{"audit"} #{"Log"})]}])
+(fact
+  "renders linked symbols without a snapshot and resolves active entries"
+  (let [e {:id 'Log,
+           :section :code,
+           :op 'deftype,
+           :static/schema "audit"}
+        b (book/book
+            {:lang :postgres,
+             :grammar {:fixture true},
+             :meta {:fixture true},
+             :modules
+             {'audit
+              (book/book-module
+                {:lang :postgres, :id 'audit, :code {'Log e}}),
+              'demo
+              (book/book-module
+                {:lang :postgres, :id 'demo, :code {'Log e}})}})
+        opts {:lang :postgres,
+              :snapshot
+              (snap/snapshot {:postgres {:id :postgres, :book b}})}]
+    [(common/pg-linked-token 'audit/Log opts)
+     (common/pg-linked-token 'demo/Log opts)])
+  =>
+  [(list '. #{"audit"} #{"Log"}) (list '. #{"audit"} #{"Log"})])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-linked}
-(Test/check [{:name "emits linked symbols through the active emitter"
-              :test (fn [] (binding [emit/*emit-fn* (fn [value grammar context]
-                                                      (if (list? value) "linked" "other"))]
-                             (common/pg-linked 'audit/Log {} {})))
-              :expected "linked"}])
+(fact
+  "emits linked symbols through the active emitter"
+  (let [e {:id 'Log,
+           :section :code,
+           :op 'deftype,
+           :static/schema "audit"}
+        b (book/book
+            {:lang :postgres,
+             :grammar {:fixture true},
+             :meta {:fixture true},
+             :modules
+             {'audit
+              (book/book-module
+                {:lang :postgres, :id 'audit, :code {'Log e}}),
+              'demo
+              (book/book-module
+                {:lang :postgres, :id 'demo, :code {'Log e}})}})
+        opts {:lang :postgres,
+              :snapshot
+              (snap/snapshot {:postgres {:id :postgres, :book b}})}]
+    (binding [emit/*emit-fn* (fn [value grammar context]
+                               (if (list? value) "linked" "other"))]
+      (common/pg-linked 'audit/Log {} opts)))
+  =>
+  "linked")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/block-do-block}
-(Test/check [{:name "builds a PL/pgSQL do block"
-              :test (fn [] (first (common/block-do-block '(do 1))))
-              :expected :do}])
+(fact
+  "builds a PL/pgSQL do block"
+  ((fn [] (first (common/block-do-block '(do 1)))))
+  =>
+  :do)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/block-do-suppress}
-(Test/check [{:name "builds an exception suppressing block"
-              :test (fn [] (has? (set (common/block-do-suppress '(do 1))) :exception))
-              :expected true}])
+(fact
+  "builds an exception suppressing block"
+  ((fn [] (has? (set (common/block-do-suppress '(do 1))) :exception)))
+  =>
+  true)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/block-loop-block}
-(Test/check [{:name "builds a loop block"
-              :test (fn [] (first (common/block-loop-block '(+ 1 2))))
-              :expected :loop}])
+(fact
+  "builds a loop block"
+  ((fn [] (first (common/block-loop-block '(+ 1 2)))))
+  =>
+  :loop)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/block-while-block}
-(Test/check [{:name "builds a while block"
-              :test (fn [] (first (common/block-while-block true '(do 1))))
-              :expected :while}])
+(fact
+  "builds a while block"
+  ((fn [] (first (common/block-while-block true '(do 1)))))
+  =>
+  :while)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/block-case-block}
-(Test/check [{:name "builds a case block"
-              :test (fn [] (first (common/block-case-block 'kind :a 1 :else 2)))
-              :expected '%}])
+(fact
+  "builds a case block"
+  ((fn [] (first (common/block-case-block 'kind :a 1 :else 2))))
+  =>
+  '%)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defenum}
-(Test/check [{:name "expands enum declarations into guarded DO blocks"
-              :test (fn [] (first (common/pg-defenum '(defenum state [open closed]))))
-              :expected :do}])
+(fact
+  "expands enum declarations into guarded DO blocks"
+  ((fn [] (first (common/pg-defenum '(defenum state [open closed])))))
+  =>
+  :do)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defindex}
-(Test/check [{:name "expands a deterministic index declaration"
-              :test (fn [] (first (common/pg-defindex '(defindex hello [table col]))))
-              :expected :create-index}])
+(fact
+  "expands a deterministic index declaration"
+  ((fn [] (first (common/pg-defindex '(defindex hello [table col])))))
+  =>
+  :create-index)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defpolicy}
-(Test/check [{:name "expands a policy declaration"
-              :test (fn [] (first (common/pg-defpolicy '(defpolicy hello [table] ()))))
-              :expected 'do}])
+(fact
+  "expands a policy declaration"
+  ((fn [] (first (common/pg-defpolicy '(defpolicy hello [table] ())))))
+  =>
+  'do)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-publication-format}
-(Test/check [{:name "formats publication declarations"
-              :test (fn [] (vector? (common/pg-publication-format '(defpublication pub [:all]))))
-              :expected true}])
+(fact
+  "formats publication declarations"
+  ((fn []
+     (vector?
+       (common/pg-publication-format '(defpublication pub [:all])))))
+  =>
+  true)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defpublication}
-(Test/check [{:name "expands publication declarations"
-              :test (fn [] (first (common/pg-defpublication '(defpublication pub [:all]))))
-              :expected 'do}])
+(fact
+  "expands publication declarations"
+  ((fn []
+     (first (common/pg-defpublication '(defpublication pub [:all])))))
+  =>
+  'do)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-subscription-format}
-(Test/check [{:name "formats subscription declarations"
-              :test (fn [] (vector? (common/pg-subscription-format '(defsubscription sub [conn pub] {}))))
-              :expected true}])
+(fact
+  "formats subscription declarations"
+  ((fn []
+     (vector?
+       (common/pg-subscription-format
+         '(defsubscription sub [conn pub] {})))))
+  =>
+  true)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defsubscription}
-(Test/check [{:name "expands subscription declarations"
-              :test (fn [] (first (common/pg-defsubscription '(defsubscription sub [conn pub] {}))))
-              :expected 'do}])
+(fact
+  "expands subscription declarations"
+  ((fn []
+     (first
+       (common/pg-defsubscription
+         '(defsubscription sub [conn pub] {})))))
+  =>
+  'do)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-deftrigger}
-(Test/check [{:name "expands trigger declarations"
-              :test (fn [] (first (common/pg-deftrigger '(deftrigger hello [table] ()))))
-              :expected 'do}])
+(fact
+  "expands trigger declarations"
+  ((fn []
+     (first (common/pg-deftrigger '(deftrigger hello [table] ())))))
+  =>
+  'do)
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common/pg-defblock}
-(Test/check [{:name "expands generic DDL declarations"
-              :test (fn [] (first (common/pg-defblock
-                                   (IObjType/with-meta '(def hello [:index])
-                                     {:static/schema "audit"}))))
-              :expected 'do}])
+(fact
+  "expands generic DDL declarations"
+  ((fn []
+     (first
+       (common/pg-defblock
+         (IObjType/with-meta
+           '(def hello [:index])
+           {:static/schema "audit"})))))
+  =>
+  'do)
+
+(ns lang.model.v1.spec-postgres.postgres-common-test
+  (:require [lang.model.v1.spec-postgres.postgres-common :as common])
+  (:use code.test))
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-sym-meta :id :absent-metadata-defaults}
+(fact "absent shorthand metadata uses the original return, language and property defaults"
+  (common/pg-sym-meta 'entry)
+  => {:- [:jsonb] :static/return [:jsonb] :static/language :default :static/props []})
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-sym-meta :id :present-nil-metadata}
+(fact "present nil metadata values do not trigger defaults"
+  (common/pg-sym-meta (with-meta 'entry {:- nil :%% nil :props nil}))
+  => {:- nil :static/return nil :static/language nil :static/props nil})
+
+^{:refer lang.model.v1.spec-postgres.postgres-common/pg-sym-meta :id :partial-metadata-defaults}
+(fact "partial metadata retains unrelated fields and defaults only absent shorthand fields"
+  (common/pg-sym-meta (with-meta 'entry {:%% :python :note "keep"}))
+  => {:- [:jsonb] :static/return [:jsonb] :static/language :python :static/props [] :note "keep"})

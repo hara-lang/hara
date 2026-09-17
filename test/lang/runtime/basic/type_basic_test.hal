@@ -1,6 +1,9 @@
 (ns lang.runtime.basic.type-basic-test
   (:use code.test)
-  (:require [lang.core.runtime :as runtime]
+  (:require [lang.model.v1.spec-js]
+            [lang.base.util]
+            [lang.runtime.basic.impl.process-python]
+            [lang.runtime.basic.impl.process-lua]
             [lang.runtime.basic.impl.process-js]
             [lang.runtime.basic.transport-node :as node]
             [lang.runtime.basic.type-basic :as subject]))
@@ -131,8 +134,8 @@
 
 ^{:refer lang.runtime.basic.type-basic/eval-raw-basic}
 (fact "retains lazy Python and Lua basic bootstrap configurations"
-  (let [python (runtime/rt-create :python :basic)
-        lua (runtime/rt-create :lua :basic)]
+  (let [python (subject/rt-basic:create {:lang :python :runtime :basic})
+        lua (subject/rt-basic:create {:lang :lua :runtime :basic})]
     [[(get-in python [:process :transport])
       (fn? (get-in python [:process :bootstrap]))
       (get-in python [:profile :response])]
@@ -161,3 +164,77 @@
       (finally
         (subject/stop-basic instance))))
   => [69 249 129])
+
+^{:refer lang.runtime.basic.type-basic/rt-basic:create}
+(fact "preserves script ownership and emission options"
+  (let [instance (subject/rt-basic:create {:lang :js
+                  :module (quote sample.module) :layout :full
+                  :emit {:test-marker :kept} :library :library-marker})]
+    (try
+      (select-keys instance [:module :layout :emit :library])
+      (finally (subject/stop-basic instance))))
+  => {:module (quote sample.module) :layout :full :emit {:test-marker :kept} :library :library-marker})
+
+^{:refer lang.runtime.basic.type-basic/RuntimeBasic}
+(fact "invokes a pointer through the native script emitter and persistent JS runtime"
+  (let [instance (subject/rt-basic {:lang :js :layout :full})]
+    (try
+      (IContextEval/invoke-ptr instance
+        (lang.base.util/lang-pointer :js {})
+        (quote [(+ 1 2)]))
+      (finally (subject/stop-basic instance))))
+  => [3])
+
+^{:refer lang.runtime.basic.type-basic/RuntimeBasic}
+(fact "does not decode semantic string results a second time"
+  (let [instance (subject/rt-basic {:lang :js :layout :full})]
+    (try
+      [(IContextEval/invoke-ptr instance
+         (lang.base.util/lang-pointer :js {:form "hello"}) [])
+       (IContextEval/invoke-ptr instance
+         (lang.base.util/lang-pointer :js {:form "{\"answer\":42}"}) [])
+       (IContextEval/invoke-ptr instance
+         (lang.base.util/lang-pointer :js {:form [false 3]}) [])]
+      (finally (subject/stop-basic instance))))
+  => ["hello" "{\"answer\":42}" [false 3]])
+
+^{:refer lang.runtime.basic.type-basic/rt-basic-port}
+(fact "prefers the bound transport port and falls back to configured port"
+  (let [state (atom {:port 4123})
+        instance {:transport {:state state} :process {:port 5123}}]
+    (try
+      [(subject/rt-basic-port instance)
+       (subject/rt-basic-port {:process {:port 5123}})
+       (subject/rt-basic-port {})]
+      (finally (reset! state {}))))
+  => [4123 5123 nil])
+
+^{:refer lang.runtime.basic.type-basic/stop-basic}
+(fact "stop is idempotent and returns the same runtime"
+  (let [instance (subject/rt-basic:create {:lang :js})]
+    (try
+      [(= instance (subject/stop-basic instance))
+       (= instance (subject/stop-basic instance))
+       (subject/basic-state instance)]
+      (finally (subject/stop-basic instance))))
+  => [true true {:status :stopped :transport :process-socket}])
+
+^{:refer lang.runtime.basic.type-basic/basic-state}
+(fact "reports the current runtime lifecycle state"
+  (let [instance (subject/rt-basic:create {:lang :js})]
+    (try
+      (let [before (subject/basic-state instance)]
+        (subject/stop-basic instance)
+        [before (subject/basic-state instance)])
+      (finally (subject/stop-basic instance))))
+  => [{:status :created :transport :process-socket}
+      {:status :stopped :transport :process-socket}])
+
+^{:refer lang.runtime.basic.type-basic/rt-basic}
+(fact "creates and starts an immediately usable basic runtime"
+  (let [instance (subject/rt-basic {:lang :js})]
+    (try
+      [(subject/basic-state instance)
+       (subject/raw-eval-basic instance "6 * 7")]
+      (finally (subject/stop-basic instance))))
+  => [{:status :started :transport :process-socket} 42])

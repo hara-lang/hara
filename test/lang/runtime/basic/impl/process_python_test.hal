@@ -1,17 +1,17 @@
 (ns lang.runtime.basic.impl.process-python-test
   (:require [lang.core.registry :as registry]
-            [lang.core.runtime :as runtime]
+            [std.lib.context.resource :as resource]
             [lang.runtime.basic.impl.process-python :as subject]
             [lang.runtime.basic.type-common :as common]))
 
 ^{:refer lang.runtime.basic.impl.process-python/+python-init+}
 (Test/check
  [{:name "declares CPython as the default persistent program"
-   :test (fn [] [(get-in subject/+python-init+ [:default :basic])
-                 (get-in subject/+python-init+ [:env :cpython :exec])
-                 (get-in subject/+python-init+ [:env :cpython :extension])
-                 (get-in subject/+python-init+ [:env :cpython :flags :basic])
-                 (get-in subject/+python-init+ [:env :cpython :flags :verify])
+   :test (fn [] [(get-in (common/get-program-options :python) [:default :basic])
+                 (get-in (common/get-program-options :python) [:env :cpython :exec])
+                 (get-in (common/get-program-options :python) [:env :cpython :extension])
+                 (get-in (common/get-program-options :python) [:env :cpython :flags :basic])
+                 (get-in (common/get-program-options :python) [:env :cpython :flags :verify])
                  (get-in (common/get-program-options :python) [:default :basic])])
    :expected [:cpython "python3" "py" ["-c"]
               ["-c" "import sys; compile(sys.stdin.read(), '<hara>', 'exec')"]
@@ -20,19 +20,19 @@
 ^{:refer lang.runtime.basic.impl.process-python/+python-oneshot-config+}
 (Test/check
  [{:name "configures Python one-shot JSON output"
-   :test (fn [] (select-keys subject/+python-oneshot-config+ [:main :emit :json]))
+   :test (fn [] (select-keys (common/get-context-options :python :oneshot :default) [:main :emit :json]))
    :expected {:main {} :emit {} :json :full}}])
 
 ^{:refer lang.runtime.basic.impl.process-python/+python-verify-config+}
 (Test/check
  [{:name "configures Python verification through stdin"
-   :test (fn [] (select-keys subject/+python-verify-config+ [:main :emit :json :transport]))
+   :test (fn [] (select-keys (common/get-context-options :python :verify :default) [:main :emit :json :transport]))
    :expected {:main {} :emit {} :json false :transport :process-stdin}}])
 
 ^{:refer lang.runtime.basic.impl.process-python/+python-basic-config+}
 (Test/check
  [{:name "configures persistent Python evaluation over JSON lines"
-   :test (fn [] (let [config subject/+python-basic-config+]
+   :test (fn [] (let [config (common/get-context-options :python :basic :default)]
                   [(select-keys config [:main :emit :json :encode :timeout :transport])
                    (:profile config)
                    (boolean (:bootstrap config))]))
@@ -45,31 +45,31 @@
 ^{:refer lang.runtime.basic.impl.process-python/+python-oneshot+}
 (Test/check
  [{:name "installs the Python one-shot runtime type"
-   :test (fn [] [(select-keys subject/+python-oneshot+ [:lang :runtime :type])
-                 (set (keys (:instance subject/+python-oneshot+)))
-                 (registry/registry-runtime-ns :python :oneshot)])
-   :expected [{:lang :python :runtime :oneshot :type :lang/rt.oneshot}
+   :test (fn [] [(:context subject/+python-oneshot+)
+                 (set (keys (select-keys (:instance (resource/spec-get :lang/rt.oneshot)) [:create :raw-eval])))
+                 (get (deref registry/+registry+) [:python :oneshot])])
+   :expected [{:key :oneshot :resource :lang/rt.oneshot :config {:runtime :oneshot}}
               #{:create :raw-eval}
               'lang.runtime.basic.impl.process-python]}])
 
 ^{:refer lang.runtime.basic.impl.process-python/+python-verify+}
 (Test/check
  [{:name "installs the Python verification runtime type"
-   :test (fn [] [(select-keys subject/+python-verify+ [:lang :runtime :type])
-                 (set (keys (:instance subject/+python-verify+)))
-                 (:type (runtime/runtime-spec :python :verify))])
-   :expected [{:lang :python :runtime :verify :type :lang/rt.verify}
+   :test (fn [] [(:context subject/+python-verify+)
+                 (set (keys (select-keys (:instance (resource/spec-get :lang/rt.verify)) [:create :raw-eval])))
+                 (:type (resource/spec-get :lang/rt.verify))])
+   :expected [{:key :verify :resource :lang/rt.verify :config {:runtime :verify}}
               #{:create :raw-eval}
               :lang/rt.verify]}])
 
 ^{:refer lang.runtime.basic.impl.process-python/+python-basic+}
 (Test/check
  [{:name "installs the Python persistent basic runtime type"
-   :test (fn [] [(select-keys subject/+python-basic+ [:lang :runtime :type])
-                 (get-in subject/+python-basic+ [:config :layout])
-                 (set (keys (:instance subject/+python-basic+)))
-                 (:type (runtime/runtime-spec :python :basic))])
-   :expected [{:lang :python :runtime :basic :type :lang/rt.basic}
+   :test (fn [] [(:context subject/+python-basic+)
+                 (get-in subject/+python-basic+ [:context :config :layout])
+                 (set (keys (select-keys (:instance (resource/spec-get :lang/rt.basic)) [:create :start :stop :raw-eval])))
+                 (:type (resource/spec-get :lang/rt.basic))])
+   :expected [{:key :basic :resource :lang/rt.basic :config {:runtime :basic :layout :full}}
               :full
               #{:create :start :stop :raw-eval}
               :lang/rt.basic]}])

@@ -1,26 +1,56 @@
 (ns lang.model.v1.spec-hara-test
+  (:use code.test)
   (:require [lang.base.book :as book]
+            [lang.base.grammar :as grammar]
             [lang.model.v1.spec-hara :as subject]))
 
 ^{:refer lang.model.v1.spec-hara/+language+}
-(Test/check
- [{:name "Hara book identifies the language and XTalk parent"
-   :test (fn [] [subject/+language+
-                 subject/+tag+
-                 subject/+version+
-                 (:parent subject/+book+)
-                 (book/book? subject/+book+)])
-   :expected [:hara :hara 1 :xtalk true]}])
+(fact "Hara keeps the native language identity and version"
+  [subject/+language+ subject/+tag+ subject/+version+ subject/+grammar-version+]
+  => [:hara :hara 1 1])
 
-^{:refer lang.model.v1.spec-hara/select}
-(Test/check
- [{:name "Hara selection resolves its declared grammar"
-   :test (fn [] [(:grammar/id (:coordinate subject/+selection+))
-                 (:grammar/version (:coordinate subject/+selection+))])
-   :expected [:hara 1]}])
+^{:refer lang.model.v1.spec-hara/+meta+}
+(fact "Hara uses the standard empty BookMeta boundary"
+  [(book/book-meta? subject/+meta+)
+   (= subject/+meta+ (book/book-meta {}))]
+  => [true true])
+
+^{:refer lang.model.v1.spec-hara/+grammar+}
+(fact "Hara owns a concrete standard grammar rather than a catalog selection"
+  [(grammar/grammar? subject/+grammar+)
+   (:tag subject/+grammar+)
+   (nil? (:selection subject/+grammar+))
+   (not (has? subject/+grammar+ :source/kind))]
+  => [true :hara true true])
+
+^{:refer lang.model.v1.spec-hara/+book+}
+(fact "Hara Book retains the XTalk parent and direct grammar"
+  [(book/book? subject/+book+)
+   (:lang subject/+book+)
+   (:parent subject/+book+)
+   (= (:grammar subject/+book+) subject/+grammar+)
+   (= (:meta subject/+book+) subject/+meta+)]
+  => [true :hara :xtalk true true])
+
+^{:refer lang.model.v1.spec-hara/+init+}
+(fact "Hara initialization follows script/install and returns its publication tuple"
+  [(vector? subject/+init+)
+   (= 3 (count subject/+init+))
+   (map? (nth subject/+init+ 1))
+   (map? (nth subject/+init+ 2))]
+  => [true true true true])
+
+^{:refer lang.model.v1.spec-hara/emit}
+(fact "Hara emission lowers definitions through the native Hara emitter"
+  [(subject/emit '(def value 1))
+   (subject/emit '(defn add [x] (+ x 1)))]
+  => ["(def value 1)"
+      "(defn add [x] (let [x (atom x)] (try (+ (deref x) 1) (catch Throwable __tahto_return_error (let [__tahto_return_data (ex-data __tahto_return_error)] (if (= :lang.hara/return (get __tahto_return_data :ex/code)) (get __tahto_return_data :value) (throw __tahto_return_error)))))))"])
 
 ^{:refer lang.model.v1.spec-hara/compile}
-(Test/check
- [{:name "Hara spec compiles a simple definition through its emitter"
-   :test (fn [] (subject/compile '(def value 1)))
-   :expected "(def value 1)"}])
+(fact "Hara compile uses the same direct grammar without materialization"
+  [(subject/compile '(def value 1))
+   (get (subject/compile-result '(def value 1)) :output)
+   (= (subject/compile '(def value 1))
+      (subject/emit '(def value 1)))]
+  => ["(def value 1)" "(def value 1)" true])

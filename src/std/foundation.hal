@@ -1202,12 +1202,12 @@
          (IAssoc/assoc output (first remaining) (second remaining))
          (rest (rest remaining)))))))
 
-(defn ^{:schema [:fn [:any :any & :any] :any]}
+(defn ^{:schema [:fn [:any & :any] :any]}
   dissoc
-  "Returns value with one or more keys removed through IDissoc."
-  [value key & more]
-  (loop [output (if (nil? value) nil (IDissoc/dissoc value key))
-         remaining more]
+  "Returns value with zero or more keys removed through IDissoc. With no keys, returns value unchanged."
+  [value & keys]
+  (loop [output value
+         remaining keys]
     (if (= 0 (count remaining))
       output
       (recur
@@ -1794,12 +1794,7 @@
   "Returns values sorted by comparison (default compare) as a vector. Stable."
   ([values] (sort compare values))
   ([comparison values]
-   (collect-like
-     values
-     (reduce (fn [result value]
-               (insert-sorted comparison value result))
-             []
-             values))))
+   (collect-like values (Algo/sort comparison values))))
 
 (defn ^{:schema [:function [:fn [:fn :any] :any]
                             [:fn [:fn :fn :any] :any]]}
@@ -2607,10 +2602,9 @@
                        (thread-last-form result-symbol step)
                      (thread-first-form result-symbol step))]
       (list 'let [result-symbol value]
-             (list 'if
-                    condition
-                    (conditional-thread-form threaded remaining last?)
-                    (conditional-thread-form result-symbol remaining last?))))))
+            (conditional-thread-form
+              (list 'if condition threaded result-symbol)
+              remaining last?)))))
 
 (defn ^{:schema [:fn [:any :vector] :any]}
   case-form
@@ -3167,13 +3161,14 @@
   (list (quote Base/delay) (apply list (quote fn) [] (if (empty? body) [nil] body))))
 
 (defmacro defonce
-  "Defines name with expression only when its Var is absent, returning the Var."
+  "Defines name with expression only when its Var is absent, returning the Var. The initializer remains in the caller's lexical and namespace context."
   [name expression]
   (let [qualified (symbol (str (:ns &env)) (str name))]
-    (list 'if
-          (list 'Base/resolve (list 'quote qualified))
-          (list 'Base/resolve (list 'quote qualified))
-          (list 'Runtime/eval (list 'quote (list 'def name expression))))))
+    (list
+      'if
+      (list 'Base/resolve (list 'quote qualified))
+      (list 'Base/resolve (list 'quote qualified))
+      (list 'def name expression))))
 
 (defmacro ->
   "Threads value through forms, inserting it as the first argument unless a
@@ -3636,3 +3631,7 @@
    (dependents-ordered context id (dep-keys context)))
   ([context id selected]
    (topological-sort (dependents-all context id selected))))
+
+(def ^{:dynamic true :public true :schema :str
+       :doc "Default path separator for Foundation collection tree transformations."}
+  *sep* "/")

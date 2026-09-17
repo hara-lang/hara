@@ -1,0 +1,758 @@
+(ns lang.core.workspace-test
+ (:require [lang.core.workspace :as w] [lang.base.util :as ut] [lang.core.runtime :as rt] [code.test :refer [fact]]))
+
+(defstruct ^{:open true} WorkspaceLifecycle [module])
+(extend-type WorkspaceLifecycle IContextLifeCycle
+ (setup-module [rt module] [:setup (:module rt) module])
+ (teardown-module [rt module] [:teardown (:module rt) module]))
+
+^{:refer lang.core.workspace/rt-resolve}
+(fact
+  "only language keywords resolve through the runtime lookup"
+  (let [previous-value-0 ut/lang-rt
+        previous-meta-0 (meta #'ut/lang-rt)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-0)
+        (fn [language] {:lang language, :module 'M}))
+      [(w/rt-resolve :lua)
+       (w/rt-resolve {:lang :python})
+       (w/rt-resolve nil)]
+      (finally
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          previous-value-0))))
+  =>
+  [{:lang :lua, :module 'M} {:lang :python} nil])
+
+^{:refer lang.core.workspace/sym-pointer}
+(fact "pointer map keeps original namespace and code section"
+ (w/sym-pointer :xtalk 'xt.lang.common-lib/noop)
+ => '{:lang :xtalk :module xt.lang.common-lib :section :code :id noop})
+
+^{:refer lang.core.workspace/multistage-tmpl}
+(fact "template preserves both arities and late module selection"
+ (w/multistage-tmpl '[demo rt/multistage-setup-for])
+ => '(defn demo
+       ([lang] (let [rt (ut/lang-rt lang)] (demo rt (:module rt))))
+       ([rt module-id] (rt/multistage-setup-for rt module-id))))
+
+^{:refer lang.core.workspace/rt:setup-single}
+(fact
+  "single setup uses runtime module by default and explicit override"
+  (let [runtime (->WorkspaceLifecycle 'M)]
+    (let [previous-value-0 ut/lang-rt
+          previous-meta-0 (meta #'ut/lang-rt)]
+      (try
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          (fn [lang] runtime))
+        [(w/rt:setup-single :lua) (w/rt:setup-single runtime 'N)]
+        (finally
+          (intern
+            'lang.base.util
+            (with-meta 'lang-rt previous-meta-0)
+            previous-value-0)))))
+  =>
+  [[:setup 'M 'M] [:setup 'M 'N]])
+
+^{:refer lang.core.workspace/rt:teardown-single}
+(fact
+  "single teardown uses native lifecycle with selected module"
+  (let [runtime (->WorkspaceLifecycle 'M)]
+    (let [previous-value-0 ut/lang-rt
+          previous-meta-0 (meta #'ut/lang-rt)]
+      (try
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          (fn [lang] runtime))
+        [(w/rt:teardown-single :lua) (w/rt:teardown-single runtime 'N)]
+        (finally
+          (intern
+            'lang.base.util
+            (with-meta 'lang-rt previous-meta-0)
+            previous-value-0)))))
+  =>
+  [[:teardown 'M 'M] [:teardown 'M 'N]])
+
+^{:refer lang.core.workspace/rt:setup-to}
+(fact
+  "setup-to forwards both arities to the original setup-to operation"
+  (let [previous-value-0 ut/lang-rt
+        previous-meta-0 (meta #'ut/lang-rt)
+        previous-value-1 rt/multistage-setup-to
+        previous-meta-1 (meta #'rt/multistage-setup-to)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-0)
+        (fn [lang] {:module 'M}))
+      (intern
+        'lang.core.runtime
+        (with-meta 'multistage-setup-to previous-meta-1)
+        (fn [runtime module] [:setup-to (:module runtime) module]))
+      [(w/rt:setup-to :lua) (w/rt:setup-to {:module 'M} 'N)]
+      (finally
+        (intern
+          'lang.core.runtime
+          (with-meta 'multistage-setup-to previous-meta-1)
+          previous-value-1)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          previous-value-0))))
+  =>
+  [[:setup-to 'M 'M] [:setup-to 'M 'N]])
+
+^{:refer lang.core.workspace/rt:setup}
+(fact
+  "setup forwards both arities to setup-for"
+  (let [previous-value-0 ut/lang-rt
+        previous-meta-0 (meta #'ut/lang-rt)
+        previous-value-1 rt/multistage-setup-for
+        previous-meta-1 (meta #'rt/multistage-setup-for)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-0)
+        (fn [lang] {:module 'M}))
+      (intern
+        'lang.core.runtime
+        (with-meta 'multistage-setup-for previous-meta-1)
+        (fn [runtime module] [:setup-for (:module runtime) module]))
+      [(w/rt:setup :lua) (w/rt:setup {:module 'M} 'N)]
+      (finally
+        (intern
+          'lang.core.runtime
+          (with-meta 'multistage-setup-for previous-meta-1)
+          previous-value-1)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          previous-value-0))))
+  =>
+  [[:setup-for 'M 'M] [:setup-for 'M 'N]])
+
+^{:refer lang.core.workspace/rt:teardown}
+(fact
+  "teardown forwards both arities to teardown-for"
+  (let [previous-value-0 ut/lang-rt
+        previous-meta-0 (meta #'ut/lang-rt)
+        previous-value-1 rt/multistage-teardown-for
+        previous-meta-1 (meta #'rt/multistage-teardown-for)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-0)
+        (fn [lang] {:module 'M}))
+      (intern
+        'lang.core.runtime
+        (with-meta 'multistage-teardown-for previous-meta-1)
+        (fn [runtime module] [:teardown-for (:module runtime) module]))
+      [(w/rt:teardown :lua) (w/rt:teardown {:module 'M} 'N)]
+      (finally
+        (intern
+          'lang.core.runtime
+          (with-meta 'multistage-teardown-for previous-meta-1)
+          previous-value-1)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          previous-value-0))))
+  =>
+  [[:teardown-for 'M 'M] [:teardown-for 'M 'N]])
+
+^{:refer lang.core.workspace/rt:teardown-to}
+(fact
+  "teardown-to retains its distinct dependent traversal"
+  (let [previous-value-0 ut/lang-rt
+        previous-meta-0 (meta #'ut/lang-rt)
+        previous-value-1 rt/multistage-teardown-to
+        previous-meta-1 (meta #'rt/multistage-teardown-to)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-0)
+        (fn [lang] {:module 'M}))
+      (intern
+        'lang.core.runtime
+        (with-meta 'multistage-teardown-to previous-meta-1)
+        (fn [runtime module] [:teardown-to (:module runtime) module]))
+      [(w/rt:teardown-to :lua) (w/rt:teardown-to {:module 'M} 'N)]
+      (finally
+        (intern
+          'lang.core.runtime
+          (with-meta 'multistage-teardown-to previous-meta-1)
+          previous-value-1)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          previous-value-0))))
+  =>
+  [[:teardown-to 'M 'M] [:teardown-to 'M 'N]])
+
+^{:refer lang.core.workspace/rt:teardown-at}
+(fact
+  "teardown-at retains its distinct dependent traversal"
+  (let [previous-value-0 ut/lang-rt
+        previous-meta-0 (meta #'ut/lang-rt)
+        previous-value-1 rt/multistage-teardown-at
+        previous-meta-1 (meta #'rt/multistage-teardown-at)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-0)
+        (fn [lang] {:module 'M}))
+      (intern
+        'lang.core.runtime
+        (with-meta 'multistage-teardown-at previous-meta-1)
+        (fn [runtime module] [:teardown-at (:module runtime) module]))
+      [(w/rt:teardown-at :lua) (w/rt:teardown-at {:module 'M} 'N)]
+      (finally
+        (intern
+          'lang.core.runtime
+          (with-meta 'multistage-teardown-at previous-meta-1)
+          previous-value-1)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          previous-value-0))))
+  =>
+  [[:teardown-at 'M 'M] [:teardown-at 'M 'N]])
+
+^{:refer lang.core.workspace/rt:scaffold-to}
+(fact
+  "scaffold-to delegates to scaffold setup-to"
+  (let [previous-value-0 ut/lang-rt
+        previous-meta-0 (meta #'ut/lang-rt)
+        previous-value-1 rt/default-scaffold-setup-to
+        previous-meta-1 (meta #'rt/default-scaffold-setup-to)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-0)
+        (fn [lang] {:module 'M}))
+      (intern
+        'lang.core.runtime
+        (with-meta 'default-scaffold-setup-to previous-meta-1)
+        (fn [runtime module] [:scaffold-to (:module runtime) module]))
+      [(w/rt:scaffold-to :lua) (w/rt:scaffold-to {:module 'M} 'N)]
+      (finally
+        (intern
+          'lang.core.runtime
+          (with-meta 'default-scaffold-setup-to previous-meta-1)
+          previous-value-1)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          previous-value-0))))
+  =>
+  [[:scaffold-to 'M 'M] [:scaffold-to 'M 'N]])
+
+^{:refer lang.core.workspace/rt:scaffold}
+(fact
+  "scaffold delegates to scaffold setup-for"
+  (let [previous-value-0 ut/lang-rt
+        previous-meta-0 (meta #'ut/lang-rt)
+        previous-value-1 rt/default-scaffold-setup-for
+        previous-meta-1 (meta #'rt/default-scaffold-setup-for)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-0)
+        (fn [lang] {:module 'M}))
+      (intern
+        'lang.core.runtime
+        (with-meta 'default-scaffold-setup-for previous-meta-1)
+        (fn [runtime module] [:scaffold-for (:module runtime) module]))
+      [(w/rt:scaffold :lua) (w/rt:scaffold {:module 'M} 'N)]
+      (finally
+        (intern
+          'lang.core.runtime
+          (with-meta 'default-scaffold-setup-for previous-meta-1)
+          previous-value-1)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          previous-value-0))))
+  =>
+  [[:scaffold-for 'M 'M] [:scaffold-for 'M 'N]])
+
+^{:refer lang.core.workspace/rt:scaffold-imports}
+(fact
+  "scaffold-imports delegates to import scaffolding"
+  (let [previous-value-0 ut/lang-rt
+        previous-meta-0 (meta #'ut/lang-rt)
+        previous-value-1 rt/default-scaffold-imports
+        previous-meta-1 (meta #'rt/default-scaffold-imports)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-0)
+        (fn [lang] {:module 'M}))
+      (intern
+        'lang.core.runtime
+        (with-meta 'default-scaffold-imports previous-meta-1)
+        (fn [runtime module] [:imports (:module runtime) module]))
+      [(w/rt:scaffold-imports :lua)
+       (w/rt:scaffold-imports {:module 'M} 'N)]
+      (finally
+        (intern
+          'lang.core.runtime
+          (with-meta 'default-scaffold-imports previous-meta-1)
+          previous-value-1)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-0)
+          previous-value-0))))
+  =>
+  [[:imports 'M 'M] [:imports 'M 'N]])
+
+(ns lang.core.workspace-test
+ (:require [lang.core.workspace :as w] [lang.core.impl :as impl]
+           [lang.core.library :as lib] [lang.core.library-snapshot :as snap]
+           [lang.base.book :as book] [lang.base.util :as ut]
+           [lang.core.runtime :as rt] [code.test :refer [fact]]))
+
+(def +query-book+
+ (book/book {:lang :lua :meta {:fixture true} :grammar {:fixture true}
+  :modules
+  {'M (book/book-module {:lang :lua :id 'M
+        :code {'late {:id 'late :module 'M :lang :lua :section :code :line 9 :time 1}
+               'second {:id 'second :module 'M :lang :lua :section :code :line 2 :time 8}
+               'first {:id 'first :module 'M :lang :lua :section :code :line 2 :time 3}}
+        :fragment {'macro {:id 'macro :module 'M :section :fragment}}})
+   'Keep (book/book-module {:lang :lua :id 'Keep})}}))
+
+^{:refer lang.core.workspace/sym-entry}
+(fact "entry lookup uses current library and distinguishes code from fragment"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book +query-book+}})})]
+  (try
+   (binding [impl/*library* library]
+    [(w/sym-entry :lua 'M/first) (w/sym-entry :lua 'M/macro) (w/sym-entry :lua 'M/absent)])
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [{:id 'first :module 'M :lang :lua :section :code :line 2 :time 3} nil nil])
+
+^{:refer lang.core.workspace/module-entries}
+(fact "entries are filtered then sorted by line and time"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book +query-book+}})})]
+  (try
+   (binding [impl/*library* library]
+    [(mapv :id (w/module-entries :lua 'M identity))
+     (mapv :id (w/module-entries :lua 'M (fn [e] (= 2 (:line e)))))
+     (vec (w/module-entries :lua 'Keep identity))])
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [['first 'second 'late] ['first 'second] []])
+
+^{:refer lang.core.workspace/rt:module}
+(fact "module lookup returns the current library's BookModule unchanged"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book +query-book+}})})]
+  (try
+   (binding [impl/*library* library]
+    (let [module (w/rt:module {:lang :lua :module 'M})]
+     [(book/book-module? module)
+      (= module (get-in +query-book+ [:modules 'M]))
+      (:id module)]))
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [true true 'M])
+
+^{:refer lang.core.workspace/rt:module-meta}
+(fact
+  "metadata strips only fragment and code without changing stored module"
+  (let [library (lib/library:create
+                  {:snapshot
+                   (snap/snapshot
+                     {:lua {:id :lua, :book +query-book+}})})]
+    (try
+      (binding [impl/*library* library]
+        (let [before (lib/get-module library :lua 'M)
+              metadata (w/rt:module-meta {:lang :lua, :module 'M})]
+          [(:id metadata)
+           (has? metadata :code)
+           (has? metadata :fragment)
+           (= (dissoc before :code :fragment) metadata)
+           (= before (lib/get-module library :lua 'M))]))
+      (finally
+        (lib/reset-all! library)
+        (reset! (:settings library) {}))))
+  =>
+  ['M false false true true])
+
+^{:refer lang.core.workspace/rt:module-purge}
+(fact "purge returns original removal diff, preserves other modules and repeats safely"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book +query-book+}})})]
+  (try
+   (binding [impl/*library* library]
+    (let [removed (w/rt:module-purge {:lang :lua :module 'M})
+          repeated (w/rt:module-purge {:lang :lua :module 'M})]
+     [(mapv first removed)
+      (= (second (first removed)) (get-in +query-book+ [:modules 'M]))
+      repeated (lib/get-module library :lua 'M) (:id (lib/get-module library :lua 'Keep))]))
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [[[ :modules 'M]] true [[[:modules 'M] nil]] nil 'Keep])
+
+
+(def imported-macro {:baseline true})
+(def +macro-book+
+ (book/book {:lang :lua :meta {:fixture true} :grammar {:fixture true}
+  :modules
+  {'Source (book/book-module {:lang :lua :id 'Source
+            :fragment {'imported-macro {:lang :lua :id 'imported-macro :module 'Source :section :fragment :namespace 'source.seed :line 7}}})
+   'Target (book/book-module {:lang :lua :id 'Target
+            :fragment {'keep {:lang :lua :id 'keep :module 'Target :section :fragment}}})
+   'Empty (book/book-module {:lang :lua :id 'Empty})}}))
+
+^{:refer lang.core.workspace/intern-macros, :id macro-replacement}
+(fact
+  "imports relocate fragments, replace destination fragment set, and publish native pointers"
+  (let [previous imported-macro
+        previous-meta (meta #'imported-macro)
+        library (lib/library:create
+                  {:snapshot
+                   (snap/snapshot
+                     {:lua {:id :lua, :book +macro-book+}})})]
+    (try
+      (let [imports (w/intern-macros
+                      :lua
+                      ['lang.core.workspace-test 'Source]
+                      'Target
+                      library)
+            value (deref (get imports 'imported-macro))
+            target (lib/get-module library :lua 'Target)]
+        [(vec (keys imports))
+         {:lang (:lang value),
+          :id (:id value),
+          :module (:module value),
+          :section (:section value)}
+         (select-keys (meta #'imported-macro) [:namespace :line])
+         (= value imported-macro)
+         (vec (keys (:fragment target)))
+         (get-in target [:fragment 'imported-macro :module])
+         (get-in
+           (lib/get-module library :lua 'Source)
+           [:fragment 'imported-macro :module])])
+      (finally
+        (intern
+          'lang.core.workspace-test
+          (with-meta 'imported-macro previous-meta)
+          previous)
+        (lib/reset-all! library)
+        (reset! (:settings library) {}))))
+  =>
+  [['imported-macro]
+   {:lang :lua,
+    :id 'imported-macro,
+    :module 'Target,
+    :section :fragment}
+   {:namespace 'source.seed, :line 7}
+   true
+   ['imported-macro]
+   'Target
+   'Source])
+
+^{:refer lang.core.workspace/intern-macros :id macro-custom-merge}
+(fact "caller merge retains existing destination fragments"
+ (let [previous imported-macro previous-meta (meta #'imported-macro)
+       library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book +macro-book+}})})]
+  (try
+   (w/intern-macros :lua ['lang.core.workspace-test 'Source] 'Target library
+                   (fn [old incoming] (merge old incoming)))
+   (set (keys (:fragment (lib/get-module library :lua 'Target))))
+   (finally
+    (intern 'lang.core.workspace-test (with-meta 'imported-macro previous-meta) previous)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => '#{keep imported-macro})
+
+^{:refer lang.core.workspace/intern-macros :id macro-empty}
+(fact "empty imports return an empty map and clear default destination fragments"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book +macro-book+}})})]
+  (try
+   [(w/intern-macros :lua ['lang.core.workspace-test 'Empty] 'Target library)
+    (:fragment (lib/get-module library :lua 'Target))]
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [{} {}])
+
+(ns lang.core.workspace-test
+ (:require [lang.core.workspace :as w] [lang.core.type-shared :as shared]
+           [lang.core.script-control :as control] [lang.base.util :as ut]
+           [lang.core.library :as lib] [lang.core.impl :as impl]
+           [lang.core.library-snapshot :as snap] [lang.base.book :as book]
+           [code.test :refer [fact]]))
+
+^{:refer lang.core.workspace/rt:inner}
+(fact "inner resolves both namespace arities and zero-argument language maps"
+ (let [previous-rt ut/lang-rt previous-rt-meta (meta #'ut/lang-rt)
+       previous-list ut/lang-rt-list previous-list-meta (meta #'ut/lang-rt-list)]
+  (binding [shared/*groups* (atom {})]
+   (try
+    (shared/set-group-instance :test :id {:inner true})
+    (let [wrapped (shared/rt-shared:create {:rt/id :id :rt/client {:type :test}})]
+     (intern 'lang.base.util (with-meta 'lang-rt previous-rt-meta)
+       (fn [namespace language] (if (= :lua language) wrapped {:namespace namespace :lang language})))
+     (intern 'lang.base.util (with-meta 'lang-rt-list previous-list-meta) (fn [] [:lua :python]))
+     [(w/rt:inner :lua) (w/rt:inner :python 'Explicit) (w/rt:inner)])
+    (finally
+     (intern 'lang.base.util (with-meta 'lang-rt previous-rt-meta) previous-rt)
+     (intern 'lang.base.util (with-meta 'lang-rt-list previous-list-meta) previous-list)
+     (reset! shared/*groups* {})))))
+ => [{:inner true} {:namespace 'Explicit :lang :python}
+     {:lua {:inner true} :python {:namespace nil :lang :python}}])
+
+^{:refer lang.core.workspace/rt:restart}
+(fact "shared restart reconstructs the inner instance and retains client count"
+ (let [previous ut/lang-rt previous-meta (meta #'ut/lang-rt) generation (atom 0)]
+  (binding [shared/*groups* (atom {})]
+   (try
+    (let [wrapped (shared/rt-shared {:rt/id :named
+                    :rt/client {:type :test :constructor (fn [config] {:generation (swap! generation inc)})}})]
+     (intern 'lang.base.util (with-meta 'lang-rt previous-meta) (fn [namespace language] wrapped))
+     [(w/rt:inner :lua) (w/rt:restart :lua 'Explicit)
+      (shared/get-group-count :test :named) (w/rt:inner :lua)])
+    (finally
+     (intern 'lang.base.util (with-meta 'lang-rt previous-meta) previous)
+     (reset! shared/*groups* {}) (reset! generation 0)))))
+ => [{:generation 1} {:generation 2} 1 {:generation 2}])
+
+^{:refer lang.core.workspace/rt:restart :id ordinary-restart}
+(fact "ordinary restart delegates language then namespace to script control"
+ (let [previous-rt ut/lang-rt previous-rt-meta (meta #'ut/lang-rt)
+       previous-control control/script-rt-restart previous-control-meta (meta #'control/script-rt-restart)]
+  (try
+   (intern 'lang.base.util (with-meta 'lang-rt previous-rt-meta) (fn [namespace language] {:lang language}))
+   (intern 'lang.core.script-control (with-meta 'script-rt-restart previous-control-meta)
+           (fn [language namespace] [:restart language namespace]))
+   [(w/rt:restart :lua) (w/rt:restart :python 'Explicit)]
+   (finally
+    (intern 'lang.core.script-control (with-meta 'script-rt-restart previous-control-meta) previous-control)
+    (intern 'lang.base.util (with-meta 'lang-rt previous-rt-meta) previous-rt))))
+ => [[:restart :lua nil] [:restart :python 'Explicit]])
+
+(ns lang.core.workspace-test
+ (:require [lang.core.workspace :as w] [lang.base.util :as ut] [lang.core.runtime :as rt]
+           [code.test :refer [fact]]))
+
+^{:refer lang.core.workspace/ptr-print}
+(fact
+  "pointer printing preserves leading blank line, CRLF normalization and trailing-line rules"
+  (mapv
+    (fn [body]
+      (let [previous-value-0 w/ptr-display-str
+            previous-meta-0 (meta #'w/ptr-display-str)]
+        (try
+          (intern
+            'lang.core.workspace
+            (with-meta 'ptr-display-str previous-meta-0)
+            (fn [pointer] body))
+          (with-out-string (w/ptr-print :pointer))
+          (finally
+            (intern
+              'lang.core.workspace
+              (with-meta 'ptr-display-str previous-meta-0)
+              previous-value-0)))))
+    ["" "x" "x\n" "\nx" "a\r\nb" "a\n\n"])
+  =>
+  ["\n 01  \n"
+   "\n 01  x\n"
+   "\n 01  x\n"
+   "\n 01  \n 02  x\n"
+   "\n 01  a\n 02  b\n"
+   "\n 01  a\n"])
+
+^{:refer lang.core.workspace/print-module}
+(fact
+  "module printing preserves original numbered output and authority source location"
+  (let [previous-value-0 w/emit-module
+        previous-meta-0 (meta #'w/emit-module)]
+    (try
+      (intern
+        'lang.core.workspace
+        (with-meta 'emit-module previous-meta-0)
+        (fn [runtime] "a\r\nb\n"))
+      (with-out-string (w/print-module {:lang :lua, :module 'M}))
+      (finally
+        (intern
+          'lang.core.workspace
+          (with-meta 'emit-module previous-meta-0)
+          previous-value-0))))
+  =>
+  "tahto.core.workspace (169:4)\n 01  a\n 02  b \n\n")
+
+^{:refer lang.core.workspace/emit-module}
+(fact
+  "module emission selects default or explicit module and maps all active languages"
+  (let [previous-value-0 ut/lang-rt-list
+        previous-meta-0 (meta #'ut/lang-rt-list)
+        previous-value-1 ut/lang-rt
+        previous-meta-1 (meta #'ut/lang-rt)
+        previous-value-2 rt/default-setup-module-emit
+        previous-meta-2 (meta #'rt/default-setup-module-emit)]
+    (try
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt-list previous-meta-0)
+        (fn [] [:lua :python]))
+      (intern
+        'lang.base.util
+        (with-meta 'lang-rt previous-meta-1)
+        (fn [language] {:lang language, :module 'M}))
+      (intern
+        'lang.core.runtime
+        (with-meta 'default-setup-module-emit previous-meta-2)
+        (fn [runtime module] [(:lang runtime) module]))
+      [(w/emit-module :lua)
+       (w/emit-module {:lang :python, :module 'M} 'N)
+       (w/emit-module)]
+      (finally
+        (intern
+          'lang.core.runtime
+          (with-meta 'default-setup-module-emit previous-meta-2)
+          previous-value-2)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt previous-meta-1)
+          previous-value-1)
+        (intern
+          'lang.base.util
+          (with-meta 'lang-rt-list previous-meta-0)
+          previous-value-0))))
+  =>
+  [[:lua 'M] [:python 'N] {:lua [:lua 'M], :python [:python 'M]}])
+
+(ns lang.core.workspace-test
+ (:require [lang.core.workspace :as w] [lang.core.impl :as impl] [lang.core.library :as lib]
+           [lang.core.library-snapshot :as snap] [lang.base.book :as book]
+           [lang.base.util :as ut] [code.test :refer [fact]]))
+(def +raw-book+
+ (book/book {:lang :xtalk :meta {:fixture true} :grammar {:fixture true}
+  :modules {'X (book/book-module {:lang :xtalk :id 'X
+    :code {'plain {:lang :xtalk :id 'plain :module 'X :section :code :form-input '(defn noop [] (return nil))}
+           'record (book/book-entry {:lang :xtalk :id 'record :module 'X :section :code :form-input '(defn noop [] (return nil))})}})}}))
+
+^{:refer lang.core.workspace/emit-ptr}
+(fact "raw xtalk forms render from maps and native BookEntry records"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:xtalk {:id :xtalk :book +raw-book+}})})]
+  (try
+   (binding [impl/*library* library]
+    [(w/emit-ptr (ut/lang-pointer :xtalk {:module 'X :id 'plain :section :code}) {})
+     (w/emit-ptr (ut/lang-pointer :xtalk {:module 'X :id 'record :section :code}) {})])
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => ["(defn noop [] (return nil))" "(defn noop [] (return nil))"])
+
+^{:refer lang.core.workspace/ptr-display-str}
+(fact "display selects runtime options then renders the actual raw entry"
+ (let [previous ut/lang-rt-default previous-meta (meta #'ut/lang-rt-default)
+       calls (atom [])
+       library (lib/library:create {:snapshot (snap/snapshot {:xtalk {:id :xtalk :book +raw-book+}})})]
+  (try
+   (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta)
+           (fn [pointer] (swap! calls conj (:id pointer)) {}))
+   (binding [impl/*library* library]
+    [(w/ptr-display-str (ut/lang-pointer :xtalk {:module 'X :id 'record :section :code})) @calls])
+   (finally
+    (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta) previous)
+    (lib/reset-all! library) (reset! (:settings library) {}) (reset! calls []))))
+ => ["(defn noop [] (return nil))" ['record]])
+
+(ns lang.core.workspace-test
+ (:require [lang.core.workspace :as w] [lang.base.util :as ut]
+           [lang.base.book :as book] [lang.core.library :as lib]
+           [lang.core.library-snapshot :as snap] [lang.core.impl :as impl]
+           [code.test :refer [fact]]))
+(defstruct WorkspacePointerRuntime [events])
+(extend-type WorkspacePointerRuntime IContextLifeCycle
+ (setup-ptr [rt pointer] (swap! (:events rt) conj [:setup (:id pointer)]) [:setup-result (:id pointer)])
+ (teardown-ptr [rt pointer] (swap! (:events rt) conj [:teardown (:id pointer)]) [:teardown-result (:id pointer)]))
+
+^{:refer lang.core.workspace/ptr-setup}
+(fact "setup selects the default runtime and forwards the native pointer unchanged"
+ (let [previous ut/lang-rt-default previous-meta (meta #'ut/lang-rt-default)
+       events (atom []) runtime (->WorkspacePointerRuntime events)]
+  (try
+   (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta) (fn [pointer] runtime))
+   [(w/ptr-setup (ut/lang-pointer :lua {:module 'D :id 'root})) @events]
+   (finally
+    (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta) previous)
+    (reset! events []))))
+ => [[:setup-result 'root] [[:setup 'root]]])
+
+^{:refer lang.core.workspace/ptr-teardown}
+(fact "teardown preserves the native operation's return value"
+ (let [previous ut/lang-rt-default previous-meta (meta #'ut/lang-rt-default)
+       events (atom []) runtime (->WorkspacePointerRuntime events)]
+  (try
+   (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta) (fn [pointer] runtime))
+   [(w/ptr-teardown (ut/lang-pointer :lua {:module 'D :id 'root})) @events]
+   (finally
+    (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta) previous)
+    (reset! events []))))
+ => [[:teardown-result 'root] [[:teardown 'root]]])
+
+(def +dependency-book+
+ (book/book {:lang :lua :meta {:fixture true} :grammar {:fixture true}
+  :modules {'D (book/book-module {:lang :lua :id 'D
+   :code {'value {:lang :lua :module 'D :id 'value :section :code :op 'defglobal :op-key :defglobal :deps #{}}
+          'leaf {:lang :lua :module 'D :id 'leaf :section :code :op 'defn :op-key :defn :deps '#{D/value}}
+          'root {:lang :lua :module 'D :id 'root :section :code :op 'defn :op-key 'defn :deps '#{D/leaf}}}})}}))
+
+^{:refer lang.core.workspace/ptr-setup-deps}
+(fact "dependency setup is leaf-first and filters on original op field"
+ (let [prepared-book (update-in +dependency-book+ [:modules 'D :code]
+                      (fn [code] (map-vals (fn [entry] (assoc entry :static/code.cache (atom {:lua {:deps (:deps entry)}}))) code)))
+       library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prepared-book}})})
+       previous ut/lang-rt-default previous-meta (meta #'ut/lang-rt-default)
+       events (atom []) runtime (->WorkspacePointerRuntime events)]
+  (try
+   (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta) (fn [pointer] runtime))
+   (binding [impl/*library* library]
+    [(w/ptr-setup-deps (ut/lang-pointer :lua {:module 'D :id 'root}))
+     @events])
+   (finally
+    (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta) previous)
+    (doseq [entry (vals (get-in prepared-book [:modules 'D :code]))] (reset! (:static/code.cache entry) {}))
+    (lib/reset-all! library) (reset! (:settings library) {}) (reset! events []))))
+ => [nil [[:setup 'leaf] [:setup 'root]]])
+
+^{:refer lang.core.workspace/ptr-teardown-deps}
+(fact "teardown retains original op-key symbol filter and does not include keyword op-key"
+ (let [prepared-book (update-in +dependency-book+ [:modules 'D :code]
+                      (fn [code] (map-vals (fn [entry] (assoc entry :static/code.cache (atom {:lua {:deps (:deps entry)}}))) code)))
+       library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prepared-book}})})
+       previous ut/lang-rt-default previous-meta (meta #'ut/lang-rt-default)
+       events (atom []) runtime (->WorkspacePointerRuntime events)]
+  (try
+   (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta) (fn [pointer] runtime))
+   (binding [impl/*library* library]
+    [(w/ptr-teardown-deps (ut/lang-pointer :lua {:module 'D :id 'root}))
+     @events])
+   (finally
+    (intern 'lang.base.util (with-meta 'lang-rt-default previous-meta) previous)
+    (doseq [entry (vals (get-in prepared-book [:modules 'D :code]))] (reset! (:static/code.cache entry) {}))
+    (lib/reset-all! library) (reset! (:settings library) {}) (reset! events []))))
+ => [nil [[:teardown 'root]]])
+
+
+^{:refer lang.core.workspace/intern-macros :id macro-absent-source}
+(fact "absent source modules produce an empty import map"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book +macro-book+}})})]
+  (try
+   [(w/intern-macros :lua ['lang.core.workspace-test 'Absent] 'Target library)
+    (:fragment (lib/get-module library :lua 'Target))]
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [{} {}])
+
+
+^{:refer lang.core.workspace/ptr-clip}
+(fact "clipboard rendering failures propagate before invoking the OS boundary"
+ (let [previous w/ptr-display-str previous-meta (meta #'w/ptr-display-str)]
+  (try
+   (intern 'lang.core.workspace (with-meta 'ptr-display-str previous-meta)
+           (fn [pointer] (throw (ex :migration.clip/render-failed {:pointer pointer}))))
+   (try (w/ptr-clip :fixture-pointer) :unexpected
+        (catch error (select-keys (ex-data error) [:ex/code :pointer])))
+   (finally
+    (intern 'lang.core.workspace (with-meta 'ptr-display-str previous-meta) previous))))
+ => {:ex/code :migration.clip/render-failed :pointer :fixture-pointer})

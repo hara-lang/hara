@@ -1,0 +1,746 @@
+(ns lang.runtime.basic.server-basic-test
+  (:require [lang.runtime.basic.server-basic :refer :all]
+            [code.test :refer [fact satisfies]]))
+
+^{:refer lang.runtime.basic.server-basic/get-port, :added "4.0", :id :historical/get-port}
+(fact
+  "gets the port given lang and id"
+  (let [historical-results (atom [])]
+    (do
+      (let [clients (atom []) unregistered (atom [])]
+        (binding [lang.runtime.basic.server-basic/*env* (atom {})]
+          (try
+            (do
+              (start-server "test-port" :lua nil)
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn [] (get-port {:lang :lua, :id "test-port"}))
+                    (satisfies long?))))
+              (stop-server "test-port" :lua))
+            (finally
+              (do
+                (doseq [client (deref clients)] (Socket/close client))
+                (doseq [server (deref unregistered)]
+                  ((deref (:stop server))))
+                (doseq [[lang entries] (seq
+                                         (deref
+                                           lang.runtime.basic.server-basic/*env*))]
+                  (doseq [id (keys entries)]
+                    (loop []
+                      (if (stop-server id lang) (recur)))))))))))
+    (deref historical-results))
+  =>
+  [true])
+
+^{:refer lang.runtime.basic.server-basic/wait-ready, :added "4.0", :id :historical/wait-ready}
+(fact
+  "wait until server is ready"
+  (let [historical-results (atom [])]
+    (do
+      (let [clients (atom []) unregistered (atom [])]
+        (binding [lang.runtime.basic.server-basic/*env* (atom {})]
+          (try
+            (do
+              (start-server "test-wait" :lua nil)
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn []
+                      (get-in
+                        (deref lang.runtime.basic.server-basic/*env*)
+                        [:lua "test-wait"]))
+                    (satisfies
+                      (fn [value]
+                        (or
+                          (map? value)
+                          (and
+                            (satisfies? IAssoc value)
+                            (= :server/basic (:type value)))))))))
+              (swap!
+                clients
+                conj
+                (Socket/connect
+                  "127.0.0.1"
+                  (get-port {:lang :lua, :id "test-wait"})
+                  {}
+                  (fn [error connection] nil)))
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn [] (wait-ready :lua "test-wait"))
+                    true)))
+              (stop-server "test-wait" :lua))
+            (finally
+              (do
+                (doseq [client (deref clients)] (Socket/close client))
+                (doseq [server (deref unregistered)]
+                  ((deref (:stop server))))
+                (doseq [[lang entries] (seq
+                                         (deref
+                                           lang.runtime.basic.server-basic/*env*))]
+                  (doseq [id (keys entries)]
+                    (loop []
+                      (if (stop-server id lang) (recur)))))))))))
+    (deref historical-results))
+  =>
+  [true true])
+
+^{:refer lang.runtime.basic.server-basic/run-basic-server, :added "4.0", :id :historical/run-basic-server}
+(fact
+  "runs a basic socket server"
+  (let [historical-results (atom [])]
+    (do
+      (let [state (atom nil)
+            ready (fn [value] nil)
+            server (run-basic-server {:port 0} state ready)]
+        (try
+          (do
+            (swap!
+              historical-results
+              conj
+              (Result/data
+                (code.test.base.process/check
+                  (fn [] (:instance server))
+                  (satisfies
+                    (fn [value]
+                      (and
+                        (long? value)
+                        (< 0 (:port (Socket/endpoint value)))))))))
+            ((:stop server)))
+          (finally ((:stop server))))))
+    (deref historical-results))
+  =>
+  [true])
+
+^{:refer lang.runtime.basic.server-basic/get-encoding, :added "4.0", :id :historical/get-encoding}
+(fact
+  "gets the encoding to use"
+  (let [historical-results (atom [])]
+    (do
+      (swap!
+        historical-results
+        conj
+        (Result/data
+          (code.test.base.process/check
+            (fn [] (get-encoding :json))
+            (satisfies map?)))))
+    (deref historical-results))
+  =>
+  [true])
+
+^{:refer lang.runtime.basic.server-basic/get-relay, :added "4.0", :id :historical/get-relay}
+(fact
+  "gets the relay associated with the server"
+  (let [historical-results (atom [])]
+    (do
+      (let [clients (atom []) unregistered (atom [])]
+        (binding [lang.runtime.basic.server-basic/*env* (atom {})]
+          (try
+            (do
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn [] (get-relay (start-server "test" :lua nil)))
+                    nil)))
+              (stop-server "test" :lua))
+            (finally
+              (do
+                (doseq [client (deref clients)] (Socket/close client))
+                (doseq [server (deref unregistered)]
+                  ((deref (:stop server))))
+                (doseq [[lang entries] (seq
+                                         (deref
+                                           lang.runtime.basic.server-basic/*env*))]
+                  (doseq [id (keys entries)]
+                    (loop []
+                      (if (stop-server id lang) (recur)))))))))))
+    (deref historical-results))
+  =>
+  [true])
+
+^{:refer lang.runtime.basic.server-basic/ping-relay, :added "4.0", :id :historical/ping-relay}
+(fact
+  "checks if the relay is still valid"
+  (let [historical-results (atom [])]
+    (do
+      (let [clients (atom []) unregistered (atom [])]
+        (binding [lang.runtime.basic.server-basic/*env* (atom {})]
+          (try
+            (do
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn [] (ping-relay (start-server "test" :lua nil)))
+                    false)))
+              (stop-server "test" :lua))
+            (finally
+              (do
+                (doseq [client (deref clients)] (Socket/close client))
+                (doseq [server (deref unregistered)]
+                  ((deref (:stop server))))
+                (doseq [[lang entries] (seq
+                                         (deref
+                                           lang.runtime.basic.server-basic/*env*))]
+                  (doseq [id (keys entries)]
+                    (loop []
+                      (if (stop-server id lang) (recur)))))))))))
+    (deref historical-results))
+  =>
+  [true])
+
+^{:refer lang.runtime.basic.server-basic/raw-eval-basic-server, :added "4.0", :id :historical/raw-eval-basic-server}
+(fact
+  "performs raw eval"
+  (let [historical-results (atom [])]
+    (do
+      (let [clients (atom []) unregistered (atom [])]
+        (binding [lang.runtime.basic.server-basic/*env* (atom {})]
+          (try
+            (do
+              (start-server "test-eval" :lua nil)
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn []
+                      (raw-eval-basic-server
+                        (get-server "test-eval" :lua)
+                        "1 + 1"))
+                    {:status "not-connected"})))
+              (stop-server "test-eval" :lua))
+            (finally
+              (do
+                (doseq [client (deref clients)] (Socket/close client))
+                (doseq [server (deref unregistered)]
+                  ((deref (:stop server))))
+                (doseq [[lang entries] (seq
+                                         (deref
+                                           lang.runtime.basic.server-basic/*env*))]
+                  (doseq [id (keys entries)]
+                    (loop []
+                      (if (stop-server id lang) (recur)))))))))))
+    (deref historical-results))
+  =>
+  [true])
+
+^{:refer lang.runtime.basic.server-basic/create-basic-server, :added "4.0", :id :historical/create-basic-server}
+(fact
+  "creates a basic server"
+  (let [historical-results (atom [])]
+    (do
+      (let [clients (atom []) unregistered (atom [])]
+        (binding [lang.runtime.basic.server-basic/*env* (atom {})]
+          (try
+            (do
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn []
+                      (let [created (create-basic-server
+                                      "test-create"
+                                      :lua
+                                      nil
+                                      :json)]
+                        (swap! unregistered conj created)
+                        created))
+                    (satisfies
+                      (fn [value]
+                        (or
+                          (map? value)
+                          (and
+                            (satisfies? IAssoc value)
+                            (= :server/basic (:type value)))))))))
+              (stop-server "test-create" :lua))
+            (finally
+              (do
+                (doseq [client (deref clients)] (Socket/close client))
+                (doseq [server (deref unregistered)]
+                  ((deref (:stop server))))
+                (doseq [[lang entries] (seq
+                                         (deref
+                                           lang.runtime.basic.server-basic/*env*))]
+                  (doseq [id (keys entries)]
+                    (loop []
+                      (if (stop-server id lang) (recur)))))))))))
+    (deref historical-results))
+  =>
+  [true])
+
+^{:refer lang.runtime.basic.server-basic/start-server, :added "4.0", :id :historical/start-server}
+(fact
+  "start server function"
+  (let [historical-results (atom [])]
+    (do
+      (let [clients (atom []) unregistered (atom [])]
+        (binding [lang.runtime.basic.server-basic/*env* (atom {})]
+          (try
+            (do
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn [] (start-server "test-start" :lua nil))
+                    (satisfies
+                      (fn [value]
+                        (or
+                          (map? value)
+                          (and
+                            (satisfies? IAssoc value)
+                            (= :server/basic (:type value)))))))))
+              (stop-server "test-start" :lua))
+            (finally
+              (do
+                (doseq [client (deref clients)] (Socket/close client))
+                (doseq [server (deref unregistered)]
+                  ((deref (:stop server))))
+                (doseq [[lang entries] (seq
+                                         (deref
+                                           lang.runtime.basic.server-basic/*env*))]
+                  (doseq [id (keys entries)]
+                    (loop []
+                      (if (stop-server id lang) (recur)))))))))))
+    (deref historical-results))
+  =>
+  [true])
+
+^{:refer lang.runtime.basic.server-basic/get-server, :added "4.0", :id :historical/get-server}
+(fact
+  "gets a server given id"
+  (let [historical-results (atom [])]
+    (do
+      (let [clients (atom []) unregistered (atom [])]
+        (binding [lang.runtime.basic.server-basic/*env* (atom {})]
+          (try
+            (do
+              (start-server "test-get" :lua nil)
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn [] (get-server "test-get" :lua))
+                    (satisfies
+                      (fn [value]
+                        (or
+                          (map? value)
+                          (and
+                            (satisfies? IAssoc value)
+                            (= :server/basic (:type value)))))))))
+              (stop-server "test-get" :lua))
+            (finally
+              (do
+                (doseq [client (deref clients)] (Socket/close client))
+                (doseq [server (deref unregistered)]
+                  ((deref (:stop server))))
+                (doseq [[lang entries] (seq
+                                         (deref
+                                           lang.runtime.basic.server-basic/*env*))]
+                  (doseq [id (keys entries)]
+                    (loop []
+                      (if (stop-server id lang) (recur)))))))))))
+    (deref historical-results))
+  =>
+  [true])
+
+^{:refer lang.runtime.basic.server-basic/stop-server, :added "4.0", :id :historical/stop-server}
+(fact
+  "stops a server"
+  (let [historical-results (atom [])]
+    (do
+      (let [clients (atom []) unregistered (atom [])]
+        (binding [lang.runtime.basic.server-basic/*env* (atom {})]
+          (try
+            (do
+              (start-server "test-stop" :lua nil)
+              (swap!
+                historical-results
+                conj
+                (Result/data
+                  (code.test.base.process/check
+                    (fn [] (stop-server "test-stop" :lua))
+                    (satisfies
+                      (fn [value]
+                        (or
+                          (map? value)
+                          (and
+                            (satisfies? IAssoc value)
+                            (= :server/basic (:type value))))))))))
+            (finally
+              (do
+                (doseq [client (deref clients)] (Socket/close client))
+                (doseq [server (deref unregistered)]
+                  ((deref (:stop server))))
+                (doseq [[lang entries] (seq
+                                         (deref
+                                           lang.runtime.basic.server-basic/*env*))]
+                  (doseq [id (keys entries)]
+                    (loop []
+                      (if (stop-server id lang) (recur)))))))))))
+    (deref historical-results))
+  =>
+  [true])
+
+(ns lang.runtime.basic.server-basic-test
+ (:require [lang.runtime.basic.server-basic :as server]
+           [std.stream.relay :as relay]
+           [code.test :refer [fact]]))
+^{:refer lang.runtime.basic.server-basic/get-port}
+(fact
+  "native contract: gets the port given lang and id"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "test-port" :lua nil)]
+      (try
+        [(long? (server/get-port {:lang :lua, :id "test-port"}))
+         (=
+           (:port rt)
+           (server/get-port :lua "test-port" server/*env*))]
+        (finally (server/stop-server "test-port" :lua)))))
+  =>
+  [true true])
+^{:refer lang.runtime.basic.server-basic/wait-ready}
+(fact
+  "native contract: wait until server is ready"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "test-wait" :lua nil)
+          client (Socket/connect
+                   "127.0.0.1"
+                   (:port rt)
+                   {}
+                   (fn [_ _] nil))]
+      (try
+        [(satisfies?
+           IAssoc
+           (get-in (deref server/*env*) [:lua "test-wait"]))
+         (server/wait-ready :lua "test-wait")
+         (server/wait-ready {:lang :lua, :id "test-wait"})]
+        (finally
+          (Socket/close client)
+          (server/stop-server "test-wait" :lua)))))
+  =>
+  [true true true])
+^{:refer lang.runtime.basic.server-basic/run-basic-server}
+(fact
+  "native contract: runs a basic socket server and tears down idempotently"
+  (let [state (atom nil)
+        server (server/run-basic-server {:port 0} state (fn [_] nil))]
+    (try
+      [(< 0 (:port (Socket/endpoint (:instance server))))
+       ((:stop server))
+       ((:stop server))
+       (deref state)]
+      (finally ((:stop server)))))
+  =>
+  [true nil nil nil])
+^{:refer lang.runtime.basic.server-basic/get-encoding}
+(fact
+  "native contract: gets the encoding to use"
+  (map? (server/get-encoding :json))
+  =>
+  true
+  ((:write (server/get-encoding nil)) "a\nb")
+  =>
+  "\"a\\nb\""
+  (let [encoder (server/get-encoding :edn)]
+    ((:read encoder) ((:write encoder) {:a [1 nil false]})))
+  =>
+  {:a [1 nil false]}
+  ((:write (server/get-encoding {:read identity})) "raw")
+  =>
+  "raw")
+^{:refer lang.runtime.basic.server-basic/get-relay}
+(fact
+  "native contract: gets the relay associated with the server"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "test" :lua nil)]
+      (try
+        (server/get-relay rt)
+        (finally (server/stop-server "test" :lua)))))
+  =>
+  nil)
+^{:refer lang.runtime.basic.server-basic/ping-relay}
+(fact
+  "native contract: checks if the relay is still valid"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "test" :lua nil)]
+      (try
+        (server/ping-relay rt)
+        (finally (server/stop-server "test" :lua)))))
+  =>
+  false)
+^{:refer lang.runtime.basic.server-basic/raw-eval-basic-server}
+(fact
+  "native contract: performs raw eval"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "test-eval" :lua nil)]
+      (try
+        (server/raw-eval-basic-server rt "1 + 1")
+        (finally (server/stop-server "test-eval" :lua)))))
+  =>
+  {:status "not-connected"})
+^{:refer lang.runtime.basic.server-basic/create-basic-server}
+(fact
+  "native contract: creates a basic server"
+  (let [rt (server/create-basic-server "test-create" :lua nil :json)]
+    (try
+      [(satisfies? IAssoc rt)
+       (:type rt)
+       (:id rt)
+       (:lang rt)
+       (deref (:count rt))
+       (deref (:return rt))
+       (deref (:state rt))]
+      (finally ((deref (:stop rt))))))
+  =>
+  [true :server/basic "test-create" :lua 0 {} nil])
+^{:refer lang.runtime.basic.server-basic/start-server}
+(fact
+  "native contract: start server function reuses the original record and increments references"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "test-start" :lua nil)]
+      (try
+        (let [other (server/start-server "test-start" :lua 9999)]
+          [(satisfies? IAssoc rt)
+           (= (:state rt) (:state other))
+           (deref (:count rt))
+           (= (:port rt) (:port other))])
+        (finally
+          (server/stop-server "test-start" :lua)
+          (server/stop-server "test-start" :lua)))))
+  =>
+  [true true 2 true])
+^{:refer lang.runtime.basic.server-basic/get-server}
+(fact
+  "native contract: gets a server given id"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "test-get" :lua nil)]
+      (try
+        [(satisfies? IAssoc (server/get-server "test-get" :lua))
+         (= (:state rt) (:state (server/get-server "test-get" :lua)))
+         (server/get-server "missing" :lua)]
+        (finally (server/stop-server "test-get" :lua)))))
+  =>
+  [true true nil])
+^{:refer lang.runtime.basic.server-basic/stop-server}
+(fact
+  "native contract: stops a server only after the final reference"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "test-stop" :lua nil)]
+      (try
+        (server/start-server "test-stop" :lua nil)
+        (let [first-stop (server/stop-server "test-stop" :lua)
+              retained [(deref (:count rt))
+                        (satisfies?
+                          IAssoc
+                          (server/get-server "test-stop" :lua))]
+              last-stop (server/stop-server "test-stop" :lua)]
+          [(satisfies? IAssoc first-stop)
+           retained
+           (satisfies? IAssoc last-stop)
+           (deref (:count rt))
+           (server/stop-server "test-stop" :lua)
+           (deref server/*env*)
+           (deref (:state rt))])
+        (finally
+          (loop []
+            (if (server/stop-server "test-stop" :lua) (recur)))))))
+  =>
+  [true [1 true] true 0 nil {:lua {}} nil])
+^{:refer lang.runtime.basic.server-basic/rt-server-string-props}
+(fact
+  "native contract: server display properties track reference count"
+  (server/rt-server-string-props
+    {:type :server/basic,
+     :lang :lua,
+     :id "s",
+     :port 123,
+     :count (atom 2)})
+  =>
+  [:server/basic :lua "s" 123 2])
+^{:refer lang.runtime.basic.server-basic/rt-server-string}
+(fact
+  "native contract: server display retains original prefix"
+  (server/rt-server-string
+    {:type :server/basic,
+     :lang :lua,
+     :id "s",
+     :port 123,
+     :count (atom 2)})
+  =>
+  "#rt.server[:server/basic :lua \"s\" 123 2]")
+^{:refer lang.runtime.basic.server-basic/run-basic-server, :id connection-replacement}
+(fact
+  "native contract: a second connection replaces the old relay and listener events remain drained"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "replace" :lua nil)
+          first-client (Socket/connect
+                         "127.0.0.1"
+                         (:port rt)
+                         {}
+                         (fn [_ _] nil))
+          second-client (atom nil)]
+      (try
+        (server/wait-ready :lua "replace")
+        (let [old (server/get-relay rt)]
+          (reset!
+            second-client
+            (Socket/connect "127.0.0.1" (:port rt) {} (fn [_ _] nil)))
+          (IDerefTimeout/deref-timeout
+            (deref (get-in rt [:server :thread]))
+            1000
+            nil)
+          [(relay/closed? old)
+           (not= old (server/get-relay rt))
+           (server/ping-relay rt)])
+        (finally
+          (Socket/close first-client)
+          (if (deref second-client)
+            (Socket/close (deref second-client)))
+          (server/stop-server "replace" :lua)))))
+  =>
+  [true true true])
+
+(ns lang.runtime.basic.server-basic-test
+ (:require [lang.runtime.basic.server-basic :as server] [code.test :refer [fact]]))
+^{:refer lang.runtime.basic.server-basic/raw-eval-basic-server, :id original-json-line-protocol}
+(fact
+  "native contract: original JSON line protocol sends the source string, not a request envelope"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "wire" :python nil)
+          child (Process/spawn
+                  ["python3"
+                   "-c"
+                   "import socket,sys,json; s=socket.create_connection(('127.0.0.1',int(sys.argv[1]))); f=s.makefile('rb'); line=f.readline(); s.sendall((json.dumps({'received':json.loads(line)})+'\\n').encode()); s.close()"
+                   (str (:port rt))])]
+      (try
+        (server/wait-ready :python "wire")
+        (Json/read
+          (server/raw-eval-basic-server rt "line\n\"q\"" 1000))
+        (finally
+          (server/stop-server "wire" :python)
+          (Process/kill child)))))
+  =>
+  {"received" "line\n\"q\""})
+^{:refer lang.runtime.basic.server-basic/raw-eval-basic-server, :id connected-timeout}
+(fact
+  "native contract: a connected peer that sends no response returns original timeout status"
+  (binding [server/*env* (atom {})]
+    (let [rt (server/start-server "timeout" :lua nil)
+          client (Socket/connect
+                   "127.0.0.1"
+                   (:port rt)
+                   {}
+                   (fn [_ _] nil))]
+      (try
+        (server/wait-ready :lua "timeout")
+        (server/raw-eval-basic-server rt "1+1" 10)
+        (finally
+          (Socket/close client)
+          (server/stop-server "timeout" :lua)))))
+  =>
+  {:status "timeout", :connected true})
+(ns lang.runtime.basic.server-basic-test
+ (:require [lang.runtime.basic.server-basic :as server] [code.test :refer [fact]]))
+^{:refer lang.runtime.basic.server-basic/raw-eval-basic-server :id peer-disconnect}
+(fact "a peer closed before evaluation produces original disconnected status and clears state"
+ (binding [server/*env* (atom {})]
+  (let [rt (server/start-server "disconnect" :lua nil)
+        client (atom (Socket/connect "127.0.0.1" (:port rt) {} (fn [error connection] nil)))]
+   (try
+    (server/wait-ready :lua "disconnect")
+    (Socket/close (deref client))
+    (reset! client nil)
+    (IDerefTimeout/deref-timeout (deref (get-in rt [:server :thread])) 1000 nil)
+    [(server/raw-eval-basic-server rt "1+1" 10) (deref (:state rt))]
+    (finally
+     (if (deref client) (Socket/close (deref client)))
+     (server/stop-server "disconnect" :lua)))))
+ => [{:status "disconnected"} nil])
+^{:refer lang.runtime.basic.server-basic/raw-eval-basic-server :id decoder-error}
+(fact "a custom decoder failure propagates without disconnecting the server"
+ (binding [server/*env* (atom {})]
+  (let [rt (server/start-server "decoder" :lua nil nil
+             {:write identity :read (fn [body] (throw (ex :decoder/failure {:body body})))})
+        client (Socket/connect "127.0.0.1" (:port rt) {} (fn [error connection] nil))]
+   (try
+    (server/wait-ready :lua "decoder")
+    (Socket/send client (str/encode-utf8 "payload\n"))
+    [(try (server/raw-eval-basic-server rt "source" 100)
+          (catch error (ex-data error)))
+     (server/ping-relay rt)]
+    (finally (Socket/close client) (server/stop-server "decoder" :lua)))))
+ => [{:ex/code :decoder/failure :body "payload"} true])
+(ns lang.runtime.basic.server-basic-test
+ (:require [lang.runtime.basic.server-basic :as server] [code.test :refer [fact]]))
+^{:refer lang.runtime.basic.server-basic/wait-ready :id timeout-then-connect}
+(fact "readiness times out after five seconds without cancelling a later connection"
+ (binding [server/*env* (atom {})]
+  (let [rt (server/start-server "late" :lua nil)
+        client (atom nil)]
+   (try
+    (let [started (time-ms)
+          timed-out (server/wait-ready :lua "late")
+          elapsed (- (time-ms) started)]
+     (reset! client (Socket/connect "127.0.0.1" (:port rt) {} (fn [error connection] nil)))
+     [timed-out (>= elapsed 4900) (< elapsed 7500)
+      (server/wait-ready :lua "late")])
+    (finally (if (deref client) (Socket/close (deref client))) (server/stop-server "late" :lua)))))
+ => [{:status "timeout"} true true true])
+(ns lang.runtime.basic.server-basic-test
+ (:require [lang.runtime.basic.server-basic :as server] [code.test :refer [fact]]))
+^{:refer lang.runtime.basic.server-basic/+encode+}
+(fact "the original encoding table preserves raw values, EDN round trips, and JSON response text"
+ [(set (keys server/+encode+))
+  ((:write (:none server/+encode+)) [:raw nil false])
+  ((:read (:none server/+encode+)) [:raw nil false])
+  (let [codec (:edn server/+encode+)]
+    ((:read codec) ((:write codec) {:a [1 nil false]})))
+  ((:write (:json server/+encode+)) "a\nb")
+  ((:read (:json server/+encode+)) "{\"answer\":42}")]
+ => [#{:none :edn :json} [:raw nil false] [:raw nil false] {:a [1 nil false]}
+     "\"a\\nb\"" "{\"answer\":42}"])
+^{:refer lang.runtime.basic.server-basic/get-encoding, :id invalid-inputs}
+(fact
+  "unknown encoding keywords and invalid input values retain their original input data"
+  [(try (server/get-encoding :missing) (catch error (ex-data error)))
+   (try (server/get-encoding 7) (catch error (ex-data error)))]
+  =>
+  [{:ex/code :hara/generic,
+    :ex/class :ex.class/internal,
+    :ex/message "Encoding not available",
+    :input :missing}
+   {:ex/code :hara/generic,
+    :ex/class :ex.class/internal,
+    :ex/message "Invalid input",
+    :input 7}])
+(ns lang.runtime.basic.server-basic-test
+ (:require [lang.runtime.basic.server-basic :as server] [code.test :refer [fact]]))
+^{:refer lang.runtime.basic.server-basic/get-relay :id observe-connection}
+(fact "public relay observation admits a connected peer without requiring wait-ready first"
+ (binding [server/*env* (atom {})]
+  (let [rt (server/start-server "observe" :lua nil)
+        client (Socket/connect "127.0.0.1" (:port rt) {} (fn [error connection] nil))]
+   (try
+    (loop [remaining 50]
+      (if (server/get-relay rt)
+        (server/ping-relay rt)
+        (if (= remaining 0) false
+          (do
+            (IDerefTimeout/deref-timeout (Promise/delay 10 (fn [] nil)) 100 nil)
+            (recur (dec remaining))))))
+    (finally (Socket/close client) (server/stop-server "observe" :lua)))))
+ => true)

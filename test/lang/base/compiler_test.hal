@@ -1,11 +1,9 @@
 (ns lang.base.compiler-test
   (:require [lang.base.compiler :as compiler]
-            [lang.base.grammar-api :as grammar]
+            [lang.base.grammar :as grammar]
             [lang.base.grammar-xtalk :as xtalk]
             [lang.base.preprocess-assign :as assign]
-            [lang.base.registry :as registry]
             [lang.base.grammar-spec :as spec]
-            [lang.model.v1.spec-xtalk :as spec-xtalk]
             [lang.protocol.compiler :as protocol]))
 
 (defn rewrite-canonical
@@ -32,35 +30,22 @@
   (lint-form [linter canonical inference selected context]
     [{:level :warning :code :demo/lint :form canonical :inference inference}]))
 
-(def template
-  (grammar/emit-template
-   {:template/id :fixture
-    :template/version 1
-    :template/value {:token {:nil "null"}}}))
-
-(def grammar-source
-  (grammar/definition
-   {:grammar/id :fixture
-    :grammar/version 1
-    :grammar/release "v1"
-    :grammar/emit-template {:template/id :fixture :template/version 1}
-    :operators {:define {:add {:op :add :symbol #{'+} :type :operator
-                               :emit :infix :raw "+"}}}
-    :grammar/rewrite
-    {:canonical {:append ['lang.base.compiler-test/rewrite-canonical]}
-     :target {:append ['lang.base.compiler-test/rewrite-target]}
-     :staging {:append ['lang.base.compiler-test/rewrite-staging]}}}))
-
-(def catalog
-  (registry/install
-   (registry/install (registry/registry) template)
-   grammar-source))
+(def +fixture-grammar+
+  (grammar/grammar
+   :fixture
+   (grammar/to-reserved
+    {:add {:op :add :symbol #{'+} :type :operator
+           :emit :infix :raw "+"}})
+   {:token {:nil "null"}
+    :rewrite {:canonical []}}))
 
 (def selected
-  (assoc spec-xtalk/+selection+
-         :rewrite {:canonical [rewrite-canonical]
-                   :target [rewrite-target]
-                   :staging [rewrite-staging]}))
+  {:grammar +fixture-grammar+
+   :rewrite {:canonical [rewrite-canonical]
+             :target [rewrite-target]
+             :staging [rewrite-staging]}
+   :coordinate {:grammar/id :fixture :grammar/version 1}
+   :provenance []})
 
 (defn entry-format
   [form]
@@ -114,7 +99,7 @@
  [{:name "accepts both selections and concrete grammar maps"
    :test (fn [] [(get (compiler/built-grammar selected) :tag)
                  (get (compiler/built-grammar {:tag :direct}) :tag)])
-   :expected [:xtalk :direct]}])
+   :expected [:fixture :direct]}])
 
 ^{:refer lang.base.compiler/entry-form}
 (Test/check

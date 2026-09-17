@@ -1,19 +1,19 @@
 (ns lang.runtime.basic.impl.process-js-test
   (:require [lang.core.registry :as registry]
-            [lang.core.runtime :as runtime]
+            [std.lib.context.resource :as resource]
             [lang.runtime.basic.impl.process-js :as subject]
             [lang.runtime.basic.type-common :as common]))
 
 ^{:refer lang.runtime.basic.impl.process-js/+program-init+}
 (Test/check
  [{:name "declares the Node.js executable and context flags"
-   :test (fn [] [(get-in subject/+program-init+ [:default :oneshot])
-                 (get-in subject/+program-init+ [:default :verify])
-                 (get-in subject/+program-init+ [:default :basic])
-                 (get-in subject/+program-init+ [:env :nodejs :exec])
-                 (get-in subject/+program-init+ [:env :nodejs :extension])
-                 (get-in subject/+program-init+ [:env :nodejs :flags :oneshot])
-                 (get-in subject/+program-init+ [:env :nodejs :flags :verify])
+   :test (fn [] [(get-in (common/get-program-options :js) [:default :oneshot])
+                 (get-in (common/get-program-options :js) [:default :verify])
+                 (get-in (common/get-program-options :js) [:default :basic])
+                 (get-in (common/get-program-options :js) [:env :nodejs :exec])
+                 (get-in (common/get-program-options :js) [:env :nodejs :extension])
+                 (get-in (common/get-program-options :js) [:env :nodejs :flags :oneshot])
+                 (get-in (common/get-program-options :js) [:env :nodejs :flags :verify])
                  (get-in (common/get-program-options :js) [:default :basic])])
    :expected [:nodejs :nodejs :nodejs "node" "js" ["-e"]
               ["--input-type=module" "--check" "-"] :nodejs]}])
@@ -21,14 +21,14 @@
 ^{:refer lang.runtime.basic.impl.process-js/+js-oneshot-config+}
 (Test/check
  [{:name "configures JavaScript one-shot evaluation for full JSON output"
-   :test (fn [] (select-keys subject/+js-oneshot-config+
+   :test (fn [] (select-keys (common/get-context-options :js :oneshot :default)
                               [:main :emit :json]))
    :expected {:main {} :emit {} :json :full}}])
 
 ^{:refer lang.runtime.basic.impl.process-js/+js-verify-config+}
 (Test/check
  [{:name "configures JavaScript verification over stdin"
-   :test (fn [] (select-keys subject/+js-verify-config+
+   :test (fn [] (select-keys (common/get-context-options :js :verify :default)
                               [:main :emit :json :transport]))
    :expected {:main {} :emit {} :json false
               :transport :process-stdin}}])
@@ -36,7 +36,7 @@
 ^{:refer lang.runtime.basic.impl.process-js/+js-basic-config+}
 (Test/check
  [{:name "configures persistent JavaScript evaluation over a socket"
-   :test (fn [] (let [config subject/+js-basic-config+]
+   :test (fn [] (let [config (common/get-context-options :js :basic :default)]
                   [(select-keys config [:main :emit :json :timeout :transport])
                    (:profile config)
                    (boolean (:bootstrap config))]))
@@ -49,34 +49,31 @@
 ^{:refer lang.runtime.basic.impl.process-js/+js-oneshot+}
 (Test/check
  [{:name "installs the JavaScript one-shot runtime type"
-   :test (fn [] [(select-keys subject/+js-oneshot+
-                              [:lang :runtime :type])
-                 (set (keys (:instance subject/+js-oneshot+)))
-                 (registry/registry-runtime-ns :js :oneshot)])
-   :expected [{:lang :js :runtime :oneshot :type :lang/rt.oneshot}
+   :test (fn [] [(:context subject/+js-oneshot+)
+                 (set (keys (select-keys (:instance (resource/spec-get :lang/rt.oneshot)) [:create :raw-eval])))
+                 (get (deref registry/+registry+) [:js :oneshot])])
+   :expected [{:key :oneshot :resource :lang/rt.oneshot :config {:runtime :oneshot}}
               #{:create :raw-eval}
               'lang.runtime.basic.impl.process-js]}])
 
 ^{:refer lang.runtime.basic.impl.process-js/+js-verify+}
 (Test/check
  [{:name "installs the JavaScript verification runtime type"
-   :test (fn [] [(select-keys subject/+js-verify+
-                              [:lang :runtime :type])
-                 (set (keys (:instance subject/+js-verify+)))
-                 (:type (runtime/runtime-spec :js :verify))])
-   :expected [{:lang :js :runtime :verify :type :lang/rt.verify}
+   :test (fn [] [(:context subject/+js-verify+)
+                 (set (keys (select-keys (:instance (resource/spec-get :lang/rt.verify)) [:create :raw-eval])))
+                 (:type (resource/spec-get :lang/rt.verify))])
+   :expected [{:key :verify :resource :lang/rt.verify :config {:runtime :verify}}
               #{:create :raw-eval}
               :lang/rt.verify]}])
 
 ^{:refer lang.runtime.basic.impl.process-js/+js-basic+}
 (Test/check
  [{:name "installs the JavaScript persistent basic runtime type"
-   :test (fn [] [(select-keys subject/+js-basic+
-                              [:lang :runtime :type])
-                 (get-in subject/+js-basic+ [:config :layout])
-                 (set (keys (:instance subject/+js-basic+)))
-                 (:type (runtime/runtime-spec :js :basic))])
-   :expected [{:lang :js :runtime :basic :type :lang/rt.basic}
+   :test (fn [] [(:context subject/+js-basic+)
+                 (get-in subject/+js-basic+ [:context :config :layout])
+                 (set (keys (select-keys (:instance (resource/spec-get :lang/rt.basic)) [:create :start :stop :raw-eval])))
+                 (:type (resource/spec-get :lang/rt.basic))])
+   :expected [{:key :basic :resource :lang/rt.basic :config {:runtime :basic :layout :full}}
               :full
               #{:create :start :stop :raw-eval}
               :lang/rt.basic]}])

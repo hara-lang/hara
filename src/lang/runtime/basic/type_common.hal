@@ -1,131 +1,271 @@
 (ns lang.runtime.basic.type-common
   (:config {:role :internal})
-  (:require [lang.core.runtime :as runtime]
-            [lang.core.registry :as registry]))
+  (:require [lang.core.registry :as registry]))
 
-(def *context-options* (atom {}))
-(def *program-options* (atom {}))
-
-(defn atom-value [reference]
-  (deref (identity reference)))
-
-(defn runtime-deep-merge
-  "Recursively merges runtime option maps without loading the grammar API."
-  [left right]
-  (reduce-kv (fn [out key value]
-               (let [current (get out key)]
-                 (assoc out key
-                        (if (and (map? current)
-                                 (map? value))
-                          (runtime-deep-merge current value)
-                          value))))
-             (or left {})
-             (or right {})))
-
-(def +valid-contexts+
-  #{:oneshot :twostep :basic :host :interactive :websocket :remote-port :remote-ws :verify})
+(defonce ^:dynamic *context-options* (atom {}))
 
 (defn get-context-options
-  ([] (atom-value *context-options*))
-  ([language] (get (atom-value *context-options*) language))
-  ([language context] (get-in (atom-value *context-options*) [language context]))
-  ([language context program]
-   (get-in (atom-value *context-options*) [language context program])))
+  "gets all or a section of the `*context-options*` structure"
+  {:added "4.0"}
+  ([]
+   @*context-options*)
+  ([lang]
+   (get @*context-options* lang))
+  ([lang context]
+   (get-in @*context-options* [lang context]))
+  ([lang context program]
+   (get-in @*context-options* [lang context program])))
+
+(defn clear-context-options
+  "clear entries from the `*context-options*` structure"
+  {:added "4.0"}
+  ([] (swap-return! *context-options* (fn [m] [m {}])))
+  ([lang]
+    (swap-return!
+      *context-options*
+      (fn [m] [(get m lang) (dissoc m lang)])))
+  ([lang context]
+    (swap-return!
+      *context-options*
+      (fn [m] [(get-in m [lang context])
+               (update-in m [lang] dissoc context)])))
+  ([lang context program]
+    (swap-return!
+      *context-options*
+      (fn [m] [(get-in m [lang context program])
+               (update-in m [lang context] dissoc program)]))))
 
 (defn put-context-options
-  [coordinate value]
-  (let [language (first coordinate)
-        context (second coordinate)
-        current (get-in (atom-value *context-options*) [language context])
-        next (runtime-deep-merge current value)]
-    (swap! *context-options* assoc-in [language context] next)
-    next))
+  "puts entries into context options"
+  {:added "4.0"}
+  [[lang context] m]
+  (swap-return!
+    *context-options*
+    (fn [previous]
+      (let [old (get-in previous [lang context])
+            new (letfn
+                  [(merge-options
+                     [left right]
+                     (cond
+                       (and (nil? left) (nil? right)) nil
+                       (and
+                         (or (nil? left) (map? left))
+                         (or (nil? right) (map? right))) (merge-with
+                                                           merge-options
+                                                           left
+                                                           right)
+                       :else right))]
+                  (merge-options old m))]
+        [[old new] (assoc-in previous [lang context] new)]))))
 
 (defn set-context-options
-  [coordinate value]
-  (let [language (nth coordinate 0)
-        context (nth coordinate 1)
-        program (nth coordinate 2)]
-    (swap! *context-options* assoc-in [language context program] value)
-    value))
+  "sets a entry into context options"
+  {:added "4.0"}
+  [[lang context program] opts]
+  (swap-return!
+    *context-options*
+    (fn [previous] [(list
+                      [[lang context program]
+                       (get-in previous [lang context program])
+                       opts])
+                    (assoc-in previous [lang context program] opts)])))
 
-(defn get-program-options
-  ([] (atom-value *program-options*))
-  ([language] (get (atom-value *program-options*) language)))
+(defonce ^:dynamic *program-options* (atom {}))
 
-(defn put-program-options
-  [language value]
-  (let [current (get (atom-value *program-options*) language)
-        next (runtime-deep-merge current value)]
-    (swap! *program-options* assoc language next)
-    next))
+(def +valid-contexts+
+  #{:oneshot
+    :twostep
+    :verify
+    :interactive
+    :basic
+    :websocket
+    :remote-port
+    :remote-ws})
 
 (defn available-runtimes
-  [language]
-  (reduce (fn [out coordinate]
-            (if (= language (first coordinate))
-              (conj out (second coordinate))
-              out))
-          []
-          (keys (atom-value registry/+registry+))))
+  "lists installed runtimes for a language"
+  {:added "4.0"}
+  [lang]
+  (->> @registry/+registry+
+       keys
+       (keep (fn [[k-lang runtime]]
+               (when (= k-lang lang)
+                 runtime)))
+       sort
+       vec))
 
-(defn valid-context
+(defn valid-context!
+  "checks that the runtime context is valid"
+  {:added "4.0"}
   [context]
-  (if (+valid-contexts+ context)
-    context
+  (if (not (has? +valid-contexts+ context))
     (throw
-     (ex :argument {:runtime context
-               :valid +valid-contexts+} :ex/message "Invalid runtime context"))))
+      (ex :argument {} :ex/message (str "Invalid context: " context)))))
 
-(defn require-runtime
-  "Loads the runtime implementation registered by lang.core.registry."
-  [language context]
-  (valid-context context)
-  (or (runtime/require-runtime language context)
-      (throw
-       (ex :dependency {:lang language
-                 :runtime context
-                 :available (available-runtimes language)} :ex/message "Runtime not installed"))))
+(defn require-runtime!
+  "loads the runtime implementation if it has been registered"
+  {:added "4.0"}
+  [lang context]
+  (valid-context! context)
+  (if-let [ns (get (std.foundation/deref registry/+registry+) [lang context])]
+    (do (eval (list (quote require) (list (quote quote) ns))) ns)
+    (throw (ex :runtime/configuration
+             {:available (available-runtimes lang) :lang lang :runtime context}
+             :ex/message
+             "Runtime not installed"))))
+
+(defn program-exists? "checks if an executable exists\n\n   (program-exists? \"gcc\")\n   => true" {:added "4.0"} [exec] (try (let [process (Process/spawn ["which" exec])] (try (Result/synchronize (Process/wait process)) (let [output (Result/synchronize (Process/stdout process))] (if (Result/success? output) (not= "" (str/trim (String/decode-utf8 (Result/data output)))) false)) (finally (Process/kill process)))) (catch error false)))
+
+(defn get-program-options
+  "gets all program options"
+  {:added "4.0"}
+  ([]
+   @*program-options*)
+  ([lang]
+   (get @*program-options* lang)))
+
+(defn put-program-options
+  "puts configuration into program options"
+  {:added "4.0"}
+  [lang m]
+  (let [[old new] (swap-return!
+                    *program-options*
+                    (fn [previous]
+                      (let [old (get-in previous [lang])
+                            new (letfn
+                                  [(merge-options
+                                     [left right]
+                                     (cond
+                                       (and (nil? left) (nil? right))
+                                       nil
+                                       (and
+                                         (or (nil? left) (map? left))
+                                         (or
+                                           (nil? right)
+                                           (map? right)))
+                                       (merge-with
+                                         merge-options
+                                         left
+                                         right)
+                                       :else right))]
+                                  (merge-options old m))]
+                        [[old new] (assoc-in previous [lang] new)])))]
+    (letfn
+      [(changes
+         [new old]
+         (reduce-kv
+           (fn [out key value]
+             (cond
+               (not (has? (or old {}) key)) (assoc out key value)
+               (and (map? value) (map? (get old key))) (let
+                                                         [nested
+                                                          (changes
+                                                            value
+                                                            (get
+                                                              old
+                                                              key))]
+                                                         (if
+                                                           (empty?
+                                                             nested)
+                                                           out
+                                                           (assoc
+                                                             out
+                                                             key
+                                                             nested)))
+               (= value (get old key)) out
+               :else (assoc out key value)))
+           {}
+           new))]
+      (let [changed (changes new old)]
+        (if (empty? changed) [:no-change] [:changed changed])))))
+
+(defn swap-program-options
+  "swaps out the program options using a funciotn"
+  {:added "4.0"}
+  [lang f & args]
+  (apply
+    swap!
+    *program-options*
+    update-in
+    [lang]
+    (if (= (type f) :std.native.Var) (deref f) f)
+    args))
 
 (defn get-program-default
-  [language context program]
-  (require-runtime language context)
-  (let [all (get-program-options language)]
-    (or program
-        (get-in all [:default context])
-        (throw
-         (ex :host {:lang language
-                   :runtime context
-                   :available (keys (get all :env))} :ex/message "No program found for runtime")))))
+  "gets the default program"
+  {:added "4.0"}
+  [lang context program]
+  (let [_ (require-runtime! lang context)
+        all (get-program-options lang)]
+    (or
+      program
+      (get-in all [:default context])
+      (throw
+        (ex
+          :runtime/configuration
+          {:lang lang,
+           :runtime context,
+           :available (-> all :env keys sort vec)}
+          :ex/message
+          "No program found for runtime")))))
 
 (defn get-program-flags
-  [language program]
-  (get-in (get-program-options language) [:env program :flags]))
+  "gets program flags"
+  {:added "4.0"}
+  [lang program]
+  (get-in (get-program-options lang) [:env program :flags]))
 
 (defn get-program-exec
-  [language context program]
-  (require-runtime language context)
-  (let [all (get-program-options language)
-        environment (get-in all [:env program])
-        executable (get environment :exec)
-        arguments (get-in environment [:flags context])]
-    (if arguments
-      (vec (concat [executable] arguments))
+  "gets running parameters for program"
+  {:added "4.0"}
+  [lang context program]
+  (let [_ (require-runtime! lang context)
+        all (get-program-options lang)
+        env (get-in all [:env program])
+        {:keys [exec flags]} env
+        args (get flags context)]
+    (if args
+      (vec (cons exec args))
       (throw
-       (ex :host {:lang language
-                 :runtime context
-                 :program program} :ex/message "Program does not support runtime")))))
+        (ex
+          :runtime/configuration
+          {:lang lang,
+           :runtime context,
+           :program program,
+           :available
+           (->>
+             (reduce-kv
+               (fn [out key env]
+                 (if (get-in env [:flags context]) (conj out key) out))
+               []
+               (:env all))
+             sort
+             vec)}
+          :ex/message
+          "Program does not support runtime")))))
 
 (defn get-options
-  [language context program]
-  (require-runtime language context)
-  (let [context-options (get-in (atom-value *context-options*) [language context])
-        program-options (get-in (atom-value *program-options*) [language :env program])]
-    (if context-options
-      (runtime-deep-merge
-       (runtime-deep-merge (get context-options :default) program-options)
-       (get context-options program))
-      (throw
-       (ex :host {:lang language
-                 :runtime context
-                 :available (available-runtimes language)} :ex/message "Runtime configuration not installed")))))
+  "gets merged options for context"
+  {:added "4.0"}
+  [lang context program]
+  (let [_     (require-runtime! lang context)
+        copts (get-in (std.foundation/deref *context-options*) [lang context])]
+    (when (not copts)
+      (throw (ex :runtime/configuration
+               {:available (available-runtimes lang) :lang lang :runtime context}
+               :ex/message
+               "Runtime configuration not installed")))
+    (letfn [(merge-options
+             [left right]
+             (cond
+              (and (nil? left) (nil? right))
+              nil
+              (and (or (nil? left) (map? left)) (or (nil? right) (map? right)))
+              (merge-with merge-options left right)
+              :else
+              right))]
+      (reduce merge-options
+        nil
+        [(:default copts)
+         (get-in (get-program-options lang) [:env program])
+         (get copts program)]))))

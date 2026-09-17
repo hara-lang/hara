@@ -7,11 +7,15 @@
 (def ^:dynamic *mock-compile* false)
 (def +types+ (atom {}))
 (defmacro with:mock-compile [& body]
-  `(binding [*mock-compile* true] ~@body))
+  (cons
+    'binding
+    (cons ['work.flow.make.artifact/*mock-compile* true] body)))
 
 (def ^:dynamic *compile-filter* nil)
 (defmacro with:compile-filter [filter & body]
-  `(binding [*compile-filter* ~filter] ~@body))
+  (cons
+    'binding
+    (cons ['work.flow.make.artifact/*compile-filter* filter] body)))
 
 (defn compile-fullbody [body options]
   (->> (concat
@@ -273,19 +277,17 @@
     :package.json {:fn json-pretty :file "package.json"}
     {:fn (fn [value] (pr-str value))}))
 
-(defn compile-resolve [value]
-  (loop [current value]
+(defn compile-resolve
+  "resolves a symbol or pointer"
+  {:added "4.0"}
+  [x]
+  (loop [x x]
     (cond
-      (symbol? current)
-      (let [resolved (resolve current)]
-        (if resolved (recur (deref resolved)) current))
-      (and (fn? current)
-           (not (map? current))
-           (not (set? current))
-           (not (keyword? current))
-           (not (vector? current)))
-      (recur (current))
-      :else current)))
+      (or (= :std.native.Var (Base/type x)) (pointer? x)) (recur
+                                                            (deref x))
+      (symbol? x) (recur (deref (resolve x)))
+      (function? x) (recur (x))
+      :else x)))
 
 (defn compile-ext [options]
   (let [descriptor (compile-ext-fn (:format options))

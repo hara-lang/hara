@@ -2,97 +2,78 @@
   (:use code.test)
   (:require [lang.base.book :as book]
             [lang.base.emit :as emit]
-            [lang.base.grammar-api :as grammar-api]
-            [lang.base.registry :as registry]
+            [lang.base.grammar :as grammar]
+            [lang.core.impl :as impl]
+            [lang.core.library :as library]
             [lang.model.v1.spec-dart :as subject]))
 
-^{:refer lang.model.v1.spec-dart/install-source}
-(fact "installs a source once and leaves duplicate installation unchanged"
-  (let [catalog (registry/registry)
-        once (subject/install-source catalog subject/+template+)
-        twice (subject/install-source once subject/+template+)]
-    [(not (nil? (registry/find once
-                               (grammar-api/source-coordinate subject/+template+))))
-     (count (registry/list once))
-     (count (registry/list twice))])
-  => [true 1 1])
+^{:refer lang.model.v1.spec-dart/+language+}
+(fact "Dart keeps the original language identity and version"
+  [subject/+language+ subject/+tag+ subject/+version+ subject/+grammar-version+]
+  => [:dart :dt 1 1])
 
-^{:refer lang.model.v1.spec-dart/install}
-(fact "installs XTalk prerequisites and every Dart grammar source"
-  (let [catalog (subject/install (registry/registry))]
-    [(registry/versions catalog :xtalk)
-     (registry/versions catalog :dt)
-     (not (nil? (registry/find catalog
-                               (grammar-api/source-coordinate subject/+grammar+))))])
-  => [[1] [1] true])
+^{:refer lang.model.v1.spec-dart/+template+}
+(fact "Dart exposes the concrete emitter template instead of a catalog source"
+  [(map? subject/+template+)
+   (= subject/+template+ subject/+profile+)
+   (not (has? subject/+template+ :source/kind))
+   (get-in subject/+template+ [:token :nil :as])]
+  => [true false true "null"])
 
-^{:refer lang.model.v1.spec-dart/catalog}
-(fact "creates a catalog with the Dart grammar selection inputs"
-  (let [catalog (subject/catalog)]
-    [(count (registry/list catalog))
-     (registry/versions catalog :dt)
-     (not (nil? (registry/find catalog
-                               (grammar-api/source-coordinate subject/+profile+))))])
-  => [6 [1] true])
-
-^{:refer lang.model.v1.spec-dart/select}
-(fact "selects the pinned Dart grammar without compiling a form"
-  (let [selection (subject/select)]
-    [(:grammar/id (:coordinate selection))
-     (:grammar/version (:coordinate selection))
-     (= (:coordinate selection) subject/+coordinate+)])
-  => [:dt 1 true])
+^{:refer lang.model.v1.spec-dart/+grammar+}
+(fact "Dart grammar is directly built from reserved operators"
+  [(grammar/grammar? subject/+grammar+)
+   (:tag subject/+grammar+)
+   (count (:reserved subject/+grammar+))
+   (get-in subject/+grammar+ [:reserved 'var* :raw])]
+  => [true :dt 303 "var"])
 
 ^{:refer lang.model.v1.spec-dart/+meta+}
-(fact "renders Dart imports with suffix and normalized alias"
+(fact "Dart metadata renders imports with suffixes and normalized aliases"
   ((:module-import subject/+meta+)
    "package:xtalk_ui/page"
    {:as 'event-listener :suffix ".dart"}
    {})
   => '(:- "import 'package:xtalk_ui/page.dart' as event_listener;"))
 
-^{:refer lang.model.v1.spec-dart/+selection+}
-(fact "keeps target rewrite staging in the selected grammar"
-  (count (get-in subject/+selection+ [:rewrite :staging]))
-  => 1)
-
 ^{:refer lang.model.v1.spec-dart/+book+}
-(fact "builds a Dart book from its selection without compiling user code"
-  [(:lang subject/+book+)
+(fact "Dart is a source-owned child Book with the concrete grammar"
+  [(book/book? subject/+book+)
+   (:lang subject/+book+)
    (:parent subject/+book+)
-   (:version subject/+book+)
-   (book/book? subject/+book+)]
-  => [:dart :xtalk 1 true])
+   (= (:grammar subject/+book+) subject/+grammar+)
+   (nil? (:selection subject/+book+))]
+  => [true :dart :xtalk true true])
 
 ^{:refer lang.model.v1.spec-dart/+init+}
-(fact "exposes the uncompiled Dart book as the initialization value"
-  (= subject/+init+ subject/+book+)
-  => true)
+(fact "Dart initialization installs the Book through the standard script path"
+  (let [stored (get-in (library/get-snapshot (impl/default-library))
+                       [:dart :book])]
+    [(vector? subject/+init+)
+     (= :dart (:lang stored))
+     (book/book? stored)
+     (= (:grammar stored) subject/+grammar+)])
+  => [true true true true])
 
-^{:refer lang.model.v1.spec-dart/+grammar+}
-(fact "emits Dart only when a caller requests emission"
-  [(emit/emit '(var greeting "hello") subject/+selection+)
-   (emit/emit '(x:len [1 2 3]) subject/+selection+)
-   (emit/emit '{:name "hello" :count 2} subject/+selection+)]
+^{:refer lang.model.v1.spec-dart/+grammar+ :id dart-direct-emission}
+(fact "Dart emission uses the concrete grammar without catalog materialization"
+  [(emit/emit '(var greeting "hello") subject/+grammar+ nil {})
+   (emit/emit '(x:len [1 2 3]) subject/+grammar+ nil {})
+   (emit/emit '(defn hello [name] (return (x:cat "hi " name)))
+              subject/+grammar+ nil {})]
   => ["var greeting = \"hello\""
       "<dynamic>[1,2,3].length"
-      "<dynamic, dynamic>{\"count\":2,\"name\":\"hello\"}"])
+      "hello(name) {\n  return \"hi \" + name;\n}"])
 
-^{:refer lang.model.v1.spec-dart/+grammar+}
-(fact "preserves historical Dart XTalk helper and numeric emission"
-  [(emit/emit '(x:print "hello") subject/+selection+)
-   (emit/emit '(x:arr-push items 1) subject/+selection+)
-   (emit/emit '(pow 2 5) subject/+selection+)]
-  => ["(() {\n  print(\"hello\");\n  return null;\n})()"
-      "items.add(1)"
-      "math.pow(2,5)"])
-
-^{:refer lang.model.v1.spec-dart/+grammar+}
-(fact "emits Dart function and loop statements through the staged compiler"
-  [(emit/emit '(defn hello [name] (return (x:cat "hi " name)))
-              subject/+selection+)
+^{:refer lang.model.v1.spec-dart/+grammar+ :id dart-target-boundaries}
+(fact "Dart preserves target-specific call, math, and loop forms"
+  [(emit/emit '(x:print "hello") subject/+grammar+ nil {})
+   (emit/emit '(x:arr-push items 1) subject/+grammar+ nil {})
+   (emit/emit '(pow 2 5) subject/+grammar+ nil {})
    (emit/emit '(for [(var index := 0) (< index 3) (:++ index)]
                  (print index))
-              subject/+selection+)]
-  => ["hello(name) {\n  return \"hi \" + name;\n}"
+              subject/+grammar+ nil {})]
+  => ["(() {\n  print(\"hello\");\n  return null;\n})()"
+      "items.add(1)"
+      "math.pow(2,5)"
       "for(var index = 0; index < 3; ++index){\n  print(index);\n}"])

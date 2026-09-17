@@ -2,10 +2,9 @@
   (:require
             [lang.base.v1.grammar-spec :as spec]
             [lang.base.emit :as emit]
+            [lang.base.emit-common :as emit-common]
             [lang.base.emit-helper :as helper]
-            [lang.base.grammar-api :as grammar]
             [lang.base.grammar-spec :as grammar-spec]
-            [lang.base.registry :as registry]
             [lang.model.v1.spec-postgres.postgres-common :as common]
             [lang.model.v1.spec-postgres.postgres-const :as const]
             [lang.model.v1.spec-postgres.postgres-deftype :as deftype]
@@ -78,7 +77,7 @@
 
 (defn pg-typecast
   [form grammar context]
-  (str "(" (emit/*emit-fn* (nth form 1) grammar context) ")::"
+  (str "(" (emit-common/*emit-fn* (nth form 1) grammar context) ")::"
        (pg-type-name (nth form 2))))
 
 (defn pg-keyword-invoke
@@ -86,14 +85,14 @@
   (let [values (vec form)
         target (last values)
         casts (drop 1 (reverse values))]
-    (str "(" (emit/*emit-fn* target grammar context) ")::"
+    (str "(" (emit-common/*emit-fn* target grammar context) ")::"
          (str/join " " (map pg-type-name (reverse casts))))))
 
 (defn pg-array
   [form grammar context]
   (str "ARRAY["
        (str/join "," (map (fn [item]
-                                (emit/*emit-fn* item grammar context))
+                                (emit-common/*emit-fn* item grammar context))
                               (rest form)))
        "]"))
 
@@ -103,7 +102,7 @@
 
 (defn pg-scalar
   [form grammar context]
-  (str "(" (emit/*emit-fn* (second form) grammar context) ")"))
+  (str "(" (emit-common/*emit-fn* (second form) grammar context) ")"))
 
 (defn pg-tag-string
   [value]
@@ -112,7 +111,7 @@
 (defn pg-throw-value
   [value tag grammar context]
   (str "RAISE EXCEPTION USING DETAIL = ("
-       (emit/*emit-fn* value grammar context)
+       (emit-common/*emit-fn* value grammar context)
        ")::TEXT, MESSAGE = "
        (pg-string (pg-tag-string tag))))
 
@@ -128,7 +127,7 @@
                                   (if (string? key) key (name key))))
                      (if (keyword? entry-value)
                        (pg-string (str entry-value))
-                       (emit/*emit-fn* entry-value grammar context))]))
+                       (emit-common/*emit-fn* entry-value grammar context))]))
                 (if (map? entries)
                   (sort-by
                    (fn [entry]
@@ -158,7 +157,7 @@
                                            (seq data))))
                          [[:status "error"] [:tag tag] [:data data]])
         detail-output (pg-map-entries detail-entries grammar context)]
-    (str "IF NOT (" (emit/*emit-fn* check grammar context) ") THEN\n"
+    (str "IF NOT (" (emit-common/*emit-fn* check grammar context) ") THEN\n"
          "  RAISE EXCEPTION USING DETAIL = (" detail-output
          ")::TEXT, MESSAGE = " (pg-string (pg-tag-string tag)) ";\n"
          "END IF")))
@@ -180,11 +179,11 @@
         arr (nth form 4)]
     (str "DECLARE e " (pg-type-name type) ";\n"
          "BEGIN\n"
-         "  FOREACH e IN ARRAY " (emit/*emit-fn* arr grammar context) " LOOP\n"
-         "    " (emit/*emit-fn* out grammar context) " := "
-         (emit/*emit-fn* (list f out 'e) grammar context) ";\n"
+         "  FOREACH e IN ARRAY " (emit-common/*emit-fn* arr grammar context) " LOOP\n"
+         "    " (emit-common/*emit-fn* out grammar context) " := "
+         (emit-common/*emit-fn* (list f out 'e) grammar context) ";\n"
          "  END LOOP;\n"
-         "  RETURN " (emit/*emit-fn* out grammar context) ";\n"
+         "  RETURN " (emit-common/*emit-fn* out grammar context) ";\n"
          "END")))
 
 (defn pg-terminated
@@ -234,8 +233,8 @@
 
 (defn pg-assignment
   [form grammar context]
-  (let [target-output (emit/*emit-fn* (second form) grammar context)
-        value-output (emit/*emit-fn* (nth form 2) grammar context)]
+  (let [target-output (emit-common/*emit-fn* (second form) grammar context)
+        value-output (emit-common/*emit-fn* (nth form 2) grammar context)]
     (if (pg-query-output? value-output)
       (str value-output " INTO " target-output)
       (str target-output " := " value-output))))
@@ -244,7 +243,7 @@
   [form grammar context]
   (let [body (map (fn [item]
                     (str "  " (pg-terminated
-                               (emit/*emit-fn* item grammar context))))
+                               (emit-common/*emit-fn* item grammar context))))
                   (rest form))]
     (str "DO $$\nBEGIN\n"
          (str/join "\n" body)
@@ -260,7 +259,7 @@
   (if (set? value)
     (let [identifier (first value)]
       (str "\"" (str/replace (str identifier) "\"" "\"\"") "\""))
-    (emit/*emit-fn* value grammar context)))
+    (emit-common/*emit-fn* value grammar context)))
 
 (defn pg-columns
   [form grammar context]
@@ -294,7 +293,7 @@
           (let [key (first entry)
                 raw (if (string? key) key (name key))]
             (str "\"" (str/replace raw "-" "_") "\" = "
-                 (emit/*emit-fn* (second entry) grammar context))))
+                 (emit-common/*emit-fn* (second entry) grammar context))))
         (seq value))))
 
 (def +condition-operators+
@@ -324,7 +323,7 @@
     (str "\"" (str/replace raw "-" "_") "\" " operator
          (if unary
            ""
-           (str " " (emit/*emit-fn* operand grammar context))))))
+           (str " " (emit-common/*emit-fn* operand grammar context))))))
 
 (defn pg-condition-map
   [value grammar context]
@@ -341,7 +340,7 @@
          (and (map? value) (or (= clause :where) (= clause :having)))
          (pg-condition-map value grammar context)
          (map? value) (pg-assignment-map value grammar context)
-         :else (emit/*emit-fn* value grammar context))))
+         :else (emit-common/*emit-fn* value grammar context))))
 
 (defn pg-section
   "Emits SQL clause vectors while retaining JSON array values for data vectors."
@@ -377,7 +376,7 @@
        " \n" "\n"))
         (str "jsonb_build_array("
              (str/join "," (map (fn [item]
-                                      (emit/*emit-fn* item grammar context))
+                                      (emit-common/*emit-fn* item grammar context))
                                     value))
              ")")))))
 
@@ -406,7 +405,7 @@
         normalized (second formatted)
         op (first normalized)
         symbol (second normalized)
-        args (nth normalized 2)
+        args (first (drop 2 normalized))
         body (drop 3 normalized)
         source-symbol (IObjType/with-meta
                        symbol
@@ -768,7 +767,7 @@
         default-output
         (if (or (:force argument) (has? argument :value))
           (str " DEFAULT "
-               (emit/*emit-fn* (:value argument) grammar context))
+               (emit-common/*emit-fn* (:value argument) grammar context))
           "")]
     (str symbol-output
          (if (= "" type-output) "" (str " " type-output))
@@ -864,7 +863,7 @@
   (if (and (= 1 (count body))
            (list? (first body))
            (has? #{'let 'let:block} (first (first body))))
-    (emit/*emit-fn* (first body) grammar context)
+    (emit-common/*emit-fn* (first body) grammar context)
     (let [forms (vec body)
           last-index (- (count forms) 1)
           statements
@@ -874,7 +873,7 @@
             (if (= 0 (count remaining))
               output
               (let [form (first remaining)
-                    statement (emit/*emit-fn* form grammar context)
+                    statement (emit-common/*emit-fn* form grammar context)
                     implicit-return
                     (and (= index last-index)
                          (not (pg-statement-form? form))
@@ -928,7 +927,7 @@
   "Emits a complete CREATE OR REPLACE FUNCTION declaration."
   [form grammar context]
   (let [symbol (second form)
-        args (nth form 2)
+        args (first (drop 2 form))
         body (drop 3 form)
         metadata (pg-sym-meta symbol)
         schema (get (meta symbol) :static/schema)
@@ -1001,7 +1000,7 @@
        :type :def
        :section :code
        :format deftype/pg-deftype-format
-       :hydrate deftype/pg-deftype-hydrate
+       :hydrate deftype/pg-deftype-hydrate-original
        :emit deftype/pg-deftype
        :static/dbtype :table}
     :deftrigger {:op :deftrigger

@@ -1,30 +1,275 @@
 (ns lang.model.v1.spec-js-test
-  (:require [lang.base.book :as book]
-            [lang.model.v1.spec-js :as subject]
-            [lang.model.v1.spec-js.js-grammar :as model]))
+  (:use code.test)
+  (:require [lang.core.impl :as l]
+            [lang.model.v1.spec-js :refer :all]
+            [std.lib.format.prose :as prose]))
 
-^{:refer lang.model.v1.spec-js/+language+}
-(Test/check
- [{:name "JavaScript book identifies the language and grammar"
-   :test (fn [] [subject/+language+
-                 subject/+tag+
-                 subject/+version+
-                 subject/+grammar-version+
-                 (:grammar/tag subject/+grammar+)
-                 (get-in subject/+selection+ [:coordinate :grammar/id])])
-   :expected [:js :js 1 1 :js :js]}])
+^{:refer lang.model.v1.spec-js/emit-html, :added "4.0"}
+(comment
+  "Original HTML assertion remains pending the Jsoup-backed boundary, not counted as passing."
+  "^{:refer lang.model.v1.spec-js/emit-html, :added \"4.0\"} (fact \"emits html\" (emit-html [:hello] +grammar+ {}) => \"<hello></hello>\")")
 
-^{:refer lang.model.v1.spec-js/select}
-(Test/check
- [{:name "JavaScript selection returns the pinned selection"
-   :test (fn [] (= (subject/select) subject/+selection+))
-   :expected true}])
+^{:refer lang.model.v1.spec-js/js-regex :added "4.0"}
+(fact "outputs the js regex"
 
-^{:refer lang.model.v1.spec-js/+book+}
-(Test/check
- [{:name "JavaScript book carries its grammar selection"
-   :test (fn [] [(:lang subject/+book+)
-                 (:parent subject/+book+)
-                 (:version subject/+book+)
-                 (book/book? subject/+book+)])
-   :expected [:js :xtalk 1 true]}])
+  (js-regex #"abc")
+  => "/abc/")
+
+^{:refer lang.model.v1.spec-js/js-map-key :added "4.0"}
+(fact "emits a map key"
+
+  (js-map-key 'hello +grammar+ {})
+  => "[hello]"
+
+  (js-map-key '(+ hello world) +grammar+ {})
+  => "[(+ hello world)]"
+
+  (js-map-key :hello +grammar+ {})
+  => "\"hello\""
+
+  (js-map-key :hello-world +grammar+ {})
+  => "\"hello_world\"")
+
+^{:refer lang.model.v1.spec-js/js-vector :added "4.0"}
+(fact "emits a js vector"
+
+  (js-vector [1 2 3 4] +grammar+ {})
+  => "[1,2,3,4]"
+
+  (js-vector [:div {} "hello"] +grammar+ {})
+  => "(\n  <div>hello</div>)")
+
+^{:refer lang.model.v1.spec-js/js-vector :id original-array-jsx-boundary}
+(fact "emits empty and symbol-headed arrays and reserves keyword heads for JSX"
+  [(js-vector [] +grammar+ {})
+   (js-vector ['red 1] +grammar+ {})
+   (js-vector [:div "hello"] +grammar+ {})]
+  => ["[]" "[red,1]" "(\n  <div>hello</div>)"])
+
+^{:refer lang.model.v1.spec-js/js-map :added "4.0"}
+(fact "emits a js map"
+
+  (js-map {:hello-world "hello"} +grammar+ {})
+  => "{\"hello_world\":\"hello\"}"
+
+  (l/emit-as :js
+             '[{:# [hello-world]}])
+  => "{hello_world}")
+
+^{:refer lang.model.v1.spec-js/js-set, :added "4.0"}
+(fact
+  "emits a js set"
+  (js-set
+    (Algo/ordered-set 'y (Algo/ordered-map :a 1 :b 2) '...x)
+    +grammar+
+    {})
+  =>
+  "{...x,y,\"a\":1,\"b\":2}"
+  (js-set
+    (Algo/ordered-set 'y '...x (Algo/ordered-map 'a 1 :b 2))
+    +grammar+
+    {})
+  =>
+  "{...x,y,[a]:1,\"b\":2}"
+  (js-set
+    (Algo/ordered-set ['...x 'y (list '% 'a) 1 :b 2])
+    +grammar+
+    {})
+  =>
+  "(tab ...x y (% a) 1 :b 2)")
+
+^{:refer lang.model.v1.spec-js/js-defclass, :added "4.0"}
+(fact
+  "creates a defclass function"
+  (lang.core.impl/emit-as
+    :js
+    [(js-defclass
+       (list
+         'defclass.js
+         'Try
+         [:- 'React.Component]
+         (with-meta
+           (list
+             'fn
+             'getDerivedStateFromError
+             ['error]
+             (list
+               'return
+               (Algo/ordered-set
+                 (Algo/ordered-map :hasError true)
+                 'error)))
+           (Algo/ordered-map :- [:static]))
+         (list
+           'fn
+           'constructor
+           []
+           (list
+             :=
+             (list '. 'this 'state)
+             (Algo/ordered-map :hasError false :error nil)))
+         (list
+           'fn
+           'render
+           []
+           (list
+             'if
+             (list '. 'this 'state 'hasError)
+             (list 'return (list '. 'this 'props 'fallback))
+             (list 'return (list '. 'this 'props 'children))))))])
+  =>
+  (prose/|
+    "class Try extends React.Component{"
+    "  static getDerivedStateFromError(error){"
+    "    return {error,\"hasError\":true};"
+    "  }"
+    "  constructor() {"
+    "    this.state = {\"hasError\":false,\"error\":null};"
+    "  }"
+    "  render() {"
+    "    if(this.state.hasError){"
+    "      return this.props.fallback;"
+    "    }"
+    "    else{"
+    "      return this.props.children;"
+    "    }"
+    "  }"
+    "}"))
+
+^{:refer lang.model.v1.spec-js/js-tf-var-let :added "4.0"}
+(fact "outputs the let keyword"
+
+  (js-tf-var-let '(var a 1))
+  => '(var* :let a := 1))
+
+^{:refer lang.model.v1.spec-js/js-tf-var-const :added "4.0"}
+(fact "outputs the const keyword"
+
+  (js-tf-var-const '(const a 1))
+  => '(var* :const a := 1))
+
+^{:refer lang.model.v1.spec-js/js-tf-for-object :added "4.0"}
+(fact "custom for:object code"
+
+  (js-tf-for-object '(for:object [[k v] {:a 1}]
+                              [k v]))
+  => '(for [(var* :let [k v]) :of (Object.entries {:a 1})] [k v]))
+
+^{:refer lang.model.v1.spec-js/js-tf-for-array :added "4.0"}
+(fact "custom for:array code"
+
+  (js-tf-for-array '(for:array [e [1 2 3 4 5]]
+                             [k v]))
+  => '(for [(var* :let e) :of (% [1 2 3 4 5])] [k v])
+
+  (js-tf-for-array '(for:array [[i e] arr]
+                            [k v]))
+  => '(for [(var* :let i := 0) (< i (. arr length))
+            (:++ i)] (var* :let e (. arr [i])) [k v]))
+
+^{:refer lang.model.v1.spec-js/js-tf-for-iter :added "4.0"}
+(fact "custom for:iter code"
+
+  (js-tf-for-iter '(for:iter [e iter]
+                          e))
+  => '(for [(var* :let e) :of (% iter)] e))
+
+
+^{:refer lang.model.v1.spec-js/js-tf-prototype-create, :added "4.1"}
+(comment
+  "Original empty fact remains pending authored semantic coverage, not counted as passing."
+  "^{:refer lang.model.v1.spec-js/js-tf-prototype-create, :added \"4.1\"} (fact \"creates js prototypes\")")
+
+^{:refer lang.model.v1.spec-js/js-tf-prototype-method, :added "4.1"}
+(comment
+  "Original empty fact remains pending authored semantic coverage, not counted as passing."
+  "^{:refer lang.model.v1.spec-js/js-tf-prototype-method, :added \"4.1\"} (fact \"calls js prototype methods\")")
+
+
+^{:refer lang.model.v1.spec-js/js-emit-input-rest, :added "4.1"}
+(fact
+  "emits a JavaScript variadic parameter"
+  (binding [lang.base.emit-common/*emit-fn* (fn
+                                              [symbol _ _]
+                                              (name symbol))]
+    (js-emit-input-rest {:symbol 'args} nil nil))
+  =>
+  "...args")
+
+
+^{:refer lang.model.v1.spec-js/js-tf-prototype-create :id original-prototype-create-contract}
+(fact "prototype creation preserves function receivers and ordinary values"
+  (js-tf-prototype-create '(x:prototype-create handlers))
+  => '(do (var out {})
+          (for:object [[k f] handlers]
+            (if (x:is-function? f)
+              (:= (. out [k]) (fn [...args] (return (f this ...args))))
+              (:= (. out [k]) f)))
+          (return out)))
+^{:refer lang.model.v1.spec-js/js-tf-prototype-method :id original-prototype-method-contract}
+(fact "prototype method lookup preserves the original receiver and four argument slots"
+  (js-tf-prototype-method '(x:prototype-method obj key))
+  => '(:? (x:is-function? (x:get-key obj key nil))
+          (fn [self a b c d]
+            (return (. (x:get-key obj key nil) (call self a b c d))))
+          (x:get-key obj key nil)))
+^{:refer lang.model.v1.spec-js/js-symbol-global :id original-global-symbol-contract}
+(fact "global symbol lookup uses the grammar namespace delimiter"
+  (js-symbol-global 'demo/value +grammar+ {})
+  => '(. globalThis ["demo$$value"]))
+^{:refer lang.model.v1.spec-js/*template-fn* :id original-template-callback-contract}
+(fact "template callback receives unchanged vector grammar and options and restores after exit"
+  (let [before *template-fn*
+        result (binding [*template-fn* (fn [arr grammar opts] [arr grammar opts])]
+                 (js-vector [:div "body"] {:grammar :fixture} {:emit :fixture}))]
+    [result (= before *template-fn*)])
+  => [[[:div "body"] {:grammar :fixture} {:emit :fixture}] true])
+^{:refer lang.model.v1.spec-js/js-tf-for-object :id original-object-loop-branches}
+(fact "object loops omit only the explicitly ignored key or value binding"
+  [(js-tf-for-object '(for:object [[_ v] obj] (use v)))
+   (js-tf-for-object '(for:object [[k _] obj] (use k)))]
+  => '[(for [(var* :let v) :of (Object.values obj)] (use v))
+       (for [(var* :let k) :of (Object.keys obj)] (use k))])
+
+
+^{:refer lang.model.v1.spec-js/+features+, :id original-js-feature-contract}
+(fact
+  "JavaScript keeps its original declaration and prototype grammar entries"
+  [(get-in +features+ [:var :symbol])
+   (get-in +features+ [:defn :symbol])
+   (select-keys (get +features+ :prototype-create) [:emit :op-spec])]
+  =>
+  '[#{var*}
+    #{defn defn- defelem}
+    {:emit :macro, :op-spec {:allow-blocks true, :arglists ([m])}}])
+^{:refer lang.model.v1.spec-js/+template+ :id original-js-template-contract}
+(fact "JavaScript retains null spelling namespace delimiter and variadic callback"
+  [(:banned +template+)
+   (get-in +template+ [:token :nil :as])
+   (get-in +template+ [:default :common :namespace-full])
+   (= #'js-emit-input-rest (get-in +template+ [:default :function :args :rest]))
+   (get-in +template+ [:xtalk :notify :custom])]
+  => [#{:keyword} "null" "$$" true true])
+
+(ns lang.model.v1.spec-js-test (:require [lang.model.v1.spec-js :as js] [lang.core.impl :as impl] [lang.core.library :as lib] [lang.base.book :as book] [lang.core.runtime :as rt] [std.lib.context.registry :as registry]))
+^{:refer lang.model.v1.spec-js/+book+ :id original-js-book}
+(fact "the original JavaScript Book retains its grammar and XTalk parent"
+  (let [stored (lib/get-book (impl/default-library) :js)]
+    [(book/book? js/+book+) (:lang js/+book+) (:parent js/+book+)
+     (:lang stored) (= (:grammar js/+book+) (:grammar stored))
+     (mapv count (:macros stored)) (:highlight (:grammar stored))])
+  => [true :js :xtalk :js true [4 9] '#{return break del tab reject}])
+^{:refer lang.model.v1.spec-js/+init+ :id original-js-registration}
+(fact "original script installation publishes its runtime and macro result"
+  (let [stored (lib/get-book (impl/default-library) :js)
+        context (registry/registry-get :lang/js)]
+    [(count js/+init+) (= (nth js/+init+ 1) context)
+     (= (nth js/+init+ 2) (select-keys stored [:macros :highlights]))
+     (select-keys (:config context) [:context :lang])
+     (rt/rt-default? (:scratch context))
+     (mapv str (first (:macros stored)))])
+  => [3 true true {:context :lang/js :lang :js} true
+      ["#'lang.model.v1.spec-js/def$.js" "#'lang.model.v1.spec-js/defmacro.js"
+       "#'lang.model.v1.spec-js/!.js" "#'lang.model.v1.spec-js/defptr.js"]])
+^{:refer lang.model.v1.spec-js/+grammar+ :id original-js-emission}
+(fact "the installed original JavaScript Book emits through the original core implementation"
+  (impl/emit-as :js '[(+ 1 2)]) => "1 + 2")

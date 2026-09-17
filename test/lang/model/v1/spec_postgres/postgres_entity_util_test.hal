@@ -1,26 +1,467 @@
 (ns lang.model.v1.spec-postgres.postgres-entity-util-test
-  (:require [lang.core.script :as script]
-            [lang.model.v1.spec-postgres.postgres-entity-util :as subject]))
+  (:require [lang.model.v1.spec-postgres.postgres-entity-util :refer :all])
+  (:use code.test))
 
-(defn isolated
-  [function]
-  (let [snapshot (script/script-snapshot)]
+(defn with-demo-app [f]
+  (let [app-before (deref +app+) addons-before (deref +addons+)]
     (try
-      (script/script-reset!)
-      (function)
+      (do
+        (let [original-default-application (deref
+                                             #'default-application)]
+          (try
+            (Runtime/intern
+              'lang.model.v1.spec-postgres.postgres-entity-util
+              'default-application
+              (fn [& _] :app/demo))
+            (do
+              (reset! +app+ {:app/demo "demo.ns"})
+              (reset!
+                +addons+
+                {:app/demo
+                 {:name {:field {:type :text}, :priority 1}}})
+              (f))
+            (finally
+              (Runtime/intern
+                'lang.model.v1.spec-postgres.postgres-entity-util
+                'default-application
+                original-default-application)))))
       (finally
-        (script/script-restore! snapshot)))))
+        (reset! +app+ app-before)
+        (reset! +addons+ addons-before)))))
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/default-application, :added "4.1"}
+(fact
+  "default-application is resolved via the runtime module metadata"
+  (let [original-default-application (deref #'default-application)]
+    (try
+      (Runtime/intern
+        'lang.model.v1.spec-postgres.postgres-entity-util
+        'default-application
+        (fn [& _] :app/demo))
+      (do (default-application))
+      (finally
+        (Runtime/intern
+          'lang.model.v1.spec-postgres.postgres-entity-util
+          'default-application
+          original-default-application))))
+  =>
+  :app/demo)
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/default-ns-str, :added "4.1"}
+(fact
+  "default-ns-str reads the configured app namespace"
+  (with-demo-app (fn [] (default-ns-str :app/demo)))
+  =>
+  "demo.ns")
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/init-default-ns-str, :added "4.1"}
+(fact
+  "init-default-ns-str stores the namespace string for an application"
+  (with-demo-app
+    (fn []
+      (do (init-default-ns-str :app/other "other.ns") (deref +app+))))
+  =>
+  {:app/demo "demo.ns", :app/other "other.ns"})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-id-v1, :added "4.1"}
+(fact
+  "type-id-v1 uses a generated v1 uuid default"
+  (type-id-v1)
+  =>
+  {:type :uuid,
+   :primary "default",
+   :priority 0,
+   :sql {:default '(postgres.core/uuid-generate-v1)}})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-id-v4, :added "4.1"}
+(fact
+  "type-id-v4 uses a generated v4 uuid default"
+  (type-id-v4)
+  =>
+  {:type :uuid,
+   :primary "default",
+   :priority 0,
+   :sql {:default '(postgres.core/uuid-generate-v4)}})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-id-text, :added "4.1"}
+(fact
+  "type-id-text uppercases and limits citext ids"
+  (let [out (type-id-text "demo")] (:type out))
+  =>
+  :citext
+  (let [out (type-id-text "demo")] (:primary out))
+  =>
+  "default"
+  (let [out (type-id-text "demo")] (get-in out [:sql :process]))
+  =>
+  '([demo/as-upper-formatted] [demo/as-upper-limit-length 100]))
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-name, :added "4.1"}
+(fact
+  "type-name generates the default name field"
+  (let [out (type-name "demo" 9)]
+    [(:type out) (:required out) (:scope out) (:priority out)])
+  =>
+  [:citext true :-/info 9]
+  (let [out (type-name "demo" 9)] (get-in out [:sql :unique]))
+  =>
+  ["name"])
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-code, :added "4.1"}
+(fact
+  "type-code generates the default code field"
+  (let [out (type-code "demo")]
+    [(:type out) (:scope out) (:priority out)])
+  =>
+  [:citext :-/info 7]
+  (let [out (type-code "demo")] (get-in out [:sql :unique]))
+  =>
+  ["code"])
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-image, :added "4.1"}
+(fact
+  "type-image stores images as jsonb"
+  (let [out (type-image "demo")]
+    [(:type out) (:priority out) (get-in out [:sql :default])])
+  =>
+  [:image 10 "{}"]
+  (let [out (type-image "demo")] (get-in out [:profiles :web :type]))
+  =>
+  "image")
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-color, :added "4.1"}
+(fact
+  "type-color sets color defaults and validation"
+  (type-color "demo")
+  =>
+  {:type :citext,
+   :required true,
+   :scope :-/info,
+   :priority 20,
+   :sql
+   {:default '(demo/color-rand),
+    :constraint '(demo/color-check #{"color"})},
+   :profile {:web {:edit #{:create :modify}, :type "color"}}})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-tags, :added "4.1"}
+(fact
+  "type-tags stores tags as a jsonb array"
+  (let [out (type-tags "demo")]
+    [(:type out)
+     (:scope out)
+     (:priority out)
+     (get-in out [:sql :default])])
+  =>
+  [:array :-/info 25 "[]"]
+  (let [out (type-tags "demo")] (get-in out [:profile :web :type]))
+  =>
+  "chip")
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-log, :added "4.1"}
+(fact
+  "type-log generates the default log array shape"
+  (type-log "demo")
+  =>
+  (contains
+    {:type :array,
+     :required true,
+     :priority 90,
+     :scope :-/detail,
+     :map
+     {:status {:type :text},
+      :message {:type :text},
+      :error {:type :text}}}))
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-log-entry, :added "4.1"}
+(fact
+  "type-log-entry generates the default log entry map"
+  (type-log-entry "demo")
+  =>
+  (contains
+    {:type :map,
+     :required true,
+     :priority 80,
+     :scope :-/detail,
+     :map
+     {:status {:type :text},
+      :message {:type :text},
+      :error {:type :text}}}))
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-detail, :added "4.1"}
+(fact
+  "type-detail stores detail as jsonb"
+  (let [out (type-detail "demo")]
+    [(:type out) (:required out) (:priority out) (:scope out)])
+  =>
+  [:map true 50 :-/detail]
+  (let [out (type-detail "demo")] (get-in out [:sql :default]))
+  =>
+  "{}")
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-boolean, :added "4.1"}
+(fact
+  "type-boolean normalizes boolean defaults"
+  (type-boolean true 4)
+  =>
+  {:type :boolean, :required true, :priority 4, :sql {:default true}})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-class, :added "4.1"}
+(fact
+  "type-class builds the default class enum field"
+  (type-class "demo")
+  =>
+  {:type :enum,
+   :scope :-/hidden,
+   :priority 1,
+   :enum {:ns 'demo/EnumClassType}})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-ref, :added "4.1"}
+(fact
+  "type-ref builds a required reference field"
+  (type-ref "demo" "Task" 3)
+  =>
+  {:type :ref, :required true, :priority 3, :ref {:ns 'demo/Task}})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/type-class-ref, :added "4.1"}
+(fact
+  "type-class-ref merges the supplied attrs with the uuid ref defaults"
+  (type-class-ref {:scope :-/ref} 6)
+  =>
+  {:scope :-/ref, :type :uuid, :required true, :priority 6})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/normalise-ref, :added "4.1"}
+(fact
+  "normalise-ref preserves symbols"
+  (normalise-ref 'demo.core/User)
+  =>
+  'demo.core/User)
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/default-fields, :added "4.1"}
+(fact
+  "default-fields includes the common field presets"
+  (select-keys (default-fields "demo") [:name :is-active :log])
+  =>
+  (contains
+    {:is-active
+     {:priority 30,
+      :field
+      {:type :boolean,
+       :required true,
+       :priority nil,
+       :sql {:default true}}}})
+  (get-in (default-fields "demo") [:name :field :type])
+  =>
+  :citext
+  (get-in (default-fields "demo") [:log :field :type])
+  =>
+  :array)
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/init-addons, :added "4.1"}
+(fact
+  "init-addons merges custom fields with the defaults"
+  (with-demo-app
+    (fn []
+      (do
+        (init-addons
+          {:custom {:field {:type :text}, :priority 2}}
+          :app/demo)
+        (select-keys
+          (get (deref +addons+) :app/demo)
+          [:custom :name]))))
+  =>
+  (contains {:custom {:field {:type :text}, :priority 2}})
+  (with-demo-app
+    (fn []
+      (do
+        (init-addons
+          {:custom {:field {:type :text}, :priority 2}}
+          :app/demo)
+        (get-in (deref +addons+) [:app/demo :name :field :type]))))
+  =>
+  :citext)
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/get-addon, :added "4.1"}
+(fact
+  "get-addon returns the stored addon and echoes the key"
+  (with-demo-app (fn [] (get-addon :name)))
+  =>
+  {:field {:type :text}, :priority 1, :key :name})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/add-addon, :added "4.1"}
+(fact
+  "add-addon stores a new addon entry for the current app"
+  (with-demo-app
+    (fn []
+      (do
+        (add-addon :extra {:type :uuid} 12)
+        (get-in (deref +addons+) [:app/demo :extra]))))
+  =>
+  {:field {:type :uuid}, :priority 12})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/addons-remove, :added "4.1"}
+(fact
+  "addons-remove removes an addon from the current app"
+  (with-demo-app
+    (fn []
+      (do
+        (addons-remove :name)
+        (has? (get (deref +addons+) :app/demo) :name))))
+  =>
+  false)
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/get-tracking, :added "4.1"}
+(fact
+  "get-tracking returns the built-in tracking presets"
+  (get-tracking :track/log)
+  =>
+  {:name "log",
+   :in {:create {:op-created :id, :time-created :time}},
+   :disable #{:modify},
+   :ignore #{:delete}})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/get-tracking-columns, :added "4.1"}
+(fact
+  "get-tracking-columns returns the temp tracking columns"
+  (get-tracking-columns :track/temp)
+  =>
+  [:time-created {:type :time} :time-updated {:type :time}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/get-access, :added "4.1"}
+(fact
+  "get-access returns the default public rls policy"
+  (get-access :access/public)
+  =>
+  {:sb/rls true,
+   :sb/access {:admin :all, :auth :select, :anon :select}})
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/fill-priority, :added "4.1"}
+(fact
+  "fill-priority annotates map entries while preserving separators"
+  (fill-priority
+    [{:field {:type :text}} :sep {:field {:type :uuid}}]
+    10)
+  =>
+  [{:field {:type :text}, :priority 10, :priority-index 0}
+   :sep
+   {:field {:type :uuid}, :priority 10, :priority-index 1}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/normalise-ref}
+(fact "normalise-ref uses real pointers and Vars, not map lookalikes"
+ [(normalise-ref (pointer {:context :fixture :module 'demo.core :id 'User}))
+  (normalise-ref (var type-id-v1))
+  (normalise-ref {:module 'demo.core :id 'User})
+  (normalise-ref nil)]
+ => '[demo.core/User lang.model.v1.spec-postgres.postgres-entity-util/type-id-v1 nil nil])
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/get-tracking}
+(fact "unknown preset and access values retain the original failure"
+ [(try (get-tracking :unknown) (catch error (ex-message error)))
+  (try (get-tracking-columns :unknown) (catch error (ex-message error)))
+  (try (get-access :unknown) (catch error (ex-message error)))]
+ => ["No matching clause: :unknown" "No matching clause: :unknown" "No matching clause: :unknown"])
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util-test/with-demo-app}
+(fact "fixture restores both registries and the function root on every exit"
+ (let [app-before @+app+ addons-before @+addons+ root-before (deref (var default-application))
+       success (with-demo-app (fn [] (add-addon :extra {:type :uuid} 12) :done))
+       clean-success [(= app-before @+app+) (= addons-before @+addons+) (= root-before (deref (var default-application)))]
+       failure (try (with-demo-app (fn [] (reset! +app+ {:broken true}) (throw (ex :argument {} :ex/message "fixture failure")))) (catch error (ex-message error)))]
+  [success clean-success failure (= app-before @+app+) (= addons-before @+addons+) (= root-before (deref (var default-application)))])
+ => [:done [true true true] "fixture failure" true true true])
+
+(ns lang.model.v1.spec-postgres.postgres-entity-util-test
+ (:require [lang.model.v1.spec-postgres.postgres-entity-util :refer :all]
+           [lang.core.impl :as impl] [lang.core.library :as lib]
+           [lang.core.library-snapshot :as snap] [lang.base.book :as book]
+           [lang.core.runtime :as rt] [std.lib.context.space :as space])
+ (:use code.test))
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/default-application}
+(fact "application follows the real runtime module, not the caller module"
+ (let [module (book/book-module {:lang :postgres :id 'actual.module :static {:application [:actual :second]}})
+       decoy (book/book-module {:lang :postgres :id 'caller.module :static {:application [:decoy]}})
+       b (book/book {:lang :postgres :grammar {:fixture true} :meta {:fixture true} :modules {'actual.module module 'caller.module decoy}})
+       library (lib/library:create {:snapshot (snap/snapshot {:postgres {:id :postgres :book b}})})
+       sp (space/space-create {:namespace 'caller.module})
+       spaces (atom {'caller.module sp (ns-current) sp})
+       runtime (rt/rt-default {:lang :postgres :module 'actual.module})]
+  (try
+   (reset! (:state sp) {:lang/postgres {:instance runtime}})
+   (let [results
+    (binding [impl/*library* library space/*spaces* spaces]
+     [(default-application 'caller.module)
+      (default-application)
+      (do (reset! (:state sp) {:lang/postgres {:instance (rt/rt-default {:lang :postgres :module 'absent.module})}})
+          (default-application 'caller.module))])]
+    (reset! (:state sp) {})
+    (reset! spaces {})
+    (lib/reset-all! library)
+    (lib/reset-all! library)
+    (reset! (:settings library) {})
+    [results @(:state sp) @spaces @(:settings library)])
+   (finally
+    (reset! (:state sp) {})
+    (reset! spaces {})
+    (lib/reset-all! library)
+    (reset! (:settings library) {}))))
+ => [[:actual :actual nil] {} {} {}])
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util/*ns-str*}
+(fact "namespace string binding restores the original default after failure"
+ [*ns-str*
+  (try (binding [*ns-str* "temporary"] (throw (ex :argument {} :ex/message *ns-str*)))
+       (catch error (ex-message error)))
+  *ns-str*]
+ => ["-" "temporary" "-"])
+
+(ns lang.model.v1.spec-postgres.postgres-entity-util-test
+  (:require [lang.model.v1.spec-postgres.postgres-entity-util :as subject]
+            [lang.core.impl :as impl]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap]
+            [lang.base.book :as book]
+            [lang.core.runtime :as rt]
+            [std.lib.context.space :as space])
+  (:use code.test))
+
+(defn isolated [function]
+  (let [module (book/book-module
+                 {:id 'fixture.pg,
+                  :lang :postgres,
+                  :static {:application [:fixture-app]}})
+        b (book/book
+            {:lang :postgres,
+             :grammar {:fixture true},
+             :meta {:fixture true},
+             :modules {'fixture.pg module}})
+        library (lib/library:create
+                  {:snapshot
+                   (snap/snapshot
+                     {:postgres {:id :postgres, :book b}})})
+        sp (space/space-create {:namespace 'fixture.pg})
+        spaces (atom {'fixture.pg sp})]
+    (try
+      (reset!
+        (:state sp)
+        {:lang/postgres
+         {:instance
+          (rt/rt-default {:lang :postgres, :module 'fixture.pg})}})
+      (binding [impl/*library* library space/*spaces* spaces]
+        (function))
+      (finally
+        (reset! (:state sp) {})
+        (reset! spaces {})
+        (lib/reset-all! library)
+        (reset! (:settings library) {})))))
 
 ^{:refer lang.model.v1.spec-postgres.postgres-entity-util/default-application}
-(Test/check
- [{:name "reads application metadata from the PostgreSQL Library overlay"
-   :test (fn [] (isolated (fn []
-                            (script/register-library-module!
-                             :postgres
-                             {:id 'fixture.pg
-                              :lang :postgres
-                             :static {:application [:fixture-app]}
-                             :code {}
-                             :fragment {}})
-                            (subject/default-application 'fixture.pg))))
-   :expected :fixture-app}])
+(fact
+  "reads application metadata from the PostgreSQL Library overlay"
+  (isolated (fn [] (subject/default-application 'fixture.pg)))
+  =>
+  :fixture-app)
+
+^{:refer lang.model.v1.spec-postgres.postgres-entity-util-test/isolated}
+(fact "isolated fixture restores the caller library and spaces even on failure"
+ (let [outer-library impl/*library* outer-spaces space/*spaces*
+       failure (try (isolated (fn [] (throw (ex :argument {} :ex/message "isolated failure")))) (catch error (ex-message error)))]
+  [failure (= outer-library impl/*library*) (= outer-spaces space/*spaces*)
+   (isolated (fn [] (subject/default-application 'fixture.pg)))])
+ => ["isolated failure" true true :fixture-app])

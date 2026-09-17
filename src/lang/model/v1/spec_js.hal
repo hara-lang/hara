@@ -1,60 +1,391 @@
 (ns lang.model.v1.spec-js
-  (:require [lang.base.book :as book]
-            [lang.base.book-meta :as book-meta]
-            [lang.base.grammar-api :as grammar-api]
-            [lang.base.registry :as registry]
+  (:config {:role :internal})
+  (:require [lang.base.emit :as emit]
+            [lang.base.emit-common :as common]
+            [lang.base.emit-data :as data]
+            [lang.base.emit-helper :as helper]
+            [lang.base.preprocess-base :as preprocess-base]
+            [lang.base.emit-top-level :as top]
+            [lang.base.grammar :as grammar]
+            [lang.model.v1.spec-js.rewrite :as rewrite]
+            [lang.model.v1.spec-js.jsx :as jsx]
+            [lang.model.v1.spec-xtalk.fn-js :as fn]
+            [lang.base.book :as book]
+            [lang.core.script :as script]
             [lang.model.v1.spec-js.meta :as meta]
-            [lang.model.v1.spec-js.js-grammar :as model]
-            [lang.model.v1.spec-xtalk :as xtalk]))
+            [lang.model.v1.spec-xtalk ]))
 
-(def +language+ :js)
-(def +tag+ :js)
-(def +version+ 1)
-(def +grammar-version+ model/+grammar-version+)
-(def +template+ model/+template-source+)
-(def +profile+ model/+profile+)
-(def +grammar+ model/+grammar+)
+(def ^:dynamic *template-fn* #'jsx/emit-jsx)
 
-(def +coordinate+
-  {:grammar/id +tag+
-   :grammar/version +grammar-version+
-   :grammar/release "alpha"
-   :grammar/facets []})
+(defn js-regex
+  "outputs the js regex"
+  {:added "4.0"}
+  [re]
+  (str "/" (RegExp/pattern re) "/"))
 
-(defn install-source
-  [catalog source]
-  (if (registry/find catalog (grammar-api/source-coordinate source))
-    catalog
-    (registry/install catalog source)))
+(defn js-emit-input-rest
+  [{:keys [symbol]} grammar mopts]
+  (str "..." (common/*emit-fn* symbol grammar mopts)))
 
-(defn install
-  [catalog]
-  (let [catalog (xtalk/install catalog)
-        catalog (install-source catalog +template+)
-        catalog (install-source catalog +profile+)]
-    (install-source catalog +grammar+)))
+(defn js-map-key
+  "emits a map key"
+  {:added "4.0"}
+  [key grammar mopts]
+  (cond (or (keyword? key) (string? key))
+    (data/default-map-key key grammar mopts)
+    :else
+    (str "[" (common/*emit-fn* key grammar mopts) "]")))
 
-(defn catalog
-  []
-  (install (registry/registry)))
+(defn js-vector
+  "emits a js vector"
+  {:added "4.0"}
+  [arr grammar mopts]
+  (let [o (first arr)]
+    (cond
+      (empty? arr) "[]"
+      (keyword? o) ((if (= :std.native.Var (Base/type *template-fn*))
+                      (deref *template-fn*)
+                      *template-fn*)
+                     arr
+                     grammar
+                     mopts)
+      :else (data/emit-coll :vector arr grammar mopts))))
 
-(defn select
-  ([] (select (catalog)))
-  ([catalog]
-   (registry/resolve catalog
-                     {:grammar/id +tag+
-                      :grammar/version +grammar-version+})))
+(defn js-map
+  "emits a js map"
+  {:added "4.0"}
+  [m grammar mopts]
+  (let [rest (get m ':..)
+        syms (get m ':#)
+        out-syms (map
+                   (fn [migration-argument-0]
+                     (common/*emit-fn*
+                       migration-argument-0
+                       grammar
+                       mopts))
+                   syms)
+        out-keys (map
+                   (fn [pair] (data/emit-map-entry pair grammar mopts))
+                   (seq (dissoc m :# :..)))
+        out-rest (if rest
+                   (map
+                     (fn [migration-argument-0]
+                       (str
+                         "..."
+                         (common/*emit-fn*
+                           migration-argument-0
+                           grammar
+                           mopts)))
+                     (if (vector? rest) rest [rest])))]
+    (data/emit-coll-layout
+      :map
+      common/*indent*
+      (concat out-syms out-keys out-rest)
+      grammar
+      mopts)))
 
-(def +meta+ meta/+meta+)
+(defn js-set
+  "emits a js set"
+  {:added "4.0"}
+  [arr grammar mopts]
+  (cond
+    (vector? (first arr)) (common/*emit-fn*
+                            (apply list 'tab (first arr))
+                            grammar
+                            mopts)
+    :else (let [migration-js-set-body (->>
+                                        arr
+                                        (sort-by
+                                          (fn
+                                            [e]
+                                            (if
+                                              (map? e)
+                                              [1
+                                               ((fn
+                                                  [value]
+                                                  (cond
+                                                    (bytes? value)
+                                                    (str/decode-utf8
+                                                      value)
+                                                    (keyword? value)
+                                                    (str/to-string
+                                                      value)
+                                                    (string? value)
+                                                    value
+                                                    :else
+                                                    (pr-str value)))
+                                                 e)]
+                                              [0
+                                               ((fn
+                                                  [value]
+                                                  (cond
+                                                    (bytes? value)
+                                                    (str/decode-utf8
+                                                      value)
+                                                    (keyword? value)
+                                                    (str/to-string
+                                                      value)
+                                                    (string? value)
+                                                    value
+                                                    :else
+                                                    (pr-str value)))
+                                                 e)])))
+                                        (map
+                                          (fn
+                                            [e]
+                                            (cond
+                                              (map? e)
+                                              (->>
+                                                (seq e)
+                                                (map
+                                                  (fn
+                                                    [pair]
+                                                    (data/emit-map-entry
+                                                      pair
+                                                      grammar
+                                                      mopts)))
+                                                (str/join ","))
+                                              (or
+                                                (symbol? e)
+                                                (string? e)
+                                                (and
+                                                  (form? e)
+                                                  (= :.. (first e))))
+                                              (common/*emit-fn*
+                                                e
+                                                grammar
+                                                mopts)
+                                              :else
+                                              (throw
+                                                (ex
+                                                  :generic
+                                                  {:entry e}
+                                                  :ex/message
+                                                  "Not allowed")))))
+                                        (str/join ","))]
+            (str "{" migration-js-set-body "}"))))
 
-(def +selection+ (select))
+(defn js-symbol-global [fsym grammar mopts]
+  (list
+    '.
+    'globalThis
+    [(helper/emit-symbol-full fsym (namespace fsym) grammar)]))
+
+(defn js-defclass
+  "creates a defclass function"
+  {:added "4.0"}
+  [[_ sym inherit & body]]
+  (let [{:as mopts, :keys [module]} (preprocess-base/macro-opts)
+        body (top/transform-defclass-inner body)
+        sym-name (if module
+                   (symbol (name (:id module)) (name sym))
+                   (symbol (name sym)))
+        supers (list 'quote (vec (remove keyword? inherit)))]
+    (seq
+      (concat
+        (list :-)
+        (list :class)
+        (list sym-name)
+        (list :extends)
+        (list supers)
+        (list \{)
+        (list
+          (seq
+            (concat
+              (list \\)
+              (list \\)
+              (list
+                (seq
+                  (concat
+                    (list \|)
+                    (list (seq (concat (list 'do) body))))))
+              (list \\))))
+        (list \})))))
+
+(defn js-tf-var-let
+  "outputs the let keyword"
+  {:added "4.0"}
+  [[_ decl & args]]
+  (list 'var* :let decl := (last args)))
+
+(defn js-tf-var-const
+  "outputs the const keyword"
+  {:added "4.0"}
+  [[_ decl & args]]
+  (list 'var* :const decl := (last args)))
+
+(defn js-tf-for-object
+  "custom for:object code"
+  {:added "4.0"}
+  [[_ [[k v] m] & body]]
+  (let [[binding method] (cond (= k '_) [v  'Object.values]
+                               (= v '_) [k  'Object.keys]
+                               :else [[k v] 'Object.entries])]
+    (apply list 'for [(list 'var* :let binding) :of (list method m)]
+           body)))
+
+(defn js-tf-for-array
+  "custom for:array code"
+  {:added "4.0"}
+  [[_ [e arr] & body]]
+  (if (vector? e)
+    (let [[i v] e]
+      (let [migration-template-value (syntax-quote
+                                       ((unquote 'for)
+                                         [((unquote 'var*)
+                                            :let
+                                            (unquote i)
+                                            :=
+                                            0)
+                                          ((unquote '<)
+                                            (unquote i)
+                                            ((unquote '.)
+                                              (unquote arr)
+                                              (unquote 'length)))
+                                          (:++ (unquote i))]
+                                         ((unquote 'var*)
+                                           :let
+                                           (unquote v)
+                                           ((unquote '.)
+                                             (unquote arr)
+                                             [(unquote i)]))
+                                         (unquote-splicing body)))]
+        (with-meta
+          migration-template-value
+          (merge
+            (or (meta migration-template-value) {})
+            (select-keys (or (template-meta) {}) [:line :column])))))
+    (let [migration-template-value (syntax-quote
+                                     ((unquote 'for)
+                                       [((unquote 'var*)
+                                          :let
+                                          (unquote e))
+                                        :of
+                                        ((unquote '%) (unquote arr))]
+                                       (unquote-splicing body)))]
+      (with-meta
+        migration-template-value
+        (merge
+          (or (meta migration-template-value) {})
+          (select-keys (or (template-meta) {}) [:line :column]))))))
+
+(defn js-tf-for-iter
+  "custom for:iter code"
+  {:added "4.0"}
+  [[_ [e it] & body]]
+  (apply list 'for [(list 'var* :let e) :of (list '% it)]
+         body))
+
+(defn js-tf-prototype-create [[_ m]]
+  (let [migration-template-value (syntax-quote
+                                   ((unquote 'do)
+                                     ((unquote 'var) (unquote 'out) {})
+                                     ((unquote 'for:object)
+                                       [[(unquote 'k) (unquote 'f)]
+                                        (unquote m)]
+                                       ((unquote 'if)
+                                         ((unquote 'x:is-function?)
+                                           (unquote 'f))
+                                         (:=
+                                           ((unquote '.)
+                                             (unquote 'out)
+                                             [(unquote 'k)])
+                                           ((unquote 'fn)
+                                             [(unquote '...args)]
+                                             ((unquote 'return)
+                                               ((unquote 'f)
+                                                 (unquote 'this)
+                                                 (unquote '...args)))))
+                                         (:=
+                                           ((unquote '.)
+                                             (unquote 'out)
+                                             [(unquote 'k)])
+                                           (unquote 'f))))
+                                     ((unquote 'return)
+                                       (unquote 'out))))]
+    (with-meta
+      migration-template-value
+      (merge
+        (or (meta migration-template-value) {})
+        (select-keys (or (template-meta) {}) [:line :column])))))
+
+(defn js-tf-prototype-method
+  [[_ obj key]]
+  (let [value (list 'x:get-key obj key nil)]
+    (list ':?
+          (list 'x:is-function? value)
+          (list 'fn ['self 'a 'b 'c 'd]
+                (list 'return
+                      (list '. value (list 'call 'self 'a 'b 'c 'd))))
+          value)))
+
+(def +features+
+  (-> (grammar/build :exclude [:pointer
+                               :block
+                               :data-range
+                               :functional-core])
+       (grammar/build:override
+        {:var         {:symbol '#{var*}}
+         :pow         {:raw "Math.pow" :emit :invoke}
+         :mul         {:value true}
+         :defn        {:symbol '#{defn defn- defelem}}
+         :with-global {:value true :raw "globalThis"}
+        :defclass    {:macro  #'js-defclass    :emit :macro}
+        :for-object  {:macro  #'js-tf-for-object  :emit :macro}
+        :for-array   {:macro  #'js-tf-for-array   :emit :macro}
+        :for-iter    {:macro  #'js-tf-for-iter   :emit :macro}
+        :prototype-get       {:emit :alias :raw 'Object.getPrototypeOf}
+        :prototype-set       {:emit :alias :raw 'Object.setPrototypeOf}
+        :prototype-create    {:macro #'js-tf-prototype-create  :emit :macro
+                              :op-spec {:allow-blocks true}}
+        :prototype-method    {:macro #'js-tf-prototype-method  :emit :macro}
+        :prototype-tostring  {:emit :unit  :default "toString"}})
+      (grammar/build:override fn/+js+)
+      (grammar/build:extend
+       {:property   {:op :property  :symbol  '#{property}   :assign ":" :raw "property" :value true :emit :def-assign}
+        :teq        {:op :teq       :symbol  '#{===}        :raw "===" :emit :bi}
+        :tneq       {:op :tneq      :symbol  '#{not==}      :raw "!==" :emit :bi}
+        :delete     {:op :delete    :symbol  '#{del}        :raw "delete" :value true :emit :prefix}
+        :typeof     {:op :typeof    :symbol  '#{typeof}     :raw "typeof" :emit :prefix}
+        :instanceof {:op :instof    :symbol  '#{instanceof} :raw "instanceof" :emit :bi}
+        :undef      {:op :undef     :symbol  '#{undefined}  :raw "undefined" :value true :emit :throw}
+        :nan        {:op :nan       :symbol  '#{NaN} :raw "NaN" :value true :emit :throw}
+        :vargs      {:op :vargs     :symbol  '#{...} :raw "...vargs" :value true :emit :throw}
+        :var-let    {:op :var-let   :symbol  '#{var}     :macro  #'js-tf-var-let :emit :macro}
+        :var-const  {:op :var-const :symbol  '#{const}   :macro  #'js-tf-var-const :emit :macro}})))
+
+(def +template+
+  (->> {:banned #{:keyword},
+        :block {:for {:parameter {:sep ";"}}},
+        :highlight '#{reject tab del return break},
+        :default
+        {:common {:namespace-full "$$"},
+         :function
+         {:raw "function", :space "", :args {:rest #'js-emit-input-rest}}},
+        :function {:defgen {:raw "function*"}, :fn.inner {:raw ""}},
+        :allow {:assign #{:symbol :vector :set :map}},
+        :define
+        {:defglobal {:raw ""}, :def {:raw "var"}, :declare {:raw "var"}},
+        :token
+        {:nil {:as "null"},
+         :regex {:custom #'js-regex},
+         :string {},
+         :symbol {:global #'js-symbol-global}},
+        :xtalk {:notify {:custom true}},
+        :rewrite {:staging [#'rewrite/js-rewrite-stage]},
+        :data
+        {:vector {:custom #'js-vector},
+         :set {:custom #'js-set},
+         :map {:custom #'js-map},
+         :map-entry {:key-fn #'js-map-key}}}
+       (merge-nested (emit/default-grammar))))
+
+(def +grammar+
+  (grammar/grammar :js
+    (grammar/to-reserved +features+)
+    +template+))
 
 (def +book+
-  (book/book {:lang +language+
-              :meta +meta+
-              :parent :xtalk
-              :version +version+
-              :coordinate +coordinate+
-              :grammar (:grammar +selection+)
-              :selection +selection+}))
-(def +init+ +book+)
+  (book/book {:lang :js :parent :xtalk :meta meta/+meta+ :grammar +grammar+}))
+
+(def +init+ (script/install +book+))

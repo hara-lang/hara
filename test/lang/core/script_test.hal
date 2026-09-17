@@ -1,982 +1,762 @@
 (ns lang.core.script-test
-  (:require [lang.core.library :as library]
-            [lang.core.registry :as registry]
-            [lang.core.runtime :as runtime]
-            [lang.core.script :as script]))
-
-(defn isolated
-  [function]
-  (let [snapshot (script/script-snapshot)]
-    (try
-      (script/script-reset!)
-      (function)
-      (finally (script/script-restore! snapshot)))))
-
-(def schema-fixture :scalar)
-
-^{:refer lang.core.script/register-code}
-(Test/check
- [{:name "copies an inherited module before registering an entry in a child Library"
-   :test (fn []
-           (isolated
-            (fn []
-              (let [parent (library/default-library)
-                    child (library/library-create {:id :child :parent parent})
-                    _ (library/library-add-module!
-                       parent :xtalk
-                       {:id 'demo.source :lang :xtalk :code {} :fragment {}})
-                    _ (library/library-add-module!
-                       child :xtalk
-                       {:id 'demo.test :lang :xtalk :code {} :fragment {}})
-                    entry (library/with:library [child]
-                            (script/register-code :xtalk '(defn local [] 1) {} 'demo.source))]
-                [(:module entry)
-                 (:id entry)
-                 (get-in (library/library-raw-book-modules child :xtalk)
-                         ['demo.source :code 'local :id])]))))
-   :expected ['demo.source 'local 'local]}])
-
-^{:refer lang.core.script/eval-form}
-(Test/check
- [{:name "reports a missing runtime through the direct evaluator contract"
-   :test (fn [] (try
-                  (script/eval-form :postgres 'demo.a '(+ 1 2))
-                  (catch error [(:ex/code (ex-data error))
-                               (:module (ex-data error))])))
-   :expected [:hara/dependency 'demo.a]}])
-
-^{:refer lang.core.script/eval-forms}
-(Test/check
- [{:name "reports a missing runtime through the plural evaluator contract"
-   :test (fn [] (try
-                  (script/eval-forms :postgres ['(+ 1 2)])
-                  (catch error (:ex/code (ex-data error)))))
-   :expected :hara/dependency}])
-
-^{:refer lang.core.script/script-snapshot}
-(Test/check [{:name "captures empty script state"
-              :test (fn [] (let [value (isolated script/script-snapshot)]
-                             [(dissoc value :library)
-                              (select-keys (:library value) [:revision :books :selected])]))
-              :expected [{:scripts {} :compile-cache {}}
-                         {:revision 0 :books {} :selected {}}]}])
-
-^{:refer lang.core.script/script-restore!}
-(Test/check [{:name "restores source modules through the Library snapshot"
-              :test (fn [] (let [value (isolated (fn []
-                                                    (let [current (library/library-create {:id :fixture})]
-                                                      (library/library-add-module!
-                                                       current :postgres
-                                                       {:id 'demo :lang :postgres :code {} :fragment {}})
-                                                      (script/script-restore!
-                                                       {:library (library/library-raw-snapshot current)
-                                                        :scripts {} :compile-cache {}}))))]
-                             [(dissoc value :library)
-                              (keys (:selected (:library value)))
-                              (try
-                                (script/script-restore!
-                                 {:modules {'legacy {:id 'legacy :lang :postgres}}})
-                                false
-                                (catch error true))]))
-              :expected [{:scripts {} :compile-cache {}}
-                         [:postgres]
-                         true]}])
-
-^{:refer lang.core.script/script-reset!}
-(Test/check [{:name "clears script state idempotently"
-              :test (fn [] (isolated (fn [] (mapv (fn [value]
-                                                    (dissoc value :library))
-                                                  [(script/script-reset!) (script/script-reset!)]))))
-              :expected [{:scripts {} :compile-cache {}}
-                         {:scripts {} :compile-cache {}}]}])
-
-^{:refer lang.core.script/reset-compile-cache!}
-(Test/check [{:name "clears only structural compile cache"
-              :test (fn [] (isolated (fn []
-                                       (swap! script/+compile-cache+ assoc :entry :result)
-                                       (script/reset-compile-cache!)
-                                       (deref script/+compile-cache+))))
-              :expected {}}])
-
-^{:refer lang.core.script/with:cache-none}
-(Test/check [{:name "binds cache bypass for an enclosed form"
-              :test (fn [] (script/with:cache-none script/*cache-none*))
-              :expected true}])
-
-^{:refer lang.core.script/with:cache-force}
-(Test/check [{:name "binds cache refresh for an enclosed form"
-              :test (fn [] (script/with:cache-force script/*cache-force*))
-              :expected true}])
-
-^{:refer lang.core.script/namespace-symbol}
-(Test/check [{:name "returns the current source namespace"
-              :test (fn [] (script/namespace-symbol))
-              :expected 'lang.core.script}])
-
-^{:refer lang.core.script/module-symbol}
-(Test/check [{:name "uses configured module mapping when present"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.script {})
-                                       (script/module-symbol))))
-              :expected 'demo.script}])
-
-^{:refer lang.core.script/module-symbol-for}
-(Test/check [{:name "uses an explicit source namespace to find its configured module"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module
-                                        :js 'demo.public {} 'demo.internal)
-                                       [(script/module-symbol-for 'demo.internal)
-                                        (script/module-symbol-for 'demo.unknown)])))
-              :expected ['demo.public 'demo.unknown]}])
-
-^{:refer lang.core.script/current-module-id}
-(Test/check [{:name "publishes the current logical module id"
-              :test (fn [] (script/current-module-id))
-              :expected 'lang.core.script}])
-
-^{:refer lang.core.script/symbol-id}
-(Test/check [{:name "drops a symbol namespace for entry ids"
-              :test (fn [] (script/symbol-id 'demo/value))
-              :expected 'value}])
-
-^{:refer lang.core.script/require-module}
-(Test/check [{:name "extracts module ids from require specs"
-              :test (fn [] [(script/require-module 'demo.a)
-                            (script/require-module ['demo.b :as 'b])])
-              :expected ['demo.a 'demo.b]}])
-
-^{:refer lang.core.script/require-primary?}
-(Test/check [{:name "recognizes only explicit primary require specs"
-              :test (fn [] [(script/require-primary? 'demo.a)
-                            (script/require-primary? ['demo.a :primary true])])
-              :expected [false true]}])
-
-^{:refer lang.core.script/require-link}
-(Test/check [{:name "derives default and aliased require links"
-              :test (fn [] [(script/require-link 'demo.a)
-                            (script/require-link ['demo.b :as 'b])])
-              :expected [['demo.a 'demo.a] ['b 'demo.b]]}])
-
-^{:refer lang.core.script/module-config}
-(Test/check [{:name "creates source-faithful module data"
-              :test (fn [] (select-keys (script/module-config :postgres 'demo.a
-                                                              {:require ['demo.b]
-                                                               :emit {:code {:transforms {:entry ['demo/transform]}}}})
-                                        [:id :lang :require :link :code :fragment :emit]))
-              :expected {:id 'demo.a :lang :postgres :require ['demo.b]
-                         :link {'- 'demo.a 'demo.b 'demo.b} :code {} :fragment {}
-                         :emit {:code {:transforms {:entry ['demo/transform]}}}}}])
-
-^{:refer lang.core.script/configure-module}
-(Test/check [{:name "registers module source against the current namespace"
-              :test (fn [] (isolated (fn []
-                                       (select-keys (script/configure-module :postgres 'demo.a {:static {:mode :test}})
-                                                    [:id :lang :static]))))
-              :expected {:id 'demo.a :lang :postgres :static {:mode :test}}}
-             {:name "keeps source module configuration local to its target language"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a
-                                                                 {:static {:application ["scratch"]}})
-                                       [(select-keys (script/configure-module :xtalk 'demo.a {})
-                                                     [:id :lang :static])
-                                        (select-keys (library/library-get-module
-                                                      (library/default-library) :postgres 'demo.a)
-                                                     [:id :lang :static])])))
-              :expected [{:id 'demo.a :lang :xtalk}
-                         {:id 'demo.a :lang :postgres
-                          :static {:application ["scratch"]}}]}])
-
-^{:refer lang.core.script/portable-schema-form}
-(Test/check [{:name "recursively retains portable schema data"
-              :test (fn [] (script/portable-schema-form {:a [#{'demo/a}]}))
-              :expected {:a [#{'demo/a}]}}])
-
-^{:refer lang.core.script/schema-value-form}
-(Test/check [{:name "ignores ordinary declaration Vars"
-              :test (fn [] (let [value (var schema-fixture)]
-                           (script/schema-value-form value)))
-              :expected nil}])
-
-^{:refer lang.core.script/module-source-symbol}
-(Test/check [{:name "resolves a module owner from source contexts"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (script/module-source-symbol 'demo.a))))
-              :expected 'lang.core.script}
-             {:name "resolves a generic source module through a target Book parent"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :xtalk 'demo.a {})
-                                       (script/module-source-symbol :js 'demo.a))))
-              :expected 'lang.core.script}])
-
-^{:refer lang.core.script/module-schema-values}
-(Test/check [{:name "collects no scalar schema declarations"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (script/module-schema-values 'demo.a))))
-              :expected {}}])
-
-^{:refer lang.core.script/refresh-module-schemas}
-(Test/check [{:name "merges collected schemas into the module"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (select-keys (script/refresh-module-schemas 'demo.a) [:id :schema]))))
-              :expected {:id 'demo.a :schema {}}}
-             {:name "updates a generic module when it is requested by a target Book"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :xtalk 'demo.a {})
-                                       (select-keys (script/refresh-module-schemas :js 'demo.a)
-                                                    [:id :lang :schema]))))
-              :expected {:id 'demo.a :lang :xtalk :schema {}}}])
-
-^{:refer lang.core.script/register-code}
-(Test/check [{:name "builds registered code symbols"
-              :test (fn [] (symbol (str 'demo.a "/" (name 'exposed))))
-              :expected 'demo.a/exposed}])
-
-^{:refer lang.core.script/code-operation-key}
-(Test/check [{:name "retains every portable declaration operation instead of collapsing it to def"
-              :test (fn [] [(script/code-operation-key '(defn ping [] "pong"))
-                            (script/code-operation-key '(deftype Log []))
-                            (script/code-operation-key '(deftrigger audit []))
-                            (script/code-operation-key '(defenum Status []))
-                            (script/code-operation-key '(defconst version 1))
-                            (script/code-operation-key '(def value 1))])
-              :expected [:defn :deftype :deftrigger :defenum :defconst :def]}])
-
-^{:refer lang.core.script/register-code}
-(Test/check [{:name "registers code in the logical module"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (script/register-code '(defn exposed [] 1))
-                                       (select-keys (library/library-get-entry
-                                                     (library/default-library)
-                                                     :postgres 'demo.a :code 'exposed)
-                                                    [:id :module :lang :section :op]))))
-              :expected {:id 'exposed :module 'demo.a :lang :postgres :section :code :op 'defn}}])
-
-^{:refer lang.core.script/register-code}
-(Test/check [{:name "retains declaration metadata for typed compiler consumers"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (script/register-code
-                                        :postgres
-                                        '(defn exposed [] 1)
-                                        {:static/public true
-                                         :api/meta {:kind :test}})
-                                       (select-keys
-                                        (library/library-get-entry (library/default-library)
-                                                                   :postgres 'demo.a :code 'exposed)
-                                        [:static/public :api/meta]))))
-              :expected {:static/public true :api/meta {:kind :test}}}])
-
-^{:refer lang.core.script/register-code}
-(Test/check [{:name "merges generated declaration metadata into the registered source form"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :go 'demo.a {})
-                                       (let [entry (script/register-code
-                                                    :go
-                                                    '(defn generated [] 1)
-                                                    {:- [:int]})]
-                                         [(get entry :-)
-                                          (:declaration-meta entry)
-                                          (get (meta (second (:form entry))) :-)]))))
-              :expected [[:int] {:- [:int]} [:int]]}])
-
-^{:refer lang.core.script/register-fragment}
-(Test/check [{:name "associates fragment data into an atom"
-              :test (fn [] (let [entries (atom {})]
-                           (swap! entries assoc-in ['demo.a :fragment 'hidden] {:id 'hidden})
-                           (get-in (deref entries) ['demo.a :fragment 'hidden :id])))
-              :expected 'hidden}])
-
-^{:refer lang.core.script/register-fragment}
-(Test/check [{:name "registers fragments in the logical module"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (script/register-fragment '(defmacro hidden [] 1) nil)
-                                       (select-keys (library/library-get-entry
-                                                     (library/default-library)
-                                                     :postgres 'demo.a :fragment 'hidden)
-                                                    [:id :module :lang :section]))))
-              :expected {:id 'hidden :module 'demo.a :lang :postgres :section :fragment}}])
-
-^{:refer lang.core.script/register-fragment}
-(Test/check [{:name "retains fragment declaration metadata"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (script/register-fragment
-                                        :postgres
-                                        '(defmacro hidden [] 1)
-                                        nil
-                                        {:static/return [:text]})
-                                       (select-keys
-                                        (library/library-get-entry (library/default-library)
-                                                                   :postgres 'demo.a :fragment 'hidden)
-                                        [:static/return]))))
-              :expected {:static/return [:text]}}])
-
-^{:refer lang.core.script/register-fragment-pointer}
-(Test/check [{:name "registers portable fragment pointers with retained return metadata"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (let [value (script/register-fragment-pointer
-                                                    :postgres 'helper '(auth.uid)
-                                                    {:- [:uuid]})
-                                             entry (library/library-get-entry
-                                                    (library/default-library)
-                                                    :postgres 'demo.a :fragment 'helper)]
-                                         [(pointer? value)
-                                          (IPointer/ptr-context value)
-                                          (:op entry)
-                                          (:static/return entry)]))))
-              :expected [true :lang/postgres 'def$ [:uuid]]}])
-
-^{:refer lang.core.script/register-macro-fragment}
-(Test/check [{:name "registers source macro fragments with their compiler template"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (script/register-macro-fragment
-                                        :postgres
-                                        '(defmacro auth-uid [] '(auth.uid))
-                                        (fn [] '(auth.uid)))
-                                       (let [entry (library/library-get-entry
-                                                    (library/default-library)
-                                                    :postgres 'demo.a :fragment 'auth-uid)]
-                                         [(select-keys entry [:lang :section :op :op-key])
-                                          (fn? (:template entry))]))))
-              :expected [{:lang :postgres :section :fragment
-                          :op 'defmacro :op-key :defmacro}
-                         true]}])
-
-^{:refer lang.core.script/script-context}
-(Test/check [{:name "creates stable language pointer contexts"
-              :test (fn [] (script/script-context :postgres))
-              :expected :lang/postgres}])
-
-^{:refer lang.core.script/register-code-pointer}
-(Test/check [{:name "registers code and returns the corresponding native pointer"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (let [value (script/register-code-pointer
-                                                    :postgres
-                                                    '(deftype Log [])
-                                                    {:public true})]
-                                         [(pointer? value)
-                                         (IPointer/ptr-context value)
-                                         (get-in value [:entry :id])
-                                         (get-in value [:entry :op-key])
-                                         (:static/public
-                                          (library/library-get-entry (library/default-library)
-                                                                     :postgres 'demo.a :code 'Log))]))))
-              :expected [true :lang/postgres 'Log :deftype true]}])
-
-^{:refer lang.core.script/script-tags}
-(Test/check
- [{:name "includes Foundation and canonical PostgreSQL grammar tags"
-   :test (fn [] (script/script-tags :postgres))
-   :expected [:pg :postgres]}
-  {:name "uses a precompiled grammar index without materializing a Book"
-   :test (fn []
-           (let [before (registry/registry-snapshot)]
-             (try
-               (reset! registry/+book-macro-registry+
-                       {:fixture {:tag :fixture
-                                  :definitions ['defn]
-                                  :highlights ['return]
-                                  :highlight-meta {}}})
-               [(script/script-tags :fixture)
-                (script/script-definition-symbols :fixture)
-                (script/script-highlight-symbols :fixture)]
-               (finally (registry/registry-restore! before)))))
-   :expected [[:fixture] ['defn] ['return]]}])
-
-^{:refer lang.core.script/script-definition-symbols}
-(Test/check [{:name "finds PostgreSQL code declaration operations from the grammar"
-              :test (fn [] (let [symbols (set (script/script-definition-symbols :postgres))]
-                           [(has? symbols 'deftype)
-                            (has? symbols 'defenum)
-                            (has? symbols 'deftrigger)
-                            (has? symbols 'defconst)]))
-              :expected [true true true true]}])
-
-^{:refer lang.core.script/script-highlight-symbols}
-(Test/check [{:name "returns the PostgreSQL grammar's explicit highlight declarations"
-              :test (fn [] (script/script-highlight-symbols :postgres))
-              :expected ['br 'break 'return 'set=]}])
-
-^{:refer lang.core.script/script-quote-macro-expansion}
-(Test/check [{:name "quotes target macro bodies without host evaluation"
-              :test (fn [] (let [form (script/script-quote-macro-expansion
-                                    ['(auth.uid)])]
-                           [(first form) (first (second form))
-                            (first (nth form 2))]))
-              :expected ['list 'quote 'do]}])
-
-^{:refer lang.core.script/script-runtime-macro-body}
-(Test/check [{:name "converts vector macro declarations to quoted target output"
-              :test (fn [] (let [body (script/script-runtime-macro-body
-                                    ['[] '(auth.uid)])]
-                           [(first body) (first (second body))]))
-              :expected [[] 'list]}])
-
-^{:refer lang.core.script/script-defmacro-expansion}
-(Test/check [{:name "builds host macro and fragment registration expansion"
-              :test (fn [] (let [form (script/script-defmacro-expansion
-                                    :postgres
-                                    (with-meta 'auth-uid {:static/return [:text]})
-                                    ['[] '(auth.uid)]
-                                    'demo.pg)]
-                           [(first form)
-                            (str/includes? (pr-str form) ":static/return")]))
-              :expected ['do true]}])
-
-^{:refer lang.core.script/script-macro-parts}
-(Test/check [{:name "extracts the operation and tag from generated aliases"
-              :test (fn [] (script/script-macro-parts '(deftype.pg ScriptLog)))
-              :expected {:operation "deftype" :tag :pg}}])
-
-^{:refer lang.core.script/script-macro-language}
-(Test/check [{:name "maps short generated tags to canonical language names"
-              :test (fn [] [(script/script-macro-language '(deftype.pg ScriptLog))
-                            (script/script-macro-language '(deftype.xt ScriptLog))
-                            (script/script-macro-language '(!.py (+ 1 2)))])
-              :expected [:postgres :xtalk :python]}])
-
-^{:refer lang.core.script/script-macro-bindings}
-(Test/check [{:name "maps each grammar's aliases to generic macro implementation Vars"
-              :test (fn [] (let [bindings (set (script/script-macro-bindings :postgres))
-                                 xtalk-bindings (set (script/script-macro-bindings :xtalk))]
-                             [(has? bindings ['!.pg
-                                              'lang.core.script/script-generated-eval])
-                              (has? bindings ['def$.pg
-                                              'lang.core.script/script-generated-fragment])
-                              (has? bindings ['defmacro.pg
-                                              'lang.core.script/script-generated-defmacro])
-                              (has? bindings ['deftype.pg
-                                              'lang.core.script/script-generated-definition])
-                              (has? xtalk-bindings ['defn.xt
-                                              'lang.core.script/script-generated-definition])
-                              (has? xtalk-bindings ['defmacro.xt
-                                              'lang.core.script/script-generated-defmacro])]))
-              :expected [true true true true true true]}])
-
-^{:refer lang.core.script/script-intern-macros!}
-(Test/check [{:name "interns generated aliases through the stable Runtime API"
-              :test (fn []
-                      (script/script-intern-macros! 'lang.core.script-test :xtalk)
-                      [(not (nil? (Base/resolve 'lang.core.script-test/!.xt)))
-                       (not (nil? (Base/resolve 'lang.core.script-test/def$.xt)))
-                       (not (nil? (Base/resolve 'lang.core.script-test/defmacro.xt)))
-                       (not (nil? (Base/resolve 'lang.core.script-test/defn.xt)))
-                       (= 'def
-                          (first
-                           (macroexpand-1
-                            '(lang.core.script-test/defn.xt generated [] 1))))])
-              :expected [true true true true true]}])
-
-^{:refer lang.core.script/module-loaded?}
-(Test/check [{:name "recognizes registered module state"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (script/module-loaded? 'demo.a))))
-              :expected true}])
-
-^{:refer lang.core.script/load-module}
-(Test/check [{:name "loads already-registered empty modules without source reload"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.a {})
-                                       (script/load-module 'demo.a))))
-              :expected 'demo.a}
-             {:name "loads a generic module through a target Book parent"
-             :test (fn [] (isolated (fn []
-                                       (script/configure-module :xtalk 'demo.a {})
-                                       (script/load-module :js 'demo.a))))
-              :expected 'demo.a}
-             {:name "keeps a default source module inherited by a child Library"
-              :test (fn [] (isolated (fn []
-                                       (let [default-library (library/default-library)
-                                             snapshot (library/library-raw-snapshot default-library)
-                                             source-module {:id 'demo.source :source 'demo.source
-                                                            :lang :xtalk :code {} :fragment {}}
-                                             child (library/library-create
-                                                    {:id :child :parent default-library})]
-                                         (try
-                                           (library/library-add-module! default-library :xtalk source-module)
-                                           (library/with:library [child]
-                                             (script/load-module :js 'demo.source)
-                                             [(nil? (get (library/library-raw-book-modules
-                                                          child :xtalk)
-                                                         'demo.source))
-                                              (= source-module
-                                                 (get (library/library-raw-book-modules
-                                                       default-library :xtalk)
-                                                      'demo.source))])
-                                           (finally
-                                             (library/library-restore! default-library snapshot)))))))
-              :expected [true true]}
-             {:name "loads a script module already owned by the active child Library"
-              :test (fn [] (isolated (fn []
-                                       (let [child (library/library-create
-                                                    {:id :child
-                                                     :parent (library/default-library)})]
-                                         (library/with:library [child]
-                                           (script/configure-module
-                                            :js 'demo.test {} 'demo.test)
-                                            (script/load-module :js 'demo.test))))))
-              :expected 'demo.test}])
-
-^{:refer lang.core.script/load-module :id reloads-source-registration}
-(Test/check
- [{:name "reloads an already-loaded source namespace after its Library registration resets"
-   :test (fn []
-           (let [snapshot (script/script-snapshot)]
-             (try
-               (script/script-reset!)
-               [(script/load-module :js 'xt.lang.spec-base)
-                (script/module-loaded? :xtalk 'xt.lang.spec-base)]
-               (finally (script/script-restore! snapshot)))))
-   :expected ['xt.lang.spec-base true]}])
-
-^{:refer lang.core.script/load-module :id loads-transitive-color-source}
-(Test/check
- [{:name "loads the transitive color source declaration without compiling target code"
-   :test (fn []
-           (let [snapshot (script/script-snapshot)]
-             (try
-               (script/script-reset!)
-               [(script/load-module :js 'xt.lang.common-color)
-                (script/module-loaded? :xtalk 'xt.lang.common-color)
-                (script/module-loaded? :xtalk 'xt.lang.common-math)
-                (script/module-loaded? :xtalk 'xt.lang.common-string)]
-               (finally (script/script-restore! snapshot)))))
-   :expected ['xt.lang.common-color true true true]}])
-
-^{:refer lang.core.script/script-options}
-(Test/check [{:name "normalizes script call option shapes"
-              :test (fn [] [(script/script-options [])
-                            (script/script-options [{:runtime :default}])
-                            (script/script-options ['demo.a {:runtime :default}])
-                            (script/script-options 'demo.source [{:runtime :default}])])
-              :expected [['lang.core.script {}]
-                         ['lang.core.script {:runtime :default}]
-                         ['demo.a {:runtime :default}]
-                         ['demo.source {:runtime :default}]]}])
-
-^{:refer lang.core.script/script-ns-import}
-(Test/check [{:name "returns an empty primary set for an empty script"
-              :test (fn [] (isolated (fn [] (script/script-ns-import :postgres {}))))
-              :expected #{}}
-             {:name "retains require links without loading source namespaces"
-              :test (fn [] (isolated (fn []
-                                       (script/script-ns-import
-                                        :postgres
-                                        {:require ['demo.missing]}))))
-              :expected #{}}])
-
-^{:refer lang.core.script/script-load-requires!}
-(Test/check [{:name "loads an already registered required module on demand"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :postgres 'demo.dep {})
-                                       [(script/script-load-requires!
-                                         :postgres
-                                         {:require ['demo.dep]})
-                                        (script/module-loaded? :postgres 'demo.dep)])))
-              :expected [nil true]}])
-
-^{:refer lang.core.script/setup}
-(Test/check [{:name "configures and records test scripts"
-              :test (fn [] (isolated (fn []
-                                       (script/setup :postgres 'demo.a {} true 'demo.source)
-                                       (select-keys (get (deref script/+scripts+) ['demo.a :postgres])
-                                                    [:lang :module :source :runtime]))))
-              :expected {:lang :postgres :module 'demo.a :source 'demo.source :runtime nil}}])
-
-^{:refer lang.core.script/setup}
-(Test/check
- [{:name "materializes only the explicit basic target Book during script setup"
-   :test (fn [] (isolated (fn []
-                            (script/setup :js 'demo.a {:runtime :basic} true)
-                            [(not (nil? (:book (library/library-book-record
-                                                (library/runtime-library) :js))))
-                             (library/library-book-record
-                              (library/runtime-library) :python)])))
-   :expected [true nil]}])
-
-^{:refer lang.core.script/setup}
-(Test/check [{:name "keeps dependency setup lazy while a source module is loading"
-              :test (fn [] (isolated (fn []
-                                       (binding [script/*loading-module* true]
-                                         (script/setup :js 'demo.a {:runtime :basic} true)
-                                         [(nil? (:book (library/library-book-record
-                                                        (library/runtime-library) :js)))
-                                          (:runtime (get (deref script/+scripts+)
-                                                         ['demo.a :js]))]))))
-              :expected [true nil]}])
-
-^{:refer lang.core.script/compile-script-module}
-(Test/check
- [{:name "compiles one selected module against its active Library Book"
-   :test (fn [] (isolated (fn []
-                            (script/configure-module :postgres 'demo.a {})
-                            (binding [script/*module-compiler*
-                                      (fn [options]
-                                        [(:lang options)
-                                         (:main options)
-                                         (:layout options)
-                                         (:emit options)
-                                         (get-in options [:book :lang])])]
-                              (script/compile-script-module
-                               :postgres 'demo.a {:emit {:dialect :fixture}})))))
-   :expected [:postgres 'demo.a :flat {:dialect :fixture} :postgres]}
-  {:name "memoises unchanged module compilation and invalidates after a source write"
-   :test (fn [] (isolated (fn []
-                            (script/configure-module :postgres 'demo.a {})
-                            (let [calls (atom 0)]
-                              (binding [script/*module-compiler*
-                                        (fn [_]
-                                          {:output (str (swap! calls inc))})]
-                                (let [first-result (script/compile-script-module :postgres 'demo.a {})
-                                      second-result (script/compile-script-module :postgres 'demo.a {})
-                                      _ (script/register-library-module!
-                                         :postgres
-                                         {:id 'demo.a :lang :postgres
-                                          :code {'entry '(return 1)} :fragment {}})
-                                      third-result (script/compile-script-module :postgres 'demo.a {})]
-                                  [(:output first-result)
-                                   (:output second-result)
-                                   (:output third-result)
-                                   (deref calls)]))))))
-   :expected ["1" "1" "2" 2]}
-  {:name "honours bypass and refresh cache bindings for module compilation"
-   :test (fn [] (isolated (fn []
-                            (script/configure-module :postgres 'demo.a {})
-                            (let [calls (atom 0)]
-                              (binding [script/*module-compiler*
-                                        (fn [_]
-                                          {:output (str (swap! calls inc))})]
-                                (let [cached (script/compile-script-module :postgres 'demo.a {})
-                                      bypass-a (script/with:cache-none
-                                                 (script/compile-script-module :postgres 'demo.a {}))
-                                      bypass-b (script/with:cache-none
-                                                 (script/compile-script-module :postgres 'demo.a {}))
-                                      refreshed (script/with:cache-force
-                                                  (script/compile-script-module :postgres 'demo.a {}))
-                                      final (script/compile-script-module :postgres 'demo.a {})]
-                                  [(:output cached)
-                                   (:output bypass-a)
-                                   (:output bypass-b)
-                                   (:output refreshed)
-                                   (:output final)
-                                   (deref calls)]))))))
-   :expected ["1" "2" "3" "4" "4" 4]}])
-
-^{:refer lang.core.script/script-module-source?}
-(Test/check
- [{:name "avoids materializing a Book for an empty selected script module"
-   :test (fn [] (isolated (fn []
-                            (script/configure-module :postgres 'demo.a {})
-                            [(script/script-module-source? :postgres 'demo.a)
-                             (do
-                               (script/register-library-module!
-                                :postgres
-                                {:id 'demo.a :lang :postgres
-                                 :code {:ready {}} :fragment {}})
-                               (script/script-module-source? :postgres 'demo.a))])))
-   :expected [false true]}
-  {:name "keeps an empty target module lazy when it declares source dependencies"
-   :test (fn [] (isolated (fn []
-                            (script/register-library-module!
-                             :xtalk
-                             {:id 'demo.source :lang :xtalk
-                              :code {'ready {}} :fragment {}})
-                            (script/configure-module
-                             :js 'demo.test {:require ['demo.source]})
-                            (script/script-module-source? :js 'demo.test))))
-   :expected false}])
-
-^{:refer lang.core.script/initialize-script!}
-(Test/check
- [{:name "injects compiled selected script source through runtime evaluation"
-   :test (fn [] (isolated (fn []
-                            (let [calls (atom [])
-                                  instance (runtime/rt-default {:lang :postgres})]
-                              (script/register-library-module!
-                               :postgres
-                               {:id 'demo.a :lang :postgres
-                                :code {:ready {}} :fragment {}})
-                              (binding [script/*module-compiler*
-                                        (fn [_] {:output "select 1" :diagnostics []})
-                                        script/*module-evaluator*
-                                        (fn [runtime source options]
-                                          (swap! calls conj [runtime source options]))]
-                                (script/initialize-script!
-                                 instance :postgres 'demo.a {:timeout 41})
-                                (mapv (fn [[runtime source options]]
-                                        [(= instance runtime) source options])
-                                      (deref calls)))))))
-   :expected [[true "select 1" {:timeout 41}]]}
-  {:name "fails before evaluating a diagnostic module result"
-   :test (fn [] (isolated (fn []
-                            (let [calls (atom [])
-                                  instance (runtime/rt-default {:lang :postgres})
-                                  result
-                                  (do
-                                    (script/register-library-module!
-                                     :postgres
-                                     {:id 'demo.a :lang :postgres
-                                      :code {:ready {}} :fragment {}})
-                                    (try
-                                      (binding [script/*module-compiler*
-                                                (fn [_] {:output "never"
-                                                         :diagnostics [{:code :fixture/missing}]})
-                                                script/*module-evaluator*
-                                                (fn [_ source _]
-                                                  (swap! calls conj source))]
-                                        (script/initialize-script! instance :postgres 'demo.a {}))
-                                      :no-error
-                                      (catch error
-                                        [(:ex/code (ex-data error))
-                                         (:module (ex-data error))
-                                         (:diagnostics (ex-data error))])))]
-                              [result (deref calls)]))))
-   :expected [[:hara/dependency 'demo.a [{:code :fixture/missing}]] []]}
-  {:name "does not compile linked source for an otherwise empty selected module"
-   :test (fn [] (isolated (fn []
-                            (let [calls (atom [])
-                                  instance (runtime/rt-default {:lang :js})]
-                              (script/register-library-module!
-                               :xtalk
-                               {:id 'demo.source :lang :xtalk
-                                :code {'ready {}} :fragment {}})
-                              (script/configure-module
-                               :js 'demo.test {:require ['demo.source]})
-                              (binding [script/*module-compiler*
-                                        (fn [_] {:output "linked" :diagnostics []})
-                                        script/*module-evaluator*
-                                        (fn [runtime source options]
-                                          (swap! calls conj [runtime source options]))]
-                                [(= instance
-                                    (script/initialize-script!
-                                     instance :js 'demo.test {}))
-                                 (deref calls)])))))
-   :expected [true []]}
-  {:name "applies the active runtime emitter when compiling injected module source"
-   :test (fn [] (isolated (fn []
-                            (let [captured (atom nil)
-                                  instance {:process {:emit {:code {:transforms
-                                                                      {:entry [:runtime]}}}}}]
-                              (script/register-library-module!
-                               :lua
-                               {:id 'demo.a :lang :lua
-                                :code {:ready {}} :fragment {}})
-                              (binding [script/*module-compiler*
-                                        (fn [options]
-                                          (reset! captured (get-in options
-                                                                    [:emit :code :transforms :entry]))
-                                          {:output "" :diagnostics []})]
-                                (script/initialize-script! instance :lua 'demo.a {})
-                                (deref captured))))))
-   :expected [:runtime]}
-  {:name "skips Book materialization while an empty module has nothing to compile"
-   :test (fn [] (isolated (fn []
-                            (script/configure-module :postgres 'demo.a {})
-                            (let [result
-                                  (binding [script/*module-compiler*
-                                            (fn [_]
-                                              (throw (ex :generic {}
-                                                         :ex/message "compiler should not run")))]
-                                    (script/initialize-script!
-                                     (runtime/rt-default {:lang :postgres})
-                                     :postgres 'demo.a {}))]
-                              [(:lang result)
-                               (not (nil? (:book
-                                            (library/library-book-record
-                                             (library/runtime-library) :postgres))))]))))
-   :expected [:postgres false]}])
-
-^{:refer lang.core.script/start-runtime}
-(Test/check
- [{:name "starts a selected runtime through the shared lifecycle"
-   :test (fn [] (let [instance (script/start-runtime :postgres :default {})]
-                  [(:lang instance)
-                   (:runtime instance)
-                   (:status (deref (:state instance)))]))
-   :expected [:postgres :default :started]}
-  {:name "defers basic target-module compilation until an expression is evaluated"
-   :test (fn [] (isolated (fn []
-                            (script/configure-module
-                             :js 'demo.lazy
-                             {})
-                            (script/register-library-module!
-                             :js
-                             {:id 'demo.lazy :lang :js
-                              :code {'entry {:id 'entry
-                                             :module 'demo.lazy
-                                             :section :code
-                                             :form-input '(def entry 1)}}
-                              :fragment {}})
-                            (binding [script/*module-compiler*
-                                      (fn [_]
-                                        (throw (ex :state {}
-                                                   :ex/message "eager compilation")))]
-                              (let [instance (script/start-runtime
-                                              :js :basic
-                                              {:module 'demo.lazy})]
-                                [(:lang instance)
-                                 (:runtime instance)
-                                (:status (deref (:state instance)))])))))
-   :expected [:js :basic :started]}
-  {:name "evaluates a compiled color expression through the selected script runtime"
-   :test (fn [] (isolated (fn []
-                            (let [config '{:runtime :basic
-                                           :require [[xt.lang.common-color :as color]]}
-                                  _ (script/setup :js 'demo.color config true)
-                                  instance (script/start-script :js 'demo.color config)
-                                  source (script/compile-form
-                                          :js 'demo.color
-                                          '(color/hex->rgb "#45f981"))]
-                              (try
-                                (runtime/rt-raw-eval instance source)
-                                (finally
-                                  (script/stop)))))))
-   :expected [69 249 129]}])
-
-^{:refer lang.core.script/start-script}
-(Test/check [{:name "starts, replaces, and records one selected script runtime"
-              :test (fn [] (isolated (fn []
-                                       (script/setup :postgres 'demo.a {} true)
-                                       (let [first (script/start-script :postgres 'demo.a {})
-                                             second (script/start-script :postgres 'demo.a {})]
-                                         [(:status (deref (:state first)))
-                                          (:status (deref (:state second)))
-                                          (= second (get-in (deref script/+scripts+)
-                                                            [['demo.a :postgres] :runtime]))]))))
-              :expected [:stopped :started true]}])
-
-^{:refer lang.core.script/script-form}
-(Test/check [{:name "builds ordinary script setup forms"
-              :test (fn [] (first (script/script-form :postgres [])))
-              :expected 'lang.core.script/setup}])
-
-^{:refer lang.core.script/script}
-(Test/check [{:name "expands ordinary script declarations"
-              :test (fn [] (first (macroexpand-1 '(lang.core.script/script :postgres))))
-              :expected 'do}])
-
-^{:refer lang.core.script/script-expansion}
-(Test/check [{:name "combines eager module setup with grammar-derived declaration macros"
-              :test (fn [] (let [form (script/script-expansion 'demo.pg :postgres [])]
-                           [(first form) (first (second form)) (first (last form))]))
-              :expected ['do 'lang.core.script/setup 'if]}
-             {:name "suppresses runtime startup while a source module is loading"
-              :test (fn [] (isolated (fn []
-                                       (binding [script/*loading-module* true]
-                                         (eval (script/script-expansion
-                                                'demo.pg
-                                                :postgres
-                                                [{:runtime :default}]))
-                                         (deref script/+scripts+)))))
-              :expected {}}])
-
-^{:refer lang.core.script/selected-book}
-(Test/check [{:name "selects the canonical Book with its inherited XTalk source overlay"
-              :test (fn [] (isolated (fn []
-                                       (script/register-library-module!
-                                        :xtalk
-                                        {:id 'demo.xtalk :lang :xtalk :code {} :fragment {}})
-                                       (let [selected (script/selected-book :js)]
-                                         [(:lang selected)
-                                          (:parent selected)
-                                         (get-in selected [:modules 'demo.xtalk])]))))
-              :expected [:js nil {:id 'demo.xtalk :lang :xtalk :code {} :fragment {}}]}])
-
-^{:refer lang.core.script/selected-book}
-(Test/check [{:name "retains the selected target grammar for target compilation"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :python 'demo.a {})
-                                       (not (nil? (:selection
-                                                   (script/selected-book :python)))))))
-              :expected true}])
-
-^{:refer lang.core.script/selected-book}
-(Test/check [{:name "keeps the Python lookup macro in the selected target grammar"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :python 'demo.a {})
-                                       (fn? (get-in (script/selected-book :python)
-                                                    [:selection :grammar :reserved
-                                                     'x:lu-del :macro])))))
-              :expected true}])
-
-^{:refer lang.core.script/selected-book}
-(Test/check [{:name "retains Python token configuration in the selected Book"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :python 'demo.a {})
-                                       (get-in (script/selected-book :python)
-                                               [:selection :grammar :token :nil]))))
-              :expected "None"}])
-
-^{:refer lang.core.script/compile-cache-key}
-(Test/check [{:name "keys cache entries by language module source and registry snapshot"
-              :test (fn [] (let [key (script/compile-cache-key :postgres 'demo.a '(+ 1 2))]
-                           [(first key) (second key) (nth key 2) (number? (nth key 3))]))
-              :expected [:postgres 'demo.a '(+ 1 2) true]}])
-
-^{:refer lang.core.script/compile-one}
-(Test/check [{:name "returns a staged compiler result and memoises it"
-              :test (fn [] (isolated (fn []
-                                       (let [module (script/module-config :postgres 'demo.a {})
-                                             first-result (script/compile-one :postgres '(+ 1 2) module nil)
-                                             second-result (script/compile-one :postgres '(+ 1 2) module nil)]
-                                         [(string? (:output first-result))
-                                          (= first-result second-result)
-                                          (= 1 (count (deref script/+compile-cache+)))]))))
-              :expected [true true true]}])
-
-^{:refer lang.core.script/compile-form}
-(Test/check [{:name "emits one PostgreSQL expression"
-              :test (fn [] (isolated (fn [] (script/compile-form :postgres 'demo.a '(+ 1 2)))))
-              :expected "1 + 2"}])
-
-^{:refer lang.core.script/compile-form}
-(Test/check [{:name "emits identity lookup deletion through the selected Python Book"
-              :test (fn [] (isolated (fn []
-                                       (script/configure-module :python 'demo.a {})
-                                       (script/compile-form
-                                        :python
-                                        'demo.a
-                                        '(x:lu-del lookup key)))))
-              :expected "lookup.pop(id(key), None)"}])
-
-^{:refer lang.core.script/restart}
-(Test/check [{:name "starts registered default scripts"
-              :test (fn [] (isolated (fn []
-                                       (script/setup :postgres 'demo.a {} true)
-                                       (script/restart)
-                                       (:status (deref (:state (get-in (deref script/+scripts+)
-                                                                       [['demo.a :postgres] :runtime])))))))
-              :expected :started}])
-
-^{:refer lang.core.script/stop}
-(Test/check [{:name "stops registered scripts and clears runtime references"
-              :test (fn [] (isolated (fn []
-                                       (script/setup :postgres 'demo.a {} true)
-                                       (script/restart)
-                                       (script/stop)
-                                       (:runtime (get (deref script/+scripts+) ['demo.a :postgres])))))
-              :expected nil}])
-
-^{:refer lang.core.script/eval-form}
-(Test/check [{:name "reports the explicitly selected module in a dependency error"
-              :test (fn [] (isolated (fn []
-                                       (try (script/eval-form :postgres 'demo.a '(+ 1 2))
-                                            (catch error [(:ex/code (ex-data error))
-                                                         (:module (ex-data error))])))))
-              :expected [:hara/dependency 'demo.a]}])
-
-^{:refer lang.core.script/eval-forms}
-(Test/check [{:name "delegates every form to the configured evaluator"
-              :test (fn [] (isolated (fn []
-                                       (try (script/eval-forms :postgres ['(+ 1 2)])
-                                            (catch error (:ex/code (ex-data error)))))))
-              :expected :hara/dependency}])
+ (:require [code.test :refer :all] [lang.core.script :as script]
+ [lang.core.library :as lib] [lang.model.v1.spec-xtalk :as xtalk] [lang.model.v1.spec-lua :as lua]
+ [code.test.context]))
+^{:refer lang.core.script/script-require-target-id :added "4.1"}
+(fact "constructs a target module id from module, source, and alias"
+
+  (script/script-require-target-id 'my.module 'source.core nil)
+  => 'my.module.source.core
+
+  (script/script-require-target-id 'my.module 'source.core 'src)
+  => 'my.module.src
+
+  (script/script-require-target-id 'my.module 'source.core '[prefix src])
+  => 'my.module.src)
+^{:refer lang.core.script/script-specialize-merge-contracts :added "4.1"}
+(fact "merges specialization bindings into a contract map"
+
+  (script/script-specialize-merge-contracts :demo 'current {}
+                                            {'source.core {:backend 'backend.core
+                                                           :bindings {'contract.core 'backend.core}}})
+  => {'contract.core {:backend 'backend.core
+                      :source 'source.core
+                      :declared-backend 'backend.core}}
+
+  (script/script-specialize-merge-contracts :demo 'current
+                                            {'contract.core {:backend 'backend.core
+                                                             :source 'source.core
+                                                             :declared-backend 'backend.core}}
+                                            {'other.core {:backend 'alt.core
+                                                          :bindings {'contract.core 'alt.core}}})
+  => (throws))
+^{:refer lang.core.script/script-specialize-require :added "4.1"}
+(fact "resolves a specialization require spec"
+
+  (let [lib (lib/library:create {})]
+    (lib/install-book! lib xtalk/+book+)
+    (lib/install-book! lib lua/+book+)
+    (lib/install-module! lib :lua 'demo.contract {})
+    (lib/install-module! lib :lua 'demo.source {:require '[[demo.contract :as cache]]})
+    (lib/install-module! lib :lua 'demo.backend {:implements '[demo.contract]})
+    (script/script-specialize-require :lua 'demo.current lib '[demo.source :as src :with demo.backend]))
+  => '{:require-spec [demo.current.src :as src]
+       :specialize {demo.source {:backend demo.backend
+                                 :bindings {demo.contract demo.backend}
+                                 :contracts [demo.contract]
+                                 :source-lang :lua
+                                 :backend-lang :lua
+                                 :target demo.current.src}}})
+^{:refer lang.core.script/script-specialize-config :added "4.1"}
+(fact "processes config require specs for specialization"
+
+  (let [lib (lib/library:create {})]
+    (lib/install-book! lib xtalk/+book+)
+    (lib/install-book! lib lua/+book+)
+    (lib/install-module! lib :lua 'demo.contract {})
+    (lib/install-module! lib :lua 'demo.source {:require '[[demo.contract :as cache]]})
+    (lib/install-module! lib :lua 'demo.backend {:implements '[demo.contract]})
+    (script/script-specialize-config :lua 'demo.current
+                                     {:require '[[demo.source :as src :with demo.backend]]}
+                                     lib))
+  => '{:require [[demo.current.src :as src]]
+       :specialize {demo.source {:backend demo.backend
+                                 :bindings {demo.contract demo.backend}
+                                 :contracts [demo.contract]
+                                 :source-lang :lua
+                                 :backend-lang :lua
+                                 :target demo.current.src}}})
+^{:refer lang.core.script/script-test-mode? :added "4.0"}
+(fact "detects test mode from :test-mode and eval-mode"
+
+  (script/script-test-mode? {})
+  => false
+
+  (script/script-test-mode? {:test-mode true})
+  => false
+
+  (binding [code.test.context/*eval-mode* false]
+    (script/script-test-mode? {:test-mode true}))
+  => true
+
+  (binding [code.test.context/*eval-mode* false]
+    (script/script-test-mode? {}))
+  => false)
+(def +runtime-config-key+ :port)
+(def +runtime-config-value+ 17001)
+(def +runtime-config-form+ "ready")
+(def +runtime-config+ {:port +runtime-config-value+ :startup {:args ["/bin/sh" "-lc" +runtime-config-form+]}})
+
+^{:refer lang.core.script/resolve-runtime-config :id original-symbol-config}
+(fact "resolves original quoted runtime configuration"
+ (script/resolve-runtime-config '+runtime-config+)
+ => {:port 17001 :startup {:args ["/bin/sh" "-lc" "ready"]}})
+
+^{:refer lang.core.script/resolve-runtime-config :id nested-config-contract}
+(fact "resolves nested keys vars symbols and forms while preserving false nil and numbers"
+ (script/resolve-runtime-config
+  {'+runtime-config-key+ '+runtime-config-value+
+   :startup {:args ["/bin/sh" "-lc" '(str "rea" "dy")]}
+   :value (var +runtime-config-value+) :false false :nil nil :count 4})
+ => {:port 17001 :startup {:args ["/bin/sh" "-lc" "ready"]}
+     :value 17001 :false false :nil nil :count 4})
+
+^{:refer lang.core.script/resolve-runtime-config :id collection-config-contract}
+(fact "resolves set and vector members without dropping false or nil"
+ (script/resolve-runtime-config [#{'+runtime-config-value+ false nil} '(+ 1 2) [] {}])
+ => [#{17001 false nil} 3 [] {}])
+
+^{:refer lang.core.script/script-macro-import :id original-empty-macros}
+(fact "allows books without any exported macros"
+ (script/script-macro-import {:macros [] :highlights []})
+ => '[#{} #{}])
+
+^{:refer lang.core.script/script-ns-import :id empty-imports-boundary}
+(fact "imports an empty namespace configuration"
+ (script/script-ns-import :lua {}) => #{})
+
+^{:refer lang.core.script/script-ns-import :id intrinsic-current-namespace}
+(fact "retains current-namespace shorthand without mutating native aliases"
+ (let [before (ns-aliases (ns-current))]
+   [(script/script-ns-import :lua {})
+    (eval '-/+runtime-config-value+)
+    (= before (ns-aliases (ns-current)))])
+ => [#{} 17001 true])
+
+^{:refer lang.core.script/script :id original-macro-expansion}
+(fact "preserves script arities and quoted module/config forms"
+ [(macroexpand-1 '(script/script :lua))
+  (macroexpand-1 '(script/script :lua demo.module))
+  (macroexpand-1 '(script/script :lua demo.module {:runtime :default}))]
+ => '[(lang.core.script/script-fn :lua)
+      (lang.core.script/script-fn :lua (quote demo.module))
+      (lang.core.script/script-fn :lua (quote demo.module) (quote {:runtime :default}))])
+
+^{:refer lang.core.script/script- :id original-test-macro-expansion}
+(fact "preserves original test macro setup and quoting"
+ [(macroexpand-1 '(script/script- :lua))
+  (macroexpand-1 '(script/script- :lua {:test-mode true}))]
+ => '[(lang.core.script/script-test :lua {})
+      (lang.core.script/script-test :lua (quote {:test-mode true}))])
+
+^{:refer lang.core.script/script+ :id original-ext-macro-expansion}
+(fact "preserves tagged extension coordinates and quoted config"
+ [(macroexpand-1 '(script/script+ [:one :lua]))
+  (macroexpand-1 '(script/script+ [:one :lua] {:runtime :oneshot}))]
+ => '[(lang.core.script/script-ext [:one :lua] {})
+      (lang.core.script/script-ext [:one :lua] (quote {:runtime :oneshot}))])
+
+^{:refer lang.core.script/! :id original-tagged-macro-expansion}
+(fact "preserves tagged evaluation body namespace metadata and non-vector rejection"
+ (let [form (with-meta '(script/! [:one] (+ 1 2)) {:probe 7}) expanded (macroexpand-1 form)]
+   [(first expanded) (second expanded) (nth expanded 2) (nth expanded 3)
+    (:probe (nth expanded 4))
+    (macroexpand-1 '(script/! :one (+ 1 2)))])
+ => '[lang.core.script/script-ext-run (quote lang.core.script-test) :one (quote (+ 1 2)) 7 nil])
+
+(require [lang.core.impl :as impl] [lang.core.runtime :as rt]
+ [lang.core.script-annex :as annex] [std.lib.context.space :as space]
+ [std.lib.context.resource :as resource])
+
+^{:refer lang.core.script/script-fn-base :id lua-original-module-setup}
+(fact "installs an original Lua module into the supplied library"
+ (let [library (impl/clone-default-library)]
+  (try
+   (impl/with:library [library]
+    (let [config (script/script-fn-base :lua 'script.pipeline.module {} library)]
+      [(:module config) (:module/primary config)
+       (Base/identical? library (:library config))
+       (:id (lib/get-module library :lua 'script.pipeline.module))]))
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => '[script.pipeline.module #{} true script.pipeline.module])
+
+^{:refer lang.core.script/script-fn, :id lua-original-default-runtime}
+(fact
+  "creates the original registered Lua default runtime with its module library"
+  (let [library (impl/clone-default-library)]
+    (binding [space/*spaces* (atom {})
+              resource/*resource-active* (atom
+                                           {:global {},
+                                            :namespace {},
+                                            :shared {}})]
+      (try
+        (impl/with:library
+          [library]
+          (let [runtime (script/script-fn
+                          :lua
+                          'script.pipeline.runtime
+                          {})]
+            [(rt/rt-default? runtime)
+             (:lang runtime)
+             (:runtime runtime)
+             (:module runtime)
+             (Base/identical? library (:library runtime))]))
+        (finally
+          (try
+            (when (annex/annex-current)
+              (annex/clear-annex (ns-current)))
+            (finally
+              (try
+                (space/reset-spaces!)
+                (finally
+                  (lib/reset-all! library)
+                  (reset! (:settings library) {})))))))))
+  =>
+  '[true :lua :default script.pipeline.runtime true])
+
+^{:refer lang.core.script/script-test-prep, :id lua-original-annex-module}
+(fact
+  "keeps test module setup in the original annex child library"
+  (let [library (impl/clone-default-library)]
+    (binding [space/*spaces* (atom {})
+              resource/*resource-active* (atom
+                                           {:global {},
+                                            :namespace {},
+                                            :shared {}})]
+      (try
+        (impl/with:library
+          [library]
+          (let [config (script/script-test-prep :lua {})
+                child (annex/get-annex-library (ns-current))]
+            [(:module config)
+             (Base/identical? child (:library config))
+             (:id (lib/get-module child :lua (ns-current)))
+             (:id (lib/get-module library :lua (ns-current)))]))
+        (finally
+          (try
+            (when (annex/annex-current)
+              (annex/clear-annex (ns-current)))
+            (finally
+              (try
+                (space/reset-spaces!)
+                (finally
+                  (lib/reset-all! library)
+                  (reset! (:settings library) {})))))))))
+  =>
+  '[lang.core.script-test true lang.core.script-test nil])
+
+^{:refer lang.core.script/script-ext, :id lua-original-tagged-reuse}
+(fact
+  "creates and reuses an original tagged runtime and emits through its pointer"
+  (let [library (impl/clone-default-library)]
+    (binding [space/*spaces* (atom {})
+              resource/*resource-active* (atom
+                                           {:global
+                                            (:global
+                                              (deref
+                                                resource/*resource-active*)),
+                                            :namespace {},
+                                            :shared {}})]
+      (try
+        (impl/with:library
+          [library]
+          (let [[previous instance] (script/script-ext
+                                      [:first :lua]
+                                      {:runtime :default})
+                reused (script/script-ext
+                         [:first :lua]
+                         {:runtime :default})]
+            [previous
+             (rt/rt-default? instance)
+             (:module instance)
+             (count reused)
+             (Base/identical? instance (first reused))
+             (Base/identical? instance (script/annex:get :first))
+             (binding [impl/*library* nil]
+               (script/script-ext-run
+                 (ns-current)
+                 :first
+                 '(return (+ 1 2))
+                 {}))]))
+        (finally
+          (try
+            (when (annex/annex-current)
+              (annex/clear-annex (ns-current)))
+            (finally
+              (try
+                (space/reset-spaces!)
+                (finally
+                  (lib/reset-all! library)
+                  (reset! (:settings library) {})))))))))
+  =>
+  '[nil true lang.core.script-test 1 true true "return 1 + 2"])
+
+^{:refer lang.core.script/annex:restart-all, :id lua-original-tagged-lifecycle}
+(fact
+  "preserves registrations while stopping and restarting original tagged runtimes"
+  (let [library (impl/clone-default-library)]
+    (binding [space/*spaces* (atom {})
+              resource/*resource-active* (atom
+                                           {:global {},
+                                            :namespace {},
+                                            :shared {}})]
+      (try
+        (impl/with:library
+          [library]
+          (script/script-ext [:one :lua] {:runtime :default})
+          (script/script-ext [:two :lua] {:runtime :default})
+          (let [initial (script/annex:list)
+                stopped (script/annex:stop :one)
+                partial (script/annex:list)
+                remaining (set (keys (script/annex:stop-all)))
+                inactive (script/annex:list)
+                restarted (set (keys (script/annex:restart-all)))]
+            [initial
+             (rt/rt-default? stopped)
+             partial
+             remaining
+             inactive
+             restarted
+             (script/annex:list)]))
+        (finally
+          (try
+            (when (annex/annex-current)
+              (annex/clear-annex (ns-current)))
+            (finally
+              (try
+                (space/reset-spaces!)
+                (finally
+                  (lib/reset-all! library)
+                  (reset! (:settings library) {})))))))))
+  =>
+  [{:registered #{:one :two}, :active #{:one :two}}
+   true
+   {:registered #{:one :two}, :active #{:two}}
+   #{:two}
+   {:registered #{:one :two}, :active #{}}
+   #{:one :two}
+   {:registered #{:one :two}, :active #{:one :two}}])
+
+(require [lang.base.emit-prep-lua-test :as prep] [lang.core.library-snapshot :as snap])
+
+^{:refer lang.core.script/+module-keys+}
+(fact "retains original module config keys and order"
+ script/+module-keys+
+ => [:lang :id :require :implements :specialize :import :macro-only :bundle :file :export :static :test-mode])
+
+^{:refer lang.core.script/+runtime-keys+}
+(fact "retains original runtime config keys and order"
+ script/+runtime-keys+
+ => [:runtime :config :layout :emit :lang :context :module :namespace :id])
+
+^{:refer lang.core.script/script-require-form}
+(fact "normalizes aliases and only collection-valued refer selections"
+ [(script/script-require-form 'demo.source nil nil)
+  (script/script-require-form 'demo.source 'src '[one two])
+  (script/script-require-form 'demo.source '[prefix src] [])
+  (script/script-require-form 'demo.source nil 'backend.source)]
+ => '[[demo.source] [demo.source :as src :refer [one two]]
+      [demo.source :as src :refer []] [demo.source]])
+
+^{:refer lang.core.script/script-module-loaded?}
+(fact "distinguishes absent empty and populated modules"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (lib/install-module! library :lua 'empty.module {})
+   [(script/script-module-loaded? nil :lua 'L.core)
+    (script/script-module-loaded? library nil 'L.core)
+    (script/script-module-loaded? library :lua 'missing.module)
+    (script/script-module-loaded? library :lua 'L.core)
+    (script/script-module-loaded? library :lua 'empty.module)]
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [false false false true false])
+
+^{:refer lang.core.script/script-require-entry}
+(fact "reloads missing module dependencies and returns only primary namespaces"
+ [(script/script-require-entry nil :lua '[std.lib.context.pointer :primary true])
+  (script/script-require-entry nil :lua '[std.lib.context.pointer])]
+ => '[std.lib.context.pointer nil])
+
+(require [std.lib.context.registry :as ctx-reg])
+^{:refer lang.core.script/annex:start, :id :original-lifecycle-annex:start} (fact "starts only a registered original annex tag" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (do (annex/register-annex-tag (ns-current) :one :lua :default {}) (let [[previous instance] (script/annex:start :one)] [previous (rt/rt-default? instance) (:lang instance) (:module instance) (script/annex:start :missing)]))) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [nil true :lua lang.core.script-test nil]))
+^{:refer lang.core.script/annex:get, :id :original-lifecycle-annex:get} (fact "returns the identical tagged runtime or nil for an absent tag" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (let [missing (script/annex:get :missing) [_ instance] (script/script-ext [:one :lua] {:runtime :default})] [missing (Base/identical? instance (script/annex:get :one)) (Base/identical? instance (script/annex:get :one (ns-current)))])) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [nil true true]))
+^{:refer lang.core.script/annex:stop, :id :original-lifecycle-annex:stop} (fact "returns and removes only the selected runtime while retaining registrations" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (let [[_ instance] (script/script-ext [:one :lua] {:runtime :default})] (script/script-ext [:two :lua] {:runtime :default}) [(Base/identical? instance (script/annex:stop :one)) (script/annex:get :one) (script/annex:list)])) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [true nil {:registered #{:one :two}, :active #{:two}}]))
+^{:refer lang.core.script/annex:start-all, :id :original-lifecycle-annex:start-all} (fact "starts all registered tags and subsequently reuses each instance" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (do (annex/register-annex-tag (ns-current) :one :lua :default {}) (annex/register-annex-tag (ns-current) :two :lua :default {}) (let [created (script/annex:start-all) reused (script/annex:start-all)] [(set (keys created)) (mapv (fn [migration-argument-0] (count (get created migration-argument-0))) [:one :two]) (mapv (fn [migration-argument-0] (count (get reused migration-argument-0))) [:one :two]) (mapv (fn [migration-argument-0] (Base/identical? (second (get created migration-argument-0)) (first (get reused migration-argument-0)))) [:one :two])]))) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [#{:one :two} [2 2] [1 1] [true true]]))
+^{:refer lang.core.script/annex:stop-all, :id :original-lifecycle-annex:stop-all} (fact "returns removed runtimes, retains tags, and is idempotent" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (do (script/script-ext [:one :lua] {:runtime :default}) (script/script-ext [:two :lua] {:runtime :default}) [(set (keys (script/annex:stop-all))) (script/annex:stop-all) (script/annex:list)])) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [#{:one :two} {} {:registered #{:one :two}, :active #{}}]))
+^{:refer lang.core.script/annex:list, :id :original-lifecycle-annex:list} (fact "distinguishes registered-only, active, and absent tags" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (do (annex/register-annex-tag (ns-current) :waiting :lua :default {}) (script/script-ext [:active :lua] {:runtime :default}) [(script/annex:list) (script/annex:list (ns-current))])) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [{:registered #{:waiting :active}, :active #{:active}} {:registered #{:waiting :active}, :active #{:active}}]))
+^{:refer lang.core.script/script-ext-run, :id :original-lifecycle-script-ext-run} (fact "emits through the selected original tagged runtime and rejects missing tags" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (do (script/script-ext [:one :lua] {:runtime :default}) [(binding [impl/*library* nil] (script/script-ext-run (ns-current) :one (quote (return (+ 1 2))) {})) (try (script/script-ext-run (ns-current) :missing (quote (return 1)) {}) :unexpected-success (catch error :missing-tag))])) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote ["return 1 + 2" :missing-tag]))
+^{:refer lang.core.script/script-test, :id :original-lifecycle-script-test} (fact "creates a scratch runtime without starting its context in explicit test mode" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (binding [code.test.context/*eval-mode* false] (let [instance (script/script-test :lua {:test-mode true})] [(rt/rt-default? instance) (:instance (space/space:context-get (space/space space/*namespace*) :lang/lua)) (Base/identical? instance (ctx-reg/registry-scratch :lang/lua))]))) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [true nil true]))
+^{:refer lang.core.script/script-require-entry :id trailing-option-maps}
+(fact "preserves Clojure trailing-map options and nil singleton options"
+ [(script/script-require-entry nil :lua '[std.lib.context.pointer {:primary true}])
+  (script/script-require-entry nil :lua '[std.lib.context.pointer :primary false {:primary true}])
+  (script/script-require-entry nil :lua '[std.lib.context.pointer nil])
+  (script/script-require-entry nil :lua '[std.lib.context.pointer :primary])]
+ => '[std.lib.context.pointer std.lib.context.pointer nil nil])
+
+(require [lang.base.book :as book])
+^{:refer lang.core.script/install, :id historical-lua-install}
+(fact
+  "installs the original Lua Book in its model namespace through the original pipeline"
+  (binding [space/*spaces* (atom {}) ctx-reg/*registry* (atom {})]
+    (let [slots '[def$.lua
+                  defmacro.lua
+                  !.lua
+                  defptr.lua
+                  defrun.lua
+                  defn.lua
+                  defglobal.lua
+                  defgen.lua
+                  defn-.lua
+                  deftemp.lua
+                  defabstract.lua
+                  def.lua
+                  return
+                  break
+                  local
+                  tab
+                  until]
+          library (lib/library:create
+                    {:snapshot
+                     (snap/snapshot
+                       {:xtalk {:id :xtalk, :book xtalk/+book+}})})
+          caller (ns-current)
+          slot-baseline (mapv
+                          (fn [sym]
+                            (let [variable
+                                  (resolve
+                                    (symbol
+                                      "lang.model.v1.spec-lua"
+                                      (name sym)))]
+                              [sym (deref variable) (meta variable)]))
+                          slots)]
+      (try
+        (impl/with:library
+          [library]
+          (let [result (Runtime/eval-in
+                         'lang.model.v1.spec-lua
+                         (fn [] (script/install lua/+book+)))
+                stored (get-in (lib/get-snapshot library) [:lua :book])
+                context (ctx-reg/registry-get :lang/lua)]
+            [(vector? result)
+             (count result)
+             (book/book? stored)
+             (:lang stored)
+             (:parent stored)
+             (= (:grammar lua/+book+) (:grammar stored))
+             (=
+               (nth result 2)
+               (select-keys stored [:macros :highlights]))
+             (= (nth result 1) context)
+             (select-keys (:config context) [:context :lang])
+             (rt/rt-default? (:scratch context))
+             (mapv count (:macros stored))
+             (:macros (:grammar stored))
+             (:highlight (:grammar stored))
+             (mapv str (first (:macros stored)))
+             (= caller (ns-current))]))
+        (finally
+          (doseq [[sym value metadata] slot-baseline]
+            (intern
+              'lang.model.v1.spec-lua
+              (with-meta sym metadata)
+              value))
+          (space/reset-spaces!)
+          (ctx-reg/reset-registry!)
+          (lib/reset-all! library)
+          (reset! (:settings library) {})))))
+  =>
+  [true
+   3
+   true
+   :lua
+   :xtalk
+   true
+   true
+   true
+   {:context :lang/lua, :lang :lua}
+   true
+   [4 8]
+   '#{defrun defn defglobal defgen defn- deftemp defabstract def}
+   '#{tab local return until break}
+   ["#'lang.model.v1.spec-lua/def$.lua"
+    "#'lang.model.v1.spec-lua/defmacro.lua"
+    "#'lang.model.v1.spec-lua/!.lua"
+    "#'lang.model.v1.spec-lua/defptr.lua"]
+   true])
+^{:refer lang.core.script/annex:start, :id :retained-start-coordinates, :migration/native-indices [24 25 52 53]} (fact "starts explicit and caller tags in the original namespace child library" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (mapv (fn [explicit?] (let [tag (if explicit? :explicit :caller) namespace (ns-current)] (annex/register-annex-tag namespace tag :lua :default {}) (let [[previous instance] (if explicit? (script/annex:start tag namespace) (script/annex:start tag)) child (annex/get-annex-library namespace)] [previous (:lang instance) (:runtime instance) (has? (:active (script/annex:list namespace)) tag) (:id (lib/get-module child :lua namespace)) (:id (lib/get-module library :lua namespace)) (Base/identical? instance (script/annex:get tag namespace))]))) [true false])) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [[nil :lua :default true lang.core.script-test nil true] [nil :lua :default true lang.core.script-test nil true]]))
+^{:refer lang.core.script/annex:stop, :id :retained-stop-restart-coordinates, :migration/native-indices [26 27 28 29 54]} (fact "stop and start compose the original single-tag restart with new identity" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (mapv (fn [explicit?] (let [tag (if explicit? :explicit :caller) namespace (ns-current) [_ initial] (script/script-ext [tag :lua] {:runtime :default}) removed (if explicit? (script/annex:stop tag namespace) (script/annex:stop tag)) inactive (not (has? (:active (script/annex:list namespace)) tag)) [_ restarted] (if explicit? (script/annex:start tag namespace) (script/annex:start tag))] [(Base/identical? initial removed) inactive (not (Base/identical? initial restarted)) (:runtime restarted) (has? (:registered (script/annex:list namespace)) tag) (Base/identical? restarted (script/annex:stop tag namespace))])) [true false])) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [[true true true :default true true] [true true true :default true true]]))
+^{:refer lang.core.script/annex:restart-all, :id :retained-all-coordinates, :migration/native-indices [33 34 35 36 37 38 55 56 57]} (fact "all-tag operations preserve original map results and replace runtime identities" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (mapv (fn [explicit?] (let [namespace (ns-current)] (annex/register-annex-tag namespace :one :lua :default {}) (annex/register-annex-tag namespace :two :lua :default {}) (let [created (if explicit? (script/annex:start-all namespace) (script/annex:start-all)) removed (if explicit? (script/annex:stop-all namespace) (script/annex:stop-all)) inactive (script/annex:list namespace) restarted (if explicit? (script/annex:restart-all namespace) (script/annex:restart-all)) replaced (mapv (fn [tag] (not (Base/identical? (second (get created tag)) (second (get restarted tag))))) [:one :two]) active (script/annex:list namespace)] (script/annex:stop-all namespace) [(map? created) (map? restarted) (set (keys created)) (set (keys removed)) inactive replaced active]))) [true false])) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [[true true #{:one :two} #{:one :two} {:registered #{:one :two}, :active #{}} [true true] {:registered #{:one :two}, :active #{:one :two}}] [true true #{:one :two} #{:one :two} {:registered #{:one :two}, :active #{}} [true true] {:registered #{:one :two}, :active #{:one :two}}]]))
+^{:refer lang.core.script/annex:list, :id :retained-status-coordinates, :migration/native-indices [31 32 58]} (fact "reports exact registered-only and active states through both original arities" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (let [namespace (ns-current) empty-state (script/annex:list)] (annex/register-annex-tag namespace :one :lua :default {}) (let [waiting (script/annex:list namespace)] (script/annex:start :one namespace) [empty-state waiting (script/annex:list) (script/annex:list namespace)]))) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [{:registered #{}, :active #{}} {:registered #{:one}, :active #{}} {:registered #{:one}, :active #{:one}} {:registered #{:one}, :active #{:one}}]))
+^{:refer lang.core.script/script-ext-run, :id :retained-value-and-return-eval, :migration/native-indices [41 42]} (fact "emits value and return forms through the selected original tagged runtime" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (do (script/script-ext [:one :lua] {:runtime :default}) (binding [impl/*library* nil] [(script/script-ext-run (ns-current) :one (quote (+ 1 2)) {}) (script/script-ext-run (ns-current) :one (quote (return (+ 1 2))) {})]))) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote ["1 + 2" "return 1 + 2"]))
+^{:refer lang.core.script/script-test, :id :retained-test-load-scratch, :migration/native-indices [44]} (fact "test-load opt-in returns a scratch runtime with the original child library" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (binding [code.test.context/*eval-mode* false] (let [instance (script/script-test :lua {:test-mode true}) namespace (ns-current) child (annex/get-annex-library namespace)] [(rt/rt-default? instance) (:instance (space/space:context-get (space/space space/*namespace*) :lang/lua)) (Base/identical? instance (ctx-reg/registry-scratch :lang/lua)) (Base/identical? child (:library instance)) (:id (lib/get-module child :lua namespace)) (:id (lib/get-module library :lua namespace))]))) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [true nil true true lang.core.script-test nil]))
+^{:refer lang.core.script/script-test, :id :retained-direct-test-start, :migration/native-indices [44]} (fact "ordinary evaluation starts an opted-in test script through its real context" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (binding [code.test.context/*eval-mode* true] (let [instance (script/script-test :lua {:test-mode true}) active (:instance (space/space:context-get (space/space space/*namespace*) :lang/lua))] [(rt/rt-default? instance) (Base/identical? instance active) (:runtime instance)]))) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [true true :default]))
+^{:refer lang.core.script/script-test, :id :original-test-load-without-opt-in, :migration/native-indices [44]} (fact "the original requires explicit test-mode opt-in to suppress startup" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (binding [code.test.context/*eval-mode* false] (let [instance (script/script-test :lua {}) active (:instance (space/space:context-get (space/space space/*namespace*) :lang/lua))] [(rt/rt-default? instance) (Base/identical? instance active) (:runtime instance)]))) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [true true :default]))
+^{:refer lang.core.script/script-ext, :id :retained-tagged-test-load, :migration/native-indices [47]} (fact "test-load tagged setup registers the original annex tag without starting it" (let [library (impl/clone-default-library)] (binding [space/*spaces* (atom {}) resource/*resource-active* (atom {:global (:global (deref resource/*resource-active*)), :namespace {}, :shared {}}) ctx-reg/*registry* (atom (deref ctx-reg/*registry*))] (try (impl/with:library [library] (binding [code.test.context/*eval-mode* false] (let [result (script/script-ext [:one :lua] {:runtime :default, :test-mode true})] [result (script/annex:list) (:instance (space/space:context-get (space/space space/*namespace*) :lang/lua)) (rt/rt-default? (ctx-reg/registry-scratch :lang/lua))]))) (finally (try (when (annex/annex-current) (annex/clear-annex (ns-current))) (finally (try (space/reset-spaces!) (finally (lib/reset-all! library) (reset! (:settings library) {}))))))))) => (quote [nil {:registered #{:one}, :active #{}} nil true]))
+
+(require [lang.core.pointer :as ptr])
+(intern 'lang.model.v1.spec-lua (with-meta 'add-more {:macro false}) nil)
+(def +install-slot-baseline+
+ (mapv (fn [sym]
+  (let [v (resolve (symbol "lang.model.v1.spec-lua" (name sym)))]
+   [(deref v) (meta v)]))
+  '[def$.lua defmacro.lua !.lua defptr.lua defrun.lua defn.lua
+    defglobal.lua defgen.lua defn-.lua deftemp.lua defabstract.lua def.lua
+    return break local tab until add-more]))
+
+^{:refer lang.core.script/install, :id installed-macro-emission}
+(fact
+  "a macro published by original installation creates a real Entry and emits through the original Lua grammar"
+  (binding [space/*spaces* (atom {}) ctx-reg/*registry* (atom {})]
+    (let [slots '[def$.lua
+                  defmacro.lua
+                  !.lua
+                  defptr.lua
+                  defrun.lua
+                  defn.lua
+                  defglobal.lua
+                  defgen.lua
+                  defn-.lua
+                  deftemp.lua
+                  defabstract.lua
+                  def.lua
+                  return
+                  break
+                  local
+                  tab
+                  until
+                  add-more]
+          library (lib/library:create
+                    {:snapshot
+                     (snap/snapshot
+                       {:xtalk {:id :xtalk, :book xtalk/+book+}})})
+          slot-baseline (mapv
+                          (fn [sym]
+                            (let [variable
+                                  (resolve
+                                    (symbol
+                                      "lang.model.v1.spec-lua"
+                                      (name sym)))]
+                              [sym (deref variable) (meta variable)]))
+                          slots)]
+      (try
+        (impl/with:library
+          [library]
+          (Runtime/eval-in
+            'lang.model.v1.spec-lua
+            (fn [] (script/install lua/+book+)))
+          (lib/install-module! library :lua 'L.core {})
+          (let [v (Runtime/eval-in
+                    'lang.model.v1.spec-lua
+                    (fn []
+                      (eval
+                        (with-meta
+                          '(defn.lua
+                             add-more
+                             [x y z]
+                             (return (+ x y z)))
+                          {:module 'L.core}))))
+                pointer (deref v)
+                entry (ptr/ptr-deref pointer)]
+            [(str v)
+             (book/book-entry? entry)
+             (select-keys entry [:lang :module :id :form-input])
+             (ptr/ptr-invoke-string pointer [1 2 3] {})
+             (ptr/ptr-invoke-string pointer [1 2 3] {:layout :full})]))
+        (finally
+          (doseq [[sym value metadata] slot-baseline]
+            (intern
+              'lang.model.v1.spec-lua
+              (with-meta sym metadata)
+              value))
+          (space/reset-spaces!)
+          (ctx-reg/reset-registry!)
+          (lib/reset-all! library)
+          (reset! (:settings library) {})))))
+  =>
+  ["#'lang.model.v1.spec-lua/add-more"
+   true
+   {:lang :lua,
+    :module 'L.core,
+    :id 'add-more,
+    :form-input '(defn add-more [x y z] (return (+ x y z)))}
+   "add_more(1,2,3)"
+   "L_core___add_more(1,2,3)"])
+^{:refer lang.core.script/install, :id repeat-install}
+(fact
+  "repeat installation reports no Book change and retains existing modules and macro Vars"
+  (binding [space/*spaces* (atom {}) ctx-reg/*registry* (atom {})]
+    (let [slots '[def$.lua
+                  defmacro.lua
+                  !.lua
+                  defptr.lua
+                  defrun.lua
+                  defn.lua
+                  defglobal.lua
+                  defgen.lua
+                  defn-.lua
+                  deftemp.lua
+                  defabstract.lua
+                  def.lua
+                  return
+                  break
+                  local
+                  tab
+                  until]
+          library (lib/library:create
+                    {:snapshot
+                     (snap/snapshot
+                       {:xtalk {:id :xtalk, :book xtalk/+book+}})})
+          slot-baseline (mapv
+                          (fn [sym]
+                            (let [variable
+                                  (resolve
+                                    (symbol
+                                      "lang.model.v1.spec-lua"
+                                      (name sym)))]
+                              [sym (deref variable) (meta variable)]))
+                          slots)]
+      (try
+        (impl/with:library
+          [library]
+          (let [first-result (Runtime/eval-in
+                               'lang.model.v1.spec-lua
+                               (fn [] (script/install lua/+book+)))
+                _ (lib/install-module! library :lua 'L.core {})
+                before (get-in (lib/get-snapshot library) [:lua :book])
+                second-result (Runtime/eval-in
+                                'lang.model.v1.spec-lua
+                                (fn [] (script/install lua/+book+)))
+                after (get-in (lib/get-snapshot library) [:lua :book])]
+            [(second (first first-result))
+             (second (first second-result))
+             (book/book? after)
+             (= (:modules before) (:modules after))
+             (set (keys (:modules after)))
+             (= (nth first-result 2) (nth second-result 2))
+             (:lang
+               (get-in (lib/get-snapshot library) [:xtalk :book]))]))
+        (finally
+          (doseq [[sym value metadata] slot-baseline]
+            (intern
+              'lang.model.v1.spec-lua
+              (with-meta sym metadata)
+              value))
+          (space/reset-spaces!)
+          (ctx-reg/reset-registry!)
+          (lib/reset-all! library)
+          (reset! (:settings library) {})))))
+  =>
+  [:new :no-change true true '#{L.core} true :xtalk])
+^{:refer lang.core.script/install, :id missing-parent-boundary}
+(fact
+  "a missing parent fails before runtime registration or macro publication"
+  (binding [space/*spaces* (atom {}) ctx-reg/*registry* (atom {})]
+    (let [library (lib/library:create {:snapshot (snap/snapshot {})})
+          macro-before (Runtime/eval-in
+                         'lang.model.v1.spec-lua
+                         (fn []
+                           (let [v (eval '#'def$.lua)]
+                             [(deref v) (:macro (meta v))])))]
+      (try
+        (impl/with:library
+          [library]
+          (let [before (lib/get-snapshot library)
+                error (try
+                        (script/install lua/+book+)
+                        (catch error (ex-data error)))]
+            [(select-keys error [:ex/code :ex/message])
+             (set (:options error))
+             (= before (lib/get-snapshot library))
+             (deref ctx-reg/*registry*)
+             (=
+               macro-before
+               (Runtime/eval-in
+                 'lang.model.v1.spec-lua
+                 (fn []
+                   (let [v (eval '#'def$.lua)]
+                     [(deref v) (:macro (meta v))]))))]))
+        (finally
+          (space/reset-spaces!)
+          (ctx-reg/reset-registry!)
+          (lib/reset-all! library)
+          (reset! (:settings library) {})))))
+  =>
+  [{:ex/code :hara/generic, :ex/message "Parent not installed"}
+   #{}
+   true
+   {}
+   true])
+^{:refer lang.core.script/install, :id install-slots-restored}
+(fact
+  "installation and definition fixtures restore all model namespace slots"
+  (mapv
+    (fn [sym]
+      (let [v (Runtime/eval-in
+                'lang.model.v1.spec-lua
+                (fn [] (eval (list 'var sym))))]
+        [(deref v) (meta v)]))
+    '[def$.lua
+      defmacro.lua
+      !.lua
+      defptr.lua
+      defrun.lua
+      defn.lua
+      defglobal.lua
+      defgen.lua
+      defn-.lua
+      deftemp.lua
+      defabstract.lua
+      def.lua
+      return
+      break
+      local
+      tab
+      until
+      add-more])
+  =>
+  +install-slot-baseline+)
+
+
+(require [lang.model.v1.spec-js])
+^{:refer lang.core.script/resolve-runtime-config
+  :id historical-prep-config :added "4.1"}
+(fact "resolves original keys and forms through JavaScript test preparation"
+  (let [library (impl/clone-default-library)]
+    (binding [space/*spaces* (atom {})
+              resource/*resource-active* (atom {:global {} :namespace {} :shared {}})]
+      (try
+        (impl/with:library [library]
+          (select-keys
+            (script/script-test-prep
+              :js
+              {:runtime :basic
+               :config {'+runtime-config-key+ '+runtime-config-value+
+                        :startup {:args ["/bin/sh" "-lc" '(str "rea" "dy")]}}})
+            [:port :startup]))
+        (finally
+          (try
+            (when (annex/annex-current) (annex/clear-annex (ns-current)))
+            (finally
+              (try
+                (space/reset-spaces!)
+                (finally
+                  (lib/reset-all! library)
+                  (reset! (:settings library) {})))))))))
+  => {:port 17001 :startup {:args ["/bin/sh" "-lc" "ready"]}})
+
+^{:refer lang.core.script/script-test-prep, :id historical-js-test-prep, :added "4.0"}
+(fact
+  "preps the current namespace"
+  (let [library (impl/clone-default-library)]
+    (binding [space/*spaces* (atom {})
+              resource/*resource-active* (atom
+                                           {:global {},
+                                            :namespace {},
+                                            :shared {}})]
+      (try
+        (impl/with:library
+          [library]
+          (select-keys (script/script-test-prep :js {}) [:module]))
+        (finally
+          (try
+            (when (annex/annex-current)
+              (annex/clear-annex (ns-current)))
+            (finally
+              (try
+                (space/reset-spaces!)
+                (finally
+                  (lib/reset-all! library)
+                  (reset! (:settings library) {})))))))))
+  =>
+  {:module 'lang.core.script-test})

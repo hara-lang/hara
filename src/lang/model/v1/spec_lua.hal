@@ -1,59 +1,415 @@
 (ns lang.model.v1.spec-lua
+  (:config {:role :internal})
   (:require [lang.base.book :as book]
-            [lang.base.book-meta :as book-meta]
-            [lang.base.grammar-api :as grammar-api]
-            [lang.base.registry :as registry]
-            [lang.model.v1.spec-lua.lua-grammar :as model]
-            [lang.model.v1.spec-xtalk :as xtalk]))
+            [lang.base.book-module :as module]
+            [lang.base.emit :as emit]
+            [lang.base.emit-common :as common]
+            [lang.base.emit-data :as data]
+            [lang.base.grammar :as grammar]
+            [lang.base.grammar-spec :as spec]
+            [lang.base.util :as ut]
+            [lang.model.v1.spec-lua.c-ffi :as c-ffi]
+            [lang.model.v1.spec-lua.rewrite :as rewrite]
+            [lang.model.v1.spec-xtalk.fn-lua :as fn]
+            [lang.core.script :as script]
+            [lang.model.v1.spec-xtalk ]))
 
-(def +language+ :lua)
-(def +tag+ :lua)
-(def +version+ 1)
-(def +grammar-version+ model/+grammar-version+)
-(def +template+ model/+template-source+)
-(def +profile+ model/+profile+)
-(def +grammar+ model/+grammar+)
+(defn lua-tf-incby
+  "lowers `:+=` into plain assignment"
+  {:added "4.1"}
+  [[_ target value]]
+  (list := target (list '+ target value)))
 
-(def +coordinate+
-  {:grammar/id +tag+
-   :grammar/version +grammar-version+
-   :grammar/release "alpha"
-   :grammar/facets []})
+(defn lua-tf-decby
+  "lowers `:-=` into plain assignment"
+  {:added "4.1"}
+  [[_ target value]]
+  (list := target (list '- target value)))
 
-(defn install-source
-  [catalog source]
-  (if (registry/find catalog (grammar-api/source-coordinate source))
-    catalog
-    (registry/install catalog source)))
+(defn lua-tf-mulby
+  "lowers `:*=` into plain assignment"
+  {:added "4.1"}
+  [[_ target value]]
+  (list := target (list '* target value)))
 
-(defn install
-  [catalog]
-  (let [catalog (xtalk/install catalog)
-        catalog (install-source catalog +template+)
-        catalog (install-source catalog +profile+)]
-    (install-source catalog +grammar+)))
+(defn lua-tf-local
+  "a more flexible `var` replacement"
+  {:added "4.0"}
+  [[_ decl & migration-lua-args]]
+  (let [args (seq migration-lua-args)]
+    (if (empty? args)
+      (list 'var* :local decl)
+      (let [bound (last args)]
+        (cond
+          (and (form? bound) (= 'fn (first bound))) (apply
+                                                      list
+                                                      'defn
+                                                      (with-meta
+                                                        decl
+                                                        {:inner true})
+                                                      (rest bound))
+          (vector? decl) (apply
+                           list
+                           'var*
+                           :local
+                           (list 'quote decl)
+                           [:= (list 'unpack bound)])
+          (set? decl) (cons
+                        'do
+                        (seq
+                          (map
+                            (fn [sym]
+                              (let [sym-index (ut/sym-default-str sym)]
+                                (list
+                                  'var*
+                                  :local
+                                  sym
+                                  :=
+                                  (list '. bound [sym-index]))))
+                            decl)))
+          :else (list 'var* :local decl := bound))))))
 
-(defn catalog
-  []
-  (install (registry/registry)))
+(defn lua-tf-c-ffi
+  "transforms a c ffi block into a C declaration string.
 
-(defn select
-  ([] (select (catalog)))
-  ([catalog]
-   (registry/resolve catalog
-                     {:grammar/id +tag+
-                      :grammar/version +grammar-version+})))
+   This runs at macro-expansion time, before Lua's lambda hoisting
+   stage can extract the nested fn forms, so the full C prototypes
+   are preserved for ffi.cdef."
+  {:added "4.0"}
+  [[_ & forms]]
+  (c-ffi/c-ffi-body->string forms))
 
-(def +meta+ (book-meta/book-meta {}))
+(defn lua-map-key
+  "custom lua map key"
+  {:added "3.0"}
+  [key grammar mopts]
+  (cond (not (or (form? key) (symbol? key) (number? key)))
+    (let [key-str (cond (string? key) key :else (ut/sym-default-str key))
+          key-str (cond
+                   (and
+                    (not
+                     (#{"else"   "not"
+                        "var"    "return"
+                        "repeat" "elseif"
+                        "for"    "false"
+                        "if"     "or"
+                        "true"   "break"
+                        "until"  "function"
+                        "and"    "do"
+                        "while"  "local"
+                        "then"   "nil"
+                        "end"    "goto"
+                        "in"}
+                      key-str))             (re-find #"^[A-Za-z][\w\d]*$" key-str)) key-str
+                   :else                                                            (str "['" key-str "']"))]
+      key-str)
+    :else
+    (str "[" (common/*emit-fn* key grammar mopts) "]")))
 
-(def +selection+ (select))
+(defn lua-vector
+  "emits a lua vector using cjson's array metatable"
+  {:added "4.1"}
+  [arr grammar mopts]
+  (str "setmetatable("
+       (data/emit-coll :vector arr grammar mopts)
+       ", cjson.array_mt)"))
+
+(defn lua-tf-for-object
+  "for object transform"
+  {:added "4.0"}
+  [[_ [[k v] m] & body]]
+  (apply list 'for [[k v] :in (list 'pairs m)]
+         body))
+
+(defn lua-tf-for-array
+  "for array transform"
+  {:added "4.0"}
+  [[_ [e arr] & body]]
+  (if (vector? e)
+    (apply list 'for [e :in (list 'ipairs arr)]
+           body)
+    (apply list 'for [['_ e] :in (list 'ipairs arr)]
+           body)))
+
+(defn lua-tf-for-iter
+  "for iter transform"
+  {:added "4.0"}
+  [[_ [e it] & body]]
+  (apply list 'for [e :in it]
+         body))
+
+(defn lua-tf-for-index
+  "for index transform"
+  {:added "4.0"}
+  [[_ [i [start end step :as range]] & body]]
+  (apply list 'for [i := (list 'quote [start end (or step 1)])]
+         body))
+
+(defn lua-tf-for-return
+  "for return transform"
+  {:added "4.0"}
+  [[_ [[res err] statement] {:keys [success error]}]]
+  (let [migration-template-value (syntax-quote
+                                   ((unquote 'do)
+                                     ((unquote 'var)
+                                       ((unquote 'quote)
+                                         [(unquote res) (unquote err)])
+                                       (unquote statement))
+                                     ((unquote 'if)
+                                       ((unquote 'not) (unquote err))
+                                       (unquote success)
+                                       (unquote error))))]
+    (with-meta
+      migration-template-value
+      (merge
+        (or (meta migration-template-value) {})
+        (select-keys (or (template-meta) {}) [:line :column])))))
+
+(defn lua-tf-for-async
+  "for async transform"
+  {:added "4.0"}
+  [[_ [[res err] statement] {:keys [success error finally]}]]
+  (let [migration-template-value (syntax-quote
+                                   ((unquote 'x:thread-spawn)
+                                     ((unquote 'fn)
+                                       []
+                                       ((unquote 'for:try)
+                                         [[(unquote res) (unquote err)]
+                                          (unquote statement)]
+                                         {:success (unquote success),
+                                          :error (unquote error)})
+                                       (unquote-splicing
+                                         (if finally [finally])))))]
+    (with-meta
+      migration-template-value
+      (merge
+        (or (meta migration-template-value) {})
+        (select-keys (or (template-meta) {}) [:line :column])))))
+
+(defn lua-tf-yield
+  "yield transform"
+  {:added "4.0"}
+  [[_ e]]
+  (list 'coroutine.yield e))
+
+(defn lua-tf-throw
+  "preserves the raw thrown payload through pcall"
+  {:added "4.1"}
+  [[_ value]]
+  (list 'error value 0))
+
+(defn lua-tf-defgen
+  "defgen transform"
+  {:added "4.0"}
+  [[_ sym args & body]]
+  (list 'defn sym args
+        (list 'return (list 'coroutine.wrap
+                            (apply list 'fn [] body)))))
+
+(defn lua-tf-prototype-create [[_ m]]
+  (let [migration-template-value (syntax-quote
+                                   ((unquote 'do)
+                                     ((unquote 'var)
+                                       (unquote 'mt)
+                                       (unquote m))
+                                     (:=
+                                       ((unquote '.)
+                                         (unquote 'mt)
+                                         (unquote '__index))
+                                       (unquote 'mt))
+                                     ((unquote 'return)
+                                       (unquote 'mt))))]
+    (with-meta
+      migration-template-value
+      (merge
+        (or (meta migration-template-value) {})
+        (select-keys (or (template-meta) {}) [:line :column])))))
+
+(defn lua-tf-prototype-method
+  [[_ obj key]]
+  (let [direct   (list 'x:get-key obj key nil)
+        value    (list ':? (list 'not= nil direct)
+                       direct
+                       (list 'x:get-key (list 'proto:get obj) key nil))]
+    value))
+
+(defn lua-emit-input-rest
+  [_ _ _]
+  "...")
+
+(def +features+
+  (-> (grammar/build :include [:builtin
+                               :builtin-global
+                               :builtin-module
+                               :builtin-helper
+                               :free-control
+                               :free-literal
+                               :math
+                               :compare
+                                :logic
+                                :return
+                                :throw
+                                :data-table
+                               :data-shortcuts
+                               :vars
+                               :fn
+                               :control-base
+                               :control-general
+                               :top-base
+                               :top-global
+                               :top-declare
+                               :for
+                               :coroutine
+                               :prototype
+                               :macro
+                               :macro-arrow
+                               :macro-let
+                               :macro-xor])
+      (merge (grammar/build-xtalk))
+        (grammar/build:override
+        {:var        {:symbol '#{var*}}
+         :not        {:raw "not "}
+         :and        {:raw "and"}
+         :or         {:raw "or"}
+         :throw      {:macro #'lua-tf-throw :emit :macro}
+         :neq        {:raw "~="}
+         :for-object {:macro #'lua-tf-for-object :emit :macro}
+         :for-array  {:macro #'lua-tf-for-array  :emit :macro}
+         :for-iter   {:macro #'lua-tf-for-iter   :emit :macro}
+        :for-index  {:macro #'lua-tf-for-index  :emit :macro}
+        :defgen     {:macro #'lua-tf-defgen     :emit :macro}
+         :yield      {:macro #'lua-tf-yield      :emit :macro}
+         :prototype-get       {:emit :alias :raw 'getmetatable}
+         :prototype-set       {:emit :alias :raw 'setmetatable}
+         :prototype-create    {:macro #'lua-tf-prototype-create  :emit :macro
+                               :op-spec {:allow-blocks true}}
+         :prototype-method    {:macro #'lua-tf-prototype-method  :emit :macro}
+         :prototype-tostring  {:emit :unit  :default "__tostring"}})
+      (grammar/build:override fn/+lua+)
+      (grammar/build:extend
+       {:cat    {:op :cat    :symbol '#{cat}       :raw ".."   :emit :infix}
+        :len    {:op :len    :symbol '#{len}       :raw "#"    :emit  :pre}
+        :incby  {:op :incby  :symbol '#{:+=}       :macro  #'lua-tf-incby :emit :macro}
+        :decby  {:op :decby  :symbol '#{:-=}       :macro  #'lua-tf-decby :emit :macro}
+        :mulby  {:op :mulby  :symbol '#{:*=}       :macro  #'lua-tf-mulby :emit :macro}
+        :local  {:op :local  :symbol '#{local var} :macro  #'lua-tf-local :emit :macro}
+        :c-ffi  {:op :c-ffi  :symbol '#{%.c}       :macro  #'lua-tf-c-ffi :emit :macro}
+        :repeat {:op :repeat
+                 :symbol '#{repeat} :type :block
+                 :block {:raw "repeat"
+                         :main    #{:body}
+                         :control [[:until {:required true
+                                            :input #{:parameter}}]]}}})))
+
+(def +template+
+ (->>
+   {:banned #{:keyword :regex :set},
+    :block
+    {:for {:body {:start "do", :end "end"}},
+     :while {:body {:start "do", :end "end"}},
+     :branch
+     {:wrap {:start "", :end "end"},
+      :control
+      {:default
+       {:parameter {:start " ", :end " then"}, :body {:append true}},
+       :if {:raw "if"},
+       :elseif {:raw "elseif"},
+       :else {:raw "else"}}},
+     :repeat {:body {:start "", :end ""}}},
+    :highlight '#{tab local return until break},
+    :default
+    {:comment {:prefix "--"},
+     :common
+     {:apply ":",
+      :statement "",
+      :namespace-full "___",
+      :namespace-sep "_"},
+     :index {:offset 1, :end-inclusive true},
+     :return {:multi true},
+     :block
+     {:parameter {:start " ", :end " "}, :body {:start "", :end ""}},
+     :function
+     {:raw "function",
+      :args {:rest #'lua-emit-input-rest},
+      :body {:start "", :end "end"}},
+     :infix {:if {:check "and", :then "or"}},
+     :global {:reference nil}},
+    :function {:defn {:raw "local function"}},
+    :allow {:assign #{:symbol :quote}},
+    :define
+    {:def {:raw "local"},
+     :defglobal {:raw ""},
+     :declare {:raw "local"}},
+    :token {:nil {:as "nil"}, :string {:quote :single}},
+    :rewrite {:staging [#'rewrite/lua-rewrite-stage]},
+    :data
+    {:map-entry
+     {:start "",
+      :end "",
+      :space "",
+      :assign "=",
+      :keyword :symbol,
+      :key-fn #'lua-map-key},
+     :vector {:start "{", :end "}", :space "", :custom #'lua-vector}}}
+   (merge-nested (emit/default-grammar))))
+
+(defn lua-module-link "gets the absolute lua based module\n   \n   (lua-module-link 'kmi.common {:root-ns 'kmi.hello})\n   => \"./common\"\n  \n   (lua-module-link 'kmi.exchange\n                    {:root-ns 'kmi :target \"src\"})\n   => \"./kmi/exchange\"" {:added "4.0"} [ns graph] (let [{:keys [target root-ns]} graph root-path (->> (str/split (name root-ns) #"\.") (butlast) (str/join "/")) ns-path (str/replace (name ns) "." "/")] (if (str/starts-with? ns-path (str root-path)) (->> (let [root-parts (vec (remove empty? (str/split (File/resolve root-path "") "/"))) target-parts (vec (remove empty? (str/split (File/resolve ns-path "") "/")))] (loop [index 0] (if (and (< index (count root-parts)) (< index (count target-parts)) (= (nth root-parts index) (nth target-parts index))) (recur (inc index)) (str/join "/" (concat (repeat (- (count root-parts) index) "..") (drop index target-parts)))))) (str) (str "./")) (str "./" ns-path))))
+
+(defn lua-module-export
+  "outputs the js module export form"
+  {:added "4.0"}
+  [module mopts]
+  (let [table (cons 'tab (module/module-entries module #{:defn :def}))]
+    (list 'return table)))
+
+
+(def +meta+
+ (book/book-meta
+   {:module-current (fn [& ignored] nil),
+    :module-link #'lua-module-link,
+    :module-export #'lua-module-export,
+    :module-import
+    (fn [name {:keys [as]} opts]
+      (let [migration-template-value (syntax-quote
+                                       ((unquote 'var*)
+                                         :local
+                                         (unquote as)
+                                         :=
+                                         ((unquote 'require)
+                                           (unquote (str name)))))]
+        (with-meta
+          migration-template-value
+          (merge
+            (or (meta migration-template-value) {})
+            (select-keys (or (template-meta) {}) [:line :column]))))),
+    :has-ptr (fn [ptr] (list 'not= (ut/sym-full ptr) nil)),
+    :teardown-ptr (fn [ptr] (list := (ut/sym-full ptr) nil))}))
+
+(def +grammar+
+  (grammar/grammar :lua
+    (grammar/to-reserved +features+)
+    +template+))
+
+(defn variant-meta
+  "merges variant metadata onto base lua metadata"
+  {:added "4.1"}
+  [m]
+  (book/book-meta (merge-nested +meta+ m)))
+
+(defn variant-grammar
+  "merges variant feature overrides onto base lua grammar"
+  {:added "4.1"}
+  [m]
+  (grammar/grammar
+    :lua
+    (grammar/to-reserved (merge-nested +features+ m))
+    +template+))
 
 (def +book+
-  (book/book {:lang +language+
-              :meta +meta+
+  (book/book {:lang :lua
               :parent :xtalk
-              :version +version+
-              :coordinate +coordinate+
-              :grammar (:grammar +selection+)
-              :selection +selection+}))
-(def +init+ +book+)
+              :meta +meta+
+              :grammar +grammar+}))
+
+(def +init+
+  (script/install +book+))

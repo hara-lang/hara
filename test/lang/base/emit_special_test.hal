@@ -1,132 +1,402 @@
 (ns lang.base.emit-special-test
-  (:use code.test)
   (:require [lang.base.emit-common :as common]
             [lang.base.emit-helper :as helper]
-            [lang.base.emit-special :as special]
-            [lang.core.script :as script]))
+            [lang.base.emit-prep-lua-test :as prep]
+            [lang.base.emit-special :refer :all]
+            [lang.core.impl-entry :as entry]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap]
+            [lang.model.v1.spec-lua :as lua])
+  (:use code.test))
+
+(do
+  (def +migration-owned-libraries+ (atom []))
+  (fact:global
+    {:teardown
+     [(try
+        (doseq [library (deref +migration-owned-libraries+)]
+          (try
+            (lib/reset-all! library)
+            (finally (reset! (:settings library) {}))))
+        (finally
+          (reset! +migration-owned-libraries+ [])
+          (intern 'lang.base.emit-special-test 'hello nil)
+          (intern 'lang.base.emit-special-test 'world nil)))]})
+  (def +library-ext+
+   (doto
+     (let [migration-created-library (lib/library:create
+                                       {:snapshot
+                                        (snap/snapshot
+                                          {:lua
+                                           {:id :lua,
+                                            :book prep/+book-min+}})})]
+       (swap!
+         +migration-owned-libraries+
+         conj
+         migration-created-library)
+       migration-created-library)
+     (lib/install-module!
+       :lua
+       'L.util
+       {:require '[[L.core :as u]],
+        :import '[["cjson" :as cjson]],
+        :export '[MODULE]})
+     ((fn [library]
+        (let [module (lib/get-module library :lua 'L.util)]
+          (lib/add-module!
+            library
+            (assoc
+              module
+              :code
+              (into (Algo/ordered-map) (:code module)))))))
+     (lib/add-entry-single!
+       (entry/create-code-base
+         '(defn sub-fn [a b]
+            (return (fn:> ((u/identity-fn u/sub) a b))))
+         {:lang :lua, :namespace (ns-current), :module 'L.util}
+         {}))
+     (lib/add-entry-single!
+       (entry/create-code-base
+         '(defn add-fn [a b]
+            (return (fn:> ((u/identity-fn u/add) a (-/sub-fn b 0)))))
+         {:lang :lua, :namespace (ns-current), :module 'L.util}
+         {})))))
+
+^{:refer lang.base.emit-special/emit-with-module-all-ids :added "4.0"}
+(fact "emits the module given snapshot in opts"
+
+  (set
+   (emit-with-module-all-ids (lib/get-snapshot +library-ext+)
+                             :lua
+                             'L.util
+                             identity))
+  => '#{add-fn sub-fn})
+
+^{:refer lang.base.emit-special/emit-with-module :added "4.0"}
+(fact "emits a module table from the snapshot"
+
+  (emit-with-module nil nil '(module :lua L.util)
+                    (:grammar prep/+book-min+)
+                    {:snapshot (lib/get-snapshot +library-ext+)})
+  => "{\"sub_fn\":L.util/sub-fn,\"add_fn\":L.util/add-fn}"
+
+
+  (binding [common/*emit-fn* test-special-loop]
+    (emit-with-module nil nil '(module :lua L.util)
+                      (:grammar prep/+book-min+)
+                      {:snapshot (lib/get-snapshot +library-ext+)
+                       :module (lib/get-module +library-ext+ :lua 'L.util)
+                       :layout :full}))
+  => "{\"sub_fn\":L_util____sub_fn,\"add_fn\":L_util____add_fn}")
+
+^{:refer lang.base.emit-special/emit-with-preprocess :added "4.0"}
+(fact "stages and emits an eval form"
+
+  (emit-with-preprocess '(L.core/sub 1 2)
+                        (:grammar prep/+book-min+)
+                        {:lang :lua
+                         :module   (lib/get-module +library-ext+ :lua 'L.core)
+                         :snapshot (lib/get-snapshot +library-ext+)})
+  => "(- 1 2)")
+
+
+^{:refer lang.base.emit-special/emit-with-eval :added "4.0"}
+(fact "emits an eval form"
+
+  (emit-with-eval nil nil
+                  '(!:eval (+ 1 2 3))
+                  (:grammar prep/+book-min+)
+                  {:lang :lua
+                   :module   (lib/get-module +library-ext+ :lua 'L.util)
+                   :snapshot (lib/get-snapshot +library-ext+)})
+  => "6"
+
+  (emit-with-eval nil nil
+                  '(!:eval '(+ 1 2 3))
+                  (:grammar prep/+book-min+)
+                  {:lang :lua
+                   :module   (lib/get-module +library-ext+ :lua 'L.util)
+                   :snapshot (lib/get-snapshot +library-ext+)})
+  => "(+ 1 2 3)"
+
+  (binding [common/*emit-fn* test-special-loop]
+    (emit-with-eval nil nil
+                    '(!:eval '(+ 1 2 3))
+                    (:grammar prep/+book-min+)
+                    {:lang :lua
+                     :module   (lib/get-module +library-ext+ :lua 'L.util)
+                     :snapshot (lib/get-snapshot +library-ext+)}))
+  => "1 + 2 + 3")
+
+^{:refer lang.base.emit-special/emit-with-deref, :added "4.0"}
+(fact
+  "emits an embedded var"
+  (intern 'lang.base.emit-special-test 'hello 1)
+  (emit-with-deref
+    nil
+    nil
+    '(!:deref #'hello)
+    (:grammar prep/+book-min+)
+    {:lang :lua,
+     :module (lib/get-module +library-ext+ :lua 'L.util),
+     :snapshot (lib/get-snapshot +library-ext+)})
+  =>
+  "1"
+  (intern 'lang.base.emit-special-test 'world '(L.core/sub 1 2))
+  (emit-with-deref
+    nil
+    nil
+    '(!:deref #'world)
+    (:grammar prep/+book-min+)
+    {:lang :lua,
+     :module (lib/get-module +library-ext+ :lua 'L.util),
+     :snapshot (lib/get-snapshot +library-ext+)})
+  =>
+  "(- 1 2)")
+
+^{:refer lang.base.emit-special/emit-with-lang :added "4.0"}
+(fact "emits an embedded eval"
+
+  (emit-with-lang nil nil '(!:lang {:lang :lua} (+ @1 2 3))
+                  (:grammar prep/+book-min+)
+                  {:snapshot (lib/get-snapshot +library-ext+)
+                   })
+  => "(+ (!:eval 1) 2 3)"
+
+  (binding [common/*emit-fn* test-special-loop]
+    (emit-with-lang nil nil '(!:lang {:lang :lua} (+ @1 2 3))
+                    (:grammar prep/+book-min+)
+                    {:snapshot (lib/get-snapshot +library-ext+)}))
+  => "1 + 2 + 3")
+
+^{:refer lang.base.emit-special/test-special-loop :added "4.0"}
+(fact "test step for special ops"
+
+  (test-special-loop '(!:lang {:lang :lua} (+ @1 2 3))
+                           (:grammar prep/+book-min+)
+                           {:snapshot (lib/get-snapshot +library-ext+)})
+  => "(+ (!:eval 1) 2 3)")
+
+^{:refer lang.base.emit-special/test-special-emit :added "4.0"}
+(fact "test function for special ops"
+
+  (test-special-emit '(!:lang {:lang :lua} (+ @1 2 3))
+                       (:grammar prep/+book-min+)
+                       {:snapshot (lib/get-snapshot +library-ext+)})
+  => "1 + 2 + 3")
+
+(require [lang.base.emit-special :as special])
 
 (def snapshot
   {:js {:book {:modules {'app.core
                          {:code {'visible {:id 'visible :op :def}
                                  'hidden {:id 'hidden :op :test}}}}}}})
 
-^{:refer lang.base.emit-special/emit-with-module-all-ids :added "4.0"}
-(fact "selects allowed module ids"
+^{:refer lang.base.emit-special/emit-with-module-all-ids, :added "4.0", :id :native-selects-allowed-module-ids}
+(fact
+  "selects allowed module ids"
   (special/emit-with-module-all-ids snapshot :js 'app.core #{:def})
-  => ['visible])
+  =>
+  ['visible])
 
-(fact "orders module ids by Foundation source priority"
+^{:refer lang.base.emit-special/emit-with-module-all-ids, :id :native-orders-module-ids-by-Foundation-source-priority}
+(fact
+  "orders module ids by Foundation source priority"
   (special/emit-with-module-all-ids
-   {:js {:book
-         {:modules
-          {'app.core
-           {:code
-            {'late {:id 'late :op :def :priority 2 :time 1 :line 1}
-             'last {:id 'last :op :def :priority 2 :time 2 :line 1}
-             'first {:id 'first :op :def :priority 1 :time 9 :line 4}}}}}}}
-   :js 'app.core #{:def})
-  => ['first 'late 'last])
+    {:js
+     {:book
+      {:modules
+       {'app.core
+        {:code
+         {'late {:id 'late, :op :def, :priority 2, :time 1, :line 1},
+          'last {:id 'last, :op :def, :priority 2, :time 2, :line 1},
+          'first
+          {:id 'first, :op :def, :priority 1, :time 9, :line 4}}}}}}}
+    :js
+    'app.core
+    #{:def})
+  =>
+  ['first 'late 'last])
 
-^{:refer lang.base.emit-special/emit-with-module :added "4.0"}
-(fact "emits an allowed module as a table"
+^{:refer lang.base.emit-special/emit-with-module, :added "4.0", :id :native-emits-an-allowed-module-as-a-table}
+(fact
+  "emits an allowed module as a table"
   (binding [common/*emit-fn* special/test-special-loop]
     (special/emit-with-module
-     nil nil '(module :js app.core)
-     (assoc-in helper/+default+ [:default :module :allow] #{:def})
-     {:snapshot snapshot}))
-  => "{\"visible\":app.core.visible}")
+      nil
+      nil
+      '(module :js app.core)
+      (assoc-in helper/+default+ [:default :module :allow] #{:def})
+      {:snapshot snapshot}))
+  =>
+  "{\"visible\":app.core.visible}")
 
-^{:refer lang.base.emit-special/emit-with-preprocess :added "4.0"}
-(fact "preprocesses before recursively emitting"
+^{:refer lang.base.emit-special/emit-with-preprocess, :added "4.0", :id :native-preprocesses-before-recursively-emitting}
+(fact
+  "preprocesses before recursively emitting"
   (binding [common/*emit-fn* special/test-special-loop]
     (special/emit-with-preprocess '(print 1) helper/+default+ {}))
-  => "print(1)")
+  =>
+  "print(1)")
 
-^{:refer lang.base.emit-special/emit-with-eval :added "4.0"}
-(fact "evaluates host forms and emits their values"
-  (special/emit-with-eval nil nil '(!:eval (+ 1 2 3)) helper/+default+ {})
-  => "6"
-
-  (special/emit-with-eval nil nil '(!:eval '(+ 1 2 3)) helper/+default+ {})
-  => "(+ 1 2 3)"
-
-  (special/emit-with-eval nil nil '(!:eval (+ host-value 2)) helper/+default+
-                          {:namespace 'lang.base.emit-special-test})
-  => "3"
-
+^{:refer lang.base.emit-special/emit-with-eval, :added "4.0", :id :native-evaluates-host-forms-and-emits-their-values}
+(fact
+  "evaluates host forms and emits their values"
+  (special/emit-with-eval
+    nil
+    nil
+    '(!:eval (+ 1 2 3))
+    helper/+default+
+    {})
+  =>
+  "6"
+  (special/emit-with-eval
+    nil
+    nil
+    '(!:eval '(+ 1 2 3))
+    helper/+default+
+    {})
+  =>
+  "(+ 1 2 3)"
+  (special/emit-with-eval
+    nil
+    nil
+    '(!:eval (+ host-value 2))
+    helper/+default+
+    {:namespace 'lang.base.emit-special-test})
+  =>
+  "3"
   (try
     (special/emit-with-eval
-     nil nil '(!:eval (throw (ex :argument {} :ex/message "host failure")))
-     helper/+default+ {})
+      nil
+      nil
+      '(!:eval (throw (ex :argument {} :ex/message "host failure")))
+      helper/+default+
+      {})
     :no-error
-    (catch error [(:ex/code (ex-data error)) (:ex/message (ex-data error))]))
-  => [:hara/argument "host failure"])
+    (catch
+      error
+      [(:ex/code (ex-data error)) (:ex/message (ex-data error))]))
+  =>
+  [:hara/argument "host failure"])
 
-^{:refer lang.base.emit-special/emit-with-deref :added "4.0"}
-(fact "dereferences host Vars and rejects non-Var forms"
-  (special/emit-with-deref nil nil
-                           '(!:deref (var lang.base.emit-special-test/host-value))
-                           helper/+default+ {})
-  => "1"
-
-  (special/emit-with-deref nil nil '(!:deref (var host-value)) helper/+default+
-                           {:namespace 'lang.base.emit-special-test})
-  => "1"
-
+^{:refer lang.base.emit-special/emit-with-deref, :added "4.0", :id :native-dereferences-host-Vars-and-rejects-non-Var-forms}
+(fact
+  "dereferences host Vars and rejects non-Var forms"
+  (special/emit-with-deref
+    nil
+    nil
+    '(!:deref #'lang.base.emit-special-test/host-value)
+    helper/+default+
+    {})
+  =>
+  "1"
+  (special/emit-with-deref
+    nil
+    nil
+    '(!:deref #'host-value)
+    helper/+default+
+    {:namespace 'lang.base.emit-special-test})
+  =>
+  "1"
   (try
-    (special/emit-with-deref nil nil '(!:deref (+ 1 2)) helper/+default+ {})
+    (special/emit-with-deref
+      nil
+      nil
+      '(!:deref (+ 1 2))
+      helper/+default+
+      {})
     :no-error
-    (catch error [(:ex/code (ex-data error)) (:form (ex-data error))]))
-  => [:hara/argument '(+ 1 2)])
+    (catch
+      error
+      [(:ex/code (ex-data error)) (:ex/message (ex-data error))]))
+  =>
+  [:hara/generic "Needs to be a clojure.lang.Var"])
 
-^{:refer lang.base.emit-special/emit-with-lang :added "4.0"}
-(fact "selects a snapshot language before emitting"
+^{:refer lang.base.emit-special/emit-with-lang, :added "4.0", :id :native-selects-a-snapshot-language-before-emitting}
+(fact
+  "selects a snapshot language before emitting"
   (binding [common/*emit-fn* special/test-special-loop]
     (special/emit-with-lang
-     nil nil '(!:lang {:lang :js} (print 1)) helper/+default+
-     {:snapshot {:js {:book {:grammar helper/+default+ :modules {}}}}}))
-  => "print(1)")
+      nil
+      nil
+      '(!:lang {:lang :js} (print 1))
+      helper/+default+
+      {:snapshot
+       {:js {:book {:grammar helper/+default+, :modules {}}}}}))
+  =>
+  "print(1)")
 
-^{:refer lang.base.emit-special/test-special-loop :added "4.0"}
-(fact "the Foundation special loop retains direct dispatch"
+^{:refer lang.base.emit-special/test-special-loop, :added "4.0", :id :native-the-Foundation-special-loop-retains-direct-dispatch}
+(fact
+  "the Foundation special loop retains direct dispatch"
   (special/test-special-loop '(print 1) helper/+default+ {})
-  => "print(1)")
+  =>
+  "print(1)")
 
-^{:refer lang.base.emit-special/test-special-emit :added "4.0"}
-(fact "the Foundation special test emitter installs recursive dispatch"
+^{:refer lang.base.emit-special/test-special-emit, :added "4.0", :id :native-the-Foundation-special-test-emitter-installs-recursive-dispatch}
+(fact
+  "the Foundation special test emitter installs recursive dispatch"
   (special/test-special-emit
-   ''(1 2 3)
-   (assoc helper/+default+
-          :reserved {'quote {:op :quote :emit :quote}})
-   {})
-  => "(1,2,3)")
+    ''(1 2 3)
+    (assoc
+      helper/+default+
+      :reserved
+      {'quote {:op :quote, :emit :quote}})
+    {})
+  =>
+  "(1,2,3)")
 
-^{:refer lang.base.emit-special/allowed-op? :added "0.1"}
-(fact "allows every operation without a filter and only members with a filter"
+^{:refer lang.base.emit-special/allowed-op?, :added "0.1", :id :native-allows-every-operation-without-a-filter-and-only-members-with-a-filter}
+(fact
+  "allows every operation without a filter and only members with a filter"
   [(special/allowed-op? nil :def)
-   (special/allowed-op? #{:def :defn} :def)
-   (special/allowed-op? #{:def :defn} :test)
+   (special/allowed-op? #{:defn :def} :def)
+   (special/allowed-op? #{:defn :def} :test)
    (special/allowed-op? #{} :def)]
-  => [true true false false])
+  =>
+  [true true false false])
 
 (def host-value 1)
 
-^{:refer lang.base.emit-special/emit-with-preprocess :added "4.0"}
-(fact "emits evaluated target forms without native staging markers and retains metadata"
-  (let [baseline (script/script-snapshot)
-        result
-        (try
-          (script/script-reset!)
-          (script/setup :lua 'demo.bootstrap {} true 'lang.base.emit-special-test)
-          (let [book (script/selected-book :lua)
-                options {:lang :lua :book book}]
-            [(binding [common/*emit-fn* special/test-special-loop]
-               (special/emit-with-eval nil nil '(!:eval '(+ 1 2 3))
-                                       (:grammar book) options))
-             (binding [common/*emit-fn* (fn [form grammar mopts]
-                                         [(first form) (:line (meta form))])]
-               (special/emit-with-preprocess
-                (with-meta '(+ 1 2 3) {:line 23}) (:grammar book) options))])
-          (finally (script/script-restore! baseline)))]
-    [result (= baseline (script/script-snapshot))])
-  => [["1 + 2 + 3" ['+ 23]] true])
+^{:refer lang.base.emit-special/emit-with-preprocess, :added "4.0", :id :native-emits-evaluated-target-forms-without-native-staging-markers-and-retains-metadata}
+(fact
+  "emits evaluated target forms without native staging markers and retains metadata"
+  (let [baseline (lib/get-snapshot +library-ext+)
+        migration-library (lib/library:create {:snapshot baseline})
+        result (try
+                 (do)
+                 (lib/install-module!
+                   migration-library
+                   :lua
+                   'demo.bootstrap
+                   {})
+                 (let [book (lib/get-book migration-library :lua)
+                       options {:lang :lua,
+                                :book book,
+                                :snapshot
+                                (lib/get-snapshot migration-library)}]
+                   [(binding [common/*emit-fn* special/test-special-loop]
+                      (special/emit-with-eval
+                        nil
+                        nil
+                        '(!:eval '(+ 1 2 3))
+                        (:grammar book)
+                        options))
+                    (binding [common/*emit-fn* (fn
+                                                 [form grammar mopts]
+                                                 [(first form)
+                                                  (:line
+                                                    (meta form))])]
+                      (special/emit-with-preprocess
+                        (with-meta '(+ 1 2 3) {:line 23})
+                        (:grammar book)
+                        options))])
+                 (finally
+                   (try
+                     (lib/reset-all! migration-library)
+                     (finally
+                       (reset! (:settings migration-library) {})))))]
+    [result (= baseline (lib/get-snapshot +library-ext+))])
+  =>
+  [["1 + 2 + 3" ['+ 23]] true])

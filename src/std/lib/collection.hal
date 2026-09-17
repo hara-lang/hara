@@ -467,3 +467,87 @@
         (list (list 'fn ['value__]
                     (nav-transform-body path '(fn [ignored__] replacement__) 'value__))
               value)))
+
+(defn tree-flatten
+  "flattens the entire map tree\n \n   (->> (tree-flatten {\"a\" {\"b\" {\"c\" 3 \"d\" 4}\n                            \"e\" {\"f\" 5 \"g\" 6}}\n                       \"h\" {\"i\" {}}})\n        (map-keys h/strn))\n   => {\"a/b/c\" 3, \"a/b/d\" 4, \"a/e/f\" 5, \"a/e/g\" 6}"
+  {:added "3.0"}
+  ([m] (tree-flatten m *sep*))
+  ([m sep] (tree-flatten m sep []))
+  ([m sep path]
+    (->>
+      (keep
+        (fn [[k v]]
+          (if (and (map? v) (not-empty v))
+            (tree-flatten v sep (conj path k))
+            (if (or (not (coll? v)) (not-empty v))
+              [(->> (conj path k) (map str/tag) (str/join sep) keyword)
+               v])))
+        (seq m))
+      (reduce
+        (fn [out entry]
+          (if (map? entry) (merge out entry) (conj out entry)))
+        {}))))
+
+(def re-create-cache (atom {}))
+
+(defn re-create-reset
+  "Clears separator cache; repeated reset returns the empty baseline."
+  []
+  (reset! re-create-cache {}))
+
+(defn re-create [s]
+  (if-let [cached (get (deref re-create-cache) s)]
+    cached
+    (let [compiled (if (regexp? s)
+                     s
+                     (regexp
+                       (-> (str s)
+                        (str/replace "." "\\.")
+                        (str/replace "*" "\\*"))))]
+      (swap! re-create-cache assoc s compiled)
+      compiled)))
+
+(defn tree-nestify
+  "nests keys in the map\n \n   (tree-nestify {:a/b 2 :a/c 3})\n   => {:a {:b 2 :c 3}}\n \n   (tree-nestify {:a/b {:e/f 1} :a/c {:g/h 1}})\n   => {:a {:b {:e/f 1}\n           :c {:g/h 1}}}"
+  {:added "3.0"}
+  ([m] (tree-nestify m *sep*))
+  ([m sep] (tree-nestify m sep identity))
+  ([m sep f]
+    (let [pattern (re-create sep)]
+      (reduce-kv
+        (fn [m k v]
+          (let [path (->>
+                       (let [migration-text (str/tag k)]
+                         (if (empty? migration-text)
+                           [""]
+                           (vec
+                             (reverse
+                               (drop-while
+                                 empty?
+                                 (reverse
+                                   (str/split
+                                     migration-text
+                                     pattern)))))))
+                       (map keyword))
+                v (f v)]
+            (update-in
+              m
+              path
+              (fn [migration-existing]
+                ((fn [p]
+                   (cond (and (map? p) (map? v)) (merge p v) :else v))
+                  (if (nil? migration-existing)
+                    v
+                    migration-existing))))))
+        {}
+        m))))
+
+(defn tree-nestify:all
+  "nests keys in the map and all submaps\n \n   (tree-nestify:all {:a/b 2 :a/c 3})\n   => {:a {:b 2 :c 3}}\n \n   (tree-nestify:all {:a/b {:e/f 1} :a/c {:g/h 1}})\n   => {:a {:b {:e {:f 1}}\n           :c {:g {:h 1}}}}"
+  {:added "3.0"}
+  ([m] (tree-nestify:all m *sep*))
+  ([m sep]
+    (tree-nestify
+      m
+      sep
+      (fn [v] (if (map? v) (tree-nestify:all v sep) v)))))

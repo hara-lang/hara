@@ -2,14 +2,7 @@
   (:require
             [lang.typed.xtalk-parse :as xtalk-parse]))
 
-(def +facet+
-  {:facet/id :typescript
-   :facet/version 1
-   :facet/parent {:grammar/id :js
-                  :grammar/variant :default
-                  :grammar/version 1}
-   :facet/output :declaration-sidecar
-   :facet/extension "d.ts"})
+
 
 (def +ts-ident-start-chars+
   (set "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$"))
@@ -208,62 +201,47 @@
 
     "unknown"))
 
-(defn collect-type-refs
-  [type]
-  (case (:kind type)
+(defn collect-type-refs [type]
+  (case
+    (:kind type)
     :named
-    (if (symbol? (:name type))
-      #{(:name type)}
-      #{})
-
+    (if (symbol? (:name type)) #{(:name type)} #{})
     :maybe
     (collect-type-refs (:item type))
-
     :union
-    (into #{} (mapcat collect-type-refs) (:types type))
-
+    (into #{} (mapcat collect-type-refs (:types type)))
     :intersection
-    (into #{} (mapcat collect-type-refs) (:types type))
-
+    (into #{} (mapcat collect-type-refs (:types type)))
     :tuple
-    (into #{} (mapcat collect-type-refs) (:types type))
-
+    (into #{} (mapcat collect-type-refs (:types type)))
     :array
     (collect-type-refs (:item type))
-
     :dict
-    (into (collect-type-refs (:key type))
-          (collect-type-refs (:value type)))
-
+    (into
+      (collect-type-refs (:key type))
+      (collect-type-refs (:value type)))
     :record
-    (let [field-refs
-          (into #{}
-                (mapcat (comp collect-type-refs :type))
-                (:fields type))
-          open-refs
-          (if-let [open (:open type)]
-            (into (collect-type-refs (:key open))
-                  (collect-type-refs (:value open)))
-            #{})]
+    (let [field-refs (into
+                       #{}
+                       (mapcat
+                         (comp collect-type-refs :type)
+                         (:fields type)))
+          open-refs (if-let [open (:open type)]
+                      (into
+                        (collect-type-refs (:key open))
+                        (collect-type-refs (:value open)))
+                      #{})]
       (into field-refs open-refs))
-
     :fn
-    (into (into #{}
-                (mapcat collect-type-refs)
-                (:inputs type))
-          (collect-type-refs (:output type)))
-
+    (into
+      (into #{} (mapcat collect-type-refs (:inputs type)))
+      (collect-type-refs (:output type)))
     :apply
-    (let [target-refs
-          (if (symbol? (:target type))
-            #{(:target type)}
-            #{})
-          arg-refs
-          (into #{}
-                (mapcat collect-type-refs)
-                (:args type))]
+    (let [target-refs (if (symbol? (:target type))
+                        #{(:target type)}
+                        #{})
+          arg-refs (into #{} (mapcat collect-type-refs (:args type)))]
       (into target-refs arg-refs))
-
     #{}))
 
 (defn fn-type
@@ -272,20 +250,21 @@
    :inputs (mapv :type (:inputs fn-def))
    :output (:output fn-def)})
 
-(defn analysis-import-groups
-  [{:keys [ns specs functions values]}]
+(defn analysis-import-groups [{:keys [ns specs functions values]}]
   (let [spec-refs (mapcat (comp collect-type-refs :type) specs)
-        fn-refs (mapcat (fn [fn-def]
-                          (collect-type-refs (fn-type fn-def)))
-                        functions)
+        fn-refs (mapcat
+                  (fn [fn-def] (collect-type-refs (fn-type fn-def)))
+                  functions)
         value-refs (mapcat (comp collect-type-refs :type) values)
         all-refs (concat spec-refs fn-refs value-refs)]
-    (->> all-refs
-         set
-         (remove #(= ns (some-> % namespace symbol)))
-         (group-by #(some-> % namespace symbol))
-         (remove (comp nil? key))
-         (sort-by (comp str key)))))
+    (->>
+      all-refs
+      set
+      (remove #(= ns (some-> % namespace symbol)))
+      (group-by #(some-> % namespace symbol))
+      vec
+      (remove (comp nil? key))
+      (sort-by (comp str key)))))
 
 (defn emit-import-item
   [sym current-ns]
@@ -390,18 +369,10 @@
            ".d.ts")
       (str output ".d.ts"))))
 
-(defn module-dts-artifact
-  [{:keys [main runtime-output]}]
-  {:facet +facet+
-   :output (declaration-output-path runtime-output)
-   :body (-> main
-             xtalk-parse/analyze-module
-             emit-analysis-declarations)})
+(defn module-dts-artifact [{:keys [main runtime-output]}]
+  {:output (declaration-output-path runtime-output),
+   :body
+   (-> main xtalk-parse/analyze-namespace emit-analysis-declarations)})
 
-(defn emit-module-declarations
-  [ns-sym]
-  (-> ns-sym
-      xtalk-parse/analyze-module
-      emit-analysis-declarations))
-
-(def emit-namespace-declarations emit-module-declarations)
+(defn emit-namespace-declarations [ns-sym]
+  (-> ns-sym xtalk-parse/analyze-namespace emit-analysis-declarations))

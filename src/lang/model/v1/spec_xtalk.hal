@@ -1,32 +1,31 @@
 (ns lang.model.v1.spec-xtalk
+  (:config {:role :internal})
   (:require [lang.base.book :as book]
-            [lang.base.grammar-api :as grammar]
-            [lang.base.registry :as registry]
-            [lang.model.v1.spec-xtalk.xtalk-grammar :as model]))
+            [lang.base.emit :as emit]
+            [lang.base.grammar :as grammar]
+            [lang.core.script :as script]))
 
-(def +language+ :xtalk)
-(def +tag+ :xtalk)
-(def +version+ 1)
-(def +grammar-version+ model/+grammar-version+)
-(def +template+ model/+template+)
-(def +profile+ model/+profile+)
-(def +grammar+ model/+grammar+)
+(def +features+
+  (-> (grammar/build-min [:top-declare
+                          :coroutine
+                          :macro
+                          :macro-arrow
+                          :macro-let])
+      (merge (grammar/build-xtalk))))
 
-(defn install-source [catalog source]
-  (if (registry/find catalog (grammar/source-coordinate source)) catalog
-      (registry/install catalog source)))
+(def +grammar+
+  (grammar/grammar :xt
+    (grammar/to-reserved +features+)
+    (emit/default-grammar
+     {:banned #{:keyword}
+      :allow   {:assign  #{:symbol :vector :set}}})))
 
-(defn install [catalog]
-  (let [catalog (install-source catalog +template+)
-        catalog (install-source catalog +profile+)]
-    (install-source catalog +grammar+)))
-(defn catalog [] (install (registry/registry)))
-(defn select
-  ([] (select (catalog)))
-  ([catalog]
-   (registry/resolve catalog {:grammar/id +tag+ :grammar/version +grammar-version+})))
-(def +selection+ (select))
-(def +book+ (book/book {:lang +language+ :parent nil :version +version+
-                        :coordinate (:coordinate +selection+)
-                        :grammar (:grammar +selection+) :selection +selection+}))
-(def +init+ +book+)
+(def +meta+ (book/book-meta {}))
+
+(def +book+
+  (book/book {:lang :xtalk
+              :meta +meta+
+              :grammar +grammar+}))
+
+(def +init+
+  (script/install +book+))

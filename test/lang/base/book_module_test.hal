@@ -18,7 +18,38 @@
 
 ^{:refer lang.base.book-module/materialized-code, :id book-module-native-6-0} (fact "leaves raw code intact when no grammar is selected" ((fn [] (module/materialized-code nil fixture-module))) => {(quote one) {:id (quote one), :op-key :defn, :deps #{(quote demo.data/value)}, :deps-native {"react" #{(quote React)}}, :deps-fragment #{(quote demo.frag/value)}}})
 
-^{:refer lang.base.book-module/materialized-code, :id book-module-native-7-0} (fact "stages inherited source entries with the pinned module language" ((fn [] (let [seen (atom []) entry {:lang :xtalk, :module (quote demo.inherited), :id (quote run), :op :plain, :form-input (quote (outer 1)), :static/code.cache (atom {})} source (module/book-module {:lang :xtalk, :id (quote demo.inherited), :code {(quote run) entry}}) book {:lang :lua, :grammar {:reserved {:plain {:hydrate (fn [form _ context] (swap! seen conj (:lang context)) [nil form])}}}, :modules {(quote demo.inherited) source}}] (module/materialized-code book source) (deref seen)))) => [:xtalk])
+^{:refer lang.base.book-module/materialized-code :id book-module-native-7-0}
+(fact "passes the inherited module language and brief source view to materialization"
+  (let [seen (atom [])
+        entry {:lang :xtalk :module 'demo.inherited :id 'run
+               :op :plain :form-input '(outer 1)}
+        source (module/book-module {:lang :xtalk :id 'demo.inherited
+                                    :code {'run entry}})
+        book {:lang :lua :modules {'demo.inherited source}}
+        original #'template/materialize-code-entry
+        original-value @original
+        original-meta (meta original)
+        outcome
+        (try
+          (intern 'lang.base.emit-template
+            (with-meta 'materialize-code-entry original-meta)
+            (fn [actual-book actual-entry context]
+              (swap! seen conj
+                [(= book actual-book) (= entry actual-entry)
+                 (:lang context) (:id (:module context))
+                 (:display (:module context))])
+              (assoc actual-entry :form 'materialized)))
+          [(module/materialized-code book source) @seen]
+          (finally
+            (intern 'lang.base.emit-template
+              (with-meta 'materialize-code-entry original-meta) original-value)
+            (reset! seen [])))]
+    [outcome (= entry (get-in source [:code 'run]))
+     (= original-value @original) (= original-meta (meta original)) @seen])
+  => [[{'run {:lang :xtalk :module 'demo.inherited :id 'run
+              :op :plain :form-input '(outer 1) :form 'materialized}}
+       [[true true :xtalk 'demo.inherited :brief]]]
+      true true true []])
 
 ^{:refer lang.base.book-module/add-polyfill-link, :id book-module-native-8-0} (fact "adds derived internal, alias, and link entries and rejects conflicts" ((fn [] (let [value (module/add-polyfill-link (module/book-module {:lang :js, :id (quote demo.core)}) (quote demo.poly))] [(select-keys value [:link :internal :alias]) (try (module/add-polyfill-link (module/book-module {:lang :js, :id (quote demo.core), :link {(quote polyfill-demo.poly) (quote other)}}) (quote demo.poly)) false (catch error true))]))) => [{:link {(quote polyfill-demo.poly) (quote demo.poly)}, :internal {(quote demo.poly) (quote polyfill-demo.poly)}, :alias {(quote polyfill-demo.poly) (quote demo.poly)}} true])
 

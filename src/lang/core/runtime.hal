@@ -1,321 +1,687 @@
-;; ============================================================================
-;; lang.core.runtime — language/runtime selection over the native context APIs.
-;;
-;; The archive owned the public runtime geometry.  This implementation retains
-;; that geometry while delegating execution to IContext, IContextEval, and
-;; IContextLifeCycle.  It deliberately has no Tahto or JDBC compatibility
-;; coordinates.
-;; ============================================================================
 (ns lang.core.runtime
-  (:require [lang.core.eval :as evaluation]
-            [lang.core.library :as library]
-            [lang.core.registry :as registry]
-            [std.lib.component :as component]))
+  (:config {:role :internal})
+  (:require [lang.core.runtime-proxy :as proxy]
+            [lang.core.pointer :as ptr]
+            [lang.base.util :as ut]
+            [std.lib.context.registry :as reg]
+            [std.lib.context.resource :as resource]
+            [lang.core.impl :as impl]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap]
+            [lang.base.book-module :as book-module]
+            [lang.core.impl-lifecycle :as lifecycle]
+            [lang.base.emit-common :as common]
+            [lang.core.impl-deps :as deps]
+            [lang.base.book :as book]))
 
-(def +type-registry+ (atom {}))
+(defn default-tags-ptr
+  "runtime default args"
+  {:added "4.0"}
+  [rt ptr]
+  (ptr/ptr-tag ptr (:runtime rt)))
 
-(defstruct RuntimeDefault
-  [id lang runtime module options state modules pointers profile timeout])
+(defn default-deref-ptr
+  "runtime default deref"
+  {:added "4.0"}
+  [{:as rt :keys [library]} ptr]
+  (ptr/ptr-deref (assoc (into {} ptr) :library library)))
 
-(defn atom-value
-  [reference]
-  (deref reference))
+(defn default-invoke-ptr
+  "runtime default invoke"
+  {:added "4.0"}
+  [{:as rt :keys [id library layout emit]} ptr args]
+  (ptr/ptr-invoke-string ptr
+    args
+    {:library library
+     :layout  layout
+     :emit    (merge emit
+                     {:transform (fn [args {:as mopts :keys [bulk]}]
+                                     (if bulk (if (vector? args) (apply list (quote do) args) args) args))
+                      :runtime   (assoc rt :type (:runtime rt) :namespace (ns-current))})}))
 
-(defn runtime-snapshot
-  "Captures explicitly installed runtime entries; Library owns Book selection."
-  []
-  {:types (atom-value +type-registry+)})
+(defn default-init-ptr
+  "will init pointer if there is a :rt/init key"
+  {:added "4.0"}
+  [{:as rt :keys [id lang library layout module emit]} entry]
+  (when (and (#{:defglobal :defrun} (:op-key entry)) (:rt/init entry))
+    (IContextEval/invoke-ptr rt
+      (ut/lang-pointer lang {:module module})
+      [(:form-input entry)])))
 
-(defn runtime-restore!
-  "Restores runtime implementation state; Library snapshots own Book selection."
-  [snapshot]
-  (let [snapshot (or snapshot {})]
-    (reset! +type-registry+ (or (:types snapshot) {}))
-    (runtime-snapshot)))
+(do
+  (defstruct ^{:open true} RuntimeDefault [lang redirect])
+  (extend-type
+    RuntimeDefault
+    IContextEval
+    (evaluate-raw
+      [rt string options]
+      (let [{:keys [redirect lang]} rt]
+        (if redirect
+          (proxy/proxy-raw-eval rt string)
+          (default-raw-eval rt string))))
+    (tags-ptr
+      [rt ptr]
+      (let [{:keys [redirect lang]} rt]
+        (if redirect
+          (proxy/proxy-tags-ptr rt ptr)
+          (default-tags-ptr rt ptr))))
+    (deref-ptr
+      [rt ptr]
+      (let [{:keys [redirect lang]} rt]
+        (if redirect
+          (proxy/proxy-deref-ptr rt ptr)
+          (default-deref-ptr rt ptr))))
+    (display-ptr
+      [rt ptr]
+      (let [{:keys [redirect lang]} rt]
+        (if redirect
+          (proxy/proxy-display-ptr rt ptr)
+          (default-display-ptr rt ptr))))
+    (invoke-ptr
+      [rt ptr args]
+      (let [{:keys [redirect lang]} rt]
+        (if redirect
+          (proxy/proxy-invoke-ptr rt ptr args)
+          (default-invoke-ptr rt ptr args))))
+    (transform-in-ptr
+      [rt ptr args]
+      (let [{:keys [redirect lang]} rt]
+        (if redirect
+          (proxy/proxy-transform-in-ptr rt ptr args)
+          (default-transform-in-ptr rt ptr args))))
+    (transform-out-ptr
+      [rt ptr return]
+      (let [{:keys [redirect lang]} rt]
+        (if redirect
+          (proxy/proxy-transform-out-ptr rt ptr return)
+          (default-transform-out-ptr rt ptr return)))))
+  (extend-type
+    RuntimeDefault
+    IContextLifeCycle
+    (setup-ptr
+      [rt ptr]
+      (let [{:keys [redirect lang]} rt]
+        (if redirect
+          (proxy/proxy-init-ptr rt ptr)
+          (default-init-ptr rt ptr)))))
+  (extend-type
+    RuntimeDefault
+    IComponent
+    (start
+      [component]
+      (let [{:keys [redirect lang]} component]
+        (if redirect
+          (let [rt (proxy/proxy-get-rt redirect lang)
+                _ (reduce-kv
+                    (fn [_ module shortcut]
+                      (when (not= module redirect)
+                        (try
+                          (eval
+                            (list
+                              'require
+                              (list 'quote [module :as shortcut])))
+                          (catch error nil))))
+                    nil
+                    (or (:module/internal rt) {}))]
+            component)
+          component)))
+    (stop
+      [component]
+      (let [{:keys [redirect lang]} component] component))
+    (kill
+      [component]
+      (let [{:keys [redirect lang]} component] component))
+    (started?
+      [component]
+      (let [{:keys [redirect lang]} component]
+        (if redirect (proxy/proxy-started? component) true)))
+    (stopped?
+      [component]
+      (let [{:keys [redirect lang]} component]
+        (if redirect (proxy/proxy-stopped? component) true)))
+    (info
+      [component level]
+      (let [{:keys [redirect lang]} component]
+        (if redirect (proxy/proxy-info component level) {})))
+    (remote?
+      [component]
+      (let [{:keys [redirect lang]} component]
+        (if redirect (proxy/proxy-remote? component) false)))
+    (health
+      [component]
+      (let [{:keys [redirect lang]} component]
+        (if redirect (proxy/proxy-health component) true))))
+  (extend-type
+    RuntimeDefault
+    IDisplay
+    (display [component] (rt-default-string component))))
 
-(defn runtime-reset!
-  "Clears installed runtime types without modifying Library-owned Book state."
-  []
-  (runtime-restore! nil))
-
-(defn rt-default:create
-  "Creates the portable compile-only runtime available for every book."
-  [options]
-  (let [options (or options {})
-        lang (:lang options)]
-    (lang.core.runtime/RuntimeDefault
-     (or (:id options) (keyword (str (name lang) ".default")))
-     lang
-     :default
-     (:module options)
-     options
-     (atom {:status :created})
-     (atom #{})
-     (atom #{})
-     {:input [] :source [] :response []}
-     (or (:timeout options) 2000))))
-
-(defn default-state
-  [runtime]
-  (deref (:state runtime)))
-
-(defn start-default
-  [runtime]
-  (reset! (:state runtime) {:status :started})
-  runtime)
-
-(defn stop-default
-  [runtime]
-  (reset! (:state runtime) {:status :stopped})
-  runtime)
+(defn rt-default-string [{:keys [lang]}] (str "#rt:lang" [lang]))
 
 (defn rt-default
-  "Creates and starts the lightweight default language runtime."
-  [options]
-  (start-default (rt-default:create options)))
+  "creates a lang runtime"
+  {:added "4.0"}
+  [{:as m :keys [lang runtime]}]
+  (map->RuntimeDefault (merge m {:runtime :default})))
 
-(defn default-runtime-spec
-  "Returns the portable compile-only runtime spec available to every language."
-  [language]
-  {:lang language
-   :runtime :default
-   :type :lang/rt.default
-   :component true
-   :config {}
-   :instance {:create rt-default:create}})
+(defn rt-default?
+  "checks if object is default runtime"
+  {:added "4.0"}
+  [obj]
+  (instance? RuntimeDefault obj))
 
-(extend-type RuntimeDefault IContextEval
-  (evaluate [runtime request options]
-    (promise/from request))
-  (evaluate-raw [runtime request options]
-    (promise/from request))
-  (eval-ptr [runtime pointer arguments options]
-    (promise/from (IContext/call runtime pointer)))
-  (eval-await-ptr [runtime pointer arguments options]
-    (deref (IContextEval/eval-ptr runtime pointer arguments options)))
-  (tags-ptr [runtime pointer] [])
-  (deref-ptr [runtime pointer] pointer)
-  (display-ptr [runtime pointer] (Edn/write pointer))
-  (invoke-ptr [runtime pointer arguments]
-    (IContextEval/eval-await-ptr runtime pointer arguments {}))
-  (transform-in-ptr [runtime pointer arguments] arguments)
-  (transform-out-ptr [runtime pointer value] value))
+(defn rt-null
+  "creates a default null runtime"
+  {:added "4.0"}
+  [m]
+  (rt-default (assoc m :lang :null)))
 
-(extend-type RuntimeDefault IContext
-  (call [runtime & arguments]
-    (if (= 1 (count arguments)) (first arguments) (vec arguments))))
+(defn install-lang!
+  "installs a language within `std.lib.context`"
+  {:added "4.0"}
+  [lang & [options]]
+  (let [ctx   (ut/lang-context lang)]
+    (reg/registry-install
+     ctx
+     {:config {:context ctx :lang lang}
+      :scratch (rt-default {:context ctx :lang lang
+                            :options (or options
+                                         {})})
+      :rt  {:default {:resource :tahto/lang.rt}}})))
 
-(extend-type RuntimeDefault IComponent
-  (props [runtime]
-    {:state {:get (fn [] (default-state runtime))}
-     :module {:get (fn [] (:module runtime))}})
-  (status [runtime] (:status (default-state runtime)))
-  (started? [runtime] (= :started (:status (default-state runtime))))
-  (stopped? [runtime] (= :stopped (:status (default-state runtime))))
-  (start [runtime] (start-default runtime))
-  (stop [runtime] (stop-default runtime))
-  (kill [runtime] (stop-default runtime))
-  (remote? [runtime] false))
+(def default-raw-eval
+  (fn [_ string] string))
 
-(extend-type RuntimeDefault IContextLifeCycle
-  (has-module? [runtime module]
-    (has? (deref (:modules runtime)) module))
-  (setup-module [runtime module]
-    (swap! (:modules runtime) conj module)
-    runtime)
-  (teardown-module [runtime module]
-    (swap! (:modules runtime) disj module)
-    runtime)
-  (has-setup-ptr? [runtime pointer]
-    (has? (deref (:pointers runtime)) pointer))
-  (setup-ptr [runtime pointer]
-    (swap! (:pointers runtime) conj pointer)
-    runtime)
-  (teardown-ptr [runtime pointer]
-    (swap! (:pointers runtime) disj pointer)
-    runtime))
+(def default-transform-in-ptr
+  (fn [_ _ args] args))
 
-(defn install-lang
-  "Selects one Book in the active Library for runtime construction."
-  ([language]
-   (install-lang language {}))
-  ([language options]
-   (let [options (or options {})
-         current-library (library/runtime-library)
-         book-key (or (:book-key options) :default)
-         requested-version (:version options)
-         supplied-book (:book options)
-         _ (if supplied-book
-             (library/library-add-book! current-library supplied-book)
-             (library/library-select-book! current-library language book-key requested-version))
-         book (library/library-get-book current-library language)]
-     (if (nil? book)
-       (throw (ex :not-found {:language language :book-key book-key
-                              :version requested-version}
-                  :ex/message "Language book is not registered"))
-       (let [entry (merge options
-                          {:lang language
-                           :book-key book-key
-                           :version (or requested-version (:version book))
-                           :book book})]
-         entry)))))
+(def default-transform-out-ptr
+  (fn [_ _ return] return))
 
-(defn select-lang-version
-  "Selects an installed book version as the active language grammar."
-  [language version]
-  (install-lang language {:version version}))
+(defn return-format-simple
+  "format forms for return"
+  {:added "4.0"}
+  [forms]
+  (concat (butlast forms)
+          [(list 'return (last forms))]))
 
-(defn install-type
-  "Installs an explicit runtime type implementation for one coordinate."
-  [language runtime spec]
-  (let [entry (merge {:lang language :runtime runtime} (or spec {}))]
-    (swap! +type-registry+ assoc [language runtime] entry)
-    entry))
+(defn return-format
+  "standard format for return"
+  {:added "4.0"}
+  [forms & [opts]]
+  (let [v (last forms)
+        v (if (and
+                (form? v)
+                ((union '#{:- return break var := throw} opts)
+                  (first v)))
+            v
+            (list 'return v))]
+    (concat (butlast forms) [v])))
 
-(defn language-info
-  [language]
-  (let [record (library/library-book-record (library/runtime-library) language)
-        info (:info record)]
-    (if record
-      {:lang language
-       :book-key (:key info)
-       :version (:version info)})))
+(defn return-wrap-invoke
+  "wraps forms to be invoked"
+  {:added "4.0"}
+  [forms]
+  (list (list 'quote (list (apply list 'fn [] forms)))))
 
-(defn runtime-installed?
-  [language runtime]
-  (or (= runtime :default)
-      (has? (atom-value +type-registry+) [language runtime])
-      (not (nil? (registry/registry-runtime-ns language runtime)))))
+(defn normalize-body-forms
+  "normalizes runtime eval input into a flat sequence of body forms"
+  {:added "4.1"}
+  [input {:keys [bulk] :as mopts}]
+  (if bulk
+    input
+    (ptr/free-form-body input)))
 
-(defn available-runtimes
-  [language]
-  (let [installed
-        (reduce (fn [out coordinate]
-                  (if (= language (first coordinate))
-                    (conj out (second coordinate))
-                    out))
-                #{}
-                (keys (atom-value +type-registry+)))
-        registered
-        (reduce (fn [out coordinate]
-                  (if (= language (first coordinate))
-                    (conj out (second coordinate))
-                    out))
-                installed
-                (registry/registry-list))]
-    (vec (sort (conj registered :default)))))
+(defn return-transform
+  "standard return transform"
+  {:added "4.0"}
+  [input {:keys [bulk], :as mopts} & [{:keys [wrap-fn format-fn]}]]
+  (let [forms (normalize-body-forms input mopts)
+        wrap-fn (or wrap-fn return-wrap-invoke)
+        format-fn (or format-fn return-format)]
+    (wrap-fn (format-fn forms))))
 
-(defn require-runtime
-  "Loads a registered runtime namespace and returns its canonical coordinate."
-  [language runtime]
-  (let [namespace-symbol (registry/registry-runtime-ns language runtime)]
-    (if (nil? namespace-symbol)
-      (throw (ex :dependency {:lang language :runtime runtime
-                              :available (registry/registry-list)}
-                 :ex/message "Runtime is not registered"))
-      (do
-        (if (not (registry/registry-namespace-loaded? namespace-symbol))
-          (eval (list 'require (list 'quote namespace-symbol))))
-        (registry/registry-runtime language runtime)))))
+(resource/spec-add
+  {:type :tahto/lang.rt,
+   :config {:bootstrap false},
+   :instance {:create rt-default}})
 
-(defn registered-runtime-spec
-  [language runtime]
-  (let [namespace-symbol (require-runtime language runtime)
-        installed (get (atom-value +type-registry+) [language runtime])]
-    (if installed
-      installed
-      (let [factory-symbol (symbol (str namespace-symbol) "runtime-entry")
-            value (eval (list factory-symbol))]
-        (if (map? value)
-          value
-          (throw (ex :dependency {:lang language :runtime runtime
-                                  :namespace namespace-symbol}
-                     :ex/message "Runtime implementation did not provide a runtime spec")))))))
+(resource/spec-add
+  {:type :tahto/context.rt.null, :instance {:create rt-null}})
 
-(defn runtime-spec
-  "Returns a runtime specification without introducing compatibility aliases."
-  [language runtime]
-  (cond (= runtime :default) (default-runtime-spec language)
-        (has? (atom-value +type-registry+) [language runtime])
-        (get (atom-value +type-registry+) [language runtime])
-        :else (registered-runtime-spec language runtime)))
+(intern 'std.lib.context.registry '+rt-null+ (rt-null reg/+null+))
 
-(defn rt-create
-  "Creates a runtime from its canonical [language runtime] coordinate."
-  ([language runtime]
-   (rt-create language runtime {}))
-  ([language runtime options]
-   (let [spec (runtime-spec language runtime)
-         create-fn (get-in spec [:instance :create])
-         create-fn (or create-fn (:create spec))
-         config (merge (or (:config spec) {}) (or options {})
-                       {:lang language :runtime runtime})]
-     (if create-fn
-       (create-fn config)
-       (throw (ex :host {:lang language :runtime runtime :spec spec}
-                  :ex/message "Runtime type has no constructor"))))))
+(defn install-type!
+  "installs a specific runtime type given `:lang`"
+  {:added "4.0"}
+  [lang runtime {:as spec :keys [type config]}]
+  (let [ctx    (ut/lang-context lang)
+        spec   (dissoc spec :config)
+        config (merge {:runtime runtime} config)
+        r-spec (when (or (not (try (resource/spec-get type) (catch error nil)))
+                       (seq (dissoc spec :type)))
+                 (resource/spec-add spec))
+        r-ctx  (reg/registry-rt-add ctx {:config config :key runtime :resource type})]
+    {:context r-ctx :spec r-spec}))
 
-(defn rt-start
-  [runtime]
-  (component/start runtime))
+(defn default-lifecycle-prep
+  "prepares mopts for lifecycle"
+  {:added "4.0"}
+  [{:keys [id layout lang module library lifecycle emit], :as rt}]
+  (let [library (or library (impl/runtime-library))
+        module-id module
+        [snapshot book module] (loop
+                                 [snapshot (lib/get-snapshot library)
+                                  book (snap/get-book snapshot lang)
+                                  module
+                                  (get-in book [:modules module-id])]
+                                 (let
+                                   [missing
+                                    (when
+                                      module
+                                      (->>
+                                        (book-module/module-deps-code
+                                          book
+                                          module)
+                                        (remove
+                                          (fn
+                                            [dependency]
+                                            (get-in
+                                              book
+                                              [:modules dependency])))
+                                        seq))]
+                                   (if
+                                     (seq missing)
+                                     (do
+                                       (impl/with:library
+                                         [library]
+                                         (doseq
+                                           [dep missing]
+                                           (eval
+                                             (list
+                                               'require
+                                               (list 'quote dep)))))
+                                       (let
+                                         [snapshot
+                                          (lib/get-snapshot library)
+                                          book
+                                          (snap/get-book
+                                            snapshot
+                                            lang)]
+                                         (recur
+                                           snapshot
+                                           book
+                                           (get-in
+                                             book
+                                             [:modules module-id]))))
+                                     [snapshot book module])))]
+    (merge
+      {:layout layout,
+       :book book,
+       :lang lang,
+       :snapshot snapshot,
+       :module module,
+       :emit
+       (assoc
+         (or emit {})
+         :runtime
+         {:id id,
+          :lang (:lang rt),
+          :type (:runtime rt),
+          :module (:module rt),
+          :namespace (ns-current)})}
+      lifecycle)))
 
-(defn rt-stop
-  [runtime]
-  (component/stop runtime))
+(defn default-setup-module-emit
+  "emits the string for the module"
+  {:added "4.0"}
+  [rt module-id]
+  (let [{:keys [book], :as meta, setup :rt/setup} (default-lifecycle-prep
+                                                    rt)]
+    (lifecycle/emit-module-setup
+      module-id
+      (update
+        meta
+        :emit
+        (fn [existing additions]
+          (letfn
+            [(merge-values
+               [left right]
+               (if (and (nil? left) (nil? right))
+                 nil
+                 (reduce-kv
+                   (fn [out key value]
+                     (let [previous (get out key)]
+                       (assoc
+                         out
+                         key
+                         (if (and
+                               (has? out key)
+                               (or (map? previous) (nil? previous))
+                               (or (map? value) (nil? value)))
+                           (merge-values previous value)
+                           value))))
+                   (or left {})
+                   (or right {}))))]
+            (merge-values additions existing)))
+        setup))))
 
-(defn rt-eval
-  ([runtime request] (rt-eval runtime request {}))
-  ([runtime request options] (IContextEval/evaluate runtime request options)))
+(defn multistage-invoke
+  "invokes a multistage pipeline given deps function"
+  {:added "4.0"}
+  [rt module-id module-fn deps-fn]
+  (let [{:keys [book], :as meta} (default-lifecycle-prep rt)
+        module-ids ((if (= (type deps-fn) :std.native.Var)
+                      (deref deps-fn)
+                      deps-fn)
+                     book
+                     module-id)]
+    (mapv
+      (fn [module-id] [module-id
+                       ((if (= (type module-fn) :std.native.Var)
+                          (deref module-fn)
+                          module-fn)
+                         rt
+                         module-id
+                         meta)])
+      module-ids)))
 
-(defn rt-eval-raw
-  ([runtime request] (rt-eval-raw runtime request {}))
-  ([runtime request options] (IContextEval/evaluate-raw runtime request options)))
+(defn default-display-ptr
+  "runtime default display"
+  {:added "4.0"}
+  [{:as rt :keys [lang library module emit]} ptr]
+  (cond (#{:defglobal} (:op-key (std.foundation/deref ptr)))
+    (let [body (impl/emit-as lang [(ut/sym-full ptr)] {:emit emit :layout :full})]
+      (ptr/ptr-invoke rt
+        (fn [runtime body] (IContextEval/evaluate-raw runtime body {}))
+        body
+        (:main emit)
+        (or (:json emit) :full)))
+    (= :xtalk lang)
+    (let [entry (ptr/ptr-deref (assoc (into {} ptr) :library library))]
+      (cond (:form entry)
+        (pretty/pprint-str (:form entry))
+        (:form-input entry)
+        (pretty/pprint-str (:form-input entry))
+        :else
+        (ptr/ptr-display ptr {:emit emit :library library})))
+    :else
+    (ptr/ptr-display ptr {:emit emit :library library})))
 
-(defn rt-eval-trace
-  ([runtime request] (rt-eval-trace runtime request {}))
-  ([runtime request options] (evaluation/eval-trace runtime request options)))
+(defn default-invoke-script
+  "default invoke script call used by most runtimes"
+  {:added "4.0"}
+  [{:keys [id
+           lang
+           library
+           layout]
+    :as rt}
+   ptr
+   args
+   f
+   {:keys [json
+           main
+           emit]
+    :or {json :full}
+    :as params}]
+  (let [emit (merge-nested emit (:emit rt))
+        emit (assoc emit
+                    :input   {:args args :pointer ptr}
+                    :runtime (assoc rt :type (:runtime rt) :namespace (ns-current)))
+        _    (if common/*trace* (println emit params))
+        body (ptr/ptr-invoke-script ptr
+                                    args
+                                    {:emit emit :lang lang :layout (or (:layout params) layout) :library library})]
+    (ptr/ptr-invoke rt f body main json)))
 
-(defn rt-raw-eval
-  "Executes already-emitted target source through the direct context contract."
-  [runtime source]
-  (IContext/call runtime source))
+(defn default-scaffold-setup-for
+  "setup native modules, defglobals and defruns in the runtime"
+  {:added "4.0"}
+  [rt module-id]
+  (let [meta (default-lifecycle-prep rt)
+        body (impl/emit-scaffold-for module-id meta)]
+    (ptr/ptr-invoke
+      rt
+      (fn [runtime body] (IContextEval/evaluate-raw runtime body {}))
+      body
+      (:main meta)
+      (:json meta))))
 
-(defn requested-version
-  [language version versions]
-  (or (get versions language)
-      version
-      (registry/registry-book-default-version language :default)))
+(defn default-scaffold-setup-to
+  "setup scaffold up to but not including the current module in the runtime"
+  {:added "4.0"}
+  [rt module-id]
+  (let [meta (default-lifecycle-prep rt)
+        body (impl/emit-scaffold-to module-id meta)]
+    (ptr/ptr-invoke
+      rt
+      (fn [runtime body] (IContextEval/evaluate-raw runtime body {}))
+      body
+      (:main meta)
+      (:json meta))))
 
-(defn bootstrap
-  "Selects active-Library Books and confirms requested runtime implementations."
-  ([] (bootstrap {}))
-  ([options]
-   (let [options (or options {})
-         languages (or (:languages options) [:xtalk :postgres])
-         runtimes (or (:runtimes options) [:default])
-         version (:version options)
-         versions (or (:versions options) {})
-         selected
-         (reduce (fn [out language]
-                   (let [selected-version (requested-version language version versions)
-                         entry (install-lang language {:book-key :default
-                                                       :version selected-version})
-                         book (:book entry)]
-                     {:books (assoc (:books out) language book)
-                      :versions (assoc (:versions out) language selected-version)}))
-                 {:books {} :versions {}}
-                 languages)]
-     (reduce (fn [_ language]
-               (reduce (fn [_ runtime]
-                         (if (not= runtime :default)
-                           (require-runtime language runtime))
-                         nil)
-                       nil
-                       runtimes))
+(defn default-scaffold-imports
+  "embed native imports to be globally accessible"
+  {:added "4.0"}
+  [rt module-id]
+  (let [meta (default-lifecycle-prep rt)
+        body (impl/emit-scaffold-imports module-id meta)]
+    (ptr/ptr-invoke
+      rt
+      (fn [runtime body] (IContextEval/evaluate-raw runtime body {}))
+      body
+      (:main meta)
+      (:json meta))))
+
+(defn default-lifecycle-fn
+  "constructs a lifecycle fn"
+  {:added "4.0"}
+  [f]
+  (fn [rt & args]
+    (let [{:keys [book], :as meta} (default-lifecycle-prep rt)
+          form (apply f book args)]
+      (if form
+        (let [body (impl/emit-str form meta)]
+          (ptr/ptr-invoke
+            rt
+            (fn [runtime body]
+              (IContextEval/evaluate-raw runtime body {}))
+            body
+            (:main meta)
+            (:json meta)))))))
+
+(def ^{:arglists ([rt module-id])} default-has-module?
+ (default-lifecycle-fn deps/has-module-form))
+
+(def ^{:arglists ([rt ptr])} default-has-ptr?
+ (default-lifecycle-fn deps/has-ptr-form))
+
+(def ^{:arglists ([rt ptr])} default-setup-ptr
+ (default-lifecycle-fn deps/setup-ptr-form))
+
+(def ^{:arglists ([rt ptr])} default-teardown-ptr
+ (default-lifecycle-fn deps/teardown-ptr-form))
+
+(defn default-setup-module-basic
+  "basic setup module action"
+  {:added "4.0"}
+  [rt module-id]
+  (let [{:keys [book], :as meta, setup :rt/setup} (default-lifecycle-prep
+                                                    rt)
+        body (lifecycle/emit-module-setup
+               module-id
+               (update
+                 meta
+                 :emit
+                 (fn [existing additions]
+                   (merge-nested additions existing))
+                 setup))]
+    (ptr/ptr-invoke
+      rt
+      (fn [runtime body] (IContextEval/evaluate-raw runtime body {}))
+      body
+      (:main meta)
+      (:json meta))))
+
+(defn default-teardown-module-basic
+  "basic teardown module action"
+  {:added "4.0"}
+  [rt module-id]
+  (let [{:keys [], :as meta, teardown :rt/teardown} (default-lifecycle-prep
+                                                      rt)
+        body (lifecycle/emit-module-teardown
+               module-id
+               (update
+                 meta
+                 :emit
+                 (fn [existing additions]
+                   (merge-nested additions existing))
+                 teardown))]
+    (ptr/ptr-invoke
+      rt
+      (fn [runtime body] (IContextEval/evaluate-raw runtime body {}))
+      body
+      (:main meta)
+      (:json meta))))
+
+(defn default-scaffold-array [rt arr]
+  (reduce
+    (fn [acc [k body]]
+      (try
+        (conj
+          acc
+          [k
+           (ptr/ptr-invoke
+             rt
+             (fn [runtime body]
+               (IContextEval/evaluate-raw runtime body {}))
+             body
              nil
-             languages)
-     {:version version
-      :versions (:versions selected)
-      :books (:books selected)
-      :library (library/library-snapshot (library/runtime-library))
-      :runtimes (atom-value +type-registry+)})))
+             nil)])
+        (catch t (do (reduced (conj acc [k body (ex-message t)]))))))
+    []
+    arr))
+
+(defn default-setup-module
+  "default setup module (with error isolation)"
+  {:added "4.0"}
+  [rt module-id & [meta]]
+  (let [{:keys [book], :as meta, setup :rt/setup} (or
+                                                    meta
+                                                    (default-lifecycle-prep
+                                                      rt))
+        raw (lifecycle/emit-module-setup-raw
+              module-id
+              (update
+                meta
+                :emit
+                (fn [existing additions]
+                  (merge-nested additions existing))
+                setup))
+        body (lifecycle/emit-module-setup-join raw)]
+    (if (not-empty body)
+      (try
+        (ptr/ptr-invoke
+          rt
+          (fn [runtime body]
+            (IContextEval/evaluate-raw runtime body {}))
+          body
+          (:main meta)
+          (:json meta))
+        (catch
+          t
+          (do
+            (let [arr (lifecycle/emit-module-setup-concat raw)]
+              (mapv
+                (fn [part]
+                  (try
+                    (ptr/ptr-invoke
+                      rt
+                      (fn [runtime body]
+                        (IContextEval/evaluate-raw runtime body {}))
+                      part
+                      (:main meta)
+                      (:json meta))
+                    (catch
+                      t
+                      (do
+                        (throw
+                          (ex
+                            :generic
+                            {:part (vec (str/split-lines part)),
+                             :message
+                             (loop [t t c (ex-cause ^Throwable t)]
+                               (if
+                                 c
+                                 (recur c (ex-cause ^Throwable c))
+                                 (ex-message ^Throwable t)))}
+                            :ex/message
+                            "Error at:"))))))
+                arr))))))))
+
+(defn default-teardown-module
+  "default teardown module (with error isolation)"
+  {:added "4.0"}
+  [rt module-id & [meta]]
+  (let [{:keys [book], :as meta, teardown :rt/teardown} (or
+                                                          meta
+                                                          (default-lifecycle-prep
+                                                            rt))
+        raw (lifecycle/emit-module-teardown-raw
+              module-id
+              (update
+                meta
+                :emit
+                (fn [existing additions]
+                  (merge-nested additions existing))
+                teardown))
+        body (lifecycle/emit-module-teardown-join raw)]
+    (if (not-empty body)
+      (try
+        (ptr/ptr-invoke
+          rt
+          (fn [runtime body]
+            (IContextEval/evaluate-raw runtime body {}))
+          body
+          (:main meta)
+          (:json meta))
+        (catch
+          t
+          (do
+            (let [arr (lifecycle/emit-module-teardown-concat raw)]
+              (mapv
+                (fn [part]
+                  (try
+                    (ptr/ptr-invoke
+                      rt
+                      (fn [runtime body]
+                        (IContextEval/evaluate-raw runtime body {}))
+                      part
+                      (:main meta)
+                      (:json meta))
+                    (catch
+                      t
+                      (do
+                        (throw
+                          (ex
+                            :generic
+                            {:part (vec (str/split-lines part)),
+                             :message
+                             (loop [t t c (ex-cause ^Throwable t)]
+                               (if
+                                 c
+                                 (recur c (ex-cause ^Throwable c))
+                                 (ex-message ^Throwable t)))}
+                            :ex/message
+                            "Error at:"))))))
+                arr))))))))
+
+(defn multistage-setup-for "setup for a given namespace" {:added "4.0"} [rt module-id] (multistage-invoke rt module-id default-setup-module (fn [book module-id] (deps-ordered book [module-id]))))
+
+(defn multistage-setup-to "setup to a given namespcase" {:added "4.0"} [rt module-id] (multistage-invoke rt module-id default-setup-module (fn [book module-id] (butlast (deps-ordered book [module-id])))))
+
+(defn multistage-teardown-for "teardown for a given namespace" {:added "4.0"} [rt module-id] (multistage-invoke rt module-id default-teardown-module (fn [book module-id] (reverse (deps-ordered book [module-id])))))
+
+(defn multistage-teardown-at "teardown all dependents including this" {:added "4.0"} [rt module-id] (multistage-invoke rt module-id default-teardown-module (fn [book module-id] (binding [book/*dep-types* :module] (dependents-ordered book module-id)))))
+
+(defn multistage-teardown-to "teardown all dependents upto this" {:added "4.0"} [rt module-id] (multistage-invoke rt module-id default-teardown-module (fn [book module-id] (binding [book/*dep-types* :module] (butlast (dependents-ordered book module-id))))))

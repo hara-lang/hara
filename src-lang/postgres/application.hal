@@ -1,26 +1,25 @@
 (ns postgres.application
-  (:require [lang.core.script :as script]
+  (:require [lang.core.impl :as impl]
+            [lang.core.library :as library]
             [postgres.typed.typed-common :as typed]
-            [postgres.typed.typed-parse :as tparse]))
+            [postgres.typed.typed-parse :as tparse]
+            [std.lib.schema :as schema]))
 
 (def ^{:dynamic true :public true} *applications* (atom {}))
 (def ^{:dynamic true :public true} *modules* (atom {}))
 
+(defn live-modules
+  "Returns the :modules of the currently compiled PostgreSQL book."
+  []
+  (or (:modules (library/get-book (impl/runtime-library) :postgres)) {}))
+
 (defn module-map
-  "Returns a module map from a compiler book, a module map, or the installed snapshot."
+  "Returns a module map from a compiler book, a module map, an installed test
+   override, or the live PostgreSQL compiler book."
   [source]
   (cond (nil? source)
         (let [installed (deref *modules*)]
-          (if (empty? installed)
-            (reduce-kv
-             (fn [output module-id module]
-               (if (or (= :postgres (:lang module))
-                       (not (nil? (get-in module [:static :application]))))
-                 (assoc output module-id module)
-                 output))
-             {}
-             (deref script/+modules+))
-            installed))
+          (if (empty? installed) (live-modules) installed))
         (map? (:modules source)) (:modules source)
         (map? source) source
         :else (throw (ex :argument {:source source}
@@ -153,23 +152,50 @@
     {}
     tables)})
 
-(defn ^{:public true} app-create-raw
-  "Creates an application schema from portable table and link maps."
-  ([tables links]
-   (app-create-raw tables links nil))
-  ([tables links typed-info]
-   (let [ordered (sort-by str (keys tables))
-         application
-         {:tables tables
-          :schema (schema-from-tables tables links)
-          :pointers links
-          :lu (zipmap (map (fn [table]
-                             (keyword (str table)))
-                           ordered)
-                      (range (count ordered)))}]
-     (if typed-info
-       (assoc application :typed typed-info)
-       application))))
+(do
+  (defstruct ^{:open true} Application [tables schema pointers])
+  (extend-type
+    Application
+    IDisplay
+    (display [app] (application-string app)))
+  (extend-type
+    Application
+    IDeps
+    (dep-get [app id] (app-get-entry app id))
+    (dep-keys [app] (app-list-entries app))
+    (dep-entries [app id] (app-get-deps app id)))
+  (defn ^{:public true} app-create-raw
+    "creates a schema from tables and links"
+    {:added "4.0"}
+    [tables links & [typed-info]]
+    (let [ref-fn (fn [{:as attrs, :keys [ref]}]
+                   (let [rkey (symbol (namespace (:key ref)))]
+                     {:link
+                      (select-keys
+                        (or (get links rkey) {})
+                        [:id :module :lang :section])}))
+          schema (schema/with:ref-fn
+                   [ref-fn]
+                   (->>
+                     (mapcat
+                       (fn [[k v]] [(keyword (name k)) v])
+                       (seq tables))
+                     (vec)
+                     (schema/schema)))
+          pointers (map-vals
+                     (fn [m]
+                       (if (not (pointer? m))
+                         (pointer (assoc m :context :lang/postgres))
+                         m))
+                     links)
+          app (Application tables schema pointers)
+          lu (zipmap
+               (map (comp keyword str) (deps-ordered app))
+               (iterate inc 0))]
+      (cond->
+        (assoc app :lu lu)
+        typed-info
+        (assoc :typed typed-info)))))
 
 (defn definition-name
   [form]
@@ -306,6 +332,11 @@
   ([name]
    (app-rebuild name nil))
   ([name source]
+   ;; Hydration invokes this mid-compile (once per deftype.pg) while the
+   ;; current module's own book entry is still being assembled, so the typed
+   ;; analysis pass is kept off the live compiler book here; callers that
+   ;; need live-book modules (`app-create`, `bind-macro`/`gen-bind` list-api)
+   ;; run after the module has fully compiled and use the general fallback.
    (swap! *applications*
           (fn [applications]
             (assoc applications name
@@ -315,7 +346,7 @@
                         (:tables current)
                         (:pointers current)
                         (app-create-typed (:tables current)
-                                          (app-modules name source)))
+                                          (app-modules name (or source (deref *modules*)))))
                        (app-create name nil source))))))
    (get (deref *applications*) name)))
 

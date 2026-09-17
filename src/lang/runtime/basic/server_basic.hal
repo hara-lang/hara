@@ -1,0 +1,287 @@
+(ns lang.runtime.basic.server-basic
+  (:config {:role :internal})
+  (:require [std.stream.duplex :as duplex]
+            [std.stream.relay :as relay]))
+
+(defonce ^:dynamic *env*
+  (atom {}))
+
+;;
+;; Server
+;;
+
+(defn ^{:public true} get-port
+  "gets the port given lang and id"
+  {:added "4.0"}
+  ([{:keys [lang id]}] (get-port lang id *env*))
+  ([lang id env] (:port (get-in (deref env) [lang id]))))
+
+(defn ^{:public true} wait-ready
+  "wait until server is ready"
+  {:added "4.0"}
+  ([{:keys [lang id]}] (wait-ready lang id))
+  ([lang id]
+    (let [record (get-in (deref *env*) [lang id])
+          ready (:ready record)
+          task (get-in record [:server :thread])]
+      (if ready
+        (let [deadline (Promise/delay 5000 (fn [] :timeout))]
+          (try
+            (loop []
+              (cond
+                (not= :pending (promise/state ready)) (IDerefTimeout/deref-timeout
+                                                        ready
+                                                        0
+                                                        {:status
+                                                         "timeout"})
+                (not= :pending (promise/state deadline)) {:status
+                                                          "timeout"}
+                :else (do
+                        (if (and task (deref task))
+                          (IDerefTimeout/deref-timeout
+                            (deref task)
+                            1
+                            nil)
+                          (IDerefTimeout/deref-timeout ready 1 nil))
+                        (recur))))
+            (finally (promise/cancel deadline))))
+        (throw (ex :generic {} :ex/message "Env not found"))))))
+
+(defn rt-server-string-props [{:keys [type lang id port count],
+                               :as server}]
+  [type lang id port (deref count)])
+
+(defn rt-server-string [{:keys [type lang id port count], :as server}]
+  (str "#rt.server" (rt-server-string-props server)))
+
+(do
+  (defstruct
+    ^{:open true} RuntimeServer
+    [type lang id port count ready state])
+  (extend-type
+    RuntimeServer
+    IDisplay
+    (display [server] (rt-server-string server))))
+
+(defn ^{:public true} run-basic-server
+  "runs a basic socket server"
+  {:added "4.0"}
+  [{:keys [port]} state ready]
+  (let [alive (atom true)
+        thread (atom nil)
+        server (Socket/listen "0.0.0.0" port {} (fn [_] nil))
+        stream (Socket/events server {})]
+    (letfn
+      [(step
+         []
+         (if (deref alive)
+           (let [pending (Socket/next stream)]
+             (reset! thread pending)
+             (promise/then
+               pending
+               (fn [event]
+                 (if (and (deref alive) (= :open (:type event)))
+                   (let [previous (deref state)
+                         socket (:connection event)]
+                     (if (:relay previous)
+                       (relay/close (:relay previous)))
+                     (reset!
+                       state
+                       {:socket socket,
+                        :relay
+                        (relay/relay
+                          (duplex/from-socket socket)
+                          nil
+                          {})})
+                     (ready true)))
+                 (step))))))]
+      (step))
+    {:instance server,
+     :thread thread,
+     :stop
+     (fn []
+       (if (cas! alive true false)
+         (try
+           (if-let [channel (:relay (deref state))]
+             (relay/close channel))
+           (finally (reset! state nil) (Socket/close server)))))}))
+
+(def +encode+
+ {:none {:read identity, :write identity},
+  :edn {:read read-string, :write pr-str},
+  :json {:read identity, :write Json/write}})
+
+(defn ^{:public true} get-encoding
+  "gets the encoding to use\n \n   (get-encoding :json)\n   => map?"
+  {:added "4.0"}
+  [encode]
+  (cond
+    (nil? encode) (:json +encode+)
+    (keyword? encode) (or
+                        (get +encode+ encode)
+                        (throw
+                          (ex
+                            :generic
+                            {:input encode}
+                            :ex/message
+                            "Encoding not available")))
+    (map? encode) (merge (:none +encode+) encode)
+    :else (throw
+            (ex :generic {:input encode} :ex/message "Invalid input"))))
+
+(defn ^{:public true} get-relay
+  "gets the relay associated with the server\n \n   (get-relay (start-server \"test\" :lua nil))\n   => nil"
+  {:added "4.0"}
+  [{:keys [state server], :as record}]
+  (if-let [pending (and (:thread server) (deref (:thread server)))]
+    (IDerefTimeout/deref-timeout pending 0 nil))
+  (:relay (deref state)))
+
+(defn ^{:public true} ping-relay
+  "checks if the relay is still valid\n \n   (ping-relay (start-server \"test\" :lua nil))\n   => false"
+  {:added "4.0"}
+  [{:keys [state], :as record}]
+  (if-let [channel (get-relay record)]
+    (try
+      (Socket/send
+        (:socket (deref state))
+        (str/encode-utf8 "<PING>\n"))
+      true
+      (catch
+        error
+        (do (relay/close channel) (reset! state nil) false)))
+    false))
+
+(defn ^{:public true} raw-eval-basic-server
+  "performs raw eval"
+  {:added "4.0"}
+  [{:keys [state encode server], :as record} body & [timeout]]
+  (if-let [pending (and (:thread server) (deref (:thread server)))]
+    (IDerefTimeout/deref-timeout pending 0 nil))
+  (if-let [channel (get-relay record)]
+    (let [line ((:write encode) body)
+          timeout (or timeout 1000)
+          result (try
+                   (Socket/send
+                     (:socket (deref state))
+                     (str/encode-utf8 (str line "\n")))
+                   (let [output (IDerefTimeout/deref-timeout
+                                  (relay/read-buffer
+                                    channel
+                                    :read-line
+                                    nil
+                                    {:timeout-ms timeout})
+                                  (+ timeout 1000)
+                                  nil)]
+                     (relay/clean-buffer channel)
+                     {:output output})
+                   (catch
+                     error
+                     (let [message (if
+                                     (string? error)
+                                     error
+                                     (:error/value (ex-data error)))]
+                       (cond
+                         (=
+                           :relay/timeout
+                           (:error/type (ex-data error))) {:output nil}
+                         (and
+                           (string? message)
+                           (or
+                             (str/starts-with?
+                               message
+                               "send failed: socket/")
+                             (= message "socket receive failed"))) (do
+                                                                     (try
+                                                                       (relay/close
+                                                                         channel)
+                                                                       (finally
+                                                                         (reset!
+                                                                           state
+                                                                           nil)))
+                                                                     {:status
+                                                                      "disconnected"})
+                         (string? error) (throw
+                                           (ex
+                                             :io
+                                             {:error/value error}
+                                             :ex/message
+                                             error))
+                         :else (throw error)))))]
+      (if (:status result)
+        result
+        (if (:output result)
+          ((:read encode) (:output result))
+          {:status "timeout", :connected (ping-relay record)})))
+    {:status "not-connected"}))
+
+(defn ^{:public true} create-basic-server
+  "creates a basic server\n \n   (create-basic-server \"test\" :lua nil :json)\n   => map?"
+  {:added "4.0"}
+  [id lang port encode]
+  (let [encode (get-encoding encode)
+        count (atom 0)
+        state (atom nil)
+        return (atom {})
+        resolver (atom nil)
+        ready (Promise/new
+                (fn [resolve reject] (reset! resolver resolve)))
+        server (run-basic-server
+                 {:port (or port 0)}
+                 state
+                 (deref resolver))]
+    (map->RuntimeServer
+      {:ready ready,
+       :return return,
+       :server server,
+       :type :server/basic,
+       :state state,
+       :port (:port (Socket/endpoint (:instance server))),
+       :lang lang,
+       :stop (atom (:stop server)),
+       :id id,
+       :count count,
+       :raw-eval raw-eval-basic-server,
+       :encode encode})))
+
+(defn ^{:public true} start-server
+  "start server function\n \n   (start-server \"test\" :lua nil)\n   => map?"
+  {:added "4.0"}
+  [id lang port & [f encode]]
+  (let [f (or f create-basic-server)
+        record (or
+                 (get-in (deref *env*) [lang id])
+                 (get-in
+                   (swap!
+                     *env*
+                     assoc-in
+                     [lang id]
+                     (f id lang port encode))
+                   [lang id]))
+        {:keys [count]} record
+        _ (swap! count inc)]
+    record))
+
+(defn ^{:public true} get-server
+  "gets a server given id\n \n   (get-server \"test\" :lua)\n   => map?"
+  {:added "4.0"}
+  [id lang]
+  (get-in (deref *env*) [lang id]))
+
+(defn ^{:public true} stop-server
+  "stops a server\n \n   (loop []\n     (if (stop-server \"test\" :lua)\n      (recur)))"
+  {:added "4.0"}
+  [id lang]
+  (when-let [{:keys [count stop], :as record} (get-server id lang)]
+    (when (not (pos? (swap! count dec)))
+      (swap! *env* update lang dissoc id)
+      ((deref stop)))
+    record))
+
+
+
+
+(do)
+
+
+(do)

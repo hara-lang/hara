@@ -1,36 +1,78 @@
 (ns lang.model.v1.spec-postgres-test
-  (:require [lang.model.v1.spec-postgres :as postgres]
+  (:require [lang.base.book :as book]
+            [lang.base.emit :as emit]
+            [lang.base.grammar :as grammar]
+            [lang.core.impl :as impl]
+            [lang.core.library :as library]
+            [lang.model.v1.spec-postgres :as postgres]
             [lang.model.v1.spec-postgres.postgres-native :as native]))
 
-^{:refer lang.model.v1.spec-postgres/+language+}
+^{:refer lang.model.v1.spec-postgres/+features+}
 (Test/check
- [{:name "restores the Foundation PostgreSQL model as a standalone grammar"
-   :test (fn [] [postgres/+language+
-                 postgres/+tag+
-                 postgres/+version+
-                 postgres/+grammar-version+
-                 (:lang postgres/+book+)
-                 (:parent postgres/+book+)
-                 (get-in postgres/+selection+ [:coordinate :grammar/id])])
-   :expected [:postgres :postgres 1 1 :postgres nil :postgres]}])
+ [{:name "builds the original PostgreSQL feature groups directly"
+   :test (fn [] [(map? postgres/+features+)
+                 (get-in postgres/+features+ [:defn :static/dbtype])
+                 (get-in postgres/+features+ [:deftype :static/dbtype])
+                 (get-in postgres/+features+ [:def :emit])])
+   :expected [true :function :table :macro]}])
 
 ^{:refer lang.model.v1.spec-postgres/+grammar+}
 (Test/check
- [{:name "does not inherit PostgreSQL grammar behaviour from XTalk"
-   :test (fn [] (get-in postgres/+grammar+ [:grammar/parent]))
-   :expected nil}])
+ [{:name "constructs a concrete PostgreSQL grammar without a selection registry"
+   :test (fn [] [(grammar/grammar? postgres/+grammar+)
+                 (:tag postgres/+grammar+)
+                 (count (:reserved postgres/+grammar+))
+                 (get-in postgres/+grammar+ [:reserved 'defn :static/dbtype])
+                 (get-in postgres/+grammar+ [:grammar/parent])
+                 (fn? (get-in postgres/+grammar+ [:reserved 'pg:raw :emit]))
+                 (fn? (get-in postgres/+grammar+ [:reserved :grant-execute-on-function :emit]))])
+   :expected [true :pg 133 :function nil true true]}])
 
 ^{:refer lang.model.v1.spec-postgres/+template+}
 (Test/check
- [{:name "installs standalone PostgreSQL template and operator profile sources"
-   :test (fn [] [(select-keys postgres/+template+ [:source/kind :source/id :source/version])
-                 (select-keys postgres/+profile+ [:source/kind :source/id :source/version])
-                 (:grammar/emit-template postgres/+grammar+)
-                 (:grammar/profiles postgres/+grammar+)])
-   :expected [{:source/kind :emit-template :source/id :postgres :source/version 1}
-              {:source/kind :profile :source/id :postgres :source/version 1}
-              {:template/id :postgres :template/version 1}
-              [{:profile/id :postgres :profile/version 1}]]}])
+ [{:name "keeps the original template map and PostgreSQL token rules"
+   :test (fn [] [(get-in postgres/+template+ [:default :comment :prefix])
+                 (get-in postgres/+template+ [:default :common :assign])
+                 (get-in postgres/+template+ [:token :symbol :replace])
+                 (fn? (get-in postgres/+template+ [:data :vector :custom]))])
+   :expected ["--" ":="
+              {\! "f" \* "__" \- "_" \: "." \< "_lt" \= "_eq" \> "_gt" \? "p_"}
+              true]}])
+
+^{:refer lang.model.v1.spec-postgres/+meta+}
+(Test/check
+ [{:name "retains the BookMeta lifecycle hooks from the original model"
+   :test (fn [] [(book/book-meta? postgres/+meta+)
+                 (fn? (:has-module postgres/+meta+))
+                 (fn? (:setup-module postgres/+meta+))
+                 (fn? (:has-ptr postgres/+meta+))
+                 (fn? (:setup-ptr postgres/+meta+))
+                 (fn? (:teardown-ptr postgres/+meta+))])
+   :expected [true true true true true true]}])
+
+^{:refer lang.model.v1.spec-postgres/+book+}
+(Test/check
+ [{:name "creates the standalone PostgreSQL Book with the concrete grammar"
+   :test (fn [] [(book/book? postgres/+book+)
+                 (:lang postgres/+book+)
+                 (:parent postgres/+book+)
+                 (:file postgres/+book+)
+                 (= (:grammar postgres/+book+) postgres/+grammar+)
+                 (= (:meta postgres/+book+) postgres/+meta+)])
+   :expected [true :postgres nil {:suffix "pg.sql"} true true]}])
+
+^{:refer lang.model.v1.spec-postgres/+init+}
+(Test/check
+ [{:name "installs the Book through the standard script pipeline"
+   :test (fn [] (let [lib (impl/runtime-library)
+                      result postgres/+init+
+                      stored (library/get-book lib :postgres)]
+                  [(vector? result)
+                   (count result)
+                   (book/book? stored)
+                   (= (:grammar stored) postgres/+grammar+)
+                   (= (:meta stored) postgres/+meta+)]))
+   :expected [true 3 true true true]}])
 
 (def sales-tax-form
   '(defn sales-tax
@@ -67,9 +109,10 @@
 (Test/check
  [{:name "emits the archived deterministic PL/pgSQL function shape"
    :test (fn [] (let [formatted (native/pg-defn-format sales-tax-form)]
-                  (native/pg-defn (second formatted)
-                                  (:grammar postgres/+selection+)
-                                  {})))
+                  (binding [lang.base.emit-common/*emit-fn* emit/emit-main-loop]
+                    (native/pg-defn (second formatted)
+                                    postgres/+grammar+
+                                    {}))))
    :expected sales-tax-output}])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-native/pg-ddl-value}
@@ -82,8 +125,9 @@
 ^{:refer lang.model.v1.spec-postgres.postgres-native/pg-section}
 (Test/check
  [{:name "dispatches keyword-headed lifecycle forms through their grammar emitter"
-   :test (fn [] (native/pg-section [:create-schema :if-not-exists #{"scratch_v0"}]
-                                   (:grammar postgres/+selection+) {}))
+   :test (fn [] (binding [lang.base.emit-common/*emit-fn* emit/emit-main-loop]
+                  (native/pg-section [:create-schema :if-not-exists #{"scratch_v0"}]
+                                     postgres/+grammar+ {})))
    :expected "CREATE SCHEMA IF NOT EXISTS \"scratch_v0\""}])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-native/pg-ddl-target}

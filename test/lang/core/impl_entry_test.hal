@@ -277,3 +277,18 @@
          (Base/identical? object saved-entry) options qualified])
       (finally (entry/emit-entry-cached-reset baseline))))
   => [1 "42" true true {} {}])
+
+
+^{:refer lang.core.impl-entry/emit-entry :id original-vector-transform-options}
+(fact "vector options have no named entry transforms while map callbacks still run"
+  (let [grammar @emit/+test-grammar+
+        object {:module 'option.fixture :id 'value :namespace (ns-current) :form 42}
+        baseline (entry/emit-entry-cached-state)]
+    [(entry/with:cache-none
+       (mapv (fn [transforms]
+               (entry/emit-entry grammar object {:emit {:code {:transforms transforms}}}))
+             [nil [] [(fn [& args] (throw (ex :unexpected/vector-transform {})))]
+              {:entry [(fn [body options] (str body "!"))]}]))
+     (Base/identical? baseline (entry/emit-entry-cached-state))
+     entry/*cache-none*])
+  => [["42" "42" "42" "42!"] true false])

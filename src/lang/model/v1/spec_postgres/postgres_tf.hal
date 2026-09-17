@@ -3,15 +3,191 @@
 (def ^:dynamic *input-syms* nil)
 
 (defn pg-js-idx
-  "Drops the archived one-letter binding prefix and snake-cases a key."
-  [value]
-  (let [text (str value)
-        text (if (and (> (count text) 2)
-                      (= \- (str/char-at text 1)))
-               (str/slice text 2)
-               text)]
-    (str/snake-case text)))
+  "ignores single letter prefix"
+  {:added "4.0"}
+  [esym]
+  (let [estr (str esym)
+        estr (if (re-find #"\w-\w+" estr) (str/slice estr 2) estr)]
+    (str/snake-case estr)))
 
+(defn pg-tf-js
+  "converts a map to js object"
+  {:added "4.0"}
+  [[_ val]]
+  (let [obj-fn (letfn
+                 [(obj-fn
+                    [val]
+                    (cond
+                      (map? val) (let
+                                   [arr
+                                    (mapcat
+                                      (fn
+                                        [[k v]]
+                                        [(obj-fn k) (obj-fn v)])
+                                      (seq val))]
+                                   (apply
+                                     list
+                                     'jsonb-build-object
+                                     arr))
+                      (vector? val) (let
+                                      [arr (map obj-fn val)]
+                                      (apply
+                                        list
+                                        'jsonb-build-array
+                                        arr))
+                      (keyword? val) (str/snake-case (str/tag val))
+                      (set? val) (let
+                                   [pairs
+                                    (loop
+                                      [acc []
+                                       [x & more :as arr]
+                                       (vec (seq val))]
+                                      (cond
+                                        (empty? arr) acc
+                                        (keyword? x)
+                                        (recur
+                                          (conj
+                                            acc
+                                            [(str/snake-case
+                                               (str/tag x))
+                                             (obj-fn (first more))])
+                                          (rest more))
+                                        (symbol? x)
+                                        (recur
+                                          (conj acc [(pg-js-idx x) x])
+                                          more)
+                                        :else
+                                        (throw
+                                          (ex
+                                            :generic
+                                            {:value x}
+                                            :ex/message
+                                            "Not Valid"))))]
+                                   (apply
+                                     list
+                                     'jsonb-build-object
+                                     (apply concat pairs)))
+                      :else val))]
+                 obj-fn)]
+    (cond
+      (string? val) (str "\"" val "\"")
+      (number? val) (str val)
+      :else (obj-fn val))))
+
+(defn pg-tf-for
+  "creates for loop"
+  {:added "4.0"}
+  [[_ args & body]]
+  (apply
+    vector
+    (seq
+      (concat
+        (list :FOR)
+        args
+        (list :LOOP)
+        (list \\)
+        (list
+          (seq
+            (concat (list \|) (list (seq (concat (list 'do) body))))))
+        (list \\)
+        (list :END-LOOP)
+        (list \;)))))
+
+(defn pg-tf-foreach
+  "creates foreach loop"
+  {:added "4.0"}
+  [[_ args & body]]
+  (apply
+    vector
+    (seq
+      (concat
+        (list :FOREACH)
+        args
+        (list :LOOP)
+        (list \\)
+        (list
+          (seq
+            (concat (list \|) (list (seq (concat (list 'do) body))))))
+        (list \\)
+        (list :END-LOOP)
+        (list \;)))))
+
+(defn pg-tf-loop
+  "creates loop"
+  {:added "4.0"}
+  [[_ & body]]
+  (apply
+    vector
+    (seq
+      (concat
+        (list :LOOP)
+        (list \\)
+        (list
+          (seq
+            (concat (list \|) (list (seq (concat (list 'do) body))))))
+        (list \\)
+        (list :END-LOOP)
+        (list \;)))))
+
+;;
+;; js basic
+;;
+
+(defn pg-tf-throw
+  "creates throw transform"
+  {:added "4.0"}
+  [[_ {:as m} tag]]
+  [:raise-exception
+   :using
+   (list
+     'quote
+     [[:detail := (list :text (list '% m))]
+      [:message := (str/tag tag)]])])
+
+(defn pg-tf-error
+  "creates error transform"
+  {:added "4.0"}
+  [[_ & [{:as m} tag]]]
+  (let [m (if (map? m) m {:value m})]
+    (pg-tf-throw [nil (merge {:status "error"} m) tag])))
+
+(defn pg-tf-assert
+  "creates assert transform"
+  {:added "4.0"}
+  [[_ chk [tag data]]]
+  (let [m (if (map? data)
+            (merge {:tag tag} data)
+            {:tag tag, :data data})]
+    (seq
+      (concat
+        (list 'if)
+        (list
+          (apply
+            vector
+            (seq
+              (concat
+                (list :NOT)
+                (list
+                  (seq
+                    (concat
+                      (list 'quote)
+                      (list (seq (concat (list chk)))))))))))
+        (list (pg-tf-error [nil m tag]))))))
+
+
+(comment
+  (env/pl (tahto.core/pg
+         (let [(:jsonb out)  {}
+               _  (do:reduce out || :jsonb arr)]
+           (return out))))
+  (env/pl (tahto.core/pg (do:reduce out || :json [{} {}]))))
+
+
+
+
+
+
+;; Existing native helper surface retained during faithful transform cutover.
 (defn pg-json-value
   "Recursively converts one portable value to a JSONB constructor form."
   [value]
@@ -47,14 +223,6 @@
 
     :else value))
 
-(defn pg-tf-js
-  "Converts portable maps, vectors, sets, and scalar values to JSONB forms."
-  [form]
-  (let [value (second form)]
-    (cond (string? value) (str "\"" value "\"")
-          (number? value) (str value)
-          :else (pg-json-value value))))
-
 (defn pg-tf-free-data
   "Wraps free data in the archived quoted JSONB shape."
   [form]
@@ -64,58 +232,3 @@
   "Wraps a free vector in the archived quoted shape."
   [form]
   (list 'quote (vec (second form))))
-
-(defn pg-tf-for
-  "Creates the archived PostgreSQL FOR loop form."
-  [form]
-  (let [args (second form)
-        body (drop 2 form)]
-    (vec (concat [:FOR] args [:LOOP \\]
-                 [(list \| (apply list 'do body))]
-                 [\\ :END-LOOP \;]))))
-
-(defn pg-tf-foreach
-  "Creates the archived PostgreSQL FOREACH loop form."
-  [form]
-  (let [args (second form)
-        body (drop 2 form)]
-    (vec (concat [:FOREACH] args [:LOOP \\]
-                 [(list \| (apply list 'do body))]
-                 [\\ :END-LOOP \;]))))
-
-(defn pg-tf-loop
-  "Creates the archived PostgreSQL LOOP form."
-  [form]
-  (let [body (drop 1 form)]
-    [:LOOP \\ (list \| (apply list 'do body)) \\ :END-LOOP \;]))
-
-(defn pg-tf-throw
-  "Creates the archived JSONB-backed PostgreSQL exception form."
-  [form]
-  (let [data (second form)
-        tag (nth form 2)]
-    [:raise-exception
-     :using (list 'quote
-                  [[:detail := (list :text (list '% data))]
-                   [:message := (str tag)]])]))
-
-(defn pg-tf-error
-  "Creates a standardized PostgreSQL error transform."
-  [form]
-  (let [data-value (if (> (count form) 1) (second form) nil)
-        tag (if (> (count form) 2) (nth form 2) nil)
-        data (if (map? data-value) data-value {:value data-value})]
-    (pg-tf-throw [nil (merge {:status "error"} data) tag])))
-
-(defn pg-tf-assert
-  "Creates a PostgreSQL assertion transform."
-  [form]
-  (let [check (second form)
-        tag-data (nth form 2)
-        tag (first tag-data)
-        data (second tag-data)
-        payload (if (map? data)
-                  (merge {:tag tag} data)
-                  {:tag tag :data data})]
-    (list 'if [:NOT (list 'quote (list check))]
-          (pg-tf-error [nil payload tag]))))

@@ -1,45 +1,334 @@
 (ns lang.model.v1.spec-go-test
-  (:require [lang.base.grammar-api :as grammar]
-            [lang.base.registry :as registry]
+  (:require [lang.core.impl :as l]
+            [lang.base.emit :as emit]
+            [lang.model.v1.spec-go :as spec-go])
+  (:use code.test))
+
+(fact "test go emission"
+  (l/emit-as :go ['(var a 1)])
+  => "var a = 1"
+
+  (l/emit-as :go ['(defn ^{:- [:int]} hello [:int a] (return (+ a 1)))])
+  => "func hello(a int)  int {\n  return a + 1\n}"
+
+  (l/emit-as :go ['(defstruct Person [[name string] [age int]])])
+  => "type Person struct {\n  name string\n  age int\n}"
+
+  (l/emit-as :go ['(go (hello 1))])
+  => "go hello(1)"
+
+  (l/emit-as :go ['(defer (hello 1))])
+  => "defer hello(1)"
+
+  (l/emit-as :go ['(:& x)])
+  => "&x"
+
+  (l/emit-as :go ['(:* x)])
+  => "*x"
+
+  (l/emit-as :go ['(<- ch)])
+  => "<-ch"
+
+  (l/emit-as :go ['(<- ch 1)])
+  => "ch <- 1"
+
+  (l/emit-as :go ['(make (chan int))])
+  => "make(chan int)"
+
+  (l/emit-as :go ['[:> slice int]])
+  => "[]int"
+
+  (l/emit-as :go ['[:> map string int]])
+  => "map[string]int"
+)
+
+  (fact "test xtalk integration"
+  (l/emit-as :go ['(x:print "hello")])
+  => "fmt.Println(\"hello\")"
+
+  (l/emit-as :go ['(x:len [1 2 3])])
+  => "len([]any{1, 2, 3})"
+
+  (l/emit-as :go ['(x:cat "a" "b")])
+  => "\"a\" + \"b\""
+
+  (l/emit-as :go ['(x:m-abs -1)])
+  => "math.Abs(-1)"
+
+  (l/emit-as :go ['(x:arr-push arr 1)])
+  => "arr = append(arr,1)"
+
+  (l/emit-as :go ['(x:str-join "," ["a" "b"])])
+  => "strings.Join([]any{\"a\", \"b\"},\",\")"
+)
+
+
+^{:refer lang.model.v1.spec-go/go-typesystem, :added "4.1"}
+(fact
+  "handle generic types"
+  (spec-go/go-typesystem '[:> slice int] spec-go/+grammar+ {})
+  =>
+  "[]int"
+  (spec-go/go-typesystem '[:> map string int] spec-go/+grammar+ {})
+  =>
+  "map[string]int")
+
+^{:refer lang.model.v1.spec-go/go-vector, :added "4.1"}
+(fact
+  "emit vector or slice"
+  (spec-go/go-vector '[1 2 3] spec-go/+grammar+ {})
+  =>
+  "[]any{1, 2, 3}"
+  (spec-go/go-vector '[:> slice int] spec-go/+grammar+ {})
+  =>
+  "[]int")
+
+^{:refer lang.model.v1.spec-go/tf-go-arrow, :added "4.1"}
+(fact
+  "macro for channel op"
+  (spec-go/tf-go-arrow '(<- ch))
+  =>
+  '(:% (:- "<-") ch)
+  (spec-go/tf-go-arrow '(<- ch 1))
+  =>
+  '(:% ch (:- " <- ") 1))
+
+^{:refer lang.model.v1.spec-go/go-defstruct, :added "4.1"}
+(fact
+  "defstruct implementation"
+  (spec-go/go-defstruct
+    '(defstruct Person [[name string]])
+    spec-go/+grammar+
+    {})
+  =>
+  "type Person struct {\n  name string\n}")
+
+^{:refer lang.model.v1.spec-go/go-definterface, :added "4.1"}
+(fact
+  "definterface implementation"
+  (spec-go/go-definterface
+    '(definterface Reader [Read])
+    spec-go/+grammar+
+    {})
+  =>
+  "type Reader interface {\n  Read\n}")
+
+(ns lang.model.v1.spec-go-test
+  (:require [lang.core.impl :as impl]
+            [lang.core.impl-entry :as entry]
+            [lang.base.book-entry :as book-entry]
             [lang.model.v1.spec-go :as subject]))
 
-^{:refer lang.model.v1.spec-go/install-source}
+^{:refer lang.model.v1.spec-go/go-typesystem}
 (Test/check
- [{:name "installs one source and keeps repeated installation idempotent"
-   :test (fn [] (let [catalog (registry/registry)
-                      once (subject/install-source catalog subject/+template+)
-                      twice (subject/install-source once subject/+template+)
-                      coordinate (grammar/source-coordinate subject/+template+)]
-                  [(not (nil? (registry/find once coordinate)))
-                   (count (registry/list once))
-                   (count (registry/list twice))]))
-   :expected [true 1 1]}])
+  [{:name "emits Go slice, map, and generic type forms",
+    :test
+    (fn [] [(subject/go-typesystem
+              ['x 'slice 'int]
+              subject/+grammar+
+              {})
+            (subject/go-typesystem
+              ['x 'map 'string 'int]
+              subject/+grammar+
+              {})
+            (subject/go-typesystem
+              ['x 'Box 'left 'right]
+              subject/+grammar+
+              {})]),
+    :expected ["[]int" "map[string]int" "Box[left, right]"]}])
 
-^{:refer lang.model.v1.spec-go/install}
+^{:refer lang.model.v1.spec-go/go-vector}
 (Test/check
- [{:name "installs XTalk prerequisites and all Go sources"
-   :test (fn [] (let [catalog (subject/install (registry/registry))]
-                  [(registry/versions catalog :xtalk)
-                   (registry/versions catalog :go)
-                   (not (nil? (registry/find catalog
-                                             (grammar/source-coordinate subject/+grammar+))))]))
-   :expected [[1] [1] true]}])
+  [{:name "emits ordinary Go vectors and type-system vectors",
+    :test
+    (fn [] [(subject/go-vector ['left 'right] subject/+grammar+ {})
+            (subject/go-vector
+              [:> 'slice 'int]
+              subject/+grammar+
+              {})]),
+    :expected ["[]any{left, right}" "[]int"]}])
 
-^{:refer lang.model.v1.spec-go/catalog}
+^{:refer lang.model.v1.spec-go/tf-go-arrow}
 (Test/check
- [{:name "creates a catalog containing the current Go grammar"
-   :test (fn [] (let [catalog (subject/catalog)]
-                  [(count (registry/list catalog))
-                   (registry/versions catalog :go)
-                   (not (nil? (registry/find catalog
-                                             (grammar/source-coordinate subject/+profile+))))]))
-   :expected [6 [1] true]}])
+  [{:name "emits one-way and typed Go arrows",
+    :test
+    (fn [] [(subject/tf-go-arrow ['arrow 'value])
+            (subject/tf-go-arrow ['arrow 'left 'right])]),
+    :expected
+    [(list :% (list :- "<-") 'value)
+     (list :% 'left (list :- " <- ") 'right)]}])
 
-^{:refer lang.model.v1.spec-go/select}
+^{:refer lang.model.v1.spec-go/go-defstruct}
 (Test/check
- [{:name "resolves the pinned Go grammar selection"
-   :test (fn [] (let [selection (subject/select)]
-                  [(:grammar/id (:coordinate selection))
-                   (:grammar/version (:coordinate selection))
-                   (= (:coordinate selection) subject/+coordinate+)]))
-   :expected [:go 1 true]}])
+  [{:name "emits a Go struct body",
+    :test
+    (fn []
+      (subject/go-defstruct
+        ['defstruct 'Person [['name 'string] 'age]]
+        subject/+grammar+
+        {})),
+    :expected "type Person struct {\n  name string\n  age\n}"}])
+
+^{:refer lang.model.v1.spec-go/go-definterface}
+(Test/check
+  [{:name "emits a Go interface body",
+    :test
+    (fn []
+      (subject/go-definterface
+        ['definterface 'Worker ['run 'stop]]
+        subject/+grammar+
+        {})),
+    :expected "type Worker interface {\n  run\n  stop\n}"}])
+
+^{:refer lang.core.impl-entry/emit-entry-raw}
+(Test/check
+  [{:name
+    "emits registered Go declarations with their persisted return metadata",
+    :test
+    (fn []
+      (let [stored (book-entry/book-entry
+                     {:lang :go,
+                      :id 'hello,
+                      :module 'demo.go,
+                      :section :code,
+                      :op 'defn,
+                      :form
+                      (list
+                        'defn
+                        (with-meta 'hello {:- [:int]})
+                        [:int 'a]
+                        '(return (+ a 1)))})]
+        (entry/emit-entry-raw
+          subject/+grammar+
+          stored
+          {:lang :go, :layout :flat}))),
+    :expected "func hello(a int)  int {\n  return a + 1\n}"}])
+
+^{:refer lang.core.impl/emit-as}
+(Test/check
+  [{:name "ports the Foundation Go grammar through the compiler",
+    :test
+    (fn [] [(impl/emit-as :go ['(var a 1)] {:layout :flat})
+            (impl/emit-as
+              :go
+              ['(defn ^{:- [:int]} hello [:int a] (return (+ a 1)))]
+              {:layout :flat})
+            (impl/emit-as
+              :go
+              ['(defstruct Person [[name string] [age int]])]
+              {:layout :flat})
+            (impl/emit-as :go ['(go (hello 1))] {:layout :flat})
+            (impl/emit-as :go ['(defer (hello 1))] {:layout :flat})
+            (impl/emit-as :go ['(:& x)] {:layout :flat})
+            (impl/emit-as :go ['(:* x)] {:layout :flat})
+            (impl/emit-as :go ['(<- ch)] {:layout :flat})
+            (impl/emit-as :go ['(<- ch 1)] {:layout :flat})
+            (impl/emit-as :go ['(make (chan int))] {:layout :flat})
+            (impl/emit-as :go ['[:> slice int]] {:layout :flat})
+            (impl/emit-as :go ['[:> map string int]] {:layout :flat})
+            (impl/emit-as :go ['(x:print "hello")] {:layout :flat})
+            (impl/emit-as :go ['(x:len [1 2 3])] {:layout :flat})
+            (impl/emit-as :go ['(x:cat "a" "b")] {:layout :flat})
+            (impl/emit-as :go ['(x:m-abs -1)] {:layout :flat})
+            (impl/emit-as :go ['(x:arr-push arr 1)] {:layout :flat})
+            (impl/emit-as
+              :go
+              ['(x:str-join "," ["a" "b"])]
+              {:layout :flat})]),
+    :expected
+    ["var a = 1"
+     "func hello(a int)  int {\n  return a + 1\n}"
+     "type Person struct {\n  name string\n  age int\n}"
+     "go hello(1)"
+     "defer hello(1)"
+     "&x"
+     "*x"
+     "<-ch"
+     "ch <- 1"
+     "make(chan int)"
+     "[]int"
+     "map[string]int"
+     "fmt.Println(\"hello\")"
+     "len([]any{1, 2, 3})"
+     "\"a\" + \"b\""
+     "math.Abs(-1)"
+     "arr = append(arr,1)"
+     "strings.Join([]any{\"a\", \"b\"},\",\")"]}])
+
+(ns lang.model.v1.spec-go-test
+  (:require [lang.model.v1.spec-go :as subject]
+            [lang.model.v1.spec-xtalk.fn-go :as fn-go]
+            [lang.base.grammar :as grammar]
+            [lang.base.book :as book]
+            [lang.base.book-entry :as book-entry]
+            [lang.core.impl :as impl]
+            [lang.core.library :as lib]
+            [std.lib.context.registry :as registry])
+  (:use code.test))
+
+^{:refer lang.model.v1.spec-go/+features+ :id go-original-feature-callbacks}
+(fact "original Go callbacks remain Vars and preserve XTalk overrides"
+  [(get-in subject/+features+ [:go-arrow :macro])
+   (get-in subject/+features+ [:defstruct :emit])
+   (get-in subject/+features+ [:definterface :emit])
+   (select-keys subject/+features+ (keys fn-go/+go+))]
+  => [#'subject/tf-go-arrow #'subject/go-defstruct #'subject/go-definterface
+      (select-keys (grammar/build:override (grammar/build-xtalk) fn-go/+go+)
+                   (keys fn-go/+go+))])
+
+^{:refer lang.model.v1.spec-go/+template+ :id go-original-template}
+(fact "original Go template retains literal restrictions and custom vector emitter"
+  [(:banned subject/+template+) (:highlight subject/+template+)
+   (get-in subject/+template+ [:data :vector :custom])
+   (get-in subject/+template+ [:default :function :prefix])
+   (get-in subject/+template+ [:default :typehint :after])]
+  => [#{:regex :set} '#{return continue fallthrough break} #'subject/go-vector "func" true])
+
+^{:refer lang.model.v1.spec-go/+grammar+ :id go-original-grammar}
+(fact "Go grammar is built from the complete original operator table"
+  [(:tag subject/+grammar+) (:reserved subject/+grammar+)]
+  => [:go (grammar/to-reserved subject/+features+)])
+
+^{:refer lang.model.v1.spec-go/+meta+ :id go-original-import}
+(fact "Go module metadata emits imports and no current-module declaration"
+  [((:module-current subject/+meta+))
+   ((:module-import subject/+meta+) "fmt" nil {})
+   ((:module-import subject/+meta+) "net/http" nil {})]
+  => [nil '(:- "import" "\"fmt\"") '(:- "import" "\"net/http\"")])
+
+^{:refer lang.model.v1.spec-go/+book+ :id go-original-book}
+(fact "Go installs the original Book without an invented parent or catalog selection"
+  (let [stored (lib/get-book (impl/default-library) :go)]
+    [(book/book? subject/+book+) (:lang subject/+book+)
+     (:parent subject/+book+) (:selection subject/+book+)
+     (:lang stored) (= subject/+grammar+ (:grammar stored))])
+  => [true :go nil nil :go true])
+
+^{:refer lang.model.v1.spec-go/+init+ :id go-original-install}
+(fact "Go installation registers the original script macros and runtime context"
+  (let [stored (lib/get-book (impl/default-library) :go)
+        context (registry/registry-get :lang/go)]
+    [(count subject/+init+) (= (nth subject/+init+ 1) context)
+     (= (nth subject/+init+ 2) (select-keys stored [:macros :highlights]))
+     (select-keys (:config context) [:context :lang])
+     (mapv str (first (:macros stored)))])
+  => [3 true true {:context :lang/go :lang :go}
+      ["#'lang.model.v1.spec-go/def$.go" "#'lang.model.v1.spec-go/defmacro.go"
+       "#'lang.model.v1.spec-go/!.go" "#'lang.model.v1.spec-go/defptr.go"]])
+
+^{:refer lang.model.v1.spec-go/go-defstruct :id go-tagged-fields}
+(fact "Go struct fields preserve tag spelling and embedded fields"
+  (subject/go-defstruct
+    '(defstruct Person [[name string "json:\"name\"" "xml:\"name\""] Reader])
+    subject/+grammar+ {})
+  => "type Person struct {\n  name string `json:\"name\" xml:\"name\"`\n  Reader\n}")
+
+^{:refer lang.base.book-entry/book-entry :id go-persisted-return-type}
+(fact "the original entry representation retains declaration-symbol return metadata"
+  (let [entry (book-entry/book-entry
+                {:lang :go :id 'hello :module 'demo.go :section :code
+                 :form (list 'defn (with-meta 'hello {:- [:int]}) [:int 'a]
+                             '(return (+ a 1)))})]
+    [(:lang entry) (:module entry) (:id entry)
+     (meta (second (:form entry)))])
+  => [:go 'demo.go 'hello {:- [:int]}])

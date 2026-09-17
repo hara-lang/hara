@@ -1,13 +1,154 @@
 (ns lang.model.v1.spec-postgres.postgres-partition
-  (:require [lang.base.grammar-spec :as grammar-spec]))
+  (:require [lang.base.book :as book]
+            [lang.base.preprocess-base :as preprocess]
+            [lang.base.grammar-spec :as grammar-spec]
+            [lang.core.library-snapshot :as snap]))
 
 (defn pg-partition-name
-  "Constructs the archived deterministic nested partition name."
-  [base value stack]
-  (str/join "__"
-            (map (fn [item] (str item))
-                 (concat [base] (reverse stack) [value]))))
+  "constructs partition name"
+  {:added "4.0"}
+  [base val stack]
+  (let [parts (concat [base] (reverse stack) [val])]
+    (str/join "__" (map str/tag parts))))
 
+(defn pg-partition-def
+  "recursive definition for partition"
+  {:added "4.0"}
+  [parent-sym base-name current-spec remaining-specs stack]
+  (let [use (or (:use current-spec) (:on current-spec))
+        in (or (:in current-spec) (:for current-spec))
+        {:keys [default schema]} current-spec
+        next-spec (first remaining-specs)
+        next-col (when-let [u (or (:use next-spec) (:on next-spec))]
+                   (str/replace (name u) "-" "_"))
+        p-ns (namespace parent-sym)
+        [p-sch p-tab] (if p-ns
+                        [p-ns (name parent-sym)]
+                        (let [parts (str/split
+                                      (name parent-sym)
+                                      (regexp "\\."))]
+                          (if (> (count parts) 1)
+                            [(first parts) (last parts)]
+                            [nil (name parent-sym)])))
+        full-parent (if p-sch (list '. #{p-sch} #{p-tab}) #{p-tab})
+        curr-sch (or schema p-sch)]
+    (if default
+      (let [new-name (pg-partition-name base-name "$DEFAULT" stack)
+            new-sym (if curr-sch
+                      (symbol curr-sch new-name)
+                      (symbol new-name))
+            full-new (if curr-sch
+                       (list '. #{curr-sch} #{new-name})
+                       #{new-name})]
+        (list
+          (vec
+            (concat
+              [:create-table
+               :if-not-exists
+               full-new
+               :partition-of
+               full-parent
+               :default]
+              (if next-col
+                [:partition-by
+                 :list
+                 (list 'quote (list (symbol next-col)))]
+                [])))))
+      (mapcat
+        (fn [val]
+          (let [new-name (pg-partition-name base-name val stack)
+                new-sym (if curr-sch
+                          (symbol curr-sch new-name)
+                          (symbol new-name))
+                full-new (if curr-sch
+                           (list '. #{curr-sch} #{new-name})
+                           #{new-name})]
+            (concat
+              [(vec
+                 (concat
+                   [:create-table
+                    :if-not-exists
+                    full-new
+                    :partition-of
+                    full-parent
+                    :for
+                    :values
+                    :in
+                    (list 'quote (list val))]
+                   (if next-col
+                     [:partition-by
+                      :list
+                      (list 'quote (list (symbol next-col)))]
+                     [])))]
+              (if (seq remaining-specs)
+                (pg-partition-def
+                  new-sym
+                  base-name
+                  next-spec
+                  (rest remaining-specs)
+                  (cons val stack))
+                nil))))
+        in))))
+
+(defn pg-defpartition
+  "defpartition block"
+  {:added "4.0"}
+  [form]
+  (let [mopts (preprocess/macro-opts)
+        [mdefn [_ sym parents specs]] (update
+                                        (grammar-spec/format-defn form)
+                                        1
+                                        vec)
+        parents (if (vector? parents) parents [parents])
+        all-statements (mapcat
+                         (fn [parent-sym]
+                           (let [parent-sym
+                                 (if
+                                   (vector? parent-sym)
+                                   (first parent-sym)
+                                   parent-sym)
+                                 p-en
+                                 (if
+                                   (symbol? parent-sym)
+                                   (let
+                                     [snapshot (:snapshot mopts)
+                                      lang (:lang mopts)
+                                      book
+                                      (if
+                                        snapshot
+                                        (snap/get-book snapshot lang))
+                                      module-id
+                                      (or
+                                        (namespace parent-sym)
+                                        (:module mopts))
+                                      entry-id (name parent-sym)]
+                                     (if
+                                       book
+                                       (book/get-base-entry
+                                         book
+                                         (symbol module-id)
+                                         (symbol entry-id)
+                                         :code))))
+                                 parent-schema
+                                 (or
+                                   (:static/schema p-en)
+                                   (namespace parent-sym))
+                                 base-name (name parent-sym)
+                                 parent-sql-sym
+                                 (if
+                                   parent-schema
+                                   (symbol parent-schema base-name)
+                                   (symbol base-name))]
+                             (pg-partition-def
+                               parent-sql-sym
+                               base-name
+                               (first specs)
+                               (rest specs)
+                               [])))
+                         parents)]
+    (apply list 'do all-statements)))
+
+;; Existing native partition helper surface retained.
 (defn partition-value
   [value]
   (if (or (vector? value) (list? value) (set? value))
@@ -37,71 +178,3 @@
 (defn partition-table
   [parent]
   (if (symbol? parent) (name parent) (str parent)))
-
-(defn pg-partition-def
-  "Recursively expands one partition specification into CREATE TABLE forms."
-  [parent-sym base-name current-spec remaining-specs stack]
-  (let [use-value (or (:use current-spec) (:on current-spec))
-        in-value (or (:in current-spec) (:for current-spec))
-        default? (:default current-spec)
-        next-spec (first remaining-specs)
-        next-col-value (or (:use next-spec) (:on next-spec))
-        next-col (if next-col-value
-                   (str/replace (name next-col-value) "-" "_")
-                   nil)
-        parent-token (partition-parent parent-sym)
-        schema (or (:schema current-spec)
-                   (partition-schema parent-sym))]
-    (if default?
-      (let [new-name (pg-partition-name base-name "$DEFAULT" stack)
-            new-token (if schema
-                        (list '. #{schema} #{new-name})
-                        #{new-name})]
-        [(vec (concat [:create-table :if-not-exists new-token
-                       :partition-of parent-token :default]
-                      (if next-col
-                        [:partition-by :list (list 'quote (list (symbol next-col)))]
-                        [])))])
-      (vec
-       (mapcat
-        (fn [value]
-          (let [new-name (pg-partition-name base-name value stack)
-                new-token (if schema
-                            (list '. #{schema} #{new-name})
-                            #{new-name})
-                statement (vec (concat [:create-table :if-not-exists new-token
-                                        :partition-of parent-token
-                                        :for :values :in (list 'quote (list value))]
-                                       (if next-col
-                                         [:partition-by :list (list 'quote (list (symbol next-col)))]
-                                         [])))
-                nested (if (seq remaining-specs)
-                         (pg-partition-def new-name base-name next-spec
-                                           (rest remaining-specs)
-                                           (conj stack value))
-                         [])]
-            (concat [statement] nested)))
-        (partition-value in-value))))))
-
-(defn pg-defpartition
-  "Expands an archived defpartition declaration into portable DDL sections."
-  [form]
-  (let [formatted (grammar-spec/format-defn form)
-        normalized (second formatted)
-        parents-value (nth normalized 2)
-        specs (nth normalized 3)
-        parents (if (vector? parents-value) parents-value [parents-value])
-        first-spec (first specs)
-        remaining-specs (rest specs)
-        statements
-        (mapcat
-         (fn [parent]
-           (let [parent (if (vector? parent) (first parent) parent)
-                 parent-sym (if (symbol? parent) parent (symbol (str parent)))]
-             (pg-partition-def parent-sym
-                               (partition-table parent-sym)
-                               first-spec
-                               remaining-specs
-                               [])))
-         parents)]
-    (apply list 'do statements)))

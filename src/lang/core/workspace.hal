@@ -1,0 +1,345 @@
+(ns lang.core.workspace
+  (:config {:role :internal})
+  (:require [lang.core.impl :as impl]
+            [lang.core.impl-entry :as impl-entry]
+            [lang.core.impl-lifecycle :as lifecycle]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap]
+            [lang.core.pointer :as ptr]
+            [lang.core.runtime :as rt]
+            [lang.core.script-control :as script-control]
+            [lang.base.util :as ut]
+            [lang.core.type-shared :as shared]
+            [lang.base.book-entry :as book-entry]))
+
+(defn rt-resolve
+  "resolves an rt given keyword"
+  {:added "4.0"}
+  [lang-or-rt]
+  (if (keyword? lang-or-rt)
+    (ut/lang-rt lang-or-rt)
+    lang-or-rt))
+
+(defn sym-entry
+  "gets the entry using a symbol"
+  {:added "4.0"}
+  [lang sym]
+  (let [[sym-module sym-id] (ut/sym-pair sym)]
+    (lib/get-entry (impl/runtime-library)
+                   {:lang lang
+                    :module sym-module
+                    :section :code
+                    :id sym-id})))
+
+(defn sym-pointer
+  "converts to a pointer map"
+  {:added "4.0"}
+  [lang sym]
+  (let [[sym-module sym-id] (ut/sym-pair sym)]
+    {:lang lang
+     :module sym-module
+     :section :code
+     :id sym-id}))
+
+(defn module-entries
+  "gets all module entries\n \n   (w/module-entries :xtalk 'xt.lang.common-lib identity)\n   => coll?"
+  {:added "4.0"}
+  [lang ns pred]
+  (->>
+    (lib/get-module (impl/runtime-library) lang ns)
+    :code
+    vals
+    (filter pred)
+    (sort-by
+      (fn [e]
+        (mapv
+          (fn [migration-argument-0] (get e migration-argument-0))
+          [:line :time])))))
+
+(defn emit-ptr
+  "emits the poiner as a string"
+  {:added "4.0"}
+  ([ptr & [opts]]
+    (impl-entry/with:cache-force
+      (let [opts (or opts (ut/lang-rt-default ptr))
+            entry (ptr/ptr-deref ptr)]
+        (if (and
+              (= :xtalk (:lang ptr))
+              (or (map? entry) (book-entry/book-entry? entry))
+              (nil? (:form entry))
+              (:form-input entry))
+          (pretty/pprint-str (:form-input entry))
+          (ptr/ptr-display ptr opts))))))
+
+(defn ptr-display-str
+  "copies pointer text to clipboard"
+  {:added "4.0"}
+  [ptr]
+  (emit-ptr ptr (ut/lang-rt-default ptr)))
+
+(defn ptr-clip
+  "copies pointer text to clipboard"
+  {:added "4.0"}
+  [ptr]
+  (do (OS/clipboard-copy (ptr-display-str ptr)) nil))
+
+(defn ptr-print
+  "copies pointer text to clipboard"
+  {:added "4.0"}
+  [ptr]
+  (impl-entry/with:cache-force
+    (println)
+    (println
+      (let [workspace-line-source (ptr-display-str ptr)
+            workspace-lines (if (= "" workspace-line-source)
+                              [""]
+                              (vec
+                                (reverse
+                                  (drop-while
+                                    (fn [line] (= "" line))
+                                    (reverse
+                                      (str/split-lines
+                                        (str/replace
+                                          workspace-line-source
+                                          "\r\n"
+                                          "\n")))))))]
+        (str/join
+          "\n"
+          (map-indexed
+            (fn [i text]
+              (str " " (str/pad-left (str (inc i)) 2 "0") "  " text))
+            workspace-lines))))))
+
+(defn ptr-setup
+  "calls setup on a pointer"
+  {:added "4.0"}
+  [ptr]
+  (IContextLifeCycle/setup-ptr (ut/lang-rt-default ptr) ptr))
+
+(defn ptr-setup
+  "calls setup on a pointer"
+  {:added "4.0"}
+  [ptr]
+  (IContextLifeCycle/setup-ptr (ut/lang-rt-default ptr) ptr))
+
+(defn ptr-teardown
+  "calls teardown on a pointer"
+  {:added "4.0"}
+  [ptr]
+  (IContextLifeCycle/teardown-ptr (ut/lang-rt-default ptr) ptr))
+
+(defn ptr-setup-deps
+  "calls setup on a pointer and all dependencies"
+  {:added "4.0"}
+  [ptr]
+  (let [deps (->>
+               (deps-ordered
+                 (lib/get-book (impl/runtime-library) (:lang ptr))
+                 [(ut/sym-full ptr)])
+               (map
+                 (fn [migration-argument-0]
+                   (sym-entry (:lang ptr) migration-argument-0)))
+               (filter
+                 (fn [migration-argument-0]
+                   (-> migration-argument-0 :op (= 'defn)))))]
+    (doseq [p deps] (ptr-setup p))))
+
+(defn ptr-teardown-deps
+  "calls teardown on pointer all dependencies"
+  {:added "4.0"}
+  [ptr]
+  (let [deps (->>
+               (deps-ordered
+                 (lib/get-book (impl/runtime-library) (:lang ptr))
+                 [(ut/sym-full ptr)])
+               (map
+                 (fn [migration-argument-0]
+                   (sym-entry (:lang ptr) migration-argument-0)))
+               (filter
+                 (fn [migration-argument-0]
+                   (-> migration-argument-0 :op-key (= 'defn)))))]
+    (doseq [p deps] (ptr-teardown p))))
+
+(defn emit-module
+  "emits the entire module"
+  {:added "4.0"}
+  ([]
+    (into
+      {}
+      (map
+        (fn [value] [(identity value) (emit-module value)])
+        (ut/lang-rt-list))))
+  ([lang-or-rt] (emit-module lang-or-rt nil))
+  ([lang-or-rt module-id]
+    (let [rt (rt-resolve lang-or-rt)]
+      (rt/default-setup-module-emit rt (or module-id (:module rt))))))
+
+(defn print-module
+  "emits and prints out the module\n \n   (std.print/with-out-str\n     (w/print-module (l/rt 'xt.lang.common-lib :xtalk)))\n   => string?"
+  {:added "4.0"}
+  ([]
+    (into
+      {}
+      (map
+        (fn [value] [(identity value) (print-module value)])
+        (ut/lang-rt-list))))
+  ([lang-or-rt]
+    (let [workspace-print-body (with-out-string
+                                 (p (emit-module lang-or-rt)))]
+      (println "tahto.core.workspace (169:4)")
+      (println
+        (let [workspace-line-source workspace-print-body
+              workspace-lines (if (= "" workspace-line-source)
+                                [""]
+                                (vec
+                                  (reverse
+                                    (drop-while
+                                      (fn [line] (= "" line))
+                                      (reverse
+                                        (str/split-lines
+                                          (str/replace
+                                            workspace-line-source
+                                            "\r\n"
+                                            "\n")))))))]
+          (str/join
+            "\n"
+            (map-indexed
+              (fn [i text]
+                (str " " (str/pad-left (str (inc i)) 2 "0") "  " text))
+              workspace-lines)))
+        "\n"))))
+
+(defn rt:module
+  "gets the book module for a runtime"
+  {:added "4.0"}
+  ([lang-or-rt]
+   (let [rt (rt-resolve lang-or-rt)]
+     (lib/get-module (impl/runtime-library)
+                     (:lang rt)
+                     (:module rt)))))
+
+(defn rt:module-meta
+  "gets the book module for a runtime"
+  {:added "4.0"}
+  ([lang-or-rt]
+   (let [rt (rt-resolve lang-or-rt)]
+     (dissoc (lib/get-module (impl/runtime-library)
+                             (:lang rt)
+                             (:module rt))
+             :fragment
+             :code))))
+
+(defn rt:module-purge
+  "purges the current workspace"
+  {:added "4.0"}
+  ([]
+    (into
+      {}
+      (map
+        (fn [value] [(identity value) (rt:module-purge value)])
+        (ut/lang-rt-list))))
+  ([lang-or-rt]
+    (let [{:keys [lang module], :as rt} (rt-resolve lang-or-rt)]
+      (lib/delete-module! (impl/runtime-library) lang module))))
+
+;;
+;;
+;;
+
+(defn rt:inner
+  "gets the inner client for a shared runtime"
+  {:added "4.0"}
+  ([]
+    (into
+      {}
+      (map
+        (fn [value] [(identity value) (rt:inner value)])
+        (ut/lang-rt-list))))
+  ([lang & [ns]] (shared/rt-get-inner (ut/lang-rt ns lang))))
+
+(defn rt:restart
+  "restarts the shared runtime"
+  {:added "4.0"}
+  ([]
+    (into
+      {}
+      (map
+        (fn [value] [(identity value) (rt:restart value)])
+        (ut/lang-rt-list))))
+  ([lang & [ns]]
+    (let [rt (ut/lang-rt ns lang)]
+      (if (shared/rt-is-shared? rt)
+        (shared/restart-group-instance
+          (-> rt :client :type)
+          (-> rt :id))
+        (script-control/script-rt-restart lang ns)))))
+
+(defn multistage-tmpl [[sym f]]
+  (list
+    'defn
+    sym
+    (list
+      '[lang]
+      (list 'let '[rt (ut/lang-rt lang)] (list sym 'rt '(:module rt))))
+    (list '[rt module-id] (list f 'rt 'module-id))))
+
+(template-entries
+  [multistage-tmpl]
+  [rt:setup-single IContextLifeCycle/setup-module]
+  [rt:teardown-single IContextLifeCycle/teardown-module]
+  [rt:setup-to rt/multistage-setup-to]
+  [rt:setup rt/multistage-setup-for]
+  [rt:teardown rt/multistage-teardown-for]
+  [rt:teardown-to rt/multistage-teardown-to]
+  [rt:teardown-at rt/multistage-teardown-at]
+  [rt:scaffold-to rt/default-scaffold-setup-to]
+  [rt:scaffold rt/default-scaffold-setup-for]
+  [rt:scaffold-imports rt/default-scaffold-imports])
+
+(defn intern-macros
+  "interns all macros from one namespace to another"
+  {:added "4.0"}
+  [lang ns & [module-id library merge-op]]
+  (let [library (or library (impl/default-library))
+        [to from] (if (vector? ns) ns [(ns-current) ns])
+        imports (lib/wait-mutate!
+                  library
+                  (fn [snap]
+                    (let [book (snap/get-book-raw snap lang)
+                          imports (map-vals
+                                    (fn
+                                      [e]
+                                      (assoc
+                                        e
+                                        :module
+                                        (or module-id to)))
+                                    (or
+                                      (get-in
+                                        book
+                                        [:modules from :fragment])
+                                      {}))
+                          new-book (update-in
+                                     book
+                                     [:modules
+                                      (or module-id to)
+                                      :fragment]
+                                     (fn
+                                       [m]
+                                       ((or merge-op (fn [_ new] new))
+                                         m
+                                         imports)))]
+                      [imports (snap/add-book snap new-book)])))]
+    (map-vals
+      (fn [e]
+        (let [src-var (resolve (symbol (str ns) (str (:id e))))]
+          (intern
+            to
+            (with-meta
+              (:id e)
+              (merge
+                (meta src-var)
+                (select-keys e [:namespace :line])))
+            (ut/lang-pointer
+              lang
+              (select-keys e [:lang :id :module :section])))))
+      (or imports {}))))

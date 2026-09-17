@@ -1,3 +1,534 @@
+(ns migration.selection-registration)
+(def ready :loaded)
+(ns lang.runtime.basic.type-common-test (:require [lang.runtime.basic.type-common :as common :refer :all] [lang.core.registry :as registry] [code.test :refer :all]))
+
+^{:refer lang.runtime.basic.type-common/get-context-options, :added "4.0"}
+(fact
+  "gets all or a section of the `*context-options*` structure"
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (common/get-context-options))
+  =>
+  (satisfies map?)
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (common/get-context-options :lua))
+  =>
+  (satisfies map?))
+
+^{:refer lang.runtime.basic.type-common/clear-context-options, :added "4.0"}
+(fact
+  "clear entries from the `*context-options*` structure"
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (binding [common/*context-options* (atom {:a {:b {:c 1}}})]
+      (clear-context-options :a :b :c)
+      @common/*context-options*))
+  =>
+  {:a {:b {}}})
+
+^{:refer lang.runtime.basic.type-common/put-context-options, :added "4.0", :setup [(common/clear-context-options :lua :test.raw)]}
+(fact
+  "puts entries into context options"
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (common/put-context-options [:lua :test.raw] {:default {}}))
+  =>
+  '[nil {:default {}}])
+
+^{:refer lang.runtime.basic.type-common/set-context-options, :added "4.0", :setup [(common/clear-context-options :lua :test.raw)]}
+(fact
+  "sets a entry into context options"
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (common/set-context-options [:lua :test.raw :default] {}))
+  =>
+  '([[:lua :test.raw :default] nil {}]))
+
+^{:refer lang.runtime.basic.type-common/get-program-options, :added "4.0"}
+(fact
+  "gets all program options"
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (common/get-program-options))
+  =>
+  (satisfies map?)
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (common/get-program-options :lua))
+  =>
+  (anything))
+
+^{:refer lang.runtime.basic.type-common/put-program-options, :added "4.0"}
+(fact
+  "puts configuration into program options"
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (binding [common/*program-options* (atom {:lua {}})]
+      (put-program-options :lua {:a 1})
+      @common/*program-options*))
+  =>
+  {:lua {:a 1}})
+
+^{:refer lang.runtime.basic.type-common/swap-program-options, :added "4.0"}
+(fact
+  "swaps out the program options using a funciotn"
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (binding [common/*program-options* (atom {:lua {:a 1}})]
+      (swap-program-options :lua (fn [m k v] (assoc m k v)) :b 2)
+      (:lua @common/*program-options*)))
+  =>
+  {:a 1, :b 2})
+
+^{:refer lang.runtime.basic.type-common/get-program-flags, :added "4.0"}
+(fact
+  "gets program flags"
+  (binding [common/*context-options* (atom {:lua {}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:env
+                                         {:luajit
+                                          {:flags
+                                           {:oneshot ["-e"]}}}}})]
+    (get-program-flags :lua :luajit))
+  =>
+  (satisfies map?))
+
+^{:refer lang.runtime.basic.type-common/available-runtimes, :added "4.1"}
+(fact
+  "lists installed runtimes for a language"
+  (let [baseline @registry/+registry+]
+    (try
+      (reset!
+        registry/+registry+
+        {[:lua :oneshot] 'migration.selection-registration})
+      (binding [common/*context-options* (atom
+                                           {:lua
+                                            {:oneshot {:default {}}}})
+                common/*program-options* (atom
+                                           {:lua
+                                            {:default
+                                             {:oneshot :luajit},
+                                             :env
+                                             {:luajit
+                                              {:exec "luajit",
+                                               :flags
+                                               {:oneshot ["-e"]}}}}})]
+        (let [before @registry/+registry+]
+          (try
+            (reset!
+              registry/+registry+
+              (deref
+                (atom
+                  {[:lua :oneshot] 'rt.basic.impl.process-lua,
+                   [:lua :basic] 'rt.basic.impl.process-lua,
+                   [:python :oneshot] 'rt.basic.impl.process-python})))
+            (available-runtimes :lua)
+            (finally (reset! registry/+registry+ before)))))
+      (finally (reset! registry/+registry+ baseline))))
+  =>
+  [:basic :oneshot])
+
+^{:refer lang.runtime.basic.type-common/valid-context!, :added "4.1"}
+(fact
+  "asserts runtime context is valid"
+  (let [baseline @registry/+registry+]
+    (try
+      (reset!
+        registry/+registry+
+        {[:lua :oneshot] 'migration.selection-registration})
+      (binding [common/*context-options* (atom
+                                           {:lua
+                                            {:oneshot {:default {}}}})
+                common/*program-options* (atom
+                                           {:lua
+                                            {:default
+                                             {:oneshot :luajit},
+                                             :env
+                                             {:luajit
+                                              {:exec "luajit",
+                                               :flags
+                                               {:oneshot ["-e"]}}}}})]
+        (valid-context! :oneshot))
+      (finally (reset! registry/+registry+ baseline))))
+  =>
+  (satisfies nil?)
+  (let [baseline @registry/+registry+]
+    (try
+      (reset!
+        registry/+registry+
+        {[:lua :oneshot] 'migration.selection-registration})
+      (binding [common/*context-options* (atom
+                                           {:lua
+                                            {:oneshot {:default {}}}})
+                common/*program-options* (atom
+                                           {:lua
+                                            {:default
+                                             {:oneshot :luajit},
+                                             :env
+                                             {:luajit
+                                              {:exec "luajit",
+                                               :flags
+                                               {:oneshot ["-e"]}}}}})]
+        (try (valid-context! :not-a-context) (catch e true)))
+      (finally (reset! registry/+registry+ baseline))))
+  =>
+  true)
+
+^{:refer lang.runtime.basic.type-common/require-runtime!, :added "4.0"}
+(fact
+  "raises a clear error when a runtime has not been installed"
+  (let [baseline @registry/+registry+]
+    (try
+      (reset!
+        registry/+registry+
+        {[:lua :oneshot] 'migration.selection-registration})
+      (binding [common/*context-options* (atom
+                                           {:lua
+                                            {:oneshot {:default {}}}})
+                common/*program-options* (atom
+                                           {:lua
+                                            {:default
+                                             {:oneshot :luajit},
+                                             :env
+                                             {:luajit
+                                              {:exec "luajit",
+                                               :flags
+                                               {:oneshot ["-e"]}}}}})]
+        (try
+          (get-options :missing.lang :twostep :default)
+          (catch
+            e
+            [(ex-message e)
+             (select-keys (ex-data e) [:lang :runtime :available])])))
+      (finally (reset! registry/+registry+ baseline))))
+  =>
+  ["Runtime not installed"
+   {:lang :missing.lang, :runtime :twostep, :available []}])
+
+^{:refer lang.runtime.basic.type-common/get-program-default, :added "4.0"}
+(fact
+  "gets the default program"
+  (let [baseline @registry/+registry+]
+    (try
+      (reset!
+        registry/+registry+
+        {[:lua :oneshot] 'migration.selection-registration})
+      (binding [common/*context-options* (atom
+                                           {:lua
+                                            {:oneshot {:default {}}}})
+                common/*program-options* (atom
+                                           {:lua
+                                            {:default
+                                             {:oneshot :luajit},
+                                             :env
+                                             {:luajit
+                                              {:exec "luajit",
+                                               :flags
+                                               {:oneshot ["-e"]}}}}})]
+        (get-program-default :lua :oneshot nil))
+      (finally (reset! registry/+registry+ baseline))))
+  =>
+  :luajit)
+
+^{:refer lang.runtime.basic.type-common/get-program-exec, :added "4.0"}
+(fact
+  "gets running parameters for program"
+  (let [baseline @registry/+registry+]
+    (try
+      (reset!
+        registry/+registry+
+        {[:lua :oneshot] 'migration.selection-registration})
+      (binding [common/*context-options* (atom
+                                           {:lua
+                                            {:oneshot {:default {}}}})
+                common/*program-options* (atom
+                                           {:lua
+                                            {:default
+                                             {:oneshot :luajit},
+                                             :env
+                                             {:luajit
+                                              {:exec "luajit",
+                                               :flags
+                                               {:oneshot ["-e"]}}}}})]
+        (get-program-exec :lua :oneshot :luajit))
+      (finally (reset! registry/+registry+ baseline))))
+  =>
+  ["luajit" "-e"])
+
+^{:refer lang.runtime.basic.type-common/get-options, :added "4.0"}
+(fact
+  "gets merged options for context"
+  (let [baseline @registry/+registry+]
+    (try
+      (reset!
+        registry/+registry+
+        {[:lua :oneshot] 'migration.selection-registration})
+      (binding [common/*context-options* (atom
+                                           {:lua
+                                            {:oneshot {:default {}}}})
+                common/*program-options* (atom
+                                           {:lua
+                                            {:default
+                                             {:oneshot :luajit},
+                                             :env
+                                             {:luajit
+                                              {:exec "luajit",
+                                               :flags
+                                               {:oneshot ["-e"]}}}}})]
+        (get-options :lua :oneshot :luajit))
+      (finally (reset! registry/+registry+ baseline))))
+  =>
+  (satisfies map?))
+
+^{:refer lang.runtime.basic.type-common/program-exists?, :added "4.0", :id historical-env-forwarder}
+(fact
+  "checks if an executable exists (original environment forwarder)"
+  (program-exists? "ls")
+  =>
+  true)
+
+^{:refer lang.runtime.basic.type-common/program-exists? :added "4.1"}
+(fact "checks if an executable exists"
+  (program-exists? "ls")
+  => true
+
+  (program-exists? "definitely-not-a-real-command-12345")
+  => false)
+
+^{:refer lang.runtime.basic.type-common/clear-context-options :id native-clear-contract}
+(fact "clear returns the removed value at every depth and repeated clearing is harmless"
+ (binding [common/*context-options* (atom {:lua {:basic {:one {:x 1} :two 2}} :python {:basic {}}})]
+   [(clear-context-options :lua :basic :one)
+    (clear-context-options :lua :basic :one)
+    (clear-context-options :lua :basic)
+    (clear-context-options :lua)
+    (clear-context-options)
+    (clear-context-options)
+    (get-context-options)])
+ => [{:x 1} nil {:two 2} {} {:python {:basic {}}} {} {}])
+
+^{:refer lang.runtime.basic.type-common/put-context-options :id native-context-merge}
+(fact "put merges nested leaves and set replaces a program, reporting exact prior state"
+ (binding [common/*context-options* (atom {:lua {:basic {:one {:keep 1 :x 2}}}})]
+   [(put-context-options [:lua :basic] {:one {:x 3}})
+    (set-context-options [:lua :basic :one] {:only 4})
+    (get-context-options :lua :basic :one)
+    (get-context-options :lua :basic)
+    (get-context-options :missing)])
+ => [[{:one {:keep 1 :x 2}} {:one {:keep 1 :x 3}}]
+     '([[:lua :basic :one] {:keep 1 :x 3} {:only 4}])
+     {:only 4} {:one {:only 4}} nil])
+
+^{:refer lang.runtime.basic.type-common/put-program-options :id native-change-records}
+(fact "program changes distinguish new nil and empty maps, unchanged values and changed leaves"
+ (binding [common/*program-options* (atom {})]
+   [(put-program-options :lua {:nil nil :empty {} :a {:x 1 :y 2}})
+    (put-program-options :lua {:nil nil :empty {} :a {:x 1}})
+    (put-program-options :lua {:a {:x 3}})
+    (put-program-options :lua {:a nil})
+    (get-program-options :lua)])
+ => [[:changed {:nil nil :empty {} :a {:x 1 :y 2}}]
+     [:no-change] [:changed {:a {:x 3}}]
+     [:no-change] {:nil nil :empty {} :a {:x 3 :y 2}}])
+
+(def +option-update+ (fn [m key value] (assoc m key value)))
+
+^{:refer lang.runtime.basic.type-common/swap-program-options :id native-var-callback}
+(fact "swap accepts a Var callback and extra arguments and returns the full new state"
+ (binding [common/*program-options* (atom {:python {:keep 1} :lua {}})]
+   [(swap-program-options :lua #'+option-update+ :env {:luajit {:flags {:oneshot ["-e"]}}})
+    (get-program-flags :lua :luajit)
+    (get-program-flags :lua :missing)
+    (get-program-options :missing)])
+ => [{:python {:keep 1} :lua {:env {:luajit {:flags {:oneshot ["-e"]}}}}}
+     {:oneshot ["-e"]} nil nil])
+
+^{:refer lang.runtime.basic.type-common/get-context-options :id native-binding-restoration}
+(fact "dynamic option bindings restore the baseline on exceptional exits"
+ (binding [common/*context-options* (atom {:baseline true})
+           common/*program-options* (atom {:baseline true})]
+   (try
+     (binding [common/*context-options* (atom {})
+               common/*program-options* (atom {})]
+       (put-context-options [:lua :basic] {:one 1})
+       (put-program-options :lua {:changed true})
+       (throw (ex :options/exit {})))
+     (catch error nil))
+   [(get-context-options) (get-program-options)])
+ => [{:baseline true} {:baseline true}])
+
+^{:refer lang.runtime.basic.type-common/available-runtimes :id native-selection-available-runtimes}
+(fact "registry coordinates are language-filtered and sorted"
+(let [before @registry/+registry+]
+ (try
+  (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration [:python :oneshot] 'migration.selection-registration})
+  (binding [common/*context-options* (atom {:lua {:oneshot {:default {:timeout 20 :nested {:base 1}} :luajit {:nested {:program 3}}}}})
+            common/*program-options* (atom {:lua {:default {:oneshot :luajit}
+               :env {:luajit {:exec "luajit" :flags {:oneshot ["-e"]} :nested {:env 2}}
+                     :lua {:exec "lua" :flags {:basic []}}}}})]
+    [(common/available-runtimes :lua) (common/available-runtimes :missing)])
+  (finally (reset! registry/+registry+ before))))
+=> [[:basic :oneshot] []])
+
+^{:refer lang.runtime.basic.type-common/valid-context! :id native-selection-valid-context}
+(fact "original context inventory accepts its supported contexts"
+(let [before @registry/+registry+]
+ (try
+  (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration [:python :oneshot] 'migration.selection-registration})
+  (binding [common/*context-options* (atom {:lua {:oneshot {:default {:timeout 20 :nested {:base 1}} :luajit {:nested {:program 3}}}}})
+            common/*program-options* (atom {:lua {:default {:oneshot :luajit}
+               :env {:luajit {:exec "luajit" :flags {:oneshot ["-e"]} :nested {:env 2}}
+                     :lua {:exec "lua" :flags {:basic []}}}}})]
+    [(common/valid-context! :oneshot) (common/valid-context! :verify) (has? common/+valid-contexts+ :host)])
+  (finally (reset! registry/+registry+ before))))
+=> [nil nil false])
+
+^{:refer lang.runtime.basic.type-common/require-runtime! :id native-selection-require-runtime}
+(fact "registered namespace is actually required and returned"
+(let [before @registry/+registry+]
+ (try
+  (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration [:python :oneshot] 'migration.selection-registration})
+  (binding [common/*context-options* (atom {:lua {:oneshot {:default {:timeout 20 :nested {:base 1}} :luajit {:nested {:program 3}}}}})
+            common/*program-options* (atom {:lua {:default {:oneshot :luajit}
+               :env {:luajit {:exec "luajit" :flags {:oneshot ["-e"]} :nested {:env 2}}
+                     :lua {:exec "lua" :flags {:basic []}}}}})]
+    [(common/require-runtime! :lua :oneshot) (deref (resolve 'migration.selection-registration/ready))])
+  (finally (reset! registry/+registry+ before))))
+=> ['migration.selection-registration :loaded])
+
+^{:refer lang.runtime.basic.type-common/get-program-default :id native-selection-get-program-default}
+(fact "explicit program wins, otherwise the registered context default is used"
+(let [before @registry/+registry+]
+ (try
+  (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration [:python :oneshot] 'migration.selection-registration})
+  (binding [common/*context-options* (atom {:lua {:oneshot {:default {:timeout 20 :nested {:base 1}} :luajit {:nested {:program 3}}}}})
+            common/*program-options* (atom {:lua {:default {:oneshot :luajit}
+               :env {:luajit {:exec "luajit" :flags {:oneshot ["-e"]} :nested {:env 2}}
+                     :lua {:exec "lua" :flags {:basic []}}}}})]
+    [(common/get-program-default :lua :oneshot nil) (common/get-program-default :lua :oneshot :explicit)])
+  (finally (reset! registry/+registry+ before))))
+=> [:luajit :explicit])
+
+^{:refer lang.runtime.basic.type-common/get-program-exec :id native-selection-get-program-exec}
+(fact "empty flags are supported, and command order is preserved"
+(let [before @registry/+registry+]
+ (try
+  (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration [:python :oneshot] 'migration.selection-registration})
+  (binding [common/*context-options* (atom {:lua {:oneshot {:default {:timeout 20 :nested {:base 1}} :luajit {:nested {:program 3}}}}})
+            common/*program-options* (atom {:lua {:default {:oneshot :luajit}
+               :env {:luajit {:exec "luajit" :flags {:oneshot ["-e"]} :nested {:env 2}}
+                     :lua {:exec "lua" :flags {:basic []}}}}})]
+    [(common/get-program-exec :lua :oneshot :luajit) (common/get-program-exec :lua :basic :lua)])
+  (finally (reset! registry/+registry+ before))))
+=> [["luajit" "-e"] ["lua"]])
+
+^{:refer lang.runtime.basic.type-common/get-options :id native-selection-get-options}
+(fact "context defaults, program environment and context program overrides merge in order"
+(let [before @registry/+registry+]
+ (try
+  (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration [:python :oneshot] 'migration.selection-registration})
+  (binding [common/*context-options* (atom {:lua {:oneshot {:default {:timeout 20 :nested {:base 1}} :luajit {:nested {:program 3}}}}})
+            common/*program-options* (atom {:lua {:default {:oneshot :luajit}
+               :env {:luajit {:exec "luajit" :flags {:oneshot ["-e"]} :nested {:env 2}}
+                     :lua {:exec "lua" :flags {:basic []}}}}})]
+    (common/get-options :lua :oneshot :luajit))
+  (finally (reset! registry/+registry+ before))))
+=> {:timeout 20 :exec "luajit" :flags {:oneshot ["-e"]} :nested {:base 1 :env 2 :program 3}})
+
+^{:refer lang.runtime.basic.type-common/valid-context! :id native-error-valid-context}
+(fact "preserves valid-context! failure message and available choices"
+(let [baseline @registry/+registry+] (try (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration}) (binding [common/*context-options* (atom {}) common/*program-options* (atom {:lua {:env {:other {:flags {:basic []}} :supported {:flags {:oneshot []}}}}})] (try (common/valid-context! :host) (catch error [(ex-message error) (select-keys (ex-data error) [:lang :runtime :program :available])]))) (finally (reset! registry/+registry+ baseline))))
+=> ["Invalid context: :host" {}])
+
+^{:refer lang.runtime.basic.type-common/require-runtime! :id native-error-require-runtime}
+(fact "preserves require-runtime! failure message and available choices"
+(let [baseline @registry/+registry+] (try (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration}) (binding [common/*context-options* (atom {}) common/*program-options* (atom {:lua {:env {:other {:flags {:basic []}} :supported {:flags {:oneshot []}}}}})] (try (common/require-runtime! :missing :oneshot) (catch error [(ex-message error) (select-keys (ex-data error) [:lang :runtime :program :available])]))) (finally (reset! registry/+registry+ baseline))))
+=> ["Runtime not installed" {:lang :missing :runtime :oneshot :available []}])
+
+^{:refer lang.runtime.basic.type-common/get-program-default :id native-error-get-program-default}
+(fact "preserves get-program-default failure message and available choices"
+(let [baseline @registry/+registry+] (try (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration}) (binding [common/*context-options* (atom {}) common/*program-options* (atom {:lua {:env {:other {:flags {:basic []}} :supported {:flags {:oneshot []}}}}})] (try (common/get-program-default :lua :oneshot nil) (catch error [(ex-message error) (select-keys (ex-data error) [:lang :runtime :program :available])]))) (finally (reset! registry/+registry+ baseline))))
+=> ["No program found for runtime" {:lang :lua :runtime :oneshot :available [:other :supported]}])
+
+^{:refer lang.runtime.basic.type-common/get-program-exec :id native-error-get-program-exec}
+(fact "preserves get-program-exec failure message and available choices"
+(let [baseline @registry/+registry+] (try (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration}) (binding [common/*context-options* (atom {}) common/*program-options* (atom {:lua {:env {:other {:flags {:basic []}} :supported {:flags {:oneshot []}}}}})] (try (common/get-program-exec :lua :oneshot :other) (catch error [(ex-message error) (select-keys (ex-data error) [:lang :runtime :program :available])]))) (finally (reset! registry/+registry+ baseline))))
+=> ["Program does not support runtime" {:lang :lua :runtime :oneshot :program :other :available [:supported]}])
+
+^{:refer lang.runtime.basic.type-common/get-options :id native-error-get-options}
+(fact "preserves get-options failure message and available choices"
+(let [baseline @registry/+registry+] (try (reset! registry/+registry+ {[:lua :oneshot] 'migration.selection-registration [:lua :basic] 'migration.selection-registration}) (binding [common/*context-options* (atom {}) common/*program-options* (atom {:lua {:env {:other {:flags {:basic []}} :supported {:flags {:oneshot []}}}}})] (try (common/get-options :lua :oneshot :supported) (catch error [(ex-message error) (select-keys (ex-data error) [:lang :runtime :program :available])]))) (finally (reset! registry/+registry+ baseline))))
+=> ["Runtime configuration not installed" {:lang :lua :runtime :oneshot :available [:basic :oneshot]}])
+
+^{:refer lang.runtime.basic.type-common/+valid-contexts+}
+(fact "retains the exact original context inventory"
+ common/+valid-contexts+ => #{:oneshot :twostep :verify :interactive :basic :websocket :remote-port :remote-ws})
+
+^{:refer lang.runtime.basic.type-common/program-exists? :id native-repeat-and-argv}
+(fact "repeated probes do not alter lookup and arguments are not shell commands" [(program-exists? "ls") (program-exists? "ls; true") (program-exists? "ls") (program-exists? nil)] => [true false true false])
+
+^{:refer lang.runtime.basic.type-common/put-context-options :id :native-nested-defaults}
+(fact "retains nested native runtime defaults through the original option operation"
+  (binding [common/*context-options* (atom {:python {:basic {:env {:node {:exec "node" :flags {:basic ["-e"]}}} :timeout 1000}}})]
+    (second (common/put-context-options [:python :basic]
+              {:env {:node {:flags {:verify ["--check"]}}} :timeout 2000})))
+  => {:env {:node {:exec "node" :flags {:basic ["-e"] :verify ["--check"]}}} :timeout 2000})
+
+^{:refer lang.runtime.basic.type-common/valid-context! :id :native-twostep-context}
+(fact "accepts two-step with original nil return and rejects unknown contexts"
+  [(common/valid-context! :twostep)
+   (try (common/valid-context! :missing) :unexpected-success
+        (catch error (:ex/code (ex-data error))))]
+  => [nil :hara/argument])
+
+(comment :previous-native-option-contracts
 (ns lang.runtime.basic.type-common-test
   (:require [lang.runtime.basic.type-common :as subject]))
 
@@ -23,3 +554,5 @@
                    :missing
                    (catch error (:ex/code (ex-data error))))])
    :expected [:twostep :hara/argument]}])
+
+)

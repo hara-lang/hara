@@ -1,0 +1,284 @@
+(ns migration.setup-registration)
+(ns lang.runtime.basic.type-oneshot-test (:require [lang.runtime.basic.type-oneshot :as p] [lang.runtime.basic.type-common :as common] [lang.core.registry :as registry] [code.test :refer :all]))
+^{:refer lang.runtime.basic.type-oneshot/sh-exec, :added "4.0", :id historical-available, :migration/partial true}
+(fact
+  "basic function for executing a shell process"
+  (p/sh-exec ["/usr/bin/python3" "-c"] "print(1 + 1)" {})
+  =>
+  "2"
+  (p/sh-exec ["/opt/homebrew/bin/luajit" "-e"] "print(1 + 1)" {})
+  =>
+  "2")
+
+^{:refer lang.runtime.basic.type-oneshot/sh-exec :id real-js-lua-python}
+(fact "runs real JavaScript Lua and Python processes"
+ (mapv (fn [request] (p/sh-exec (first request) (second request) {}))
+  [[["/opt/homebrew/bin/node" "-e"] "console.log(1 + 1)"]
+   [["/opt/homebrew/bin/lua" "-e"] "print(1 + 1)"]
+   [["/usr/bin/python3" "-c"] "print(1 + 1)"]])
+ => ["2" "2" "2"])
+
+^{:refer lang.runtime.basic.type-oneshot/sh-exec :id newline-only-trimming}
+(fact "default trimming removes only terminal CR and LF and accepts Var callbacks"
+ [(p/sh-exec ["/usr/bin/printf" "%s"] "  value  \r\n\n" {})
+  (p/sh-exec ["/usr/bin/printf" "%s"] "  value  \n" {:trim (var identity)})
+  (p/sh-exec ["/usr/bin/printf" "%s"] "value\n" {:trim (fn [text] (str "[" text "]"))})]
+ => ["  value  " "  value  \n" "[value\n]"])
+
+^{:refer lang.runtime.basic.type-oneshot/sh-exec :id raw-stream-selection}
+(fact "raw results preserve exit status choose stdout first and omit only empty lines"
+ [(p/sh-exec ["/usr/bin/python3" "-c"]
+   "import sys; sys.stdout.write('first\\n\\n  \\nlast\\n'); sys.stderr.write('error\\n'); sys.exit(7)" {:raw true})
+  (p/sh-exec ["/usr/bin/python3" "-c"]
+   "import sys; sys.stderr.write('error\\n\\nlast\\n'); sys.exit(8)" {:raw true})
+  (p/sh-exec ["/usr/bin/python3" "-c"] "import sys; sys.exit(9)" {:raw true})
+  (p/sh-exec ["/usr/bin/python3" "-c"]
+   "import sys; print('out'); sys.stderr.write('error\\n'); sys.exit(7)" {:stderr true})]
+ => [[7 ["first" "  " "last"]] [8 ["error" "last"]] [9 []] "out"])
+
+^{:refer lang.runtime.basic.type-oneshot/sh-exec :id piped-unicode-input}
+(fact "pipe mode sends UTF-8 stdin closes it and does not append the body to argv"
+ (p/sh-exec ["/bin/cat"] "λ\nlast\r\n" {:pipe true :trim (var identity)})
+ => "λ\nlast\r\n")
+
+^{:refer lang.runtime.basic.type-oneshot/sh-exec :id environment-and-root}
+(fact "root and stringified shell environment apply only to the child"
+ (let [before (OS/getenv "HARA_MIGRATION_ONESHOT_VALUE")]
+  [(p/sh-exec ["/usr/bin/python3" "-c"]
+    "import os; print(os.getcwd()); print(os.environ['HARA_MIGRATION_ONESHOT_VALUE'])"
+    {:root "/private/tmp" :shell {:env {"HARA_MIGRATION_ONESHOT_VALUE" 42}}})
+   (= before (OS/getenv "HARA_MIGRATION_ONESHOT_VALUE"))])
+ => ["/private/tmp\n42" true])
+
+^{:refer lang.runtime.basic.type-oneshot/sh-exec :id launch-and-trim-failures}
+(fact "launch failures propagate or pass through trim and explicit nil trim remains invalid"
+ [(try (p/sh-exec ["/__hara_migration_missing_executable__"] "" {}) :unexpected-success
+   (catch error (str/starts-with? (ex-message error) "os/spawn failed:")))
+  (p/sh-exec ["/__hara_migration_missing_executable__"] ""
+   {:stderr true :trim (fn [message] (if (str/starts-with? message "os/spawn failed:") "captured" "wrong error"))})
+  (try (p/sh-exec ["/usr/bin/printf" "%s"] "value" {:trim nil}) :unexpected-success
+   (catch error (ex-message error)))]
+ => [true "captured" "value is not callable"])
+
+^{:refer lang.runtime.basic.type-oneshot/sh-exec :id large-output}
+(fact "captures output larger than a process pipe buffer"
+ (count (p/sh-exec ["/usr/bin/python3" "-c"] "import sys; sys.stdout.write('x' * 131072)" {}))
+ => 131072)
+
+^{:refer lang.runtime.basic.type-oneshot/sh-exec :id unsupported-shell-options}
+(fact "unavailable shell modes are reported instead of silently ignored"
+ (mapv (fn [option]
+  (try (p/sh-exec ["/usr/bin/printf" "%s"] "value" {:shell {option true}}) :unexpected-success
+   (catch error [(:option (ex-data error)) (ex-message error)])))
+  [:inherit :print :async :output])
+ => [[:inherit "Native oneshot shell option is not available"]
+     [:print "Native oneshot shell option is not available"]
+     [:async "Native oneshot shell option is not available"]
+     [:output "Native oneshot shell option is not available"]])
+
+^{:refer lang.runtime.basic.type-oneshot/raw-eval-oneshot :id real-raw-executor}
+(fact "raw evaluation uses the real process executor and original output shape"
+ [(p/raw-eval-oneshot {:exec ["/opt/homebrew/bin/node" "-e"] :process {}} "console.log(42)")
+  (p/raw-eval-oneshot {:exec ["/opt/homebrew/bin/lua" "-e"] :process {:raw true}} "print(42)")
+  (p/raw-eval-oneshot {:exec ["/usr/bin/python3" "-c"] :process nil} "print(42)")]
+ => ["42" [0 ["42"]] "42"])
+
+^{:refer lang.runtime.basic.type-oneshot/raw-eval-oneshot :id custom-executor-forwarding}
+(fact "custom functions and Vars receive unchanged arguments and preserve nil and false"
+ (let [process {:exec-fn (var vector) :marker :keep}
+       result (p/raw-eval-oneshot {:exec ["custom"] :process process} :body)]
+  [(first result) (second result) (dissoc (nth result 2) :exec-fn)
+   (= (var vector) (:exec-fn (nth result 2)))
+   (p/raw-eval-oneshot {:process {:exec-fn (fn [exec body options] nil)}} :body)
+   (p/raw-eval-oneshot {:process {:exec-fn (fn [exec body options] false)}} :body)])
+ => [["custom"] :body {:marker :keep} true nil false])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot-setup, :id :setup-precedence} (fact "caller settings merge last without losing nested defaults" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (p/rt-oneshot-setup :lua nil {:nested {:caller 4, :winner :caller}} nil) (finally (reset! registry/+registry+ baseline))))) => [:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nullable nil, :nested {:default 1, :program 2, :context 3, :caller 4, :winner :caller}} ["resty" "-e"]])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot-setup, :id :setup-context} (fact "explicit context selects its own defaults and flags" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (p/rt-oneshot-setup :lua nil nil nil :verify) (finally (reset! registry/+registry+ baseline))))) => [:luac {:mode :verify, :exec "luac", :flags {:verify ["-p"]}} ["luac" "-p"]])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot-setup, :id :setup-explicit} (fact "explicit program and executable are preserved even without registered flags" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (p/rt-oneshot-setup :lua :custom {:nested {:winner false}} []) (finally (reset! registry/+registry+ baseline))))) => [:custom {:nested {:default 1, :winner false}, :nullable nil} []])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot-setup, :id :setup-nil} (fact "nil maps retain defaults and nil leaves while scalars replace maps" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (let [[program process exec] (p/rt-oneshot-setup :lua nil {:nested nil, :nullable false} false)] [program process exec]) (finally (reset! registry/+registry+ baseline))))) => [:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:default 1, :program 2, :context 3, :winner :context}, :nullable false} ["resty" "-e"]])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot-setup, :id :setup-errors} (fact "invalid context and unavailable runtime program or configuration keep original errors" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (vector (try (p/rt-oneshot-setup :lua nil {} nil :bad) (catch error (ex-message error))) (try (p/rt-oneshot-setup :absent nil {} nil) (catch error (ex-message error))) (try (p/rt-oneshot-setup :lua :custom {} nil) (catch error (ex-message error))) (do (reset! common/*program-options* {}) (try (p/rt-oneshot-setup :lua nil {} nil) (catch error (ex-message error)))) (do (reset! common/*context-options* {}) (try (p/rt-oneshot-setup :lua :resty {} ["explicit"]) (catch error (ex-message error))))) (finally (reset! registry/+registry+ baseline))))) => ["Invalid context: :bad" "Runtime not installed" "Program does not support runtime" "No program found for runtime" "Runtime configuration not installed"])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot-setup, :id :setup-immutable} (fact "setup is repeatable and leaves both option registries unchanged" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (let [context (deref common/*context-options*) programs (deref common/*program-options*) first (p/rt-oneshot-setup :lua nil {} nil) second (p/rt-oneshot-setup :lua nil {} nil)] [(= first second) (= context (deref common/*context-options*)) (= programs (deref common/*program-options*))]) (finally (reset! registry/+registry+ baseline))))) => [true true true])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot-setup, :id :setup-real-process} (fact "configured setup reaches real JavaScript Lua and Python process execution" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (mapv (fn [[language executable flag body]] (swap! registry/+registry+ assoc [language :oneshot] (quote migration.setup-registration)) (common/put-context-options [language :oneshot] {:default {}}) (common/put-program-options language {:default {:oneshot :native}, :env {:native {:exec executable, :flags {:oneshot [flag]}}}}) (let [[program process exec] (p/rt-oneshot-setup language nil {} nil)] [program (p/raw-eval-oneshot {:exec exec, :process process} body)])) [[:js "/opt/homebrew/bin/node" "-e" "console.log(42)"] [:lua "/opt/homebrew/bin/lua" "-e" "print(42)"] [:python "/usr/bin/python3" "-c" "print(42)"]]) (finally (reset! registry/+registry+ baseline))))) => [[:native "42"] [:native "42"] [:native "42"]])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot-setup, :added "4.0", :id :historical-setup}
+(fact
+  "helper function for preparing oneshot params"
+  (binding [common/*context-options* (atom
+                                       {:lua
+                                        {:oneshot
+                                         {:default
+                                          {:nested
+                                           {:default 1,
+                                            :winner :default},
+                                           :nullable nil},
+                                          :resty
+                                          {:nested
+                                           {:context 3,
+                                            :winner :context}}},
+                                         :verify
+                                         {:default {:mode :verify}}}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:default
+                                         {:oneshot :resty,
+                                          :verify :luac},
+                                         :env
+                                         {:resty
+                                          {:exec "resty",
+                                           :flags {:oneshot ["-e"]},
+                                           :nested
+                                           {:program 2,
+                                            :winner :program}},
+                                          :luac
+                                          {:exec "luac",
+                                           :flags
+                                           {:verify ["-p"]}}}}})]
+    (let [baseline (deref registry/+registry+)]
+      (try
+        (reset!
+          registry/+registry+
+          {[:lua :oneshot] 'migration.setup-registration,
+           [:lua :verify] 'migration.setup-registration})
+        (p/rt-oneshot-setup :lua :resty {} nil)
+        (finally (reset! registry/+registry+ baseline)))))
+  =>
+  (satisfies (fn [value] (vector? value))))
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot:create, :id :constructor-open-record} (fact "constructor retains original fields and arbitrary caller data" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (into {} (p/rt-oneshot:create {:id :provided, :lang :lua, :extra {:keep 1}})) (finally (reset! registry/+registry+ baseline))))) => {:id :provided, :lang :lua, :extra {:keep 1}, :runtime :oneshot, :program :resty, :exec ["resty" "-e"], :process {:exec "resty", :flags {:oneshot ["-e"]}, :nullable nil, :nested {:default 1, :program 2, :context 3, :winner :context}}})
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot-string, :id :constructor-display} (fact "original display labels use language runtime and program" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (let [runtime (p/rt-oneshot:create {:id :label, :lang :lua})] [(p/rt-oneshot-string runtime) (IDisplay/display runtime) (p/rt-oneshot-string {})]) (finally (reset! registry/+registry+ baseline))))) => ["#rt.oneshot[:lua :oneshot :resty]" "#rt.oneshot[:lua :oneshot :resty]" "#rt.oneshot[nil nil nil]"])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot, :id :constructor-convenience} (fact "convenience constructor forwards all caller configuration" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (into {} (p/rt-oneshot {:id 0, :lang :lua, :runtime :verify, :custom false, :exec [], :process {:custom true}})) (finally (reset! registry/+registry+ baseline))))) => {:id 0, :lang :lua, :runtime :verify, :custom false, :program :luac, :exec [], :process {:mode :verify, :exec "luac", :flags {:verify ["-p"]}, :custom true}})
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot:create, :id :constructor-short-id} (fact "omitted IDs match original UUID ASCII big-endian base36 algorithm" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (let [uuid-var (var uuid) baseline (deref uuid-var) baseline-meta (meta uuid-var) constructor-var (var p/rt-oneshot:create) constructor-root (deref constructor-var) constructor-meta (meta constructor-var)] (try (mapv (fn [text] (intern (quote std.foundation) (with-meta (quote uuid) (dissoc baseline-meta :inline :inline-target)) (fn [] (Base/uuid text))) (eval-in-ns (quote lang.runtime.basic.type-oneshot) [(read-string "(defn ^{:public true} rt-oneshot:create\n  \"creates a oneshot runtime\"\n  {:added \"4.0\"}\n  [{:keys [id lang runtime exec program process],\n    :as m,\n    :or {runtime :oneshot}}]\n  (let [[program process exec] (rt-oneshot-setup\n                                 lang\n                                 program\n                                 process\n                                 exec\n                                 runtime)\n        flags (common/get-program-flags lang program)\n        _ (cond\n            (not (get flags runtime)) (throw\n                                        (ex\n                                          :runtime/configuration\n                                          {:lang lang,\n                                           :runtime runtime,\n                                           :flags flags,\n                                           :program program}\n                                          :ex/message\n                                          \"Program does not support runtime\")))]\n    (map->RuntimeOneshot\n      (assoc\n        m\n        :id\n        (or\n          id\n          (let [buffer (String/encode-utf8 (subs (str (uuid)) 7 43))\n                number (reduce\n                         (fn [out index]\n                           (+ (* out 256) (Bytes/get buffer index)))\n                         0\n                         (range 8))]\n            (loop [number number output \"\"]\n              (if (zero? number)\n                output\n                (let [digit (rem number 36)]\n                  (recur\n                    (quot number 36)\n                    (str\n                      (subs\n                        \"0123456789abcdefghijklmnopqrstuvwxyz\"\n                        digit\n                        (inc digit))\n                      output)))))))\n        :runtime\n        runtime\n        :program\n        program\n        :exec\n        exec\n        :process\n        process))))")]) (:id ((deref constructor-var) {:lang :lua}))) ["00000000-0000-4000-8000-000000000000" "12345678-1234-4234-8234-123456789abc" "ffffffff-ffff-4fff-bfff-ffffffffffff"]) (finally (intern (quote std.foundation) (with-meta (quote uuid) baseline-meta) baseline) (intern (quote lang.runtime.basic.type-oneshot) (with-meta (quote rt-oneshot:create) constructor-meta) constructor-root)))) (finally (reset! registry/+registry+ baseline))))) => ["qdpxnhru4ieo" "qxl0nudotqgo" "1k25m0f9nil46"])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot:create, :id :constructor-flags} (fact "explicit executable does not bypass constructor runtime support validation" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (try (p/rt-oneshot:create {:lang :lua, :program :custom, :exec ["explicit"]}) :unexpected (catch error [(ex-message error) (select-keys (ex-data error) [:lang :runtime :flags :program])])) (finally (reset! registry/+registry+ baseline))))) => ["Program does not support runtime" {:lang :lua, :runtime :oneshot, :flags nil, :program :custom}])
+
+^{:refer lang.runtime.basic.type-oneshot/RuntimeOneshot, :id :constructor-record-roundtrip} (fact "open RuntimeOneshot record preserves unknown fields through map round trips" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (let [data {:id :record, :lang :lua, :runtime :oneshot, :program :resty, :extra {:nested [1 false nil]}} runtime (p/map->RuntimeOneshot data) restored (p/map->RuntimeOneshot (into {} runtime))] [(into {} runtime) (into {} restored) (instance? p/RuntimeOneshot restored) (IDisplay/display restored)]) (finally (reset! registry/+registry+ baseline))))) => [{:id :record, :lang :lua, :runtime :oneshot, :program :resty, :extra {:nested [1 false nil]}} {:id :record, :lang :lua, :runtime :oneshot, :program :resty, :extra {:nested [1 false nil]}} true "#rt.oneshot[:lua :oneshot :resty]"])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot, :id :constructor-native-process} (fact "original constructor configurations execute in real Node Lua and Python" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (mapv (fn [[language executable flag body]] (swap! registry/+registry+ assoc [language :oneshot] (quote migration.setup-registration)) (common/put-context-options [language :oneshot] {:default {}}) (common/put-program-options language {:default {:oneshot :native}, :env {:native {:exec executable, :flags {:oneshot [flag]}}}}) (let [runtime (p/rt-oneshot {:id :process, :lang language, :retained :extra})] [(:runtime runtime) (:program runtime) (:retained runtime) (p/raw-eval-oneshot runtime body)])) [[:js "/opt/homebrew/bin/node" "-e" "console.log(42)"] [:lua "/opt/homebrew/bin/lua" "-e" "print(42)"] [:python "/usr/bin/python3" "-c" "print(42)"]]) (finally (reset! registry/+registry+ baseline))))) => [[:oneshot :native :extra "42"] [:oneshot :native :extra "42"] [:oneshot :native :extra "42"]])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot:create, :id :constructor-empty-flags} (fact "empty supported flags are truthy while false flags still reject explicit executables" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (do (common/put-program-options :lua {:env {:empty {:exec "empty", :flags {:oneshot []}}, :disabled {:exec "disabled", :flags {:oneshot false}}}}) [(select-keys (p/rt-oneshot:create {:id :empty, :lang :lua, :program :empty}) [:program :exec]) (try (p/rt-oneshot:create {:id :disabled, :lang :lua, :program :disabled, :exec ["explicit"]}) :unexpected (catch error [(ex-message error) (select-keys (ex-data error) [:lang :runtime :flags :program])]))]) (finally (reset! registry/+registry+ baseline))))) => [{:program :empty, :exec ["empty"]} ["Program does not support runtime" {:lang :lua, :runtime :oneshot, :flags {:oneshot false}, :program :disabled}]])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot:create, :id :constructor-id-branches} (fact "only absent nil and false IDs generate IDs and injected state is fully restored" (binding [common/*context-options* (atom {:lua {:oneshot {:default {:nested {:default 1, :winner :default}, :nullable nil}, :resty {:nested {:context 3, :winner :context}}}, :verify {:default {:mode :verify}}}}) common/*program-options* (atom {:lua {:default {:oneshot :resty, :verify :luac}, :env {:resty {:exec "resty", :flags {:oneshot ["-e"]}, :nested {:program 2, :winner :program}}, :luac {:exec "luac", :flags {:verify ["-p"]}}}}})] (let [baseline (deref registry/+registry+)] (try (reset! registry/+registry+ {[:lua :oneshot] (quote migration.setup-registration), [:lua :verify] (quote migration.setup-registration)}) (let [uuid-var (var uuid) baseline (deref uuid-var) baseline-meta (meta uuid-var) constructor-var (var p/rt-oneshot:create) constructor-root (deref constructor-var) constructor-meta (meta constructor-var) calls (atom 0) ids (try (intern (quote std.foundation) (with-meta (quote uuid) (dissoc baseline-meta :inline :inline-target)) (fn [] (swap! calls inc) (Base/uuid "00000000-0000-4000-8000-000000000000"))) (eval-in-ns (quote lang.runtime.basic.type-oneshot) [(read-string "(defn ^{:public true} rt-oneshot:create\n  \"creates a oneshot runtime\"\n  {:added \"4.0\"}\n  [{:keys [id lang runtime exec program process],\n    :as m,\n    :or {runtime :oneshot}}]\n  (let [[program process exec] (rt-oneshot-setup\n                                 lang\n                                 program\n                                 process\n                                 exec\n                                 runtime)\n        flags (common/get-program-flags lang program)\n        _ (cond\n            (not (get flags runtime)) (throw\n                                        (ex\n                                          :runtime/configuration\n                                          {:lang lang,\n                                           :runtime runtime,\n                                           :flags flags,\n                                           :program program}\n                                          :ex/message\n                                          \"Program does not support runtime\")))]\n    (map->RuntimeOneshot\n      (assoc\n        m\n        :id\n        (or\n          id\n          (let [buffer (String/encode-utf8 (subs (str (uuid)) 7 43))\n                number (reduce\n                         (fn [out index]\n                           (+ (* out 256) (Bytes/get buffer index)))\n                         0\n                         (range 8))]\n            (loop [number number output \"\"]\n              (if (zero? number)\n                output\n                (let [digit (rem number 36)]\n                  (recur\n                    (quot number 36)\n                    (str\n                      (subs\n                        \"0123456789abcdefghijklmnopqrstuvwxyz\"\n                        digit\n                        (inc digit))\n                      output)))))))\n        :runtime\n        runtime\n        :program\n        program\n        :exec\n        exec\n        :process\n        process))))")]) (mapv (fn [options] (:id ((deref constructor-var) (merge {:lang :lua} options)))) [{} {:id nil} {:id false} {:id :given} {:id 0} {:id ""}]) (finally (intern (quote std.foundation) (with-meta (quote uuid) baseline-meta) baseline) (intern (quote lang.runtime.basic.type-oneshot) (with-meta (quote rt-oneshot:create) constructor-meta) constructor-root)))] [ids (deref calls) (= baseline (deref uuid-var)) (= baseline-meta (meta uuid-var)) (= constructor-root (deref constructor-var)) (= constructor-meta (meta constructor-var))]) (finally (reset! registry/+registry+ baseline))))) => [["qdpxnhru4ieo" "qdpxnhru4ieo" "qdpxnhru4ieo" :given 0 ""] 3 true true true true])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot:create, :added "4.0", :id :historical-constructor}
+(fact
+  "creates a oneshot runtime"
+  (binding [common/*context-options* (atom
+                                       {:lua
+                                        {:oneshot
+                                         {:default
+                                          {:nested
+                                           {:default 1,
+                                            :winner :default},
+                                           :nullable nil},
+                                          :resty
+                                          {:nested
+                                           {:context 3,
+                                            :winner :context}}},
+                                         :verify
+                                         {:default {:mode :verify}}}})
+            common/*program-options* (atom
+                                       {:lua
+                                        {:default
+                                         {:oneshot :resty,
+                                          :verify :luac},
+                                         :env
+                                         {:resty
+                                          {:exec "resty",
+                                           :flags {:oneshot ["-e"]},
+                                           :nested
+                                           {:program 2,
+                                            :winner :program}},
+                                          :luac
+                                          {:exec "luac",
+                                           :flags
+                                           {:verify ["-p"]}}}}})]
+    (let [baseline (deref registry/+registry+)]
+      (try
+        (reset!
+          registry/+registry+
+          {[:lua :oneshot] 'migration.setup-registration,
+           [:lua :verify] 'migration.setup-registration})
+        (do
+          (common/put-program-options
+            :lua
+            {:env
+             {:luajit {:exec "luajit", :flags {:oneshot ["-e"]}}}})
+          (->>
+            (p/rt-oneshot:create {:lang :lua, :program :luajit})
+            (into {})))
+        (finally (reset! registry/+registry+ baseline)))))
+  =>
+  (satisfies (fn [value] (map? value))))
+
+(require [lang.core.runtime :as runtime])
+
+^{:refer lang.runtime.basic.type-oneshot/invoke-ptr-oneshot :id :original-invocation-delegation}
+(fact "forwards the original invocation pipeline with default or explicit layout"
+  (let [owner 'lang.core.runtime/default-invoke-script
+        original (deref (resolve owner))]
+    (try
+      (intern (symbol (namespace owner)) (symbol (name owner))
+        (fn [rt ptr args executor process]
+          [(:layout rt) ptr args (:marker process)
+           (executor {:exec ["custom"]
+                      :process {:exec-fn (fn [argv body options] [argv body])}}
+                     "emitted")]))
+      [(p/invoke-ptr-oneshot {:process {:marker :kept}} :pointer [nil false])
+       (p/invoke-ptr-oneshot {:layout :flat :process {:marker :flat}} :other [1])]
+      (finally (intern (symbol (namespace owner)) (symbol (name owner)) original))))
+  => [[:full :pointer [nil false] :kept [["custom"] "emitted"]]
+      [:flat :other [1] :flat [["custom"] "emitted"]]])
+
+^{:refer lang.runtime.basic.type-oneshot/RuntimeOneshot :id :original-context-protocol-dispatch}
+(fact "dispatches original context methods through native evaluation and setup protocols"
+  (let [owners '[lang.core.runtime/default-tags-ptr
+                 lang.core.runtime/default-deref-ptr
+                 lang.core.runtime/default-display-ptr
+                 lang.core.runtime/default-init-ptr
+                 lang.core.runtime/default-invoke-script]
+        originals (mapv (fn [owner] (deref (resolve owner))) owners)
+        replacements [(fn [rt ptr] [:tags (:id rt) ptr])
+                      (fn [rt ptr] [:deref (:id rt) ptr])
+                      (fn [rt ptr] [:display (:id rt) ptr])
+                      (fn [rt ptr] [:setup (:id rt) ptr])
+                      (fn [rt ptr args executor process]
+                        [:invoke (:layout rt) ptr args (executor rt "emitted")])]
+        rt (p/map->RuntimeOneshot
+             {:id :oneshot :lang :lua :runtime :oneshot :exec ["custom"]
+              :process {:marker :kept
+                        :exec-fn (fn [argv body options] [argv body (:marker options)])}})]
+    (try
+      (doseq [[owner replacement] (map vector owners replacements)]
+        (intern (symbol (namespace owner)) (symbol (name owner)) replacement))
+      [(IContextEval/evaluate-raw rt "raw" {:ignored true})
+       (IContextEval/tags-ptr rt :pointer)
+       (IContextEval/deref-ptr rt :pointer)
+       (IContextEval/display-ptr rt :pointer)
+       (IContextLifeCycle/setup-ptr rt :pointer)
+       (IContextEval/invoke-ptr rt :pointer [nil false])
+       (IContextEval/transform-in-ptr rt :pointer [nil false])
+       (IContextEval/transform-out-ptr rt :pointer false)]
+      (finally
+        (doseq [[owner original] (map vector owners originals)]
+          (intern (symbol (namespace owner)) (symbol (name owner)) original)))))
+  => [[["custom"] "raw" :kept]
+      [:tags :oneshot :pointer]
+      [:deref :oneshot :pointer]
+      [:display :oneshot :pointer]
+      [:setup :oneshot :pointer]
+      [:invoke :full :pointer [nil false] [["custom"] "emitted" :kept]]
+      [nil false]
+      false])
+
+^{:refer lang.runtime.basic.type-oneshot/rt-oneshot:create :id oneshot-identity-lifecycle}
+(fact "oneshot lifecycle preserves identity, fields, and repeated teardown" (let [rt (p/map->RuntimeOneshot {:id "owned" :lang :js :process {:pipe true}}) started (std.lib.component/start rt) stopped (std.lib.component/stop started) stopped-again (std.lib.component/stop stopped) killed (std.lib.component/kill stopped-again) killed-again (std.lib.component/kill killed)] [(Base/identical? rt started) (Base/identical? rt stopped-again) (Base/identical? rt killed-again) (select-keys killed-again [:id :lang :process])]) => [true true true {:id "owned" :lang :js :process {:pipe true}}])

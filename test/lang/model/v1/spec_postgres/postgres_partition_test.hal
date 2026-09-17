@@ -1,59 +1,357 @@
 (ns lang.model.v1.spec-postgres.postgres-partition-test
-  (:require [lang.model.v1.spec-postgres.postgres-partition :as partition]))
+  (:require [lang.model.v1.spec-postgres.postgres-partition :as form-defpartition])
+  (:use code.test))
+
+^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-partition-name, :added "4.1"}
+(fact
+  "constructs partition name"
+  (form-defpartition/pg-partition-name "table" "val" ["stack"])
+  =>
+  "table__stack__val")
+
+^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-partition-def, :added "4.1"}
+(fact
+  "recursive definition for partition"
+  (form-defpartition/pg-partition-def
+    'parent
+    "base"
+    {:use :col, :in ["a"]}
+    []
+    [])
+  =>
+  '([:create-table
+     :if-not-exists
+     #{"base__a"}
+     :partition-of
+     #{"parent"}
+     :for
+     :values
+     :in
+     '("a")]))
+
+
+^{:refer tahto.model.spec-postgres.form-defpartition/pg-defpartition, :added "4.1"}
+(do
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-partition/pg-defpartition,
+   :added "4.1"}
+ (fact
+  "defpartition block"
+  (form-defpartition/pg-defpartition
+   '(defpartition part [parent] [{:use :col, :in ["a"]}]))
+  =>
+  '(do
+    [:create-table
+     :if-not-exists
+     #{"parent__a"}
+     :partition-of
+     #{"parent"}
+     :for
+     :values
+     :in
+     '("a")]))
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-partition/pg-defpartition,
+   :added "4.1",
+   :id :historical-nested-0}
+ (fact
+  "defpartition handles multiple parents"
+  (form-defpartition/pg-defpartition
+   '(defpartition part [p1 p2] [{:use :col, :in ["a"]}]))
+  =>
+  '(do
+    [:create-table
+     :if-not-exists
+     #{"p1__a"}
+     :partition-of
+     #{"p1"}
+     :for
+     :values
+     :in
+     '("a")]
+    [:create-table
+     :if-not-exists
+     #{"p2__a"}
+     :partition-of
+     #{"p2"}
+     :for
+     :values
+     :in
+     '("a")]))
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-partition/pg-defpartition,
+   :added "4.1",
+   :id :historical-nested-1}
+ (fact
+  "defpartition handles multiple parents with nested partitions"
+  (form-defpartition/pg-defpartition
+   '(defpartition
+     part
+     [p1 p2]
+     [{:use :c1, :in ["v1"]} {:use :c2, :in ["v2"]}]))
+  =>
+  '(do
+    [:create-table
+     :if-not-exists
+     #{"p1__v1"}
+     :partition-of
+     #{"p1"}
+     :for
+     :values
+     :in
+     '("v1")
+     :partition-by
+     :list
+     '(c2)]
+    [:create-table
+     :if-not-exists
+     #{"p1__v1__v2"}
+     :partition-of
+     #{"p1__v1"}
+     :for
+     :values
+     :in
+     '("v2")]
+    [:create-table
+     :if-not-exists
+     #{"p2__v1"}
+     :partition-of
+     #{"p2"}
+     :for
+     :values
+     :in
+     '("v1")
+     :partition-by
+     :list
+     '(c2)]
+    [:create-table
+     :if-not-exists
+     #{"p2__v1__v2"}
+     :partition-of
+     #{"p2__v1"}
+     :for
+     :values
+     :in
+     '("v2")]))
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-partition/pg-defpartition,
+   :added "4.1",
+   :id :historical-nested-2}
+ (fact
+  "defpartition handles default partition"
+  (form-defpartition/pg-defpartition
+   '(defpartition part [p1] [{:default true}]))
+  =>
+  '(do
+    [:create-table
+     :if-not-exists
+     #{"p1__$DEFAULT"}
+     :partition-of
+     #{"p1"}
+     :default]))
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-partition/pg-defpartition,
+   :added "4.1",
+   :id :historical-nested-3}
+ (fact
+  "defpartition handles nested partitions and schemas"
+  (form-defpartition/pg-defpartition
+   '(defpartition
+     RevPartitionBase
+     [szn_type/Rev]
+     [{:use :class, :schema "szn_type", :in ["Default"]}
+      {:use :class-table, :schema "szn_type_rev", :in ["Feed"]}]))
+  =>
+  '(do
+    [:create-table
+     :if-not-exists
+     (. #{"szn_type"} #{"Rev__Default"})
+     :partition-of
+     (. #{"szn_type"} #{"Rev"})
+     :for
+     :values
+     :in
+     '("Default")
+     :partition-by
+     :list
+     '(class_table)]
+    [:create-table
+     :if-not-exists
+     (. #{"szn_type_rev"} #{"Rev__Default__Feed"})
+     :partition-of
+     (. #{"szn_type"} #{"Rev__Default"})
+     :for
+     :values
+     :in
+     '("Feed")]))
+ ^{:refer
+   lang.model.v1.spec-postgres.postgres-partition/pg-defpartition,
+   :added "4.1",
+   :id :historical-nested-4}
+ (fact
+  "defpartition handles :on and :for keywords"
+  (form-defpartition/pg-defpartition
+   '(defpartition.pg
+     RevPartitionGlobal
+     [szn_type/Rev]
+     [{:on :class, :for ["Global"], :schema "szn_type"}
+      {:on :class,
+       :for ["Token" "Commodity"],
+       :schema "szn_type_rev"}]))
+  =>
+  '(do
+    [:create-table
+     :if-not-exists
+     (. #{"szn_type"} #{"Rev__Global"})
+     :partition-of
+     (. #{"szn_type"} #{"Rev"})
+     :for
+     :values
+     :in
+     '("Global")
+     :partition-by
+     :list
+     '(class)]
+    [:create-table
+     :if-not-exists
+     (. #{"szn_type_rev"} #{"Rev__Global__Token"})
+     :partition-of
+     (. #{"szn_type"} #{"Rev__Global"})
+     :for
+     :values
+     :in
+     '("Token")]
+    [:create-table
+     :if-not-exists
+     (. #{"szn_type_rev"} #{"Rev__Global__Commodity"})
+     :partition-of
+     (. #{"szn_type"} #{"Rev__Global"})
+     :for
+     :values
+     :in
+     '("Commodity")])))
+
+(ns lang.model.v1.spec-postgres.postgres-partition-test
+  (:require [lang.model.v1.spec-postgres.postgres-partition :as partition])
+  (:use code.test))
 
 
 ^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-partition-name}
-(Test/check
- [{:name "constructs deterministic nested partition names"
-   :test (fn [] (partition/pg-partition-name "table" "val" ["stack"]))
-   :expected "table__stack__val"}])
+(fact
+  "constructs deterministic nested partition names"
+  ((fn [] (partition/pg-partition-name "table" "val" ["stack"])))
+  =>
+  "table__stack__val")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-partition/partition-value}
-(Test/check
- [{:name "normalizes scalar partition values without changing collections"
-   :test (fn [] [(partition/partition-value "a")
-                 (partition/partition-value ["a" "b"])
-                 (partition/partition-value #{"a"})])
-   :expected [["a"] ["a" "b"] #{"a"}]}])
+(fact
+  "normalizes scalar partition values without changing collections"
+  ((fn [] [(partition/partition-value "a")
+           (partition/partition-value ["a" "b"])
+           (partition/partition-value #{"a"})]))
+  =>
+  [["a"] ["a" "b"] #{"a"}])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-partition/partition-parent}
-(Test/check
- [{:name "constructs portable parent tokens"
-   :test (fn [] [(partition/partition-parent 'parent)
-                 (partition/partition-parent 'scratch/parent)
-                 (partition/partition-parent (list '. #{"scratch"} #{"parent"}))])
-   :expected [#{"parent"} (list '. #{"scratch"} #{"parent"})
-              (list '. #{"scratch"} #{"parent"})]}])
+(fact
+  "constructs portable parent tokens"
+  ((fn [] [(partition/partition-parent 'parent)
+           (partition/partition-parent 'scratch/parent)
+           (partition/partition-parent
+             (list '. #{"scratch"} #{"parent"}))]))
+  =>
+  [#{"parent"}
+   (list '. #{"scratch"} #{"parent"})
+   (list '. #{"scratch"} #{"parent"})])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-partition/partition-schema}
-(Test/check
- [{:name "extracts an explicit parent schema"
-   :test (fn [] [(partition/partition-schema 'scratch/parent)
-                 (partition/partition-schema 'parent)])
-   :expected ["scratch" nil]}])
+(fact
+  "extracts an explicit parent schema"
+  ((fn [] [(partition/partition-schema 'scratch/parent)
+           (partition/partition-schema 'parent)]))
+  =>
+  ["scratch" nil])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-partition/partition-table}
-(Test/check
- [{:name "extracts the base table name"
-   :test (fn [] [(partition/partition-table 'scratch/parent)
-                 (partition/partition-table "parent")])
-   :expected ["parent" "parent"]}])
+(fact
+  "extracts the base table name"
+  ((fn [] [(partition/partition-table 'scratch/parent)
+           (partition/partition-table "parent")]))
+  =>
+  ["parent" "parent"])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-partition-def}
-(Test/check
- [{:name "expands one list partition"
-   :test (fn [] (partition/pg-partition-def
-                 'parent "base" {:use :col :in ["a"]} [] []))
-   :expected [[:create-table :if-not-exists #{"base__a"}
-               :partition-of #{"parent"}
-               :for :values :in (list 'quote (list "a"))]]}])
+(fact
+  "expands one list partition"
+  ((fn []
+     (partition/pg-partition-def
+       'parent
+       "base"
+       {:use :col, :in ["a"]}
+       []
+       [])))
+  =>
+  [[:create-table
+    :if-not-exists
+    #{"base__a"}
+    :partition-of
+    #{"parent"}
+    :for
+    :values
+    :in
+    (list 'quote (list "a"))]])
 
 ^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-defpartition}
-(Test/check
- [{:name "expands archived partition declarations"
-   :test (fn [] (partition/pg-defpartition
-                 '(defpartition part [parent]
-                    [{:use :col :in ["a"]}])) )
-   :expected '(do [:create-table :if-not-exists #{"parent__a"}
-                   :partition-of #{"parent"}
-                   :for :values :in (quote ("a"))])}])
+(fact
+  "expands archived partition declarations"
+  ((fn []
+     (partition/pg-defpartition
+       '(defpartition part [parent] [{:use :col, :in ["a"]}]))))
+  =>
+  '(do
+     [:create-table
+      :if-not-exists
+      #{"parent__a"}
+      :partition-of
+      #{"parent"}
+      :for
+      :values
+      :in
+      '("a")]))
+
+
+(ns lang.model.v1.spec-postgres.postgres-partition-test
+ (:require [lang.model.v1.spec-postgres.postgres-partition :as partition]
+           [lang.base.preprocess-base :as prep] [lang.base.book :as book]
+           [lang.core.library-snapshot :as snap]) (:use code.test))
+^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-partition-name}
+(fact "names normalize keywords and reverse the ancestor stack"
+ (partition/pg-partition-name :Parent :leaf [:inner :outer])
+ => "Parent__outer__inner__leaf")
+^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-partition-def}
+(fact "three levels preserve ancestor ordering and inherited parent schemas"
+ (mapv (fn [statement] [(nth statement 2) (nth statement 4)])
+  (partition/pg-partition-def 'audit/parent "parent" {:use :l1 :in [:a]}
+    [{:use :l2 :in [:b]} {:use :l3 :in [:c]}] []))
+ => '[[ (. #{"audit"} #{"parent__a"}) (. #{"audit"} #{"parent"})]
+      [(. #{"audit"} #{"parent__a__b"}) (. #{"audit"} #{"parent__a"})]
+      [(. #{"audit"} #{"parent__a__b__c"}) (. #{"audit"} #{"parent__a__b"})]])
+^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-partition-def}
+(fact "default partitions retain the next partition key without recursing"
+ (partition/pg-partition-def 'audit.parent "parent" {:default true}
+   [{:on :sub-key :for ["child"]}] [])
+ => '([:create-table :if-not-exists (. #{"audit"} #{"parent__$DEFAULT"})
+        :partition-of (. #{"audit"} #{"parent"}) :default :partition-by :list (quote (sub_key))]))
+^{:refer lang.model.v1.spec-postgres.postgres-partition/pg-defpartition}
+(fact "snapshot entry schema overrides logical module names and macro options restore"
+ (let [before prep/*macro-opts*
+       b (book/book {:lang :postgres :grammar {:fixture true} :meta {:fixture true}
+           :modules {'logical (book/book-module {:lang :postgres :id 'logical
+                      :code {'Parent {:id 'Parent :static/schema "physical"}}})}})
+       snapshot (snap/snapshot {:postgres {:id :postgres :book b}})
+       out (binding [prep/*macro-opts* {:lang :postgres :snapshot snapshot}]
+             (partition/pg-defpartition '(defpartition P [logical/Parent] [{:use :kind :in ["a"]}])))]
+  [out (= before prep/*macro-opts*)])
+ => '[(do [:create-table :if-not-exists (. #{"physical"} #{"Parent__a"})
+           :partition-of (. #{"physical"} #{"Parent"})
+           :for :values :in (quote ("a"))]) true])

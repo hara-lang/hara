@@ -1,5 +1,6 @@
 (ns code.test.compile-test
-  (:require [code.test.compile :as compile]
+  (:require [code.test.execution :as execution]
+            [code.test.compile :as compile]
             [code.test.context :as context]
             [code.test.registry :as registry]))
 
@@ -7,6 +8,35 @@
   []
   (Test/purge)
   (registry/reset))
+
+(def hook-fixture-value :baseline)
+
+^{:refer code.test.compile/fact}
+(Test/check
+ [{:name "metadata setup defines a value before assertions and tears down afterward"
+   :test (fn []
+     (let [events (atom [])]
+       (try
+         (let [result ^{:setup [(swap! events conj :setup) (def hook-fixture-value 42)]
+                       :teardown [(swap! events conj :teardown)]}
+               (compile/fact "hook ordering"
+                 (do (swap! events conj :body) hook-fixture-value) => 42)]
+           [(:status result) (deref events)])
+         (finally
+           (Runtime/intern (ns-current) (quote hook-fixture-value) :baseline)
+           (cleanup)))))
+   :expected [:passed [:setup :body :teardown]]}
+  {:name "metadata teardown runs after setup failure"
+   :test (fn []
+     (let [events (atom [])]
+       (try
+         (let [result ^{:setup [(swap! events conj :setup) (throw (ex :test {}))]
+                       :teardown [(swap! events conj :teardown)]}
+               (compile/fact "hook failure"
+                 (do (swap! events conj :body) 1) => 1)]
+           [(:status result) (deref events)])
+         (finally (cleanup)))))
+   :expected [:error [:setup :teardown]]}])
 
 ^{:refer code.test.compile/=>}
 (Test/check
@@ -173,3 +203,9 @@
              (compile/fact:symbol "symbol fact")
              (finally (cleanup))))
    :expected nil}])
+
+^{:refer code.test.compile/fact}
+(Test/check
+ [{:name "compile execution journals exactly one assertion"
+   :test (fn [] (let [before (execution/snapshot)] (try (execution/reset) (let [token (execution/begin) result (compile/fact "journal candidate" 42 => 42) report (execution/finish token)] (if (= [:passed 1 1] [(:status result) (:facts report) (:checks report)]) true (throw (ex :state {} :ex/message "Immediate fact journal mismatch")))) (finally (cleanup) (execution/restore before)))))
+   :expected true}])

@@ -1,0 +1,87 @@
+(ns code.test.resp
+  (:config {:role :internal}))
+
+(defn encode
+  "Encodes RESP2 values canonically. Simple strings become bulk strings;
+   errors retain their tag. Decode retains wire bytes for exact reconstruction."
+  [value]
+  (str/encode-utf8
+    (cond
+      (nil? value) "$-1\r\n"
+      (string? value) (str "$" (bytes/count (str/encode-utf8 value)) "\r\n" value "\r\n")
+      (integer? value) (str ":" value "\r\n")
+      (and (map? value) (string? (:resp/error value)))
+      (str "-" (:resp/error value) "\r\n")
+      (or (vector? value) (list? value))
+      (str "*" (count value) "\r\n"
+           (apply str (map (fn [item] (str/decode-utf8 (encode item))) value)))
+      :else (throw (ex :argument {} :ex/message "Unsupported RESP value")))))
+
+(defn parse-at
+  "Returns one complete frame or nil for incomplete input; rejects invalid framing.
+   Every frame retains exact wire bytes, including its original string encoding."
+  [input start depth]
+  (when (> depth 64)
+    (throw (ex :limit {} :ex/message "RESP nesting limit exceeded")))
+  (when (> (bytes/count input) 16777216)
+    (throw (ex :limit {} :ex/message "RESP buffer limit exceeded")))
+  (let [length (bytes/count input)
+        line-end (loop [index start]
+                   (cond (>= (inc index) length) nil
+                         (and (= 13 (bytes/get input index)) (= 10 (bytes/get input (inc index)))) index
+                         :else (recur (inc index))))]
+    (when line-end
+      (let [tag (bytes/get input start)
+            header (str/decode-utf8 (bytes/slice input (inc start) line-end))
+            body (+ line-end 2)
+            result (cond
+                     (= tag 43) {:value header :end body}
+                     (= tag 45) {:value {:resp/error header} :end body}
+                     (= tag 58) {:value (parse-long header) :end body}
+                     (or (= tag 36) (= tag 42))
+                     (let [size (parse-long header)]
+                       (when (or (< size -1) (> size 16777216))
+                         (throw (ex :argument {} :ex/message "Invalid RESP length")))
+                       (cond
+                         (= size -1) {:value nil :end body}
+                         (= tag 36)
+                         (when (<= (+ body size 2) length)
+                           (when (not (and (= 13 (bytes/get input (+ body size)))
+                                           (= 10 (bytes/get input (+ body size 1)))))
+                             (throw (ex :argument {} :ex/message "Invalid RESP bulk terminator")))
+                           {:value (str/decode-utf8 (bytes/slice input body (+ body size)))
+                            :end (+ body size 2)})
+                         :else
+                         (loop [index 0 offset body values []]
+                           (if (= index size)
+                             {:value values :end offset}
+                             (when-let [item (parse-at input offset (inc depth))]
+                               (recur (inc index) (:end item) (conj values (:value item))))))))
+                     :else (throw (ex :argument {} :ex/message "Unknown RESP frame tag")))]
+        (when result
+          (assoc result :wire (bytes/slice input start (:end result))))))))
+
+(defn append-bytes
+  "Concatenates two byte buffers without decoding partial UTF-8."
+  [left right]
+  (apply Bytes/new
+    (into (mapv (fn [index] (bytes/get left index)) (range (bytes/count left)))
+          (mapv (fn [index] (bytes/get right index)) (range (bytes/count right))))))
+
+(defn receive
+  "Reads a complete frame using one deadline, retaining any subsequent frames.
+   The caller owns and closes the input stream on every exit path."
+  [stream buffer deadline]
+  (loop [input (deref buffer)]
+    (if-let [frame (parse-at input 0 0)]
+      (do (reset! buffer (bytes/slice (deref buffer) (:end frame))) (:value frame))
+      (let [remaining (- deadline (time-ms))]
+        (when (<= remaining 0)
+          (throw (ex :timeout {} :ex/message "RESP response timed out")))
+        (let [chunk (IDerefTimeout/deref-timeout (IStream/next stream) remaining :timeout)]
+          (when (= chunk :timeout)
+            (throw (ex :timeout {} :ex/message "RESP response timed out")))
+          (when (nil? chunk)
+            (throw (ex :io {} :ex/message "RESP peer closed before a complete response")))
+          (swap! buffer append-bytes chunk)
+          (recur (deref buffer)))))))

@@ -1,0 +1,165 @@
+(ns std.lib.schema.base)
+
+(defonce +scope-brief+
+  {:*/min        #{:-/id       :-/key}
+   :*/info       #{:*/min      :-/info}
+   :*/data       #{:*/info     :-/data}
+   :*/default    #{:*/data     :-/ref}
+   :*/detail     #{:*/data     :-/detail}
+   :*/standard   #{:*/detail   :-/ref}
+   :*/all        #{:*/standard :-/system}
+   :*/everything #{:*/all      :-/hidden}})
+
+(defn expand-scopes
+  "expand scopes for all globbed keywords. Expansion discards intermediate scope edges; retain the input graph for reconstruction. +scope-brief+ retains the standard graph."
+  {:added "4.0"}
+  ([m]
+    (expand-scopes
+      m
+      (let [migration-predicate (fn
+                                  [v]
+                                  (every?
+                                    (comp
+                                      (fn
+                                        [migration-argument-0]
+                                        (= migration-argument-0 "-"))
+                                      namespace)
+                                    v))]
+        (reduce-kv
+          (fn [out key value]
+            (if (migration-predicate value) (assoc out key value) out))
+          {}
+          m))))
+  ([m expanded]
+    (let [prev (apply dissoc m (keys expanded))
+          curr (map-vals
+                 (fn [ks]
+                   (let [scoped (set (remove expanded ks))
+                         es (select-keys expanded ks)]
+                     (apply union scoped (vals es))))
+                 prev)]
+      (if (not-empty curr)
+        (expand-scopes
+          curr
+          (merge
+            expanded
+            (let [migration-predicate (fn
+                                        [v]
+                                        (every?
+                                          (comp
+                                            (fn
+                                              [migration-argument-0]
+                                              (=
+                                                migration-argument-0
+                                                "-"))
+                                            namespace)
+                                          v))]
+              (reduce-kv
+                (fn [out key value]
+                  (if (migration-predicate value)
+                    (assoc out key value)
+                    out))
+                {}
+                curr))))
+        expanded))))
+
+(defonce +scope+
+  (expand-scopes +scope-brief+))
+
+(defn check-scope
+  "check if a scope is valid"
+  {:added "4.0"}
+  [scope]
+  (or
+    (get (:*/everything +scope+) scope)
+    (throw
+      (ex
+        :schema/invalid-scope
+        {:value scope, :allowed (:*/everything +scope+)}
+        :ex/message
+        "Scope not Valid"))))
+
+(def base-meta
+ (Algo/ordered-map
+   :unique
+   {:check #{:identity :value}}
+   :index
+   {:check boolean?}
+   :default
+   {:check identity}
+   :type
+   {:required true, :default :string, :auto true}
+   :scope
+   {:check (:*/everything +scope+)}
+   :ident
+   {:required true, :check keyword?}
+   :restrict
+   {:check fn?}
+   :cardinality
+   {:check #{:one :many}, :auto true, :default :one}
+   :doc
+   {:check string?}
+   :required
+   {:check boolean?}))
+
+
+(defn attr-add-ident
+  "adds the key of a pair as :ident to a schema property pair"
+  {:added "3.0"}
+  [migration-argument-0]
+  (let [migration-argument-0-value migration-argument-0
+        k (first (drop 0 migration-argument-0-value))
+        [attr :as v] (first (drop 1 migration-argument-0-value))]
+    [k (assoc-in v [0 :ident] k)]))
+
+(defn attr-add-defaults
+  "adds defaults to a given schema property pair"
+  {:added "3.0"}
+  [migration-argument-0 dfts]
+  (let [migration-argument-0-value migration-argument-0
+        k (first (drop 0 migration-argument-0-value))
+        [attr :as v] (first (drop 1 migration-argument-0-value))]
+    (let [mks (map :id dfts)
+          mdfts (map :default dfts)
+          v-defaults (->> (merge (zipmap mks mdfts) attr) (assoc v 0))]
+      [k v-defaults])))
+
+(defn defaults
+  "constructs a map according to specifics\n \n   (base/defaults [:person/name {:default \"Unknown\"\n                                 :auto true}])\n   => {:default \"Unknown\", :auto true, :id :person/name}"
+  {:added "3.0"}
+  [migration-argument-0]
+  (let [migration-argument-0-value migration-argument-0
+        k (first (drop 0 migration-argument-0-value))
+        prop (first (drop 1 migration-argument-0-value))]
+    (-> (select-keys prop [:default :auto]) (assoc :id k))))
+
+(defn all-auto-defaults
+  "all automatic defaults for the schema\n \n   (base/all-auto-defaults)\n   => [{:default :string, :auto true, :id :type}\n       {:default :one, :auto true, :id :cardinality}]"
+  {:added "3.0"}
+  ([] (all-auto-defaults base-meta))
+  ([meta] (filter (fn [m] (-> m :auto)) (map defaults (seq meta)))))
+
+(defn all-defaults
+  "all defaults for the schema\n \n   (base/all-defaults)\n   => [{:default :string, :auto true, :id :type}\n       {:default :one, :auto true, :id :cardinality}]"
+  {:added "3.0"}
+  ([] (all-defaults base-meta))
+  ([meta]
+    (filter
+      (fn [m] (-> m :default nil? not))
+      (map defaults (seq meta)))))
+
+(defmulti
+  ^{:added "3.0", :doc "gets type-checks according to category\n \n   ((base/type-checks :default :string) \"Hello\")\n   => true"} type-checks
+  (fn [t k] t))
+
+(defmethod
+  type-checks
+  :default
+  [_ k]
+  (get
+    {:string string?,
+     :boolean boolean?,
+     :long integer?,
+     :float double?,
+     :double double?}
+    k))

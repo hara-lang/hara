@@ -1,0 +1,327 @@
+(ns lang.core.type-notify)
+
+(def ^:dynamic *notify-capture*
+  (atom []))
+
+(defn ^{:public true} has-sink?
+  "checks that sink exists"
+  {:added "4.0"}
+  [{:keys [sinks]} id]
+  (has? (deref sinks) id))
+
+(defn ^{:public true} get-sink
+  "gets a sink from the notification app server"
+  {:added "4.0"}
+  [{:keys [sinks]} id]
+  (swap-return!
+    sinks
+    (fn [m]
+      (let [q (get m id) curr (or q (atom nil))]
+        [curr (if q m (assoc m id curr))]))))
+
+(defn ^{:public true} clear-sink
+  "clears a sink"
+  {:added "4.0"}
+  [{:keys [sinks]} id]
+  (swap-return! sinks (fn [m] [(get m id) (dissoc m id)])))
+
+(defn ^{:public true} add-listener
+  "adds a listener to the sink"
+  {:added "4.0"}
+  [notify id sink-key f]
+  (let [sink (get-sink notify id)]
+    (watch-add
+      sink
+      sink-key
+      (fn [_ _ _ v]
+        (f
+          (map-keys
+            (fn [key] (if (keyword? key) key (keyword key)))
+            v))))))
+
+(defn ^{:public true} remove-listener
+  "removes a listener from the sink"
+  {:added "4.0"}
+  [notify id sink-key]
+  (let [sink (get-sink notify id)] (watch-remove sink sink-key)))
+
+(defn ^{:public true} get-oneshot-id
+  "registers a oneshot id for the app server"
+  {:added "4.0"}
+  [{:keys [oneshots]}]
+  (swap-return!
+    oneshots
+    (fn [set]
+      (loop [id (str
+                  "oneshot/"
+                  (let [buffer (String/encode-utf8
+                                 (subs (str (uuid)) 7 43))
+                        number (reduce
+                                 (fn
+                                   [out index]
+                                   (+
+                                     (* out 256)
+                                     (Bytes/get buffer index)))
+                                 0
+                                 (range 8))]
+                    (loop [number number output ""]
+                      (if (zero? number)
+                        output
+                        (let [digit (rem number 36)]
+                          (recur
+                            (quot number 36)
+                            (str
+                              (subs
+                                "0123456789abcdefghijklmnopqrstuvwxyz"
+                                digit
+                                (inc digit))
+                              output)))))))]
+        (if (get set id)
+          (recur
+            (str
+              "oneshot/"
+              (let [buffer (String/encode-utf8
+                             (subs (str (uuid)) 7 43))
+                    number (reduce
+                             (fn [out index]
+                               (+
+                                 (* out 256)
+                                 (Bytes/get buffer index)))
+                             0
+                             (range 8))]
+                (loop [number number output ""]
+                  (if (zero? number)
+                    output
+                    (let [digit (rem number 36)]
+                      (recur
+                        (quot number 36)
+                        (str
+                          (subs
+                            "0123456789abcdefghijklmnopqrstuvwxyz"
+                            digit
+                            (inc digit))
+                          output))))))))
+          [id (conj set id)])))))
+
+(defn ^{:public true} remove-oneshot-id
+  "removes a oneshot id"
+  {:added "4.0"}
+  [{:keys [oneshots]} id]
+  (swap-return! oneshots (fn [set] [(get set id) (disj set id)])))
+
+(defn ^{:public true} clear-oneshot-sinks
+  "clear all registered oneshot sinks"
+  {:added "4.0"}
+  [{:keys [oneshots sinks]}]
+  (let [ids (deref oneshots)]
+    (swap! sinks (fn [m] (apply dissoc m ids)))
+    (reset! oneshots #{})
+    ids))
+
+(defn ^{:public true} process-capture
+  "processes `capture` id option"
+  {:added "4.0"}
+  [msg]
+  (swap! *notify-capture* conj msg))
+
+(defn ^{:public true} watch-oneshot
+  "returns a completable future\n \n   (notify/watch-oneshot +server+\n                         10)\n   => (contains [string? h/future?])\n\nNative Promise completion preserves message values and nil timeout results; all completion paths clean up."
+  {:added "4.0"}
+  [app timeout & options]
+  (let [id (or (first options) (get-oneshot-id app))
+        q (get-sink app id)
+        deadline (atom nil)
+        cleaned (atom false)
+        complete (atom nil)
+        p (Promise/new (fn [resolve reject] (reset! complete resolve)))
+        cleanup (fn []
+                  (if (cas! cleaned false true)
+                    (do
+                      (watch-remove q id)
+                      (remove-oneshot-id app id)
+                      (clear-sink app id)
+                      (if (deref deadline)
+                        (promise/cancel (deref deadline))))))]
+    (try
+      (promise/finally p cleanup)
+      (watch-add q id (fn [_ _ _ value] ((deref complete) value)))
+      (if (not (nil? timeout))
+        (let [timer (Promise/delay (max 0 timeout) (fn [] nil))]
+          (reset! deadline timer)
+          (promise/then timer (fn [_] ((deref complete) nil)))))
+      [id p]
+      (catch error (do (cleanup) (promise/cancel p) (throw error))))))
+
+(defn ^{:public true} process-print
+  "processes `print` id option\n\nString values retain Foundation line numbering. Non-string values use the native pretty-printer representation and layout."
+  {:added "4.0"}
+  [msg]
+  (let [value (get msg "value")
+        context (second (get msg "key"))
+        line (get context "line")
+        column (get context "column")
+        namespace (get context "namespace")
+        id (get context "id")
+        data (get context "data")]
+    (println
+      (str
+        "\n"
+        namespace
+        (if id (str "/" id))
+        (if (or line column) (str " (" line ":" column ")"))
+        (if data (str " " data))))
+    (if (string? value)
+      (let [parts (str/split-lines (str/replace value "\r\n" "\n"))
+            lines (if (= value "")
+                    parts
+                    (loop [lines parts]
+                      (if (and (not-empty lines) (= "" (last lines)))
+                        (recur (butlast lines))
+                        lines)))]
+        (println
+          (str/join
+            "\n"
+            (map-indexed
+              (fn [index text]
+                (str
+                  " "
+                  (str/pad-left (str (inc index)) 2 "0")
+                  "  "
+                  text))
+              lines))))
+      (println (pretty/pprint-str value)))))
+
+(defn ^{:public true} process-message
+  "processes a message recieved by the notification server"
+  {:added "4.0"}
+  [app input]
+  (let [msg (Json/read input) id (get msg "id")]
+    (cond
+      (= id "print") (process-print msg)
+      (= id "capture") (process-capture msg)
+      (and
+        id
+        (or (not (str/starts-with? id "oneshot/")) (has-sink? app id))) (reset!
+                                                                          (get-sink
+                                                                            app
+                                                                            id)
+                                                                          msg))))
+
+(defn ^{:public true} handle-notify-socket
+  "handler for socket request"
+  {:added "4.0"}
+  [socket app]
+  (let [closed (atom false)
+        close-socket (fn []
+                       (if (cas! closed false true)
+                         (Socket/close socket)))
+        stream (Socket/events socket {})]
+    (letfn
+      [(step
+         [content]
+         (promise/then
+           (Socket/next stream)
+           (fn [event]
+             (case
+               (:type event)
+               :open
+               (step content)
+               :data
+               (let [chunk (:bytes event)]
+                 (step
+                   (reduce
+                     (fn [out index]
+                       (conj out (Bytes/get chunk index)))
+                     content
+                     (range (Bytes/count chunk)))))
+               :close
+               (do
+                 (close-socket)
+                 (process-message
+                   app
+                   (str/decode-utf8 (apply Bytes/new content))))
+               :error
+               (throw
+                 (ex
+                   :io
+                   {:event event}
+                   :ex/message
+                   "Notification socket read failed"))
+               (throw
+                 (ex
+                   :io
+                   {:event event}
+                   :ex/message
+                   "Unexpected notification socket event"))))))]
+      (try
+        (let [pending (step [])]
+          (promise/finally pending close-socket)
+          pending)
+        (catch error (do (close-socket) (throw error)))))))
+
+(defn ^{:public true} start-notify-socket
+  "starts socket server"
+  {:added "4.0"}
+  [{:keys [socket-port socket-instance], :as app}]
+  (if (not (deref socket-instance))
+    (let [alive (atom true)
+          tasks (atom {})
+          thread (atom nil)
+          errors (atom [])
+          server (Socket/listen
+                   "0.0.0.0"
+                   socket-port
+                   {}
+                   (fn [event]
+                     (if (and (deref alive) (= :open (:type event)))
+                       (let [connection (:connection event)]
+                         (try
+                           (let [pending
+                                 (handle-notify-socket connection app)]
+                             (swap! tasks assoc connection pending)
+                             (promise/finally
+                               pending
+                               (fn
+                                 []
+                                 (swap! tasks dissoc connection))))
+                           (catch error (swap! errors conj error)))))))
+          stop (fn []
+                 (if (cas! alive true false)
+                   (try
+                     (if (deref thread)
+                       (promise/cancel (deref thread)))
+                     (doseq [pending (vals (deref tasks))]
+                       (promise/cancel pending))
+                     (finally
+                       (reset! tasks {})
+                       (reset! thread nil)
+                       (Socket/close server)))))]
+      (try
+        (let [stream (Socket/events server {})]
+          (letfn
+            [(step
+               []
+               (if (deref alive)
+                 (let [pending (Socket/next stream)]
+                   (reset! thread pending)
+                   (promise/then
+                     pending
+                     (fn [_] (if (deref alive) (step)) nil)))))]
+            (step)))
+        (reset!
+          socket-instance
+          {:server server,
+           :thread thread,
+           :tasks tasks,
+           :errors errors,
+           :stop stop})
+        (catch error (do (stop) (throw error))))))
+  app)
+
+(defn ^{:public true} stop-notify-socket
+  "stops socket server"
+  {:added "4.0"}
+  [{:keys [socket-instance], :as app}]
+  (if-let [instance (deref socket-instance)]
+    (try ((:stop instance)) (finally (reset! socket-instance nil))))
+  app)

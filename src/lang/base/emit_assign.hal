@@ -30,107 +30,100 @@
 (defn emit-def-assign-inline
   "assigns an inline form directly"
   {:added "4.0"}
-  [sym [link & input] grammar {:keys [lang book snapshot], :as mopts}]
+  [sym [link & input] grammar {:as mopts :keys [lang book snapshot]}]
   (let [input (not-empty (apply list (vec input)))]
-    (let [[link-module link-id] (ut/sym-pair link)
-          book (or book (get-in snapshot [lang :book]))
-          entry (or
-                  (when-let [entry (get-in
-                                     book
-                                     [:modules
-                                      link-module
-                                      :code
-                                      link-id])]
-                    (impl-template/materialize-code-entry
-                      book
-                      entry
-                      {:lang lang,
-                       :module
-                       (or
-                         (:module mopts)
-                         (get-in book [:modules link-module]))}))
-                  (throw
-                    (ex
-                      :generic
-                      {:lang lang, :input link}
-                      :ex/message
-                      "Cannot find entry")))
-          _ (or
-              (empty? (:deps entry))
-              (throw
-                (ex
-                  :generic
-                  {:lang lang, :input link}
-                  :ex/message
-                  "Inline cannot have additional dependencies.")))
-          [_ _ args & body] (:form entry)
-          body (not-empty (apply list (vec body)))
-          return-ref (atom nil)
-          body (postwalk
-                 (fn [form]
-                   (if (form? form)
-                     (cond
-                       (= 'return (first form)) (if
-                                                  @return-ref
-                                                  (throw
-                                                    (ex
-                                                      :generic
-                                                      {:input
-                                                       @return-ref}
-                                                      :ex/message
-                                                      "Inline cannot have multiple returns."))
-                                                  (do
-                                                    (reset!
-                                                      return-ref
-                                                      (second form))
-                                                    '<RETURN>))
-                       :else (remove (fn [x] (= x '<RETURN>)) form))
-                     form))
-                 body)
-          _ (or
-              (not (coll? @return-ref))
-              (throw
-                (ex
-                  :generic
-                  {:input @return-ref}
-                  :ex/message
-                  "Return should be a token.")))
-          assign-ref (atom nil)
-          - (postwalk
-              (fn [form]
-                (do
-                  (when (and (form? form) (= 'var (first form)))
-                    (let [asym (first (filter symbol? (rest form)))]
-                      (or
-                        (= @return-ref asym)
+    (let [[link-module
+           link-id]    (ut/sym-pair link)
+          book         (or book (get-in snapshot [lang :book]))
+          entry        (or
+                        (when-let
+                         [entry (get-in book [:modules link-module :code link-id])]
+                         (impl-template/materialize-code-entry
+                          book
+                          entry
+                          {:lang lang :module (or (:module mopts) (get-in book [:modules link-module]))}))
+                        (throw (ex :generic {:input link :lang lang} :ex/message "Cannot find entry")))
+          _            (or
+                        (empty? (:deps entry))
                         (throw
-                          (ex
-                            :generic
-                            {:link link, :form body}
-                            :ex/message
-                            "Inlined with unaccounted for declarations")))
-                      (reset! assign-ref asym)))
-                  form))
-              body)
-          asym? @assign-ref
-          rsym? (symbol? @return-ref)
-          smap (cond->
-                 (zipmap args input)
-                 (and rsym? asym?)
-                 (assoc @return-ref sym))
-          body (prewalk-replace smap body)]
+                         (ex
+                          :generic
+                          {:input link :lang lang}
+                          :ex/message
+                          "Inline cannot have additional dependencies.")))
+          [_
+           _
+           args
+           &
+           body]       (:form entry)
+          body         (not-empty (apply list (vec body)))
+          return-ref   (atom nil)
+          body         (postwalk
+                        (fn
+                         [form]
+                         (if
+                          (form? form)
+                          (cond
+                           (= (quote return) (first form))
+                           (if
+                            (std.foundation/deref return-ref)
+                            (throw
+                             (ex
+                              :generic
+                              {:input (std.foundation/deref return-ref)}
+                              :ex/message
+                              "Inline cannot have multiple returns."))
+                            (do (reset! return-ref (second form)) (quote <RETURN>)))
+                           :else
+                           (remove (fn [x] (= x (quote <RETURN>))) form))
+                          form))
+                        body)
+          _            (or
+                        (not (coll? (std.foundation/deref return-ref)))
+                        (throw
+                         (ex
+                          :generic
+                          {:input (std.foundation/deref return-ref)}
+                          :ex/message
+                          "Return should be a token.")))
+          assign-ref   (atom nil)
+          -            (postwalk
+                        (fn
+                         [form]
+                         (do
+                          (when
+                           (and (form? form) (= (quote var) (first form)))
+                           (let
+                            [asym (first (filter symbol? (rest form)))]
+                            (or
+                             (= (std.foundation/deref return-ref) asym)
+                             (throw
+                              (ex
+                               :generic
+                               {:form body :link link}
+                               :ex/message
+                               "Inlined with unaccounted for declarations")))
+                            (reset! assign-ref asym)))
+                          form))
+                        body)
+          asym?        (std.foundation/deref assign-ref)
+          rsym?        (symbol? (std.foundation/deref return-ref))
+          smap         (cond-> (zipmap args input)
+                         (and rsym? asym?) (assoc (std.foundation/deref return-ref) sym))
+          body         (prewalk-replace smap body)]
       (if (and rsym? asym?)
-        (apply list 'do* body)
-        (apply
-          list
-          'do*
-          (concat
-            body
+        (apply list (quote do*) body)
+        (apply list
+          (quote do*)
+          (concat body
             [(list
-               'var
-               sym
-               :=
-               (if rsym? (get smap @return-ref) @return-ref))]))))))
+              (quote var)
+              sym
+              :=
+              (if
+               rsym?
+               (get smap (std.foundation/deref return-ref))
+               (std.foundation/deref return-ref)))]))))))
 
 (defn assign-options
   "gets assignment options either from value metadata or from a reserved macro entry"

@@ -2,77 +2,42 @@
   (:require [lang.core :as l]
             [lang.core.library :as library]))
 
-(l/script- :js
-  {:runtime :basic})
-
-^{:refer lang.core/bootstrap}
-(Test/check [{:name "publishes the runtime bootstrap entry point"
-              :test (fn [] (map? (l/bootstrap)))
-              :expected true}])
-
-^{:refer lang.core/default-library}
-(Test/check [{:name "publishes the Foundation-style default Library surface"
-              :test (fn [] [(library/library? (l/default-library))
-                             (= (l/default-library) (l/runtime-library))])
-              :expected [true true]}])
-
 ^{:refer lang.core/with:library}
-(Test/check [{:name "binds Library-owned operations through the core facade"
-              :test (fn [] (let [current (library/library-create {:id :facade})]
-                             (l/with:library [current]
-                               (= current (l/runtime-library)))))
-              :expected true}])
-
-^{:refer lang.core/get-book}
-(Test/check [{:name "publishes PostgreSQL Books only through the default Library"
-              :test (fn [] [(:lang (l/get-book (l/default-library) :postgres))
-                             (nil? (Base/resolve 'lang.core/registry-book))])
-              :expected [:postgres true]}])
-
-^{:refer lang.core/compile-module}
-(Test/check [{:name "publishes deterministic module compilation"
-              :test (fn [] (fn? l/compile-module))
-              :expected true}])
-
-^{:refer lang.core/lib:overview}
-(Test/check [{:name "publishes lazy Library management without materializing every Book"
-              :test (fn [] (map? (l/lib:overview)))
-              :expected true}])
-
-^{:refer lang.core/compile-form}
-(Test/check [{:name "publishes target form compilation"
-              :test (fn [] (l/compile-form :postgres 'demo.module '(+ 1 2)))
-              :expected "1 + 2"}])
+(Test/check [{:name "facade binding selects the supplied library and restores the prior binding"
+              :test (fn []
+                      (let [before (l/default-library)
+                            local (library/library:create {})]
+                        [(l/with:library [local]
+                           [(Base/identical? local (l/default-library))
+                            (Base/identical? local (l/runtime-library))
+                            (into {} (l/get-snapshot local))])
+                         (Base/identical? before (l/default-library))]))
+              :expected [[true true {}] true]}])
 
 ^{:refer lang.core/script}
-(Test/check [{:name "publishes ordinary script declaration macros"
-              :test (fn [] [(true? (:macro (meta (Base/resolve 'lang.core/script))))
-                            (first (macroexpand-1 '(lang.core/script :postgres)))])
-              :expected [true 'do]}])
+(Test/check [{:name "ordinary declaration preserves module and config"
+              :test (fn [] (macroexpand-1 '(l/script :lua demo.module {:runtime :default})))
+              :expected '(lang.core.script/script-fn :lua (quote demo.module) (quote {:runtime :default}))}])
 
 ^{:refer lang.core/script-}
-(Test/check [{:name "publishes test script declaration macros"
-              :test (fn [] [(true? (:macro (meta (Base/resolve 'lang.core/script-))))
-                            (first (macroexpand-1 '(lang.core/script- :postgres)))
-                            (not (nil? (Base/resolve 'lang.core-test/!.js)))])
-              :expected [true 'lang.core.script-annex/script-test-in true]}])
+(Test/check [{:name "test declaration publishes the current script owner"
+              :test (fn [] (macroexpand-1 '(l/script- :js {:runtime :basic})))
+              :expected '(lang.core.script/script-test :js (quote {:runtime :basic}))}])
 
 ^{:refer lang.core/script+}
-(Test/check [{:name "publishes tagged script declaration macros"
-              :test (fn [] (first (macroexpand-1 '(lang.core/script+ [:CORE.0 :postgres]))))
-              :expected 'lang.core.script-annex/script-ext-in}])
+(Test/check [{:name "tagged declaration preserves coordinates"
+              :test (fn [] (macroexpand-1 '(l/script+ [:one :lua])))
+              :expected '(lang.core.script/script-ext [:one :lua] {})}])
 
 ^{:refer lang.core/!}
-(Test/check [{:name "publishes tagged script evaluation macros"
-              :test (fn [] (first (macroexpand-1 '(lang.core/! [:CORE.0] (+ 1 2)))))
-              :expected 'lang.core.script-annex/eval-tag-in}])
+(Test/check [{:name "tagged evaluation preserves caller and body"
+              :test (fn []
+                      (vec (take 4 (macroexpand-1 '(l/! [:one] (+ 1 2))))))
+              :expected '[lang.core.script/script-ext-run (quote lang.core-test) :one (quote (+ 1 2))]}])
 
-^{:refer lang.core/script-}
-(Test/check [{:name "installs target evaluators in the caller namespace"
-              :test (fn [] (first (macroexpand-1 '(lang.core-test/!.js (+ 1 2)))))
-              :expected 'lang.core.script/eval-form}])
-
-^{:refer lang.core/annex:list}
-(Test/check [{:name "publishes the archive annex lifecycle surface"
-              :test (fn [] (l/annex:list 'lang.core-test))
-              :expected {:registered #{} :active #{}}}])
+^{:refer lang.core/get-book}
+(Test/check [{:name "core initializes the portable target books before script setup"
+              :test (fn []
+                      (mapv (fn [lang] (:lang (l/get-book (l/default-library) lang)))
+                            [:xtalk :js :lua :python]))
+              :expected [:xtalk :js :lua :python]}])

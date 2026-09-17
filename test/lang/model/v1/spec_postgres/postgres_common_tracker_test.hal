@@ -1,37 +1,103 @@
 (ns lang.model.v1.spec-postgres.postgres-common-tracker-test
-  (:require [lang.model.v1.spec-postgres.postgres-common-tracker :as tracker]))
+  (:require [lang.model.v1.spec-postgres.postgres-common-tracker :as tracker])
+  (:use code.test))
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-string}
-(Test/check [{:name "formats tracker metadata"
-              :test (fn [] (tracker/tracker-string {:name "Task" :in true :out true}))
-              :expected "#pg.tracker [Task] {:in true, :out true}"}])
+(fact
+  "formats tracker metadata"
+  ((fn []
+     (tracker/tracker-string {:name "Task", :in true, :out true})))
+  =>
+  "#pg.tracker [Task] {:in true, :out true}")
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/add-tracker}
-(Test/check [{:name "attaches active tracker metadata"
-              :test (fn [] (tracker/add-tracker {:track 'op} {:in true} :spec :create))
-              :expected {:track 'op :static/tracker {:in true}}}])
+(fact
+  "attaches active tracker metadata"
+  ((fn [] (tracker/add-tracker {:track 'op} {:in true} :spec :create)))
+  =>
+  {:track 'op, :static/tracker {:in true}})
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-map}
-(Test/check [{:name "reads a tracker direction"
-              :test (fn [] (tracker/tracker-map {:in {:create {:id true}}} :create))
-              :expected {:id true}}])
+(fact
+  "reads a tracker direction"
+  ((fn [] (tracker/tracker-map {:in {:create {:id true}}} :create)))
+  =>
+  {:id true})
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-map-output}
-(Test/check [{:name "maps tracker fields to JSONB extraction forms"
-              :test (fn [] (tracker/tracker-map-output {:in {:create {:time-created true}}}
-                                                        :create 'op))
-              :expected {:time-created '(:->> op "time_created")}}])
+(fact
+  "maps tracker fields to JSONB extraction forms"
+  ((fn []
+     (tracker/tracker-map-output
+       {:in {:create {:time-created true}}}
+       :create
+       'op)))
+  =>
+  {:time-created '(:->> op "time_created")})
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-map-in}
-(Test/check [{:name "creates insert tracking values"
-              :test (fn [] (tracker/tracker-map-in
-                            {:track 'op
-                             :static/tracker {:in {:create {:op-created true}}}}))
-              :expected {:op-created '(:->> op "op_created")}}])
+(fact
+  "creates insert tracking values"
+  (tracker/tracker-map-in
+    {:track 'op, :static/tracker {:in {:create {:op-created :id}}}})
+  =>
+  '{:op-created (:->> op "id")})
 
 ^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-map-modify}
-(Test/check [{:name "creates modify tracking values"
-              :test (fn [] (tracker/tracker-map-modify
-                            {:track 'op
-                             :static/tracker {:in {:modify {:op-updated true}}}}))
-              :expected {:op-updated '(:->> op "op_updated")}}])
+(fact
+  "creates modify tracking values"
+  (tracker/tracker-map-modify
+    {:track 'op, :static/tracker {:in {:modify {:op-updated :id}}}})
+  =>
+  '{:op-updated (:->> op "id")})
+
+^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-string, :added "4.1"}
+(fact
+  "tracker-string formats tracker metadata"
+  (tracker/tracker-string {:name "Task", :in true, :out true})
+  =>
+  "#pg.tracker [Task] {:in true, :out true}")
+^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/Tracker}
+(fact "native Tracker is an open record with the original display"
+ (let [value (tracker/map->Tracker {:name "Task" :in true :out true :extra 9})]
+  [(instance? tracker/Tracker value) (:extra value) (IDisplay/display value) (str value)])
+ => [true 9 "#pg.tracker [Task] {:in true, :out true}" "#pg.tracker [Task] {:in true, :out true}"])
+^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-map-in}
+(fact "insert fields read the configured source keys instead of their output names"
+ (tracker/tracker-map-in {:track 'op :static/tracker {:in {:create {:op-created :id :time-created :time}}}})
+ => '{:op-created (:->> op "id") :time-created (:->> op "time")})
+^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-map-modify}
+(fact "modify uses configured keys and absent directions stay absent"
+ [(tracker/tracker-map-modify {:track 'op :static/tracker {:in {:modify {:op-updated :id :time-updated :time}}}})
+  (tracker/tracker-map-modify {:track 'op :static/tracker {}})
+  (tracker/tracker-map-in {:track 'op :static/tracker {}})]
+ => ['{:op-updated (:->> op "id") :time-updated (:->> op "time")} nil nil])
+^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/add-tracker}
+(fact "tracking requirements, ignored operations, and disabled operations retain their order"
+ (let [value {:in {:create {:op-created :id}} :ignore #{:delete}}
+       disabled (assoc value :disable #{:insert})]
+  [(tracker/add-tracker {:track 'op} value 'Task :insert)
+   (tracker/add-tracker {:track :ignore} value 'Task :insert)
+   (tracker/add-tracker {} value 'Task :delete)
+   (try (tracker/add-tracker {} value 'Task :insert) (catch error (ex-message error)))
+   (try (tracker/add-tracker {:track :ignore} disabled 'Task :insert)
+        (catch error (str/starts-with? (ex-message error) ":insert disabled for spec")))])
+ => [{:track 'op :static/tracker {:in {:create {:op-created :id}} :ignore #{:delete}}}
+     {:track :ignore}
+     {:static/tracker {:in {:create {:op-created :id}} :ignore #{:delete}}}
+     "`:track` key required for spec" true])
+
+^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-map}
+(fact "missing tracker directions remain empty maps"
+ [(tracker/tracker-map {} :create) (tracker/tracker-map {:in {:modify {}}} :modify)] => [{} {}])
+^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/tracker-map-output}
+(fact "the retained output helper keeps its existing key-based contract"
+ [(tracker/tracker-map-output {} :create 'op)
+  (tracker/tracker-map-output {:in {:create {:op-created :id}}} :create 'op)]
+ => [nil {:op-created '(:->> op "op_created")}])
+^{:refer lang.model.v1.spec-postgres.postgres-common-tracker/add-tracker}
+(fact "real Tracker records preserve their configured extraction fields"
+ (let [value (tracker/map->Tracker {:name "data" :in {:create {:op-created :id}}})
+       params (tracker/add-tracker {:track 'op} value 'Task :insert)]
+  [(instance? tracker/Tracker value) (= value (:static/tracker params)) (tracker/tracker-map-in params)])
+ => [true true {:op-created '(:->> op "id")}])

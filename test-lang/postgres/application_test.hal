@@ -101,13 +101,16 @@
 
 ^{:refer postgres.application/app-get-entry}
 (Test/check
- [{:name "looks up one table by its symbol name"
-   :test (fn [] (internal/app-get-entry
-                 (internal/app-create-raw {'User +columns+} {})
-                 'User))
-   :expected {:id [{:type :uuid :primary true} 0]
-              :owner-id [{:type :ref :ref {:ns 'owner.core :key 'owner.core/Owner}} 1]
-              :name [{:type :text} 2]}}])
+  [{:name
+    "preserves the original string-key lookup without coercing schema keyword keys",
+    :test
+    (fn [] [(internal/app-get-entry
+              {:schema {:tree {"User" {:id [:manual]}}}}
+              'User)
+            (internal/app-get-entry
+              (internal/app-create-raw {'User +columns+} {})
+              'User)]),
+    :expected [{:id [:manual]} nil]}])
 
 ^{:refer postgres.application/app-get-deps}
 (Test/check
@@ -165,11 +168,118 @@
 
 ^{:refer postgres.application/app-create-raw}
 (Test/check
- [{:name "creates stable lookup and optional typed payloads"
-   :test (fn []
-           (let [application (internal/app-create-raw {'User +columns+ 'Role [:id {:type :uuid}]} {} {:tables {}})]
-             [(:lu application) (:typed application)]))
-   :expected [{:Role 0 :User 1} {:tables {}}]}])
+  [{:name
+    "orders referenced tables before dependents and retains typed payload",
+    :test
+    (fn []
+      (let [a (internal/app-create-raw
+                {'A [:z {:type :ref, :ref {:ns :Z}}],
+                 'Z [:id {:type :uuid, :primary true}]}
+                {}
+                {:tables {}})]
+        [(:lu a) (:typed a)])),
+    :expected [{:Z 0, :A 1} {:tables {}}]}
+   {:name
+    "wraps raw links with the PostgreSQL context and retains existing pointer context",
+    :test
+    (fn []
+      (let [p (pointer
+                {:context :retained,
+                 :id 'Z,
+                 :module 'demo,
+                 :lang :postgres,
+                 :section :code})
+            a (internal/app-create-raw
+                {}
+                {'A
+                 {:id 'A,
+                  :module 'demo,
+                  :lang :postgres,
+                  :section :code,
+                  :extra :keep},
+                 'Z p})
+            raw (get (:pointers a) 'A)
+            retained (get (:pointers a) 'Z)]
+        [(pointer? raw)
+         (select-keys raw [:id :extra])
+         (IPointer/ptr-context raw)
+         (= p retained)
+         (IPointer/ptr-context retained)])),
+    :expected
+    [true {:id 'A, :extra :keep} :lang/postgres true :retained]}
+   {:name
+    "preserves the schema seed and enriches reverse references with selected source links",
+    :test
+    (fn []
+      (let [tables {'A [:z {:type :ref, :ref {:ns :Z}}],
+                    'Z [:id {:type :uuid, :primary true}]}
+            a (internal/app-create-raw
+                tables
+                {'A
+                 {:id 'A,
+                  :module 'demo,
+                  :lang :postgres,
+                  :section :code,
+                  :extra :drop}})
+            s (:schema a)]
+        [(:tables a)
+         (get-in s [:tree :A :z 0 :ident])
+         (get-in s [:tree :Z :as 0 :ref :link])
+         (get-in s [:flat :Z/as 0 :ref :type])
+         (set (map first (partition 2 (:vec s))))
+         (has? a :typed)])),
+    :expected
+    [{'A [:z {:type :ref, :ref {:ns :Z}}],
+      'Z [:id {:type :uuid, :primary true}]}
+     :A/z
+     {:id 'A, :module 'demo, :lang :postgres, :section :code}
+     :reverse
+     #{:A :Z}
+     false]}
+   {:name "missing source links produce an empty reverse link",
+    :test
+    (fn []
+      (get-in
+        (internal/app-create-raw
+          {'A [:z {:type :ref, :ref {:ns :Z}}]}
+          {})
+        [:schema :tree :Z :as 0 :ref :link])),
+    :expected {}}
+   {:name
+    "recreating an application retains its schema order and pointer descriptors",
+    :test
+    (fn []
+      (let [tables {'A [:z {:type :ref, :ref {:ns :Z}}],
+                    'Z [:id {:type :uuid}]}
+            first-app (internal/app-create-raw
+                        tables
+                        {'A
+                         {:id 'A,
+                          :module 'demo,
+                          :lang :postgres,
+                          :section :code}})
+            second-app (internal/app-create-raw
+                         (:tables first-app)
+                         (:pointers first-app))]
+        [(= (:schema first-app) (:schema second-app))
+         (= (:lu first-app) (:lu second-app))
+         (=
+           (get (:pointers first-app) 'A)
+           (get (:pointers second-app) 'A))])),
+    :expected [true true true]}
+   {:name
+    "native Application implements dependency keys entries and original entry lookup",
+    :test
+    (fn []
+      (let [a (internal/app-create-raw
+                {'A [:z {:type :ref, :ref {:ns :Z}}],
+                 'Z [:id {:type :uuid}]}
+                {})]
+        [(set (IDeps/dep-keys a))
+         (IDeps/dep-entries a 'A)
+         (IDeps/dep-get a 'A)
+         (str a)])),
+    :expected [#{'A 'Z} #{'Z} nil "#pg.app [2]\nA Z\n"]}])
 
 ^{:refer postgres.application/definition-name}
 (Test/check
@@ -295,14 +405,20 @@
 
 ^{:refer postgres.application/app-schema}
 (Test/check
- [{:name "returns the registered application schema"
-   :test (fn []
-           (try
-             (internal/app-reset)
-             (internal/register-app :demo (internal/app-create-raw {'User +columns+} {}))
-             (get-in (internal/app-schema :demo) [:tree "User" :name])
-             (finally (internal/app-reset))))
-   :expected [{:type :text} 2]}])
+  [{:name
+    "returns the registered original schema with keyword tables and enriched attributes",
+    :test
+    (fn []
+      (let [saved (internal/app)]
+        (try
+          (internal/app-reset)
+          (internal/register-app
+            :demo
+            (internal/app-create-raw {'User +columns+} {}))
+          (get-in (internal/app-schema :demo) [:tree :User :name])
+          (finally (reset! internal/*applications* saved))))),
+    :expected
+    [{:type :text, :cardinality :one, :ident :User/name, :order 2}]}])
 
 ^{:refer postgres.application/app-typed}
 (Test/check
@@ -333,3 +449,26 @@
            (do (internal/register-app :demo {:tables {}})
                [(internal/app-reset) (internal/app-reset)]))
    :expected [{} {}]}])
+
+^{:refer postgres.application/*applications*}
+(Test/check
+  [{:name
+    "application registry is isolated by dynamic binding and reset",
+    :test
+    (fn []
+      (binding [internal/*applications* (atom {})]
+        (internal/register-app :isolated {:tables {}})
+        [(internal/app) (internal/app-reset) (internal/app)])),
+    :expected [{:isolated {:tables {}}} {} {}]}])
+
+^{:refer postgres.application/*modules*}
+(Test/check
+  [{:name "module registry is isolated by dynamic binding and reset",
+    :test
+    (fn []
+      (binding [internal/*modules* (atom {})]
+        (internal/register-module {:id 'isolated})
+        [(internal/module-snapshot)
+         (internal/reset-modules!)
+         (internal/module-snapshot)])),
+    :expected [{'isolated {:id 'isolated}} {} {}]}])

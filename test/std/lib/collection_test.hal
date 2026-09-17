@@ -392,3 +392,78 @@ results
 (Test/check [{:name "setval replaces every addressed value once"
               :test (fn [] (collection/setval [1 2] [:each] 0))
               :expected [0 0]}])
+
+^{:refer std.lib.collection/tree-flatten}
+(Test/check
+ [{:name "historical complete map tree"
+   :test (fn [] (reduce-kv (fn [out k v] (assoc out (str/tag k) v)) {}
+                  (collection/tree-flatten {"a" {"b" {"c" 3 "d" 4}
+                                                  "e" {"f" 5 "g" 6}}
+                                            "h" {"i" {}}})))
+   :expected {"a/b/c" 3 "a/b/d" 4 "a/e/f" 5 "a/e/g" 6}}
+  {:name "empty collections are discarded without losing false or nil"
+   :test (fn [] [(collection/tree-flatten {:a {:nil nil :false false :empty-map {} :empty-vector [] :empty-set #{} :empty-list '() :vector [1] :set #{2} :list '(3)}})
+                 (collection/tree-flatten {}) (collection/tree-flatten nil)])
+   :expected [{:a/nil nil :a/false false :a/vector [1] :a/set #{2} :a/list '(3)} {} {}]}
+  {:name "explicit separator and prefix preserve qualified key text"
+   :test (fn [] (collection/tree-flatten {:a/b {:c 2}} "." [:root]))
+   :expected {:root.a/b.c 2}}
+  {:name "dynamic separator restores after nested bindings"
+   :test (fn [] [(binding [std.foundation/*sep* "."]
+                  [(collection/tree-flatten {:a {:b 1}})
+                   (binding [std.foundation/*sep* "*"] (collection/tree-flatten {:a {:b 1}}))
+                   (collection/tree-flatten {:a {:b 1}})])
+                 (collection/tree-flatten {:a {:b 1}})])
+   :expected [[{:a.b 1} {:a*b 1} {:a.b 1}] {:a/b 1}]}
+  {:name "canonicalization is idempotent and leaves provenance unchanged"
+   :test (fn [] (let [original {:a {:b 1 :empty []} :lost {}}
+                     flat (collection/tree-flatten original)]
+                 [flat (collection/tree-flatten flat) original]))
+   :expected [{:a/b 1} {:a/b 1} {:a {:b 1 :empty []} :lost {}}]}])
+
+(ns std.lib.collection-test (:require [std.lib.collection :as collection]) (:use code.test))
+^{:refer std.lib.collection/tree-nestify, :added "3.0"}
+(fact
+  "nests keys in the map"
+  (try
+    (collection/tree-nestify {:a/b 2, :a/c 3})
+    (finally (collection/re-create-reset)))
+  =>
+  {:a {:b 2, :c 3}}
+  (try
+    (collection/tree-nestify {:a/b {:e/f 1}, :a/c {:g/h 1}})
+    (finally (collection/re-create-reset)))
+  =>
+  {:a {:b {:e/f 1}, :c {:g/h 1}}})
+
+^{:refer std.lib.collection/tree-nestify:all, :added "3.0"}
+(fact
+  "nests keys in the map and all submaps"
+  (try
+    (collection/tree-nestify:all {:a/b 2, :a/c 3})
+    (finally (collection/re-create-reset)))
+  =>
+  {:a {:b 2, :c 3}}
+  (try
+    (collection/tree-nestify:all {:a/b {:e/f 1}, :a/c {:g/h 1}})
+    (finally (collection/re-create-reset)))
+  =>
+  {:a {:b {:e {:f 1}}, :c {:g {:h 1}}}})
+
+^{:refer std.lib.collection/re-create}
+(Test/check [{:name "literal dot/star and regex input preserve patterns and cache hits"
+ :test (fn [] (collection/re-create-reset) (try (let [dot (collection/re-create ".") snapshot (deref collection/re-create-cache) again (collection/re-create ".") pattern (regexp "[./]")] [(re-pattern dot) (= dot again) (Base/identical? snapshot (deref collection/re-create-cache)) (re-pattern (collection/re-create "*")) (= pattern (collection/re-create pattern))]) (finally (collection/re-create-reset))))
+ :expected ["\\." true true "\\*" true]}
+ {:name "failed compilation leaves cache unchanged" :test (fn [] (collection/re-create-reset) (try (do (collection/re-create ".") (let [before (deref collection/re-create-cache)] [(try (collection/re-create "(") :not-thrown (catch error :thrown)) (Base/identical? before (deref collection/re-create-cache))])) (finally (collection/re-create-reset)))) :expected [:thrown true]}])
+
+^{:refer std.lib.collection/re-create-reset}
+(Test/check [{:name "reset clears entries and is idempotent" :test (fn [] (collection/re-create-reset) (try (do (collection/re-create ".") [(count (deref collection/re-create-cache)) (collection/re-create-reset) (collection/re-create-reset) (deref collection/re-create-cache)]) (finally (collection/re-create-reset)))) :expected [1 {} {} {}]}])
+
+^{:refer std.lib.collection/tree-nestify}
+(Test/check [{:name "dot star regex and trailing separators follow original splitting" :test (fn [] (collection/re-create-reset) (try [(collection/tree-nestify {:a.b 1} ".") (collection/tree-nestify {:a*b 2} "*") (collection/tree-nestify {"a.b/c" 3} (regexp "[./]")) (collection/tree-nestify {"a///" 4})] (finally (collection/re-create-reset)))) :expected [{:a {:b 1}} {:a {:b 2}} {:a {:b {:c 3}}} {:a 4}]}
+ {:name "callback runs once per entry and merges map leaves" :test (fn [] (collection/re-create-reset) (try (let [calls (atom []) input (collection/ordered-map :a {:old 1} :a/b 2) result (collection/tree-nestify input "/" (fn [v] (swap! calls conj v) v))] [result (deref calls) (collection/tree-nestify {:a/b nil :a/c false})]) (finally (collection/re-create-reset)))) :expected [{:a {:old 1 :b 2}} [{:old 1} 2] {:a {:b nil :c false}}]}
+ {:name "flatten and nestify round trip canonical maps" :test (fn [] (collection/re-create-reset) (try (let [original {:a {:b 1 :c [2]}} flat (collection/tree-flatten original)] [(collection/tree-nestify flat) (collection/tree-flatten (collection/tree-nestify flat)) (collection/tree-nestify {}) (collection/tree-nestify nil)]) (finally (collection/re-create-reset)))) :expected [{:a {:b 1 :c [2]}} {:a/b 1 :a/c [2]} {} {}]}
+ {:name "dynamic separator restores after callback failure" :test (fn [] (collection/re-create-reset) (try [(binding [std.foundation/*sep* "."] (collection/tree-nestify {:a.b 1})) (try (binding [std.foundation/*sep* "*"] (collection/tree-nestify {:a*b 1} "*" (fn [v] (throw (ex :test/callback {} :ex/message "callback"))))) (catch error (ex-message error))) (collection/tree-nestify {:a/b 2}) *sep*] (finally (collection/re-create-reset)))) :expected [{:a {:b 1}} "callback" {:a {:b 2}} "/"]}])
+
+^{:refer std.lib.collection/tree-nestify:all}
+(Test/check [{:name "recursive nesting leaves vectors alone and is idempotent" :test (fn [] (collection/re-create-reset) (try (let [input {:a/b {:c/d 1} :a/v [{:e/f 2}]} nested (collection/tree-nestify:all input)] [nested (collection/tree-nestify:all nested) input]) (finally (collection/re-create-reset)))) :expected [{:a {:b {:c {:d 1}} :v [{:e/f 2}]}} {:a {:b {:c {:d 1}} :v [{:e/f 2}]}} {:a/b {:c/d 1} :a/v [{:e/f 2}]}]}])

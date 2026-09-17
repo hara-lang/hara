@@ -1,10 +1,11 @@
 (ns lang.runtime.basic.type-basic
   (:config {:role :internal})
   (:require [lang.core.eval :as evaluation]
+            [lang.core.runtime :as default]
             [lang.runtime.basic.transport-node :as node]
             [lang.runtime.basic.type-oneshot :as oneshot]))
 
-(defstruct RuntimeBasic
+(defstruct ^{:open true} RuntimeBasic
   [id lang runtime program exec process state transport profile timeout])
 
 (defn default-id
@@ -38,18 +39,13 @@
         process (merge process
                        {:transport (if persistent? :process-socket :oneshot)
                         :persistent persistent?})]
-    (lang.runtime.basic.type-basic/RuntimeBasic
-     (or id (default-id lang))
-     lang
-     runtime
-     program
-     exec
-     process
-     (atom {:status :created
-            :transport (get process :transport)})
-     eval-transport
-     profile
-     timeout)))
+    (map->RuntimeBasic
+     (merge options
+            {:id (or id (default-id lang))
+             :lang lang :runtime runtime :program program :exec exec
+             :process process
+             :state (atom {:status :created :transport (get process :transport)})
+             :transport eval-transport :profile profile :timeout timeout}))))
 
 (defn start-basic
   [runtime]
@@ -136,6 +132,9 @@
   (start-basic (rt-basic:create options)))
 
 (extend-type RuntimeBasic IContextEval
+  (invoke-ptr [runtime pointer args]
+    ;; eval-basic already decodes the response profile, including string values.
+    (default/default-invoke-script runtime pointer args raw-eval-basic (assoc (:process runtime) :json false)))
   (evaluate [runtime request options]
     (eval-basic runtime request options))
   (evaluate-raw [runtime request options]

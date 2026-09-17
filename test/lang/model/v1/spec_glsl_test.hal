@@ -1,0 +1,104 @@
+(ns lang.model.v1.spec-glsl-test
+  (:require [lang.core.impl :as l]
+            [lang.core.library :as lib]
+            [lang.model.v1.spec-glsl :as model])
+  (:use code.test))
+
+^{:refer lang.model.v1.spec-glsl/CANARY, :adopt true, :added "4.0"}
+(fact
+  "top-level definition for shaders"
+  (let [migration-library (lib/library:create {})]
+    (try
+      (lib/install-book! migration-library model/+book+)
+      (l/with:library
+        [migration-library]
+        (l/emit-as
+          :glsl
+          '[(defrun
+              shader-vs
+              (var :attribute :vec3 pos)
+              (var :uniform :mat4 u_ModelView)
+              (var :uniform :mat4 u_Persp)
+              (fn ^{:- [:void]} main []
+                (:=
+                  gl_Position
+                  (* u_persp u_ModelView (:vec4 pos 1.0)))))]))
+      (finally
+        (lib/reset-all! migration-library)
+        (reset! (:settings migration-library) {}))))
+  =>
+  "attribute vec3 pos;\nuniform mat4 u_ModelView;\nuniform mat4 u_Persp;\nvoid main(){\n  gl_Position = (u_persp * u_ModelView * vec4(pos,1.0));\n}")
+
+(fact
+  "supports sampler declarations and constructors"
+  (let [migration-library (lib/library:create {})]
+    (try
+      (lib/install-book! migration-library model/+book+)
+      (l/with:library
+        [migration-library]
+        (l/emit-as
+          :glsl
+          '[(var :uniform :sampler2D u_Texture)
+            (:= color (:vec4 1.0 0.5 0.0 1.0))]))
+      (finally
+        (lib/reset-all! migration-library)
+        (reset! (:settings migration-library) {}))))
+  =>
+  "uniform sampler2D u_Texture\n\ncolor = vec4(1.0,0.5,0.0,1.0)")
+
+
+^{:refer lang.model.v1.spec-glsl/+types+}
+(fact "retains the complete GLSL type inventory"
+  model/+types+
+  => [:bool :int :float :double :uint
+      :vec2 :vec3 :vec4 :dvec2 :dvec3 :dvec4
+      :ivec2 :ivec3 :ivec4 :uvec2 :uvec3 :uvec4 :bvec2 :bvec3 :bvec4
+      :mat2 :mat3 :mat4 :mat2x3 :mat2x4 :mat3x2 :mat3x4 :mat4x2 :mat4x3
+      :sampler1D :sampler2D :sampler3D :samplerCube
+      :sampler1DShadow :sampler2DShadow :samplerCubeShadow :isampler2D :usampler2D
+      :dmat2 :dmat3 :dmat4 :dmat2x3 :dmat2x4 :dmat3x2 :dmat3x4 :dmat4x2 :dmat4x3])
+
+^{:refer lang.model.v1.spec-glsl/+typeops+}
+(fact "type constructors keep their exact operation descriptors"
+  [(count model/+typeops+)
+   (get model/+typeops+ :sampler2D)
+   (get model/+typeops+ :dmat4x3)]
+  => [47 {:op :sampler2D :symbol #{:sampler2D} :raw "sampler2D" :emit :invoke}
+         {:op :dmat4x3 :symbol #{:dmat4x3} :raw "dmat4x3" :emit :invoke}])
+
+^{:refer lang.model.v1.spec-glsl/+features+}
+(fact "type operations extend the shared grammar"
+  (select-keys (get model/+features+ :vec4) [:op :symbol :raw :emit])
+  => {:op :vec4 :symbol #{:vec4} :raw "vec4" :emit :invoke})
+
+^{:refer lang.model.v1.spec-glsl/+template+}
+(fact "GLSL punctuation and forbidden literals remain explicit"
+  [(:banned model/+template+)
+   (get-in model/+template+ [:data :vector])
+   (get-in model/+template+ [:block :for :parameter :sep])
+   (get-in model/+template+ [:define :def :raw])]
+  => [#{:set :map :regex} {:start "{" :end "}" :space ""} "," ""])
+
+^{:refer lang.model.v1.spec-glsl/+grammar+}
+(fact "the original grammar tag and constructor resolution are preserved"
+  [(:tag model/+grammar+)
+   (select-keys (get-in model/+grammar+ [:reserved :sampler2D]) [:op :raw :emit])]
+  => [:gl {:op :sampler2D :raw "sampler2D" :emit :invoke}])
+
+^{:refer lang.model.v1.spec-glsl/+meta+}
+(fact "module includes interpolate their input without qualifying it"
+  ((:module-import model/+meta+) "lighting.glsl" nil {})
+  => '(:- "#include" "lighting.glsl"))
+
+^{:refer lang.model.v1.spec-glsl/+book+}
+(fact "the Book keeps the language distinct from the grammar tag"
+  [(:lang model/+book+) (get-in model/+book+ [:grammar :tag]) (:modules model/+book+)]
+  => [:glsl :gl {}])
+
+^{:refer lang.model.v1.spec-glsl/+init+}
+(fact "initialization installs the original GLSL Book"
+  [(count model/+init+)
+   (:lang (lib/get-book (l/default-library) :glsl))
+   (get-in (lib/get-book (l/default-library) :glsl) [:grammar :tag])]
+  => [3 :glsl :gl])
+

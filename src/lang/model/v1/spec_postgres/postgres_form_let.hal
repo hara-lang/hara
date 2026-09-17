@@ -1,37 +1,413 @@
 (ns lang.model.v1.spec-postgres.postgres-form-let
-  (:require [lang.base.emit :as emit]
-            [lang.model.v1.spec-postgres.postgres-common :as common]))
+  (:require [lang.model.v1.spec-postgres.postgres-common :as common]
+            [lang.model.v1.spec-postgres.postgres-tf :as tf]
+            [lang.base.emit-common :as emit-common]
+            [lang.base.emit-preprocess :as preprocess]
+            [lang.base.preprocess-base :as preprocess-base]
+            [lang.core.library-snapshot :as snap]
+            [std.lib.collection :as collection]))
 
 (def ^:dynamic *input-syms* nil)
 
 (defn pg-tf-let-block
-  "Builds a declaration/begin/end block from archived let options."
-  [form]
-  (let [options (second form)
-        body (drop 2 form)
-        name (:name options)
-        declare (:declare options)
-        catch (:catch options)
-        header (if name [(list \\ (list \| "<<" name ">>"))] [])
-        declaration (if (seq declare)
-                      [:declare \\ (list \| (apply list 'do
-                                                        (map (fn [item] (list 'var item)) declare))) \\]
-                      [])
-        begin [:begin \\ (list \| (apply list 'do body))]
-        catcher (if catch [\\ (apply list 'do* catch)] [])]
-    (list 'do (vec (concat header declaration begin catcher [\\ :end])))))
+  "transforms a let block call"
+  {:added "4.0"}
+  [migration-argument-0]
+  (let [migration-argument-0-value migration-argument-0
+        _ (first (drop 0 migration-argument-0-value))
+        {:keys [name declare catch]} (first
+                                       (drop
+                                         1
+                                         migration-argument-0-value))
+        body (drop 2 migration-argument-0-value)]
+    (let [hform (if name [(list \\ (list \| "<<" name ">>"))] [])
+          dform (if (not-empty declare)
+                  [:declare
+                   \\
+                   (list
+                     \|
+                     (apply
+                       list
+                       'do
+                       (map
+                         (fn [migration-argument-0]
+                           (cons 'var migration-argument-0))
+                         declare)))
+                   \\])
+          bform [:begin \\ (list \| (apply list 'do body))]]
+      (seq
+        (concat
+          (list 'do)
+          hform
+          (list
+            (vec
+              (concat
+                dform
+                bform
+                (when catch [\\ (apply list 'do* catch)])
+                [\\ :end]))))))))
 
 (defn pg-tf-let-assign
-  "Creates one portable PostgreSQL assignment statement."
-  [pair]
-  (let [target (first pair)
-        value (second pair)]
-    (cond (= '_ target) [value]
-          (and (vector? value)
-               (= [target :into] (vec (take 2 (reverse value))))) [value]
-          (vector? value) [(conj (conj value :into) target)]
-          :else [(list := target value)])))
+  "create assignment statments for let form"
+  {:added "4.0"}
+  [migration-argument-0]
+  (let [migration-argument-0-value migration-argument-0
+        e (first (drop 0 migration-argument-0-value))
+        v (first (drop 1 migration-argument-0-value))]
+    (let [data-fn (fn [e]
+                    (let [assign-fn (:assign/fn (meta v))]
+                      (cond
+                        (false? assign-fn) [v]
+                        assign-fn [(let
+                                     [result (assign-fn e)
+                                      {:keys [snapshot], :as mopts}
+                                      (preprocess-base/macro-opts)
+                                      book
+                                      (snap/get-book
+                                        snapshot
+                                        :postgres)]
+                                     (first
+                                       (preprocess/to-staging
+                                         result
+                                         (:grammar book)
+                                         (:modules book)
+                                         mopts)))]
+                        (not (vector? v)) [(list := e v)]
+                        (= [e :into] (take 2 (reverse v))) [v]
+                        :else (if (some
+                                    (fn
+                                      [migration-argument-0]
+                                      (= migration-argument-0 e))
+                                    v)
+                                [v]
+                                [(conj v :into e)]))))
+          js-val-fn (fn [esym]
+                      (let [estr (str esym)
+                            estr (if
+                                   (re-find (regexp "^\\w-\\w+") estr)
+                                   (subs 2 estr)
+                                   estr)]
+                        (str/snake-case estr)))]
+      (cond
+        (= '_ e) [v]
+        (symbol? e) (data-fn e)
+        (form? e) (data-fn (last e))
+        (set? e) (mapv
+                   (fn [ei]
+                     (cond
+                       (symbol? ei) (seq
+                                      (concat
+                                        (list :=)
+                                        (list ei)
+                                        (list
+                                          (seq
+                                            (concat
+                                              (list :->)
+                                              (list v)
+                                              (list
+                                                (tf/pg-js-idx ei)))))))
+                       (form? ei) (seq
+                                    (concat
+                                      (list :=)
+                                      (list (last ei))
+                                      (list
+                                        (seq
+                                          (concat
+                                            (butlast ei)
+                                            (list
+                                              (seq
+                                                (concat
+                                                  (list :->>)
+                                                  (list v)
+                                                  (list
+                                                    (tf/pg-js-idx
+                                                      (last
+                                                        ei)))))))))))
+                       :else (throw
+                               (ex
+                                 :postgres/let-invalid
+                                 {:value ei}
+                                 :ex/message
+                                 "Not Allowed"))))
+                   e)
+        (vector? e) (vec
+                      (map-indexed
+                        (fn [i ei]
+                          (cond
+                            (symbol? ei) (seq
+                                           (concat
+                                             (list :=)
+                                             (list ei)
+                                             (list
+                                               (seq
+                                                 (concat
+                                                   (list :->)
+                                                   (list v)
+                                                   (list i))))))
+                            (form? ei) (seq
+                                         (concat
+                                           (list :=)
+                                           (list (last ei))
+                                           (list
+                                             (seq
+                                               (concat
+                                                 (butlast ei)
+                                                 (list
+                                                   (seq
+                                                     (concat
+                                                       (list :->>)
+                                                       (list v)
+                                                       (list i)))))))))
+                            :else (throw
+                                    (ex
+                                      :postgres/let-invalid
+                                      {:value ei}
+                                      :ex/message
+                                      "Not Allowed"))))
+                        e))
+        :else (throw
+                (ex
+                  :postgres/let-invalid
+                  {:value e}
+                  :ex/message
+                  "Not Allowed"))))))
 
+(defn pg-tf-let-check-body
+  "checks if variables are in scope"
+  {:added "4.0"}
+  [dsyms body]
+  (let [not-checked (atom #{})
+        _ (if *input-syms* (swap! *input-syms* union dsyms))
+        collect-syms (fn [form]
+                       (collection/walk:find
+                         (fn [x]
+                           (and (symbol? x) (nil? (namespace x))))
+                         form))
+        check-fn (letfn
+                   [(check-fn
+                      [csyms x]
+                      (cond
+                        (form? x) (let
+                                    [f (first x)]
+                                    (cond
+                                      (= 'let f)
+                                      (let
+                                        [bindings (second x)
+                                         inner-body (drop 2 x)
+                                         pairs (partition 2 bindings)
+                                         inner-syms
+                                         (reduce
+                                           (fn
+                                             [acc [b v]]
+                                             (check-fn acc v)
+                                             (union
+                                               acc
+                                               (collect-syms b)))
+                                           csyms
+                                           pairs)]
+                                        (let
+                                          [migration-run-fn
+                                           (fn
+                                             [v]
+                                             (check-fn inner-syms v))]
+                                          (doseq
+                                            [migration-run-value
+                                             inner-body]
+                                            (migration-run-fn
+                                              migration-run-value))))
+                                      :else
+                                      (let
+                                        [migration-run-fn
+                                         (fn [v] (check-fn csyms v))]
+                                        (doseq
+                                          [migration-run-value x]
+                                          (migration-run-fn
+                                            migration-run-value)))))
+                        (vector? x) (let
+                                      [migration-run-fn
+                                       (fn [v] (check-fn csyms v))]
+                                      (doseq
+                                        [migration-run-value x]
+                                        (migration-run-fn
+                                          migration-run-value)))
+                        (symbol? x) (if
+                                      (and
+                                        (re-find
+                                          (regexp "^\\w-\\w+")
+                                          (str x))
+                                        (not
+                                          (re-find
+                                            (regexp "^\\w-ret$")
+                                            (str x)))
+                                        (not (get csyms x))
+                                        (not
+                                          (if
+                                            *input-syms*
+                                            (get
+                                              (deref *input-syms*)
+                                              x))))
+                                      (swap! not-checked conj x))
+                        (coll? x) (let
+                                    [migration-run-fn
+                                     (fn [v] (check-fn csyms v))]
+                                    (doseq
+                                      [migration-run-value x]
+                                      (migration-run-fn
+                                        migration-run-value)))))]
+                   check-fn)]
+    (let [migration-run-fn (fn [v] (check-fn dsyms v))]
+      (doseq [migration-run-value body]
+        (migration-run-fn migration-run-value)))
+    (if (not-empty (deref not-checked))
+      (throw
+        (ex
+          :postgres/let-invalid
+          {:symbols (deref not-checked), :dsyms dsyms}
+          :ex/message
+          "Unknown symbols in form")))))
+
+(defn pg-tf-let
+  "creates a let form"
+  {:added "4.0"}
+  [migration-argument-0]
+  (let [migration-argument-0-value migration-argument-0
+        _ (first (drop 0 migration-argument-0-value))
+        bindings (first (drop 1 migration-argument-0-value))
+        body (drop 2 migration-argument-0-value)]
+    (let [pairs (map vec (partition 2 bindings))
+          declp (map first pairs)
+          [declu dsyms] (loop [dsyms '#{_}
+                               [form & more :as forms] declp
+                               out []]
+                          (if (empty? forms)
+                            [out dsyms]
+                            (let [csyms
+                                  (collection/walk:find
+                                    (fn
+                                      [x]
+                                      (and
+                                        (symbol? x)
+                                        (nil? (namespace x))))
+                                    form)]
+                              (recur
+                                (union dsyms csyms)
+                                more
+                                (if
+                                  (and (symbol? form) (get dsyms form))
+                                  out
+                                  (conj out form))))))
+          _ (pg-tf-let-check-body
+              dsyms
+              (vec (concat (map second pairs) body)))
+          decl (mapcat
+                 (letfn
+                   [(dec-fn
+                      [e]
+                      (cond
+                        (= '_ e) []
+                        (symbol? e) [(list :jsonb e)]
+                        (form? e) [(if
+                                     (= '++ (first e))
+                                     (apply
+                                       list
+                                       :%
+                                       (concat
+                                         (drop 2 e)
+                                         [(second e)]))
+                                     (apply
+                                       list
+                                       (reduce
+                                         (fn
+                                           [acc ei]
+                                           (if
+                                             (and
+                                               (symbol? ei)
+                                               (namespace ei))
+                                             (conj acc :% ei)
+                                             (conj acc ei)))
+                                         []
+                                         e)))]
+                        (set? e) (mapcat dec-fn e)
+                        (vector? e) (mapcat dec-fn e)
+                        :else (throw
+                                (ex
+                                  :postgres/let-invalid
+                                  {:value e}
+                                  :ex/message
+                                  "Not Allowed"))))]
+                   dec-fn)
+                 declu)
+          deqs (mapcat pg-tf-let-assign pairs)]
+      (pg-tf-let-block
+        (concat [nil {:declare (sort-by last decl)}] deqs body)))))
+
+(defn pg-do-block
+  "emits a block with let usage"
+  {:added "4.0"}
+  [migration-argument-0 grammar mopts]
+  (let [migration-argument-0-value migration-argument-0
+        _ (first (drop 0 migration-argument-0-value))
+        form (first (drop 1 migration-argument-0-value))]
+    (binding [*input-syms* (or *input-syms* (atom #{}))]
+      (emit-common/*emit-fn*
+        (common/block-do-block form)
+        grammar
+        mopts))))
+
+(defn pg-do-suppress
+  "emits a suppress block with let ussage"
+  {:added "4.0"}
+  [migration-argument-0 grammar mopts]
+  (let [migration-argument-0-value migration-argument-0
+        _ (first (drop 0 migration-argument-0-value))
+        form (first (drop 1 migration-argument-0-value))]
+    (binding [*input-syms* (or *input-syms* (atom #{}))]
+      (emit-common/*emit-fn*
+        (common/block-do-suppress form)
+        grammar
+        mopts))))
+
+(defn pg-loop-block
+  "creates a loop block"
+  {:added "4.0"}
+  [migration-argument-0 grammar mopts]
+  (let [migration-argument-0-value migration-argument-0
+        _ (first (drop 0 migration-argument-0-value))
+        forms (drop 1 migration-argument-0-value)]
+    (binding [*input-syms* (or *input-syms* (atom #{}))]
+      (emit-common/*emit-fn*
+        (apply common/block-loop-block forms)
+        grammar
+        mopts))))
+
+(defn pg-while-block
+  "creates a while block"
+  {:added "4.0"}
+  [migration-argument-0 grammar mopts]
+  (let [migration-argument-0-value migration-argument-0
+        _ (first (drop 0 migration-argument-0-value))
+        condition (first (drop 1 migration-argument-0-value))
+        forms (drop 2 migration-argument-0-value)]
+    (binding [*input-syms* (or *input-syms* (atom #{}))]
+      (emit-common/*emit-fn*
+        (apply common/block-while-block condition forms)
+        grammar
+        mopts))))
+
+(defn pg-case-block
+  "creates a case block"
+  {:added "4.0"}
+  [migration-argument-0 grammar mopts]
+  (let [migration-argument-0-value migration-argument-0
+        _ (first (drop 0 migration-argument-0-value))
+        forms (drop 1 migration-argument-0-value)]
+    (binding [*input-syms* (or *input-syms* (atom #{}))]
+      (emit-common/*emit-fn*
+        (apply common/block-case-block forms)
+        grammar
+        mopts))))
+
+;; Existing native helper surface retained.
 (defn symbol-set
   [value]
   (cond (and (symbol? value)
@@ -40,23 +416,6 @@
         (list? value) (reduce union #{} (map symbol-set value))
         :else #{}))
 
-(defn pg-tf-let-check-body
-  "Checks simple unqualified body symbols against the declared scope."
-  [declared body]
-  (let [scope (reduce union (set declared) (map symbol-set declared))
-        used (reduce union #{} (map symbol-set body))
-        unknown (reduce (fn [result symbol]
-                          (if (or (has? scope symbol)
-                                  (= '_ symbol))
-                            result
-                            (conj result symbol)))
-                        #{}
-                        used)]
-    (if (seq unknown)
-      (throw (ex :syntax {:symbols unknown}
-                 :ex/message "Unknown symbols in PostgreSQL let body"))
-      nil)))
-
 (defn pg-let-declaration
   [binding]
   (cond (= '_ binding) nil
@@ -64,40 +423,3 @@
         (list? binding) (list 'pg:raw (str (str/replace (name (last binding)) "-" "_")
                                             " " (str/join " " (map name (butlast binding)))))
         :else nil))
-
-(defn pg-tf-let
-  "Transforms a portable let into a PostgreSQL declaration block."
-  [form]
-  (let [bindings (second form)
-        body (drop 2 form)
-        pairs (vec (partition 2 bindings))
-        declarations (vec (filter (fn [value] (not (nil? value)))
-                                  (map (fn [pair] (pg-let-declaration (first pair))) pairs)))
-        assignments (mapcat pg-tf-let-assign pairs)]
-    (pg-tf-let-block [nil {:declare declarations}
-                      (apply list 'do (concat assignments body))])))
-
-(defn pg-do-block
-  "Emits a PL/pgSQL block with let support."
-  [form grammar context]
-  (emit/*emit-fn* (common/block-do-block (second form)) grammar context))
-
-(defn pg-do-suppress
-  "Emits a PL/pgSQL block that suppresses errors."
-  [form grammar context]
-  (emit/*emit-fn* (common/block-do-suppress (second form)) grammar context))
-
-(defn pg-loop-block
-  "Emits a PL/pgSQL loop block."
-  [form grammar context]
-  (emit/*emit-fn* (apply common/block-loop-block (drop 1 form)) grammar context))
-
-(defn pg-while-block
-  "Emits a PL/pgSQL while block."
-  [form grammar context]
-  (emit/*emit-fn* (apply common/block-while-block (drop 1 form)) grammar context))
-
-(defn pg-case-block
-  "Emits a PL/pgSQL case block."
-  [form grammar context]
-  (emit/*emit-fn* (apply common/block-case-block (drop 1 form)) grammar context))

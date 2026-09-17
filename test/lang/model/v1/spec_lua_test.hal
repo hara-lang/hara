@@ -1,4 +1,352 @@
 (ns lang.model.v1.spec-lua-test
+ (:use code.test)
+ (:require [lang.model.v1.spec-lua :as r]
+           [lang.base.emit-common :as common]
+           [lang.base.emit-rewrite :as er]
+           [lang.model.v1.spec-lua.rewrite :as rewrite]))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-incby}
+(fact "increment assignment preserves its target"
+ (r/lua-tf-incby '[_ target value]) => '(:= target (+ target value)))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-decby}
+(fact "decrement assignment preserves operand order"
+ (r/lua-tf-decby '[_ target value]) => '(:= target (- target value)))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-mulby}
+(fact "multiplication assignment preserves its target"
+ (r/lua-tf-mulby '[_ target value]) => '(:= target (* target value)))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-local}
+(fact "local declaration retains unbound scalar vector set and function branches"
+ (let [function (r/lua-tf-local '[_ helper := (fn [x] (return x))])]
+  [(r/lua-tf-local '[_ value])
+   (r/lua-tf-local '[_ value := 3])
+   (r/lua-tf-local '[_ [a b] := values])
+   (r/lua-tf-local '[_ #{item} := object])
+   function (meta (second function))])
+ => ['(var* :local value) '(var* :local value := 3)
+     '(var* :local '[a b] := (unpack values))
+     '(do (var* :local item := (. object ["item"])))
+     '(defn helper [x] (return x)) {:inner true}])
+
+^{:refer lang.model.v1.spec-lua/lua-tf-c-ffi}
+(fact "C declarations are generated before callback hoisting"
+ (r/lua-tf-c-ffi '[_ (fn ^{:tag :int} add [:int x])])
+ => "int add(int x);")
+
+^{:refer lang.model.v1.spec-lua/lua-map-key}
+(fact "Lua keys distinguish identifiers reserved words and emitted expressions"
+ (binding [common/*emit-fn* (fn [_ _ _] "EXPR")]
+  [(r/lua-map-key "hello" {} {}) (r/lua-map-key :return {} {})
+   (r/lua-map-key "a-b" {} {}) (r/lua-map-key 'computed {} {})
+   (r/lua-map-key 7 {} {})])
+ => ["hello" "['return']" "['a-b']" "[EXPR]" "[EXPR]"])
+
+^{:refer lang.model.v1.spec-lua/lua-vector}
+(fact "Lua vectors retain cjson array metatable wrapping"
+ (r/lua-vector [1 2] r/+grammar+ {})
+ => "setmetatable({1,2}, cjson.array_mt)")
+
+^{:refer lang.model.v1.spec-lua/lua-tf-for-object}
+(fact "object iteration keeps keys values and all body forms"
+ (r/lua-tf-for-object '[_ [[key value] object] (visit key) (visit value)])
+ => '(for [[key value] :in (pairs object)] (visit key) (visit value)))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-for-array}
+(fact "array iteration retains explicit index bindings and implicit ignored index"
+ [(r/lua-tf-for-array '[_ [value array] (visit value)])
+  (r/lua-tf-for-array '[_ [[index value] array] (visit index value)])]
+ => ['(for [[_ value] :in (ipairs array)] (visit value))
+     '(for [[index value] :in (ipairs array)] (visit index value))])
+
+^{:refer lang.model.v1.spec-lua/lua-tf-for-iter}
+(fact "iterator loops preserve their binding and ordered body"
+ (r/lua-tf-for-iter '[_ [value iterator] (first-step) (visit value)])
+ => '(for [value :in iterator] (first-step) (visit value)))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-for-index}
+(fact "index loops preserve default and explicit steps"
+ [(r/lua-tf-for-index '[_ [i [0 4]] (visit i)])
+  (r/lua-tf-for-index '[_ [i [4 0 -1]] (visit i)])]
+ => ['(for [i := '[0 4 1]] (visit i)) '(for [i := '[4 0 -1]] (visit i))])
+
+^{:refer lang.model.v1.spec-lua/lua-tf-for-return}
+(fact "return loops retain the paired result and success/error branches"
+ (r/lua-tf-for-return '[_ [[result error] (work)] {:success (ok result) :error (fail error)}])
+ => '(do (var '[result error] (work)) (if (not error) (ok result) (fail error))))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-for-async}
+(fact "async loops preserve handlers and optional final body"
+ [(r/lua-tf-for-async '[_ [[result error] (work)] {:success (ok result) :error (fail error)}])
+  (r/lua-tf-for-async '[_ [[result error] (work)] {:success (ok result) :error (fail error) :finally (cleanup)}])]
+ => ['(x:thread-spawn (fn [] (for:try [[result error] (work)] {:success (ok result) :error (fail error)})))
+     '(x:thread-spawn (fn [] (for:try [[result error] (work)] {:success (ok result) :error (fail error)}) (cleanup)))])
+
+^{:refer lang.model.v1.spec-lua/lua-tf-yield}
+(fact "yield delegates to the original coroutine primitive"
+ (r/lua-tf-yield '[_ value]) => '(coroutine.yield value))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-throw}
+(fact "throw retains the raw payload and level zero"
+ (r/lua-tf-throw '[_ {:message "failure"}]) => '(error {:message "failure"} 0))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-defgen}
+(fact "generator definitions wrap the complete body in a coroutine factory"
+ (r/lua-tf-defgen '[_ generate [x] (yield x) (yield (+ x 1))])
+ => '(defn generate [x] (return (coroutine.wrap (fn [] (yield x) (yield (+ x 1)))))))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-prototype-create}
+(fact "prototype creation points __index back to the same table"
+ (r/lua-tf-prototype-create '[_ methods])
+ => '(do (var mt methods) (:= (. mt __index) mt) (return mt)))
+
+^{:refer lang.model.v1.spec-lua/lua-tf-prototype-method}
+(fact "prototype method lookup prefers a direct non-nil entry"
+ (r/lua-tf-prototype-method '[_ object "method"])
+ => '(:? (not= nil (x:get-key object "method" nil))
+         (x:get-key object "method" nil)
+         (x:get-key (proto:get object) "method" nil)))
+
+^{:refer lang.model.v1.spec-lua/lua-emit-input-rest}
+(fact "Lua rest parameters always emit the vararg marker"
+ (r/lua-emit-input-rest nil nil nil) => "...")
+
+^{:refer lang.model.v1.spec-lua/lua-module-link}
+(fact "module links preserve original relative-path behavior including shared-prefix neighbors"
+ [(r/lua-module-link 'kmi.common {:root-ns 'kmi.hello})
+  (r/lua-module-link 'kmi.exchange {:root-ns 'kmi :target "src"})
+  (r/lua-module-link 'kmi {:root-ns 'kmi.hello})
+  (r/lua-module-link 'kminot.core {:root-ns 'kmi.hello})
+  (r/lua-module-link 'other.core {:root-ns 'kmi.hello})]
+ => ["./common" "./kmi/exchange" "./" "./../kminot/core" "./other/core"])
+
+^{:refer lang.model.v1.spec-lua/variant-meta}
+(fact "variant metadata overrides one field while retaining module hooks"
+ (let [metadata (r/variant-meta {:bootstrap :variant})]
+  [(:bootstrap metadata) (= (:module-link metadata) (:module-link r/+meta+))
+   (= (:module-export metadata) (:module-export r/+meta+))])
+ => [:variant true true])
+
+^{:refer lang.model.v1.spec-lua/variant-grammar}
+(fact "variant grammar overrides the requested operator without mutating the base"
+ (let [before (get-in r/+grammar+ [:reserved '+ :raw])
+       variant (r/variant-grammar {:add {:raw "PLUS"}})]
+  [(get-in variant [:reserved '+ :raw]) (get-in r/+grammar+ [:reserved '+ :raw]) before])
+ => ["PLUS" "+" "+"])
+
+^{:refer lang.model.v1.spec-lua/+template+}
+(fact "the Lua template keeps original container syntax and rewrite ownership"
+ [(get-in r/+template+ [:default :index])
+  (get-in r/+template+ [:default :return])
+  (:banned r/+template+)
+  (get-in r/+template+ [:rewrite :staging])
+  (get-in r/+template+ [:rewrite :canonical])]
+ => [{:offset 1 :end-inclusive true :start "[" :end "]"} {:multi true} #{:keyword :set :regex}
+     [(var rewrite/lua-rewrite-stage)] [(var er/canonical-stage)]])
+
+^{:refer lang.model.v1.spec-lua/lua-module-export}
+(fact "module exports retain ordered def/defn entries and omit other operations"
+ [(r/lua-module-export {:id 'demo :code {}} {})
+  (r/lua-module-export
+   {:id 'demo :code {'second {:id 'second :op-key :defn :priority 2 :time 1 :line 1}
+                    'first {:id 'first :op-key :def :priority 1 :time 1 :line 1}
+                    'ignored {:id 'ignored :op-key :macro :priority 0 :time 1 :line 1}}} {})]
+ => (let [q (first (pr-str ""))]
+      ['(return (tab))
+       (list 'return (list 'tab [(list :% q 'first q) 'demo/first]
+                               [(list :% q 'second q) 'demo/second]))]))
+
+^{:refer lang.model.v1.spec-lua/+features+}
+(fact "Lua feature composition retains local declarations arithmetic macros and original wall clock"
+ [(get-in r/+features+ [:cat :raw])
+  (get-in r/+features+ [:incby :macro])
+  (get-in r/+features+ [:var :symbol])
+  (get-in r/+features+ [:x-now-ms :default])]
+ => [".." (var r/lua-tf-incby) '#{var*} '(math.floor (* 1000 (os.time)))])
+
+^{:refer lang.model.v1.spec-lua/+grammar+}
+(fact "the grammar resolves Lua-specific operators with the original tag"
+ [(:tag r/+grammar+) (get-in r/+grammar+ [:reserved 'not :raw])
+  (get-in r/+grammar+ [:reserved 'cat :raw])]
+ => [:lua "not " ".."])
+
+^{:refer lang.model.v1.spec-lua/+meta+}
+(fact "module and pointer hooks build original Lua import and teardown forms"
+ [((:module-current r/+meta+) 1 2)
+  ((:module-import r/+meta+) 'demo {:as 'alias} {})
+  ((:has-ptr r/+meta+) {:module 'demo :id 'item})
+  ((:teardown-ptr r/+meta+) {:module 'demo :id 'item})]
+ => [nil '(var* :local alias := (require "demo"))
+     '(not= demo/item nil) '(:= demo/item nil)])
+
+(ns lang.model.v1.spec-lua-test
+  (:use code.test)
+  (:require [lang.model.v1.spec-lua :as r]
+            [lang.model.v1.spec-xtalk :as x]
+            [lang.base.book :as b]))
+
+^{:refer lang.model.v1.spec-lua/+book+}
+(fact "Lua creates an original Book with an unresolved xtalk parent"
+ [(b/book? r/+book+) (:lang r/+book+) (:parent r/+book+) (:modules r/+book+)
+  (:merged r/+book+) (= (:grammar r/+book+) r/+grammar+) (= (:meta r/+book+) r/+meta+)]
+ => [true :lua :xtalk {} #{:lua} true true])
+
+^{:refer lang.base.book/book-merge :id lua-original-parent-merge}
+(fact "parent resolution merges module entries while preserving child overrides and input books"
+ (let [parent (assoc x/+book+ :modules
+               {'shared {:id 'shared :code {'base {:id 'base} 'override {:id 'override :form :parent}}
+                         :fragment {'helper {:id 'helper}}}})
+       child (assoc r/+book+ :modules
+              {'shared {:id 'shared :code {'local {:id 'local} 'override {:id 'override :form :child}}
+                        :fragment {}}})
+       merged (b/book-merge child parent)]
+  [(:lang merged) (:parent merged) (:merged merged)
+   (get-in merged [:modules 'shared :code])
+   (get-in merged [:modules 'shared :fragment])
+   (= (:grammar merged) r/+grammar+) (:modules r/+book+) (:modules x/+book+)])
+ => [:lua nil #{:lua :xtalk}
+     {'base {:id 'base} 'local {:id 'local} 'override {:id 'override :form :child}}
+     {'helper {:id 'helper}} true {} {}])
+
+(require [lang.core.impl :as init-impl]
+         [lang.core.library :as init-lib]
+         [lang.model.v1.spec-xtalk :as init-xtalk]
+         [lang.model.v1.spec-lua :as init-lua]
+         [std.lib.context.resource :as init-resource]
+         [std.lib.context.registry :as init-registry]
+         [std.lib.context.space :as init-space])
+
+(ns lang.model.v1.spec-lua-test (:require [lang.model.v1.spec-lua :refer :all]) (:use code.test))
+
+^{:refer lang.model.v1.spec-lua/lua-map-key, :added "3.0", :id "historical-lang.model.v1.spec-lua/lua-map-key"}
+(fact
+  "custom lua map key"
+  (lua-map-key 123 +grammar+ {})
+  =>
+  "[123]"
+  (lua-map-key "123" +grammar+ {})
+  =>
+  "['123']"
+  (lua-map-key "abc" +grammar+ {})
+  =>
+  "abc"
+  (lua-map-key "not" +grammar+ {})
+  =>
+  "['not']"
+  (lua-map-key :abc +grammar+ {})
+  =>
+  "abc")
+
+^{:refer lang.model.v1.spec-lua/lua-module-link, :added "4.0", :id "historical-lang.model.v1.spec-lua/lua-module-link"}
+(fact
+  "gets the absolute lua based module"
+  (lua-module-link 'kmi.common {:root-ns 'kmi.hello})
+  =>
+  "./common"
+  (lua-module-link 'kmi.exchange {:root-ns 'kmi, :target "src"})
+  =>
+  "./kmi/exchange")
+
+^{:refer lang.model.v1.spec-lua/lua-module-export, :added "4.0", :id "historical-lang.model.v1.spec-lua/lua-module-export"}
+(fact
+  "outputs the lua module export form"
+  (lua-module-export 'kmi.common {:root-ns 'kmi.hello})
+  =>
+  '(return (tab)))
+
+^{:refer lang.model.v1.spec-lua/lua-emit-input-rest, :added "4.1", :id "historical-lang.model.v1.spec-lua/lua-emit-input-rest"}
+(fact
+  "emits Lua's anonymous varargs marker"
+  (lua-emit-input-rest {:symbol 'args} nil nil)
+  =>
+  "...")
+
+(ns lang.model.v1.spec-lua-test (:require [lang.core.impl :as l]) (:use code.test))
+
+^{:refer lang.model.v1.spec-lua/tf-counter, :added "4.1", :id "historical-compound assignment lowers to valid lua assignments", :adopt true}
+(fact
+  "compound assignment lowers to valid lua assignments"
+  [(l/emit-as :lua '[(:+= a 2)])
+   (l/emit-as :lua '[(:-= a 2)])
+   (l/emit-as :lua '[(:*= a 2)])
+   (l/emit-as :lua '[(:+= circle.x 20)])]
+  =>
+  ["a = (a + 2)"
+   "a = (a - 2)"
+   "a = (a * 2)"
+   "circle.x = (circle.x + 20)"])
+
+^{:id "historical-try/catch lowers to a pcall wrapper", :adopt true}
+(fact
+  "try/catch lowers to a pcall wrapper"
+  (let [out (l/emit-as
+              :lua
+              '[(try
+                  (throw (x:ex-new "boom" {:a 1}))
+                  (catch e (x:print (x:ex-data e))))])]
+    [(boolean (re-find #"pcall\(function \(\)" out))
+     (boolean (re-find #"error\(\{\['__type__'\]='xt\.exception'" out))
+     (boolean (re-find #"local e =" out))
+     (boolean (re-find #"e\['data'\]" out))
+     (boolean (re-find #"print" out))])
+  =>
+  [true true true true true])
+
+^{:id "historical-try/finally preserves outer return flow", :adopt true}
+(fact
+  "try/finally preserves outer return flow"
+  (let [out (l/emit-as
+              :lua
+              '[(defn demo []
+                  (try (return 1) (finally (x:print "done"))))])]
+    [(boolean (re-find #"pcall\(function \(\)" out))
+     (boolean (re-find #"print\('done'\)" out))
+     (boolean (re-find #"return lua_try_result__" out))
+     (boolean (re-find #"error\(lua_try_error__" out))])
+  =>
+  [true true false false])
+
+^{:refer lang.model.v1.spec-lua/+init+ :id original-load-time-install}
+(fact "the original model init installs the Book and runtime through the global Library and tears down deterministically"
+ (let [result init-lua/+init+
+       publications (vec (mapcat (fn [result]
+                             (let [publication (nth result 2)]
+                              (concat (first (:macros publication))
+                                      (second (:macros publication))
+                                      (:highlights publication))))
+                           [init-xtalk/+init+ init-lua/+init+]))
+       library (init-impl/default-library)
+       outcome (try
+                 (let [stored (get-in (init-lib/get-snapshot library) [:lua :book])]
+                  [(vector? result) (count result)
+                   (set (keys (init-lib/get-snapshot library)))
+                   (:lang stored) (:parent stored)
+                   (= (nth result 2) (select-keys stored [:macros :highlights]))
+                   (= (nth result 1) (init-registry/registry-get :lang/lua))
+                   (mapv var-sym (first (:macros stored)))
+                   (Base/identical? library (init-impl/default-library))])
+                 (finally
+                  (doseq [v publications]
+                   (let [sym (var-sym v)]
+                    (intern (symbol (namespace sym)) (with-meta (symbol (name sym)) {:macro false}) nil)))
+                  (intern 'lang.model.v1.spec-xtalk '+init+ nil)
+                  (intern 'lang.model.v1.spec-lua '+init+ nil)
+                  (init-resource/resource-stop :lang/lang.library)
+                  (init-resource/resource-stop :lang/lang.library)
+                  (init-space/reset-spaces!) (init-registry/reset-registry!)))]
+  [outcome
+   (init-resource/resource-active-get :global :lang/lang.library :default nil)
+   (set (init-registry/registry-list))
+   (every? (fn [v] (= [nil {:macro false}] [(deref v) (meta v)])) publications)
+   [init-xtalk/+init+ init-lua/+init+]])
+ => [[true 3 #{:xtalk :lua} :lua :xtalk true true
+      '[lang.model.v1.spec-lua/def$.lua lang.model.v1.spec-lua/defmacro.lua
+        lang.model.v1.spec-lua/!.lua lang.model.v1.spec-lua/defptr.lua] true]
+     nil #{:null} true [nil nil]])
+
+(comment :previous-native-model-architecture
+(ns lang.model.v1.spec-lua-test
   (:require [lang.base.book :as book]
             [lang.model.v1.spec-lua :as subject]
             [lang.model.v1.spec-lua.lua-grammar :as model]))
@@ -34,3 +382,28 @@
  [{:name "registers the Lua target rewrite stage"
    :test (fn [] (get-in model/+grammar+ [:grammar/rewrite :staging :append]))
    :expected '[lang.model.v1.spec-lua.lua-rewrite/lua-rewrite-stage]}])
+
+)
+
+(ns lang.model.v1.spec-lua-test
+  (:require [lang.model.v1.spec-lua :as lua] [lang.base.emit :as emit])
+  (:use code.test))
+^{:refer lang.model.v1.spec-lua/lua-module-export, :id original-export-emission}
+(fact
+  "original module export constructs a destructurable table and emits Lua"
+  (let [form (lua/lua-module-export
+               {:id 'demo,
+                :code
+                {:value
+                 {:id 'value,
+                  :op-key :def,
+                  :priority 0,
+                  :time 0,
+                  :line 1}}}
+               {})
+        table (second form)]
+    [(first table)
+     ((fn [[head & entries]] [head (count entries)]) table)
+     (emit/emit-main form lua/+grammar+ {})])
+  =>
+  ['tab ['tab 1] "return {[\"value\"]=demo.value}"])

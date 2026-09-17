@@ -1,0 +1,213 @@
+(ns std.lib.schema.base-test
+  (:require [std.lib.schema.base :as base])
+  (:use code.test))
+
+^{:refer std.lib.schema.base/expand-scopes, :added "4.0", :migration/reader :expanded-namespaced-map}
+(fact
+  "expand scopes for all globbed keywords"
+  (base/expand-scopes base/+scope-brief+)
+  =>
+  {:*/min #{:-/id :-/key},
+   :*/info #{:-/info :-/id :-/key},
+   :*/data #{:-/info :-/id :-/data :-/key},
+   :*/default #{:-/info :-/id :-/ref :-/data :-/key},
+   :*/detail #{:-/detail :-/info :-/id :-/data :-/key},
+   :*/standard #{:-/detail :-/info :-/id :-/ref :-/data :-/key},
+   :*/all #{:-/detail :-/info :-/id :-/ref :-/data :-/system :-/key},
+   :*/everything
+   #{:-/detail
+     :-/info
+     :-/hidden
+     :-/id
+     :-/ref
+     :-/data
+     :-/system
+     :-/key}})
+
+^{:refer std.lib.schema.base/check-scope :added "4.0"}
+(fact "check if a scope is valid"
+
+  (base/check-scope :-/info)
+  => :-/info
+
+  (base/check-scope :-/WRONG)
+  => (throws))
+
+^{:refer std.lib.schema.base/attr-add-ident :added "3.0"}
+(fact "adds the key of a pair as :ident to a schema property pair"
+
+  (base/attr-add-ident [:person [{}]])
+  => [:person [{:ident :person}]]
+
+  (base/attr-add-ident [:person/address [{}]])
+  => [:person/address [{:ident :person/address}]])
+
+^{:refer std.lib.schema.base/attr-add-defaults :added "3.0"}
+(fact "adds defaults to a given schema property pair"
+
+  (base/attr-add-defaults [:person [{}]] [])
+  => [:person [{}]]
+
+  (base/attr-add-defaults [:person [{}]]
+                          [{:default :string, :auto true, :id :type}
+                           {:default :one, :auto true, :id :cardinality}])
+  => [:person [{:cardinality :one :type :string}]]
+
+  (base/attr-add-defaults [:person [{:cardinality :many :type :long}]]
+                          [{:default :string, :auto true, :id :type}
+                           {:default :one, :auto true, :id :cardinality}])
+  => [:person [{:cardinality :many
+                :type :long}]]
+
+  (base/attr-add-defaults [:person [{}]]
+                          [{:default false, :id :index}
+                           {:default false, :id :fulltext}
+                           {:default false, :id :noHistory}
+                           {:default :string, :auto true, :id :type}
+                           {:default :one, :auto true, :id :cardinality}])
+  => [:person [{:index false
+                :fulltext false
+                :cardinality :one
+                :noHistory false
+                :type :string}]])
+
+^{:refer std.lib.schema.base/defaults :added "3.0"}
+(fact "constructs a map according to specifics"
+
+  (base/defaults [:person/name {:default "Unknown"
+                                :auto true}])
+  => {:default "Unknown", :auto true, :id :person/name})
+
+^{:refer std.lib.schema.base/all-auto-defaults :added "3.0"}
+(fact "all automatic defaults for the schema"
+
+  (base/all-auto-defaults)
+  => [{:default :string, :auto true, :id :type}
+      {:default :one, :auto true, :id :cardinality}])
+
+^{:refer std.lib.schema.base/all-defaults :added "3.0"}
+(fact "all defaults for the schema"
+
+  (base/all-defaults)
+  => [{:default :string, :auto true, :id :type}
+      {:default :one, :auto true, :id :cardinality}])
+
+^{:refer std.lib.schema.base/type-checks :added "3.0"}
+(fact "gets type-checks according to category"
+
+  ((base/type-checks :default :string) "Hello")
+  => true)
+
+(comment)
+
+(ns std.lib.schema.base-test
+  (:require [std.lib.schema.base :as base])
+  (:use code.test))
+
+^{:refer std.lib.schema.base/+scope-brief+ :id :scope-provenance}
+(fact "the original scope graph is retained as expansion provenance"
+  base/+scope-brief+
+  => {:*/min #{:-/id :-/key}
+      :*/info #{:*/min :-/info}
+      :*/data #{:*/info :-/data}
+      :*/default #{:*/data :-/ref}
+      :*/detail #{:*/data :-/detail}
+      :*/standard #{:*/detail :-/ref}
+      :*/all #{:*/standard :-/system}
+      :*/everything #{:*/all :-/hidden}})
+
+^{:refer std.lib.schema.base/+scope+ :id :scope-closure}
+(fact "the derived scope catalog contains only leaf scopes and is idempotent"
+  [(get base/+scope+ :*/everything)
+   (= base/+scope+ (base/expand-scopes base/+scope+))
+   (= base/+scope+ (base/expand-scopes base/+scope-brief+))]
+  => [#{:-/id :-/key :-/info :-/data :-/ref :-/detail :-/system :-/hidden} true true])
+
+^{:refer std.lib.schema.base/base-meta :id :metadata-contract}
+(fact "schema defaults and validation predicates retain their original contracts"
+  [(select-keys base/base-meta [:type :cardinality])
+   ((get-in base/base-meta [:ident :check]) :field)
+   ((get-in base/base-meta [:ident :check]) "field")
+   ((get-in base/base-meta [:doc :check]) "field")
+   ((get-in base/base-meta [:required :check]) false)
+   ((get-in base/base-meta [:restrict :check]) (var base/check-scope))
+   ((get-in base/base-meta [:restrict :check]) (pointer {:context :lang/postgres}))
+   ((get-in base/base-meta [:restrict :check]) {})
+   ((get-in base/base-meta [:restrict :check]) 42)
+   ((get-in base/base-meta [:default :check]) false)]
+  => [{:type {:required true :default :string :auto true}
+       :cardinality {:check #{:one :many} :auto true :default :one}}
+      true false true true true true true false false])
+
+^{:refer std.lib.schema.base/expand-scopes :id :custom-scope-expansion}
+(fact "custom scope graphs expand without mutating their retained source"
+  (let [original {:*/leaf #{:-/id} :*/extra #{:*/leaf :-/data}}
+        expanded (base/expand-scopes original)]
+    [(base/expand-scopes {})
+     expanded
+     (base/expand-scopes original {:*/leaf #{:-/id}})
+     (= expanded (base/expand-scopes expanded))
+     original])
+  => [{} {:*/leaf #{:-/id} :*/extra #{:-/id :-/data}}
+      {:*/leaf #{:-/id} :*/extra #{:-/id :-/data}} true
+      {:*/leaf #{:-/id} :*/extra #{:*/leaf :-/data}}])
+
+^{:refer std.lib.schema.base/check-scope :id :scope-error-contract}
+(fact "invalid scopes retain the original message and allowed-value data"
+  (try
+    (base/check-scope :*/everything)
+    (catch error [(ex-message error) (select-keys (ex-data error) [:value :allowed])]))
+  => ["Scope not Valid"
+      {:value :*/everything
+       :allowed #{:-/id :-/key :-/info :-/data :-/ref :-/detail :-/system :-/hidden}}])
+
+^{:refer std.lib.schema.base/attr-add-ident :id :identity-tail-preservation}
+(fact "attribute identities replace prior identities without discarding trailing data"
+  (base/attr-add-ident (list :person/id [{:ident :old :required true} :annotation]))
+  => [:person/id [{:ident :person/id :required true} :annotation]])
+
+^{:refer std.lib.schema.base/attr-add-defaults :id :explicit-values-win}
+(fact "explicit nil and false attributes override defaults while trailing data survives"
+  (base/attr-add-defaults [:person [{:type nil :required false} :annotation]]
+                          [{:id :type :default :string} {:id :required :default true}])
+  => [:person [{:type nil :required false} :annotation]])
+
+^{:refer std.lib.schema.base/defaults :id :default-projection}
+(fact "default projection retains false and nil and removes unrelated validation fields"
+  [(base/defaults [:missing {:check keyword?}])
+   (base/defaults [:false {:default false :auto false :check boolean?}])
+   (base/defaults [:nil {:default nil :required true}])]
+  => [{:id :missing} {:id :false :default false :auto false} {:id :nil :default nil}])
+
+^{:refer std.lib.schema.base/all-auto-defaults :id :automatic-selection-order}
+(fact "automatic defaults keep caller order and include explicitly nil defaults"
+  (base/all-auto-defaults
+    (Algo/ordered-map :nil {:auto true :default nil}
+                      :manual {:auto false :default 1}
+                      :false {:auto true :default false}))
+  => [{:id :nil :auto true :default nil} {:id :false :auto true :default false}])
+
+^{:refer std.lib.schema.base/all-defaults :id :default-selection-order}
+(fact "all defaults keep caller order, include false, and exclude nil or absent defaults"
+  (base/all-defaults
+    (Algo/ordered-map :false {:default false}
+                      :nil {:default nil}
+                      :missing {}
+                      :value {:default 0 :auto false}))
+  => [{:id :false :default false} {:id :value :default 0 :auto false}])
+
+^{:refer std.lib.schema.base/type-checks :id :primitive-dispatch-contract}
+(fact "default dispatch supplies the original primitive predicates and missing-category result"
+  [((base/type-checks :default :string) "yes")
+   ((base/type-checks :default :string) :no)
+   ((base/type-checks :default :boolean) false)
+   ((base/type-checks :default :boolean) 0)
+   ((base/type-checks :default :long) 1)
+   ((base/type-checks :default :long) 1.5)
+   ((base/type-checks :default :float) 1.5)
+   ((base/type-checks :default :float) 1)
+   ((base/type-checks :default :double) 1.5)
+   ((base/type-checks :other :string) "fallback")
+   (base/type-checks :default :unknown)
+   (:added (meta (var base/type-checks)))]
+  => [true false true false true false true false true true nil "3.0"])

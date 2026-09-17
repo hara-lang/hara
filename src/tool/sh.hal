@@ -288,7 +288,10 @@
   ([argv]
    (run-record argv {}))
   ([argv value]
-   (deref (execute argv value))))
+   (let [outcome (Result/synchronize (execute argv value))]
+     (if (Result/error? outcome)
+       (throw (Result/error-value outcome))
+       (Result/data outcome)))))
 
 (defn require-success
   "Returns a successful command result or throws a structured exception containing it."
@@ -321,3 +324,116 @@
    (run-checked argv {}))
   ([argv value]
    (require-success (run argv value))))
+
+;; Foundation shell semantics live here, not in migrated callers.
+;; Unlike run, sh selects output without treating a nonzero exit as failure.
+(defn shell-options
+  "Normalizes Foundation shell options without changing the strict run options.
+   Inherited stdio is explicitly unsupported until native Process provides it.
+   Environment conversion and trimming are intentionally lossy; sh results
+   retain the original options and untrimmed record in their Result context."
+  [value]
+  (let [value (or value {})
+        allowed #{:root :env :wait :output :trim :wrap :async :inherit
+                  :print :output-errors :ignore-errors}
+        unknown (if (map? value)
+                  (vec (sort-by str (filter (fn [key] (not (has? allowed key)))
+                                           (keys value))))
+                  [])]
+    (if (not (map? value))
+      (throw (ex :argument {:tool.sh/error :invalid-options}
+                 :ex/message "tool.sh/sh options must be a map")))
+    (if (not (empty? unknown))
+      (throw (ex :argument {:tool.sh/error :unknown-options :unknown unknown}
+                 :ex/message "tool.sh/sh received unknown options")))
+    (if (:inherit value)
+      (throw (ex :host {:tool.sh/error :unsupported-inherit}
+                 :ex/message "Native Process does not support inherited stdio")))
+    (if (and (not (nil? (:root value))) (not (string? (:root value))))
+      (throw (ex :argument {:tool.sh/error :invalid-cwd}
+                 :ex/message "tool.sh/sh :root must be a string")))
+    (if (and (not (nil? (:env value))) (not (map? (:env value))))
+      (throw (ex :argument {:tool.sh/error :invalid-env}
+                 :ex/message "tool.sh/sh :env must be a map")))
+    (let [wait (if (nil? (:wait value)) true (:wait value))
+          output (if (nil? (:output value)) (if wait true false) (:output value))]
+      (if (and output (not wait))
+        (throw (ex :argument {:tool.sh/error :output-without-wait}
+                   :ex/message "tool.sh/sh output requires waiting for completion")))
+      (assoc (merge {:trim true :wrap true} value)
+             :wait wait :output output))))
+
+(defn shell-output
+  "Selects Foundation stdout/stderr semantics from an untrimmed process record.
+   Stderr-only output throws unless ignored or explicitly selected. Exit status
+   alone is not failure. Result context preserves the record and input options."
+  [record value]
+  (let [out (:stdout record)
+        err (:stderr record)
+        selected (cond
+                   (:output-errors value) err
+                   (and (empty? out) (not (empty? err))
+                        (not (:ignore-errors value)))
+                   (throw (ex :host record :ex/message err))
+                   :else out)
+        selected (if (:trim value) (str/trim selected) selected)]
+    (if (:wrap value)
+      (Result/create :success selected
+                     {:tool.sh/operation :sh
+                      :tool.sh/options value
+                      :tool.sh/record record})
+      selected)))
+
+(defn ^{:public true} sh
+  "Runs Foundation-style argv with native Process, Promise, and Result.
+   Accepts a map with :args, or an executable followed by arguments and an
+   optional options map. Strings are never interpreted by a shell.
+
+   Defaults: wait and select trimmed stdout, wrapped in Result. :wrap false
+   returns a string; :output false returns the completed Process; :wait false
+   returns a live Process. :async true returns a Promise of the same outcome.
+   Stdin stays open, as in Foundation; callers own close-input/kill for returned
+   processes. No timeout, inherited stdio, or descendant-kill contract is added.
+   :print prints argv only, not Foundation's source-location diagnostic header."
+  [first-arg & more]
+  (let [map-form (map? first-arg)
+        _ (if (and map-form (not (empty? more)))
+            (throw (ex :argument {:tool.sh/error :invalid-command}
+                       :ex/message "tool.sh/sh map form takes one argument")))
+        all (cons first-arg more)
+        value (if map-form
+                (dissoc first-arg :args)
+                (if (map? (last all)) (last all) {}))
+        argv (command (if map-form
+                        (vec (:args first-arg))
+                        (vec (if (map? (last all)) (butlast all) all))))
+        normalized (shell-options value)
+        process-value (cond-> {:cwd (or (:root normalized) (OS/getenv "PWD") (OS/cwd))}
+                        (:env normalized)
+                        (assoc :env (into {} (map (fn [[key item]] [(str key) (str item)])
+                                                 (:env normalized)))))
+        _ (if (:print normalized) (println argv))
+        process (spawn argv process-value)]
+    (try
+      (let [pending (if (:output normalized)
+                      (promise/then
+                       (promise/all [(stdout process) (stderr process) (wait process)])
+                       (fn [values]
+                         (result argv values)))
+                      (if (:wait normalized)
+                        (promise/then (wait process) (fn [exit] process))
+                        (promise/from process)))]
+        (if (:async normalized)
+          (if (:output normalized)
+            (promise/then pending (fn [record] (shell-output record normalized)))
+            pending)
+          (let [outcome (Result/synchronize pending)]
+            (if (Result/error? outcome)
+              (throw (Result/error-value outcome))
+              (if (:output normalized)
+                (shell-output (Result/data outcome) normalized)
+                (Result/data outcome))))))
+      (catch error
+        (do
+          (try (kill process) (catch ignored nil))
+          (throw error))))))

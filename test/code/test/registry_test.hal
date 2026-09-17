@@ -1,5 +1,6 @@
 (ns code.test.registry-test
-  (:require [code.test.registry :as registry]))
+  (:require [code.test.execution :as execution]
+            [code.test.registry :as registry]))
 
 (def fixture-namespace 'code.test.registry-test)
 
@@ -205,3 +206,9 @@
              (registry/missing fixture-namespace ["one" "two"])
              (finally (cleanup))))
    :expected ["two"]}])
+
+^{:refer code.test.registry/execute}
+(Test/check
+ [{:name "registry execution journals exactly one assertion"
+   :test (fn [] (let [before (execution/snapshot)] (try (execution/reset) (registry/register (ns-current) {:desc "candidate" :test (fn [] 42) :expected 42 :meta {}}) (let [token (execution/begin) result (registry/execute (ns-current) "candidate" {}) report (execution/finish token)] (if (= [:passed 1 1] [(:status result) (:facts report) (:checks report)]) true (throw (ex :state {} :ex/message "Registry execution journal mismatch")))) (finally (cleanup) (execution/restore before)))))
+   :expected true}])

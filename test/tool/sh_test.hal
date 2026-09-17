@@ -1,17 +1,370 @@
 (ns tool.sh-test
-  (:require [tool.sh :as subject]))
+  (:require [tool.sh :as subject]
+            [code.test :refer [fact]]))
+
+^{:refer tool.sh/+option-keys+}
+(fact "strict option inventory stays closed"
+  subject/+option-keys+
+  => #{:cwd :env :stdin :timeout})
+
+^{:refer tool.sh/command}
+(fact "argv preserves literal shell metacharacters"
+  (subject/command ["/bin/echo" "$NAME; *"])
+  => ["/bin/echo" "$NAME; *"])
+
+^{:refer tool.sh/command}
+(fact "command rejects string empty and non-string vectors"
+  (mapv (fn [value]
+                                  (try (subject/command value) :unexpected
+                                       (catch error (:tool.sh/error (ex-data error)))))
+                                ["echo hi" [] ["echo" 1]])
+  => [:invalid-command :invalid-command :invalid-command])
+
+^{:refer tool.sh/string-map?}
+(fact "environment must have string keys and values"
+  (mapv subject/string-map? [{} {"A" "1"} {:A "1"} {"A" 1} [] nil])
+  => [true true false false false false])
+
+^{:refer tool.sh/options}
+(fact "strict option validation and defaults"
+  [(subject/options nil)
+                             (subject/options {:cwd "." :env {} :stdin "" :timeout 0})]
+  => [{} {:stdin "" :env {} :cwd "." :timeout 0}])
+
+^{:refer tool.sh/options}
+(fact "strict options reject malformed values and shell-only options"
+  (mapv (fn [value]
+                                  (try (subject/options value) :unexpected
+                                       (catch error (:tool.sh/error (ex-data error)))))
+                                [[] {:trim true} {:cwd nil} {:env {"A" 1}}
+                                 {:stdin 1} {:timeout -1}])
+  => [:invalid-options :unknown-options :invalid-cwd :invalid-env :invalid-stdin :invalid-timeout])
+
+^{:refer tool.sh/process-options}
+(fact "spawn receives only host options"
+  (subject/process-options {:cwd "." :env {"A" "B"} :stdin "" :timeout 1})
+  => {:env {"A" "B"} :cwd "."})
 
 ^{:refer tool.sh/process-failure}
-(Test/check
- [{:name "wraps a non-Exception process failure without an invalid cause"
-   :test (fn []
-           (try
-             (subject/process-failure :spawn ["missing"] "native failure")
-             :missing
-             (catch error
-               [(ex-message error)
-                (:tool.sh/error (ex-data error))
-                (:command (ex-data error))])))
-   :expected ["tool.sh process access is unavailable or failed"
-              :process-unavailable
-              ["missing"]]}])
+(fact "wraps a non-Exception process failure without an invalid cause"
+  (try (subject/process-failure :spawn ["missing"] "native failure")
+                           :missing
+                           (catch error
+                             [(ex-message error) (:tool.sh/error (ex-data error))
+                              (:command (ex-data error))]))
+  => ["tool.sh process access is unavailable or failed" :process-unavailable ["missing"]])
+
+^{:refer tool.sh/spawn}
+(fact "spawn leaves stdin open and preserves explicit environment"
+  (let [process (subject/spawn ["/bin/sh" "-c" "read value; printf '%s:%s' \"$TOOL_SH_TEST\" \"$value\""]
+                                                  {:env {"TOOL_SH_TEST" "environment"}})]
+                        (try
+                          (subject/write process "input\n")
+                          (subject/close-input process)
+                          (str/decode-utf8 (Result/data (Result/synchronize (subject/stdout process))))
+                          (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => "environment:input")
+
+^{:refer tool.sh/stdout}
+(fact "stdout is captured without trimming"
+  (let [process (subject/spawn ["/bin/sh" "-c" "printf ' out '"])]
+                        (try (str/decode-utf8 (Result/data (Result/synchronize (subject/stdout process))))
+                             (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => " out ")
+
+^{:refer tool.sh/stderr}
+(fact "stderr is captured independently"
+  (let [process (subject/spawn ["/bin/sh" "-c" "printf ' err ' >&2"])]
+                        (try (str/decode-utf8 (Result/data (Result/synchronize (subject/stderr process))))
+                             (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => " err ")
+
+^{:refer tool.sh/wait}
+(fact "wait preserves nonzero exit status"
+  (let [process (subject/spawn ["/bin/sh" "-c" "exit 7"])]
+                        (try (Result/data (Result/synchronize (subject/wait process)))
+                             (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => 7)
+
+^{:refer tool.sh/write}
+(fact "write accepts text and bytes without closing input"
+  (let [process (subject/spawn ["/bin/cat"])]
+                        (try
+                          (subject/write process "a")
+                          (subject/write process (str/encode-utf8 "λ"))
+                          (subject/close-input process)
+                          (str/decode-utf8 (Result/data (Result/synchronize (subject/stdout process))))
+                          (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => "aλ")
+
+^{:refer tool.sh/write}
+(fact "write rejects non-bytes without host access"
+  (try (subject/write nil 42) :unexpected
+                                (catch error (:tool.sh/error (ex-data error))))
+  => :invalid-stdin)
+
+^{:refer tool.sh/close-input}
+(fact "closing input twice delivers EOF and is idempotent"
+  (let [process (subject/spawn ["/bin/cat"])]
+                        (try
+                          (subject/close-input process)
+                          (subject/close-input process)
+                          [(Result/data (Result/synchronize (subject/wait process)))
+                           (str/decode-utf8 (Result/data (Result/synchronize (subject/stdout process))))]
+                          (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => [0 ""])
+
+^{:refer tool.sh/alive?}
+(fact "process transitions from input wait to stopped"
+  (let [process (subject/spawn ["/bin/cat"])]
+                        (try
+                          (let [before (subject/alive? process)]
+                            (subject/close-input process)
+                            (Result/synchronize (subject/wait process))
+                            [before (subject/alive? process)])
+                          (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => [true false])
+
+^{:refer tool.sh/kill}
+(fact "kill is idempotent and terminates an input-waiting child"
+  (let [process (subject/spawn ["/bin/cat"])]
+                        (try
+                          (subject/kill process)
+                          (Result/synchronize (subject/wait process))
+                          (subject/kill process)
+                          (subject/alive? process)
+                          (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => false)
+
+^{:refer tool.sh/result}
+(fact "completion record decodes both streams and retains argv"
+  (subject/result ["cmd"] [(str/encode-utf8 " λ ") (str/encode-utf8 "err") 3])
+  => {:stderr "err" :command ["cmd"] :stdout " λ " :exit 3})
+
+^{:refer tool.sh/start-execution}
+(fact "execution writes and closes stdin then joins streams"
+  (let [started (subject/start-execution ["/bin/cat"] {:stdin "round trip\n"})]
+                        (try (Result/data (Result/synchronize (:promise started)))
+                             (finally (subject/kill (:process started))
+                                      (Result/synchronize (subject/wait (:process started))))))
+  => {:stderr "" :command ["/bin/cat"] :stdout "round trip\n" :exit 0})
+
+^{:refer tool.sh/execute}
+(fact "async execution returns full nonzero record"
+  (Result/data (Result/synchronize
+                              (subject/execute ["/bin/sh" "-c" "printf ' out '; printf err >&2; exit 9"])))
+  => {:stderr "err" :command ["/bin/sh" "-c" "printf ' out '; printf err >&2; exit 9"] :stdout " out " :exit 9})
+
+^{:refer tool.sh/run-context}
+(fact "run context identifies argv"
+  (subject/run-context ["cmd"])
+  => {:tool.sh/operation :run :tool.sh/command ["cmd"]})
+
+^{:refer tool.sh/timed-out?}
+(fact "timeout classification requires error and timeout marker"
+  [(subject/timed-out? (Result/create :error (ex :host {}) {:result/timeout true}))
+                             (subject/timed-out? (Result/create :success 1 {:result/timeout true}))
+                             (subject/timed-out? (Result/create :error (ex :host {}) {}))]
+  => [true false false])
+
+^{:refer tool.sh/completion-result}
+(fact "strict completion maps nonzero to error without dropping output"
+  (let [record {:exit 7 :stdout "out" :stderr "err" :command ["cmd"]}
+                            outcome (subject/completion-result ["cmd"] (Result/create :success record {:trace 1}))]
+                        [(Result/error? outcome)
+                         (select-keys (ex-data (Result/error-value outcome)) [:exit :stdout :stderr :command])
+                         (Result/context outcome)])
+  => [true {:stderr "err" :command ["cmd"] :stdout "out" :exit 7} {:trace 1}])
+
+^{:refer tool.sh/run}
+(fact "run keeps strict nonzero semantics"
+  (let [outcome (subject/run ["/bin/sh" "-c" "printf out; exit 7"])]
+                             [(Result/error? outcome) (:stdout (ex-data (Result/error-value outcome)))])
+  => [true "out"])
+
+^{:refer tool.sh/run}
+(fact "run succeeds with complete untrimmed record"
+  (Result/data (subject/run ["/bin/echo" "ok"]))
+  => {:stderr "" :command ["/bin/echo" "ok"] :stdout "ok\n" :exit 0})
+
+^{:refer tool.sh/result-record}
+(fact "result-record accepts success error records and maps"
+  (let [record {:exit 4 :stdout "out" :stderr "" :command ["cmd"]}]
+                             [(subject/result-record record)
+                              (subject/result-record (Result/create :success record))
+                              (subject/result-record (Result/create :error (ex :host record)))])
+  => [{:stderr "" :command ["cmd"] :stdout "out" :exit 4} {:stderr "" :command ["cmd"] :stdout "out" :exit 4} {:stderr "" :command ["cmd"] :stdout "out" :exit 4}])
+
+^{:refer tool.sh/run-record}
+(fact "run-record synchronizes to a map even for nonzero exits"
+  (subject/run-record ["/bin/sh" "-c" "printf out; exit 4"])
+  => {:stderr "" :command ["/bin/sh" "-c" "printf out; exit 4"] :stdout "out" :exit 4})
+
+^{:refer tool.sh/require-success}
+(fact "require-success preserves a successful record"
+  (subject/require-success (Result/create :success {:exit 0 :stdout "ok"}))
+  => {:stdout "ok" :exit 0})
+
+^{:refer tool.sh/require-success}
+(fact "require-success throws requested message and process data"
+  (try (subject/require-success "rejected" {:exit 3 :stdout "out"}) :unexpected
+                                (catch error [(ex-message error) (:exit (ex-data error)) (:stdout (ex-data error))]))
+  => ["rejected" 3 "out"])
+
+^{:refer tool.sh/run-checked}
+(fact "checked commands return records and throw on failure"
+  [(:stdout (subject/run-checked ["/bin/echo" "ok"]))
+                             (try (subject/run-checked ["/bin/sh" "-c" "exit 6"]) :unexpected
+                                  (catch error (:exit (ex-data error))))]
+  => ["ok\n" 6])
+
+^{:refer tool.sh/shell-options}
+(fact "shell defaults are stable under normalization"
+  (let [value (subject/shell-options {})]
+                             [value (= value (subject/shell-options value))
+                              (subject/shell-options {:wait false})])
+  => [{:wrap true :output true :trim true :wait true} true {:wrap true :output false :trim true :wait false}])
+
+^{:refer tool.sh/shell-options}
+(fact "unsupported shell combinations fail before spawning"
+  (mapv (fn [value]
+                                  (try (subject/shell-options value) :unexpected
+                                       (catch error (:tool.sh/error (ex-data error)))))
+                                [{:inherit true} {:wait false :output true} {:timeout 1}
+                                 {:root 1} {:env []} []])
+  => [:unsupported-inherit :output-without-wait :unknown-options :invalid-cwd :invalid-env :invalid-options])
+
+^{:refer tool.sh/shell-output}
+(fact "shell output retains untrimmed provenance and prefers stdout"
+  (let [record {:command ["cmd"] :exit 7 :stdout " out \n" :stderr " err \n"}
+                            value {:trim true :wrap true}
+                            result (subject/shell-output record value)]
+                        [(Result/data result) (:tool.sh/record (Result/context result))
+                         (:tool.sh/options (Result/context result))])
+  => ["out" {:stderr " err \n" :command ["cmd"] :stdout " out \n" :exit 7} {:wrap true :trim true}])
+
+^{:refer tool.sh/shell-output}
+(fact "stderr selection ignoring and raw output follow original branches"
+  [(subject/shell-output {:stdout "out" :stderr " err "} {:output-errors true :trim true :wrap false})
+                             (subject/shell-output {:stdout "" :stderr "err"} {:ignore-errors true :wrap false})
+                             (subject/shell-output {:stdout " out " :stderr ""} {:trim false :wrap false})
+                             (try (subject/shell-output {:stdout "" :stderr " err "} {})
+                                  :unexpected (catch error (ex-message error)))]
+  => ["err" "" " out " " err "])
+
+^{:refer tool.sh/sh}
+(fact "shell nonzero stdout wins while strict run still fails"
+  [(Result/data (subject/sh "/bin/sh" "-c" "printf ' out '; printf err >&2; exit 7"))
+                             (Result/error? (subject/run ["/bin/sh" "-c" "printf out; exit 7"]))
+                             (subject/sh "/bin/sh" "-c" "exit 7" {:wrap false})]
+  => ["out" true ""])
+
+^{:refer tool.sh/sh}
+(fact "shell map form raw output and literal arguments"
+  (subject/sh {:args ["/bin/echo" "$NAME; *"] :wrap false :trim false})
+  => "$NAME; *\n")
+
+^{:refer tool.sh/sh}
+(fact "shell root and stringified environment reach child"
+  (subject/sh "/bin/sh" "-c" "printf '%s|%s|%s|%s' \"$TOOL_SH_NUMBER\" \"$TOOL_SH_NIL\" \"$TOOL_SH_FALSE\" \"$PWD\""
+                                     {:root (OS/cwd) :env {"TOOL_SH_NUMBER" 7 "TOOL_SH_NIL" nil "TOOL_SH_FALSE" false}
+                                      :wrap false})
+  => (str "7||false|" (OS/cwd)))
+
+^{:refer tool.sh/sh}
+(fact "async shell resolves to Result and selected stderr"
+  (let [outcome (Result/synchronize
+                                          (subject/sh "/bin/sh" "-c" "printf ' warning ' >&2"
+                                                      {:async true :output-errors true}))]
+                             (Result/data (Result/data outcome)))
+  => "warning")
+
+^{:refer tool.sh/sh}
+(fact "async stderr-only failure rejects"
+  (let [outcome (Result/synchronize
+                                          (subject/sh "/bin/sh" "-c" "printf failure >&2" {:async true}))]
+                             [(Result/error? outcome)
+                              (str/includes? (ex-message (Result/error-value outcome)) "failure")])
+  => [true true])
+
+^{:refer tool.sh/sh}
+(fact "no-wait exposes live process with usable stdin"
+  (let [process (subject/sh {:args ["/bin/cat"] :wait false})]
+                        (try
+                          (let [before (subject/alive? process)]
+                            (subject/write process "interactive")
+                            (subject/close-input process)
+                            [before (str/decode-utf8 (Result/data (Result/synchronize (subject/stdout process))))])
+                          (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => [true "interactive"])
+
+^{:refer tool.sh/sh}
+(fact "output false returns the completed process not selected text"
+  (let [process (subject/sh "/bin/echo" "retained" {:output false})]
+                        (try [(subject/alive? process)
+                              (str/decode-utf8 (Result/data (Result/synchronize (subject/stdout process))))]
+                             (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => [false "retained\n"])
+
+^{:refer tool.sh/sh}
+(fact "sync stderr failure retains message and raw process record"
+  (try (subject/sh "/bin/sh" "-c" "printf ' raw error ' >&2; exit 3")
+                                :unexpected
+                                (catch error [(ex-message error)
+                                              (select-keys (ex-data error) [:exit :stdout :stderr])]))
+  => [" raw error " {:stderr " raw error " :stdout "" :exit 3}])
+
+^{:refer tool.sh/sh}
+(fact "async no-wait yields an owned live process"
+  (let [process (Result/data (Result/synchronize
+                                           (subject/sh "/bin/cat" {:wait false :async true})))]
+                             (try (let [alive (subject/alive? process)]
+                                    (subject/close-input process)
+                                    [alive (Result/data (Result/synchronize (subject/wait process)))])
+                                  (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => [true 0])
+
+^{:refer tool.sh/sh}
+(fact "shell ignores stderr only when explicitly requested"
+  (subject/sh "/bin/sh" "-c" "printf ignored >&2; exit 2"
+                                      {:ignore-errors true :wrap false})
+  => "")
+
+^{:refer tool.sh/sh}
+(fact "shell rejects ambiguous map plus arguments and empty argv"
+  [(try (subject/sh {:args ["/bin/echo"]} "extra") :unexpected
+                                 (catch error (:tool.sh/error (ex-data error))))
+                             (try (subject/sh {:args []}) :unexpected
+                                  (catch error (:tool.sh/error (ex-data error))))]
+  => [:invalid-command :invalid-command])
+
+^{:refer tool.sh/sh}
+(fact "shell map args accepts a list as Foundation does"
+  (subject/sh {:args (list "/bin/echo" "list argv") :wrap false})
+  => "list argv")
+
+^{:refer tool.sh/sh}
+(fact "async unwrapped output is a string"
+  (Result/data (Result/synchronize
+                              (subject/sh "/bin/echo" "async raw" {:async true :wrap false})))
+  => "async raw")
+
+^{:refer tool.sh/run-record}
+(fact "record is available to synchronous map consumers"
+  (let [record (subject/run-record ["/bin/echo" "immediate"])]
+                             [(:exit record) (:stdout record)])
+  => [0 "immediate\n"])
+
+^{:refer tool.sh/sh}
+(fact "print writes argv without a source-location header"
+  (capture (fn [] (subject/sh "/bin/echo" "diagnostic" {:print true :wrap false}) nil))
+  => "[\"/bin/echo\" \"diagnostic\"]\n")
+
+^{:refer tool.sh/sh}
+(fact "async output false waits then yields the completed process"
+  (let [process (Result/data (Result/synchronize
+                                           (subject/sh "/bin/sh" "-c" "exit 5" {:async true :output false})))]
+                             (try [(subject/alive? process)
+                                   (Result/data (Result/synchronize (subject/wait process)))]
+                                  (finally (subject/kill process) (Result/synchronize (subject/wait process)))))
+  => [false 5])

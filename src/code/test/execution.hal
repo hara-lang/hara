@@ -1,0 +1,96 @@
+(ns code.test.execution
+  (:config {:role :internal}))
+
+(def +journal+ (atom nil))
+(def ^:dynamic *fact-depth* 0)
+
+(defn snapshot
+  "Captures the active evaluation journal without copying live test values."
+  []
+  (deref +journal+))
+
+(defn restore
+  "Restores a caller-owned journal snapshot."
+  [state]
+  (reset! +journal+ state))
+
+(defn reset
+  "Idempotently discards the active evaluation journal."
+  []
+  (restore nil))
+
+(defn begin
+  "Starts an isolated evaluation report. Nested report scopes are rejected."
+  []
+  (when (snapshot)
+    (throw (ex :state {} :ex/message "An evaluation report is already active")))
+  (let [token (str (gensym "evaluation-"))]
+    (restore {:token token :events []})
+    token))
+
+(defn check-report
+  "Projects a native assertion into portable display data; live values stay in Test results."
+  [check]
+  {:passed (Test/passed? check)
+   :actual (pr-str (Test/actual check))
+   :expected (pr-str (Test/expected check))
+   :failures (Test/failure-count check)})
+
+(defn fact-report
+  "Projects a fact outcome without serializing callbacks or native Result objects."
+  [result]
+  (let [report (assoc (select-keys result [:namespace :desc :status :elapsed :error])
+                      :checks (vec (map check-report (:checks result))))]
+    ;; Metadata can contain sets, forms, and callbacks. Preserve its source
+    ;; representation rather than treating process-local objects as JSON data.
+    (if (has? result :meta) (assoc report :meta/source (pr-str (:meta result))) report)))
+
+(defn record
+  "Records every completed fact in an active evaluation, returning its original result."
+  [result]
+  (when (snapshot)
+    (swap! +journal+ update :events conj (fact-report result)))
+  result)
+
+(defn record-checks
+  "Observes completed primitive checks in mixed files; fact-owned checks are reported once."
+  [checks]
+  (when (and (snapshot) (= 0 *fact-depth*))
+    (record {:namespace (ns-current) :desc "Test/check"
+             :status (if (and (seq checks) (every? Test/passed? checks)) :passed :failed)
+             :checks checks})))
+
+(defn run-fact
+  "Executes a fact once for both immediate and suite callers; empty facts fail."
+  [fact options]
+  (let [result (eval-in-ns (:namespace fact) (fn [] (binding [*fact-depth* (inc *fact-depth*)] (Test/run-fact fact options))))
+        result (if (and (= :passed (:status result))
+                        (empty? (:checks result)))
+                 (assoc result :status :failed :error "Fact executed no assertions")
+                 result)]
+    (record result)))
+
+(defn run-suite
+  "Runs the native suite with the same fact executor used by immediate evaluation.
+   Native top-level Test/check results remain runner-owned and are not re-evaluated."
+  [options]
+  (Test/run (assoc (assoc (or options {}) :namespace (or (:namespace options) (ns-current)))
+                   :executor run-fact)))
+
+(defn finish
+  "Consumes only the matching report token. Empty reports describe setup, not passing tests."
+  [token]
+  (let [state (snapshot)]
+    (when (or (nil? state) (not= token (:token state)))
+      (throw (ex :state {:token token} :ex/message "Stale evaluation report token")))
+    (let [events (:events state)
+          report {:report/version 1
+                  :events events
+                  :facts (count events)
+                  :checks (reduce (fn [n event] (+ n (count (:checks event)))) 0 events)
+                  :status (cond
+                            (empty? events) :none
+                            (every? (fn [event] (= :passed (:status event))) events) :passed
+                            :else :failed)}]
+      (reset)
+      report)))

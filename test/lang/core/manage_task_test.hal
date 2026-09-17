@@ -1,0 +1,585 @@
+(ns lang.core.manage-task-test
+ (:require [lang.core.manage-task :as subject]
+           [work.flow.task :as task])
+ (:use code.test))
+
+^{:refer lang.core.manage-task/compile :id :summary-print-order}
+(fact "summary display suppresses numeric zeros without changing data and precedes notices and projection"
+ (let [result (atom nil)
+       bundle (subject/compile :fixture/summary-print
+                {:item {:list (fn [_ _] [1])}
+                 :main {:fn (fn [input _ _ _] input)}
+                 :result {:output (fn [value] (println "projected") value)}
+                 :summary {:finalise
+                           (fn [summary _ _]
+                             (with-meta (assoc summary :zero 0 :flag false :note nil)
+                               {:std.task/after-summary ["saved"]}))}})]
+   (try
+     (let [text (with-out-string
+                  (reset! result (:data (deref (task/invoke bundle
+                    {:selector :all :print {:summary true} :return :all})))))
+           summary (:summary (deref result))
+           expected (str "\n\u001b[1mSUMMARY "
+                      {:items 1 :results 1 :flag false :note nil
+                       :cumulative (subject/format-ms (:cumulative summary))
+                       :elapsed (subject/format-ms (:elapsed summary))}
+                      "\u001b[0m\n\nsaved\nprojected\n")]
+       [(= expected text)
+        (select-keys summary [:items :results :errors :warnings :zero :flag :note])
+        (:results (deref result))])
+     (finally (reset! result nil))))
+ => [true {:items 1 :results 1 :errors 0 :warnings 0 :zero 0 :flag false :note nil} {1 1}])
+
+
+^{:refer lang.core.manage-task/compile :id :original-item-transformations}
+(fact "single and bulk invocation preserve original pre/post transformations and prepared keys"
+ (let [definition {:item {:pre inc :post dec :list (fn [_ _] [1 2 3])}
+                   :main {:fn (fn [input _ _ _] (* 2 input))}}
+       bundle (subject/compile :fixture/transforms definition)]
+  [(:data (deref (task/invoke bundle {:selector 1})))
+   (:data (deref (task/invoke bundle {:selector :all})))
+   (= definition (:lang.core.manage/config bundle))])
+ => [3 {2 3 3 5 4 7} true])
+
+^{:refer lang.core.manage-task/compile :id :constructed-context}
+(fact "constructors receive original task, parameter and environment contexts"
+ (let [bundle (subject/compile :fixture/context
+               {:params {:inherited 7}
+                :construct {:input (fn [_] 'default)
+                            :env (fn [config] {:marker (:extra config)})
+                            :lookup (fn [_ env] (:marker env))}
+                :main {:fn (fn [input params lookup env]
+                             [input params lookup env])}})]
+  (:data (deref (task/invoke bundle {:extra 9}))))
+ => ['default {:inherited 7 :extra 9} 9 {:marker 9}])
+
+^{:refer lang.core.manage-task/compile :id :projection-boundaries}
+(fact "item and result output functions apply at their original boundaries"
+ (let [bundle (subject/compile :fixture/projections
+               {:item {:list (fn [_ _] [1 2]) :output (fn [value] (+ 10 value))}
+                :result {:output (fn [value] (+ 100 value)) :ignore (fn [value] (= 2 value))}
+                :main {:fn (fn [input _ _ _] input)}})]
+  [(:data (deref (task/invoke bundle {:selector 1})))
+   (:data (deref (task/invoke bundle {:selector :all})))
+   (:data (deref (task/invoke bundle {:selector :all :return :items})))
+   (mapv vec (:data (deref (task/invoke bundle {:selector :all :package :vector}))))])
+ => [11 {1 101} {1 11 2 12} [[1 101]]])
+
+^{:refer lang.core.manage-task/compile :id :summary-and-finalisation}
+(fact "aggregation ignores excluded results and passes original finalisation arguments"
+ (let [bundle (subject/compile :fixture/summary
+               {:item {:list (fn [_ _] [1 2 3])}
+                :result {:ignore (fn [value] (= value 2)) :keys {:amount identity}}
+                :summary {:aggregate {:total [:amount + 0]}
+                          :finalise (fn [summary items results]
+                                      (assoc summary :seen [(count items) (count results)]))}
+                :main {:fn (fn [input _ _ _] input)}})]
+  (select-keys (:data (deref (task/invoke bundle {:selector :all :return :summary})))
+               [:items :results :errors :warnings :total :seen]))
+ => {:items 3 :results 2 :errors 0 :warnings 0 :total 4 :seen [3 2]})
+
+^{:refer lang.core.manage-task/compile, :id :failure-boundaries}
+(fact
+  "single errors propagate and bulk errors do not prevent later items"
+  (let [bundle (subject/compile
+                 :fixture/errors
+                 {:item {:list (fn [_ _] [1 2])},
+                  :main
+                  {:fn
+                   (fn [input _ _ _]
+                     (if (= input 1)
+                       (throw
+                         (ex
+                           :argument
+                           {:input input}
+                           :ex/message
+                           "first item failed"))
+                       input))}})
+        single (try
+                 (deref (task/invoke bundle {:selector 1}))
+                 (catch
+                   error
+                   (let [failure (read-string (ex-message error))]
+                     [:rejected
+                      (:code failure)
+                      (:retryable failure)
+                      (str/includes?
+                        (:message failure)
+                        "first item failed")])))
+        bulk (:data
+               (deref
+                 (task/invoke bundle {:selector :all, :return :all})))]
+    [single
+     (:items bulk)
+     (:results bulk)
+     (mapv
+       (fn [[key record]] [key (:status record) (:data record)])
+       (:errors bulk))
+     (select-keys
+       (:summary bulk)
+       [:items :results :errors :warnings])])
+  =>
+  [[:rejected :work/failed false true]
+   {1 :errored, 2 2}
+   {2 2}
+   [[1 :error :errored]]
+   {:items 2, :results 1, :errors 1, :warnings 0}])
+
+(comment :additional-order-contract)
+^{:refer lang.core.manage-task/compile :id :ordered-results}
+(fact "result ordering controls packaging and order-sensitive aggregation, not item execution"
+ (let [bundle (subject/compile :fixture/order
+                {:item {:list (fn [_ _] [3 1 2])}
+                 :main {:fn (fn [input _ _ _] input)}
+                 :result {:keys {:rank identity}}
+                 :summary {:aggregate {:sequence [:rank conj []]}
+                           :finalise (fn [summary items results]
+                                       (assoc summary :final-order (mapv :key results)))}})
+       result (:data (deref (task/invoke bundle {:selector :all :return :all :package :vector :order-by :rank})))]
+   [(mapv vec (:items result)) (mapv vec (:results result))
+    (select-keys (:summary result) [:sequence :final-order])])
+ => [[[3 3] [1 1] [2 2]] [[1 1] [2 2] [3 3]] {:sequence [1 2 3] :final-order [1 2 3]}])
+
+(comment :additional-parallel-contract)
+^{:refer lang.core.manage-task/compile :id :parallel-execution}
+(fact "parallel tasks overlap, retain input order and isolate one item's failure"
+ (let [release (atom nil)
+       gate (Promise/new (fn [resolve _reject] (reset! release resolve)))
+       bundle (subject/compile :fixture/parallel
+                {:item {:list (fn [_ _] [1 2 3])}
+                 :main {:fn (fn [input _ _ _]
+                              (case input
+                                1 (IDerefTimeout/deref-timeout gate 1000 :timed-out)
+                                2 (do ((deref release) :overlapped) :released)
+                                3 (throw (ex :argument {} :ex/message "third item failed"))))}})]
+   (try
+     (let [output (:data (deref (task/invoke bundle {:selector :all :parallel true :package :vector :return :all})))]
+       [(mapv vec (:items output))
+        (mapv vec (:results output))
+        (mapv (fn [[key entry]] [key (:status entry) (:data entry)]) (:errors output))
+        (select-keys (:summary output) [:items :results :errors])])
+     (finally (reset! release nil))))
+ => [[[1 :overlapped] [2 :released] [3 :errored]]
+     [[1 :overlapped] [2 :released]]
+     [[3 :error :errored]]
+     {:items 3 :results 2 :errors 1}])
+
+(comment :additional-random-contract)
+^{:refer lang.core.manage-task/shuffle-inputs :id :shuffle-contract}
+(fact "Fisher-Yates preserves input values, rejects biased draws and avoids draws for trivial input"
+ (let [draws (atom [(Bytes/new 255 255 255 255) (Bytes/new 0 0 0 0) (Bytes/new 0 0 0 1)])
+       input ['a 'b 'c]]
+   (try
+     [(subject/shuffle-inputs input (fn [] (let [next (first (deref draws))] (swap! draws subvec 1) next)))
+      input (count (deref draws))
+      (subject/shuffle-inputs nil (fn [] (throw "unexpected draw")))
+      (subject/shuffle-inputs [false] (fn [] (throw "unexpected draw")))
+      (subject/shuffle-inputs [nil false nil] (fn [] (Bytes/new 0 0 0 0)))]
+     (finally (reset! draws []))))
+ => [['c 'b 'a] ['a 'b 'c] 0 [] [false] [false nil nil]])
+^{:refer lang.core.manage-task/shuffle-inputs :id :shuffle-native-draw}
+(fact "native random draws retain every original value and invalid draws fail explicitly"
+ [(sort (subject/shuffle-inputs [4 1 3 2]))
+  (try (subject/shuffle-inputs [1 2] (fn [] (Bytes/new 1)))
+       (catch error (str/includes? (ex-message error) "four bytes")))]
+ => [[1 2 3 4] true])
+
+(comment :additional-random-contract)
+^{:refer lang.core.manage-task/shuffle-inputs :id :shuffle-single-pass-input}
+(fact "shuffle consumes a single-pass input once"
+ (subject/shuffle-inputs (IIter/iter [1 2 3]) (fn [] (Bytes/new 0 0 0 0)))
+ => [2 3 1])
+
+(comment :additional-random-contract)
+^{:refer lang.core.manage-task/compile :id :random-bulk-selection}
+(fact "random bulk order is chosen once before dispatch and single calls remain direct"
+ (let [original subject/shuffle-inputs
+       variable (var subject/shuffle-inputs)
+       metadata (meta variable)
+       calls (atom [])
+       definition {:item {:list (fn [_ _] [1 2 3])}
+                   :main {:fn (fn [input _ _ _] input)}}]
+   (try
+     (intern 'lang.core.manage-task 'shuffle-inputs
+             (fn [inputs] (swap! calls conj (vec inputs)) (vec (reverse inputs))))
+     (let [bundle (subject/compile :fixture/random definition)]
+       [(mapv vec (:data (deref (task/invoke bundle {:selector :all :random true :package :vector}))))
+        (mapv vec (:data (deref (task/invoke bundle {:selector :all :random false :package :vector}))))
+        (:data (deref (task/invoke bundle {:selector 2 :random true})))
+        (deref calls)])
+     (finally
+       (intern 'lang.core.manage-task 'shuffle-inputs original)
+       (reset! calls [])
+       (if (not (= metadata (meta variable))) (throw "shuffle Var metadata was not restored")))))
+ => [[[3 3] [2 2] [1 1]] [[1 1] [2 2] [3 3]] 2 [[1 2 3]]])
+
+^{:refer lang.core.manage-task/compile :id :cumulative-item-time}
+(fact "cumulative time includes ignored and errored items and overrides a finaliser's timing field"
+ (let [bundle (subject/compile :fixture/cumulative
+               {:item {:list (fn [_ _] [1 2 3])}
+                :result {:ignore (fn [value] (= value 2))}
+                :main {:fn (fn [input _ _ _]
+                             (deref (Promise/delay 3 (fn [] nil)))
+                             (if (= input 3) (throw "timed failure") input))}
+                :summary {:finalise
+                          (fn [summary items _]
+                            (assoc summary :cumulative -999
+                                   :observed-times (mapv (fn [[_ item]] (:time item)) items)))}})
+       summary (:data (deref (task/invoke bundle {:selector :all :return :summary})))
+       empty-bundle (subject/compile :fixture/empty-time
+                      {:item {:list (fn [_ _] [])}
+                       :main {:fn (fn [_ _ _ _] (throw "empty task executed"))}})
+       empty-summary (:data (deref (task/invoke empty-bundle {:selector :all :return :summary})))]
+   [(= (:cumulative summary) (reduce + 0 (:observed-times summary)))
+    (every? (fn [elapsed] (> elapsed 0)) (:observed-times summary))
+    (count (:observed-times summary))
+    (select-keys summary [:items :results :errors :warnings])
+    (:cumulative empty-summary)])
+ => [true true 3 {:items 3 :results 1 :errors 1 :warnings 0} 0])
+
+^{:refer lang.core.manage-task/compile :id :elapsed-stops-before-finalisation}
+(fact "serial and parallel elapsed time stop before a delayed summary finaliser"
+ (mapv
+  (fn [parallel]
+    (let [bundle
+          (subject/compile :fixture/elapsed
+            {:item {:list (fn [_ _] [1 2])}
+             :main {:fn (fn [input _ _ _]
+                          (deref (Promise/delay 3 (fn [] input))))}
+             :summary
+             {:finalise (fn [summary _ _]
+                          (let [before (time-ms)]
+                            (deref (Promise/delay 100 (fn [] nil)))
+                            (assoc summary :elapsed -1
+                                   :before-finalise before
+                                   :finalise-duration (- (time-ms) before))))}})
+          invoked (time-ms)
+          summary (:data (deref (task/invoke bundle
+                                 {:selector :all :return :summary :parallel parallel})))]
+      [(<= 0 (:elapsed summary) (- (:before-finalise summary) invoked))
+       (>= (:finalise-duration summary) 100)
+       (> (:cumulative summary) 0)
+       (select-keys summary [:items :results :errors])]))
+  [false true])
+ => [[true true true {:items 2 :results 2 :errors 0}]
+     [true true true {:items 2 :results 2 :errors 0}]])
+
+^{:refer lang.core.manage-task/compile :id :elapsed-includes-shuffle}
+(fact "bulk timing includes shuffling while cumulative time counts only item execution"
+ (let [original subject/shuffle-inputs
+       variable (var subject/shuffle-inputs)
+       metadata (meta variable)
+       duration (atom 0)]
+   (try
+     (intern 'lang.core.manage-task 'shuffle-inputs
+       (fn [inputs]
+         (let [started (time-ms)]
+           (deref (Promise/delay 100 (fn [] nil)))
+           (reset! duration (- (time-ms) started))
+           (vec (reverse inputs)))))
+     (let [bundle (subject/compile :fixture/shuffle-timing
+                    {:item {:list (fn [_ _] [1 2])}
+                     :main {:fn (fn [input _ _ _] input)}})
+           output (:data (deref (task/invoke bundle
+                                  {:selector :all :random true :return :all :package :vector})))]
+       [(mapv vec (:items output))
+        (>= (get-in output [:summary :elapsed]) (deref duration))
+        (>= (deref duration) 100)
+        (< (get-in output [:summary :cumulative]) (deref duration))])
+     (finally
+       (intern 'lang.core.manage-task 'shuffle-inputs original)
+       (reset! duration 0)
+       (if (not (= metadata (meta variable))) (throw "shuffle Var metadata was not restored")))))
+ => [[[2 2] [1 1]] true true true])
+
+^{:refer lang.core.manage-task/compile :id :random-empty-and-list}
+(fact "empty bulk requests and listing do not shuffle"
+ (let [original subject/shuffle-inputs
+       variable (var subject/shuffle-inputs)
+       metadata (meta variable)]
+   (try
+     (intern 'lang.core.manage-task 'shuffle-inputs
+       (fn [_] (throw "unexpected shuffle")))
+     (let [empty-task (subject/compile :fixture/empty-random
+                        {:item {:list (fn [_ _] [])}
+                         :main {:fn (fn [_ _ _ _] (throw "unexpected item"))}})
+           listing-task (subject/compile :fixture/list-random
+                          {:item {:list (fn [_ _] [1 2])}
+                           :main {:fn (fn [_ _ _ _] (throw "unexpected item"))}})]
+       [(:data (deref (task/invoke empty-task {:selector :all :random true})))
+        (:data (deref (task/invoke listing-task {:selector :list :random true})))])
+     (finally
+       (intern 'lang.core.manage-task 'shuffle-inputs original)
+       (if (not (= metadata (meta variable))) (throw "shuffle Var metadata was not restored")))))
+ => [{} [1 2]])
+
+^{:refer lang.core.manage-task/format-ms :id :original-duration-labels :added "3.0"}
+(fact "duration labels preserve original padding, unit cutoffs and negative remainder behavior"
+ (mapv subject/format-ms
+   [0 1 999 1000 1001 59999 60000 61001 3599999 3600000 10000000 86399999 86400000 90061001 -1 -1000])
+ => ["0ms" "001ms" "999ms" "01s 000ms" "01s 001ms" "59s 999ms"
+     "01m 00s" "01m 01s" "59m 59s" "01h 00m 00s" "02h 46m 40s"
+     "23h 59m 59s" "01d 00h 00m" "01d 01h 01m" "999ms" "59s 000ms"]
+ (let [raw {:elapsed 61001 :cumulative 90061001}
+       shown (assoc raw :display
+                {:elapsed (subject/format-ms (:elapsed raw))
+                 :cumulative (subject/format-ms (:cumulative raw))})]
+   [raw (dissoc shown :display) (:display shown)
+    (= (subject/format-ms 61000) (subject/format-ms 61001))])
+ => [{:elapsed 61001 :cumulative 90061001}
+     {:elapsed 61001 :cumulative 90061001}
+     {:elapsed "01m 01s" :cumulative "01d 01h 01m"} true])
+
+^{:refer lang.core.manage-task/report:title, :added "3.0"}
+(fact
+  "title formatting retains the original border and ANSI bytes"
+  (subject/report:title "Hello World")
+  =>
+  "[1m\n-----------\nHello World\n-----------[0m"
+  (subject/report:title nil)
+  =>
+  "[1m\n\nnull\n[0m")
+
+^{:refer lang.core.manage-task/compile :id :title-context-and-order}
+(fact "a function title receives merged parameters and environment before item execution"
+ (let [events (atom [])
+       result (atom nil)
+       bundle (subject/compile :fixture/title
+                {:params {:label "TASK" :print {:function true}}
+                 :construct {:env (fn [_] {:region :local})}
+                 :item {:list (fn [_ _] [1])}
+                 :main {:fn (fn [input _ _ _] (swap! events conj :main) input)}})]
+   (try
+     (let [printed
+           (with-out-string
+             (reset! result
+               (:data (deref (task/invoke bundle
+                              {:selector :all
+                               :title (fn [params env]
+                                        (swap! events conj [(:label params) env])
+                                        (:label params))})))))]
+       [printed (deref result) (deref events)])
+     (finally (reset! events []) (reset! result nil))))
+ => ["\u001b[1m\n----\nTASK\n----\u001b[0m\n" {1 1} [["TASK" {:region :local}] :main]])
+
+^{:refer lang.core.manage-task/compile :id :title-print-flags}
+(fact "each print flag enables the bulk title, but silent, listing and single calls do not"
+ (let [bundle (subject/compile :fixture/title-flags
+                {:params {:title "TASK"}
+                 :item {:list (fn [_ _] [])}
+                 :main {:fn (fn [input _ _ _] input)}})
+       header "\u001b[1m\n----\nTASK\n----\u001b[0m\n"]
+   [(mapv
+     (fn [flag]
+       (str/starts-with?
+         (with-out-string
+           (deref (task/invoke bundle {:selector :all :print {flag true}})))
+         header))
+     [:function :item :result :summary])
+    (with-out-string (deref (task/invoke bundle {:selector :all})))
+    (with-out-string (deref (task/invoke bundle {:selector :list :print {:function true}})))
+    (with-out-string (deref (task/invoke bundle {:selector 'one :print {:function true}})))])
+ => [[true true true true] "" "" ""])
+
+^{:refer lang.core.manage-task/compile :id :requested-projections-only}
+(fact "finalisation precedes packaging and only requested projections execute"
+ (mapv
+  (fn [selection]
+    (let [events (atom [])
+          bundle (subject/compile :fixture/projection-order
+                   {:item {:list (fn [_ _] [1])
+                           :output (fn [value]
+                                     (if (not (= selection :items)) (throw "unexpected item projection"))
+                                     (swap! events conj [:item value])
+                                     (+ value 10))}
+                    :result {:output (fn [value]
+                                       (if (not (= selection :results)) (throw "unexpected result projection"))
+                                       (swap! events conj [:result value])
+                                       (+ value 100))}
+                    :main {:fn (fn [input _ _ _] (swap! events conj [:main input]) (* input 2))}
+                    :summary {:finalise
+                              (fn [summary _ _]
+                                (swap! events conj [:finalise (has? summary :cumulative)])
+                                summary)}})]
+      (try
+        (let [result (:data (deref (task/invoke bundle {:selector :all :return selection})))]
+          [(deref events)
+           (if (= selection :summary) (select-keys result [:items :results :errors :warnings]) result)])
+        (finally (reset! events [])))))
+  [:summary :items :results])
+ => [[[[:main 1] [:finalise false]] {:items 1 :results 1 :errors 0 :warnings 0}]
+     [[[:main 1] [:finalise false] [:item 2]] {1 12}]
+     [[[:main 1] [:finalise false] [:result 2]] {1 102}]])
+
+^{:refer lang.core.manage-task/compile :id :vector-projections-lazy}
+(fact "vector packaging retains lazy frozen projections after finalisation"
+ (let [events (atom [])
+       bundle (subject/compile :fixture/lazy-projection
+                {:item {:list (fn [_ _] [1 2])}
+                 :result {:output (fn [value] (swap! events conj [:result value]) (+ value 100))}
+                 :main {:fn (fn [input _ _ _] input)}
+                 :summary {:finalise (fn [summary _ _] (swap! events conj :finalise) summary)}})]
+   (try
+     (let [output (:data (deref (task/invoke bundle {:selector :all :package :vector})))
+           before (deref events)
+           first-read (mapv vec output)
+           after (deref events)
+           second-read (mapv vec output)]
+       [before first-read after second-read (deref events)])
+     (finally (reset! events []))))
+ => [[:finalise] [[1 101] [2 102]]
+     [:finalise [:result 1] [:result 2]]
+     [[1 101] [2 102]] [:finalise [:result 1] [:result 2]]])
+
+^{:refer lang.core.manage-task/compile :id :deferred-summary-notices}
+(fact "deferred notices print after finalisation and before projection even with summary printing disabled"
+ (let [result (atom nil)
+       bundle (subject/compile :fixture/notices
+                {:item {:list (fn [_ _] [1])}
+                 :main {:fn (fn [input _ _ _] input)}
+                 :result {:output (fn [value] (println "projected") (+ value 10))}
+                 :summary {:finalise
+                           (fn [summary _ _]
+                             (println "finalised")
+                             (with-meta summary {:std.task/after-summary ["saved" "done"]}))}})]
+   (try
+     [(with-out-string
+        (reset! result (:data (deref (task/invoke bundle {:selector :all :print {:summary false}})))))
+      (deref result)]
+     (finally (reset! result nil))))
+ => ["finalised\nsaved\ndone\nprojected\n" {1 11}])
+
+
+^{:refer lang.core.manage-task/compile, :id :empty-vector-truthiness}
+(fact
+  "original empty vector-package result remains a truthy reusable sequence"
+  (let [bundle (subject/compile
+                 :fixture/empty-lazy
+                 {:item {:list (fn [_ _] [])},
+                  :main
+                  {:fn (fn [_ _ _ _] (throw "unexpected item"))}})
+        output (:data
+                 (deref
+                   (task/invoke
+                     bundle
+                     {:selector :all, :package :vector})))]
+    [(nil? output) (boolean output) (vec output)])
+  =>
+  [false true []])
+^{:refer lang.core.manage-task/compile, :id :projection-error-boundary}
+(fact
+  "projection exceptions are raised by consumption rather than invocation"
+  (let [bundle (subject/compile
+                 :fixture/projection-error
+                 {:item {:list (fn [_ _] [1])},
+                  :main {:fn (fn [input _ _ _] input)},
+                  :result
+                  {:output
+                   (fn [_]
+                     (throw
+                       (ex
+                         :argument
+                         {}
+                         :ex/message
+                         "projection failed")))}})
+        outcome (try
+                  {:returned
+                   (:data
+                     (deref
+                       (task/invoke
+                         bundle
+                         {:selector :all, :package :vector})))}
+                  (catch error {:phase :invoke}))]
+    (if (:phase outcome)
+      (:phase outcome)
+      (try
+        (first (:returned outcome))
+        :unexpected-success
+        (catch error :consume))))
+  =>
+  :consume)
+
+^{:refer lang.core.manage-task/compile :id :unconditional-bulk-error-diagnostic}
+(fact "bulk failures print their original diagnostic with presentation disabled"
+ (mapv
+  (fn [parallel]
+   (let [result (atom nil)
+         bundle (subject/compile :fixture/error-output
+                  {:item {:list (fn [_ _] [1 2])}
+                   :main {:fn (fn [input _ _ _]
+                                (if (= input 1)
+                                  (throw (ex :argument {} :ex/message "broken item"))
+                                  (* input 10)))}})]
+    (try
+     [(with-out-string
+       (reset! result
+        (:data (deref (task/invoke bundle
+         {:selector :all :parallel parallel :return :all
+          :print {:item false :result false :summary false :function false}})))))
+      (:results (deref result))
+      (mapv (fn [[key record]] [key (:status record) (:data record)])
+            (:errors (deref result)))]
+     (finally (reset! result nil)))))
+  [false true])
+ => [[">> broken item\n" {2 20} [[1 :error :errored]]]
+     [">> broken item\n" {2 20} [[1 :error :errored]]]])
+
+^{:refer lang.core.manage-task/compile :id :single-error-no-bulk-diagnostic}
+(fact "single-item failure rethrows without printing a bulk diagnostic"
+ (let [result (atom nil)
+       bundle (subject/compile :fixture/single-error-output
+                {:main {:fn (fn [_ _ _ _]
+                              (throw (ex :argument {} :ex/message "broken item")))}})]
+  (try
+   [(with-out-string
+     (reset! result (try (deref (task/invoke bundle {:selector 1}))
+                        :unexpected-success (catch error :rejected))))
+    (deref result)]
+   (finally (reset! result nil))))
+ => ["" :rejected])
+
+^{:refer lang.core.manage-task/compile :id :parallel-output-input-order}
+(fact "parallel item output is captured separately and flushed in input order"
+ (let [completed (atom false)
+       result (atom nil)
+       bundle (subject/compile :fixture/parallel-output
+                {:item {:list (fn [_ _] [1 2])}
+                 :main {:fn (fn [input _ _ _]
+                              (if (= input 1)
+                                (do (println "one-start")
+                                    (deref (Promise/delay 30 (fn [] nil)))
+                                    (println "one-end"))
+                                (do (println "two") (reset! completed true)))
+                              input)}})]
+  (try
+   [(with-out-string
+      (reset! result (:data (deref (task/invoke bundle {:selector :all :parallel true})))))
+    (deref result) (deref completed)]
+   (finally (reset! completed false) (reset! result nil))))
+ => ["one-start\none-end\ntwo\n" {1 1 2 2} true])
+
+^{:refer lang.core.manage-task/prepare-columns, :added "4.0"}
+(fact
+  "prepares columns for printing"
+  (subject/prepare-columns
+    [{:key :name} {:key :data}]
+    [{:name "Chris", :data "1"} {:name "Bob", :data "100"}])
+  =>
+  [{:key :name, :id :name, :length 7}
+   {:key :data, :id :data, :length 5}])
+^{:refer lang.core.manage-task/prepare-columns :id :column-width-contract}
+(fact "column preparation preserves explicit widths and metadata and infers missing widths"
+ (let [columns [{:key :name :length 4 :align :right :color #{:blue}}
+                {:key :amount :length :auto}
+                {:key :missing}]]
+  [(subject/prepare-columns columns [{:name "longer" :amount -12} {:amount 12345}])
+   columns
+   (subject/prepare-columns [] [])
+   (subject/prepare-columns [{:key :name :length 0}] [])])
+ => [[{:key :name :length 4 :id :name :align :right :color #{:blue}}
+      {:key :amount :length 7 :id :amount}
+      {:key :missing :length 2 :id :missing}]
+     [{:key :name :length 4 :align :right :color #{:blue}}
+      {:key :amount :length :auto} {:key :missing}]
+     []
+     [{:key :name :length 0 :id :name}]])

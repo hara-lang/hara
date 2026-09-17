@@ -1,0 +1,407 @@
+(ns lang.core.script-lint
+  (:require [lang.core.impl :as impl] [lang.core.library :as lib]))
+
+;;
+;; dumb linter
+;;
+
+(defn get-reserved-raw
+  "gets all reserved symbols in the grammar"
+  {:added "4.0"}
+  [lang]
+  (set (keys (:reserved (impl/grammar lang)))))
+
+(def get-reserved
+ (let [cache (atom {}) operation get-reserved-raw]
+   (fn [lang]
+     (if (has? (deref cache) lang)
+       (get (deref cache) lang)
+       (let [result (operation lang)]
+         (swap! cache assoc lang result)
+         result)))))
+
+(defn collect-vars
+  "collects all vars"
+  {:added "4.0"}
+  [form]
+  (let [vars (atom #{})
+        _ (prewalk
+            (fn [form]
+              (cond
+                (symbol? form) (do (swap! vars conj form) form)
+                :else form))
+            form)]
+    (deref vars)))
+
+(do
+  (def +collect-module-globals (atom {}))
+  (defn collect-module-globals-raw
+    "helper function for lang.core.script-lint/collect-module-globals"
+    ([module]
+      (let [{:keys [native static]} module]
+        (disj
+          (union
+            (set
+              (mapcat
+                (fn [migration-argument-0]
+                  (mapcat
+                    (fn [value] (if (coll? value) value [value]))
+                    (vals migration-argument-0)))
+                (vals native)))
+            (:lang/lint-globals static))
+          '*))))
+  (def ^{:added "4.0", :doc "collects global symbols from module", :arglists ([module])} collect-module-globals
+   (fn [module & ignored]
+     (let [key (:id module)
+           tag (hash module)
+           previous (get (deref +collect-module-globals) key)]
+       (if (and previous (= tag (:tag previous)))
+         (:return previous)
+         (let [result (collect-module-globals-raw module)]
+           (swap!
+             +collect-module-globals
+             assoc
+             key
+             {:tag tag, :return result})
+           result))))))
+
+(defn collect-sym-vars
+  "collect symbols and vars"
+  {:added "4.0"}
+  ([entry module] (collect-sym-vars entry module #{}))
+  ([entry module lang-globals]
+    (let [globals (or
+                    (union
+                      lang-globals
+                      (collect-module-globals module)
+                      (:static/lint-globals entry))
+                    #{})
+          {:keys [form form-input lang op-key]} entry
+          form (or form form-input)
+          reserved (get-reserved lang)
+          [vars lint-input] (case
+                              op-key
+                              :defn
+                              [(atom (collect-vars (nth form 2)))
+                               (drop 3 form)]
+                              :defgen
+                              [(atom (collect-vars (nth form 2)))
+                               (drop 3 form)]
+                              :def
+                              [(atom #{}) (drop 2 form)]
+                              :defglobal
+                              [(atom #{}) (drop 2 form)])
+          syms (atom #{})
+          sym-fn (fn [form]
+                   (let [[ftag] form
+                         form (if (and
+                                    (= ftag 'fn)
+                                    (symbol? (second form)))
+                                (do
+                                  (swap!
+                                    vars
+                                    union
+                                    (collect-vars (second form)))
+                                  (cons 'fn (drop 2 form)))
+                                form)]
+                     (cond
+                       (#{'local 'fn 'var 'fn:> 'const} ftag) (do
+                                                                (swap!
+                                                                  vars
+                                                                  union
+                                                                  (collect-vars
+                                                                    (second
+                                                                      form)))
+                                                                (drop
+                                                                  2
+                                                                  form))
+                       (= '. ftag) (let
+                                     [[_ sym & body] form]
+                                     [sym
+                                      (map
+                                        (fn
+                                          [form]
+                                          (cond
+                                            (list? form) (drop 1 form)
+                                            (symbol? form) nil
+                                            :else form))
+                                        body)])
+                       (or
+                         (str/starts-with? (str ftag) "for:")
+                         (= (str ftag) "forange")) (let
+                                                     [[_
+                                                       bindings
+                                                       &
+                                                       body]
+                                                      form]
+                                                     (do
+                                                       (swap!
+                                                         vars
+                                                         union
+                                                         (collect-vars
+                                                           (first
+                                                             bindings)))
+                                                       [(second
+                                                          bindings)
+                                                        body]))
+                       (= 'let ftag) (let
+                                       [[_ bindings & body] form
+                                        all-bindings
+                                        (take-nth 2 bindings)
+                                        all-bound
+                                        (take-nth 2 (drop 1 bindings))]
+                                       (do
+                                         (swap!
+                                           vars
+                                           union
+                                           (collect-vars all-bindings))
+                                         [all-bound body]))
+                       ('#{new !:G} ftag) (do
+                                            (swap!
+                                              vars
+                                              conj
+                                              (second form))
+                                            nil)
+                       (= 'catch ftag) (let
+                                         [[_ bindings & body] form]
+                                         (do
+                                           (swap!
+                                             vars
+                                             union
+                                             (collect-vars bindings))
+                                           body))
+                       :else form)))
+          _ (prewalk
+              (fn [form]
+                (cond
+                  (list? form) (sym-fn form)
+                  (symbol? form) (cond
+                                   (or
+                                     (= '_ form)
+                                     (globals form)
+                                     (reserved form)
+                                     (namespace form)
+                                     (str/starts-with? (str form) "x:")
+                                     (str/starts-with?
+                                       (str form)
+                                       "..."))
+                                   form
+                                   :else
+                                   (let
+                                     [s
+                                      (first
+                                        (str/split (str form) "."))
+                                      s (if s (symbol s))]
+                                     (cond
+                                       (or
+                                         (nil? s)
+                                         (globals s)
+                                         (reserved s))
+                                       form
+                                       :else
+                                       (do (swap! syms conj s) form))))
+                  :else form))
+              lint-input)]
+      {:vars (deref vars), :syms (deref syms)})))
+
+(defn sym-check-linter
+  "checks the linter"
+  {:added "4.0"}
+  ([entry module] (sym-check-linter entry module #{}))
+  ([entry module lang-globals]
+    (sym-check-linter
+      entry
+      module
+      lang-globals
+      {:unknown :print, :unused :silent}))
+  ([entry module lang-globals options]
+    (let [{:keys [id op]} entry]
+      (cond
+        ('#{fn defn defglobal defgen def} op) (let
+                                                [{:keys [vars syms]}
+                                                 (collect-sym-vars
+                                                   entry
+                                                   module
+                                                   lang-globals)
+                                                 internal
+                                                 (disj
+                                                   (set
+                                                     (vals
+                                                       (:internal
+                                                         module)))
+                                                   '-)
+                                                 unused
+                                                 (difference
+                                                   (disj vars '_)
+                                                   syms)
+                                                 unknown
+                                                 (difference syms vars)
+                                                 unknown
+                                                 (difference
+                                                   unknown
+                                                   internal)]
+                                                (when
+                                                  (not-empty unused)
+                                                  (when
+                                                    (=
+                                                      :print
+                                                      (:unused
+                                                        options))
+                                                    (println
+                                                      (str
+                                                        "UNUSED VAR @ "
+                                                        (:module entry)
+                                                        "/"
+                                                        id)
+                                                      {:unused
+                                                       unused})))
+                                                (when
+                                                  (not-empty unknown)
+                                                  (when
+                                                    (=
+                                                      :print
+                                                      (:unknown
+                                                        options))
+                                                    (println
+                                                      (str
+                                                        "UNKNOWN VARIABLES @ "
+                                                        (:module entry)
+                                                        "/"
+                                                        id)
+                                                      {:unknown
+                                                       unknown}))
+                                                  (when
+                                                    (=
+                                                      :error
+                                                      (:unknown
+                                                        options))
+                                                    (throw
+                                                      (ex
+                                                        :lang/lint-unknown
+                                                        {:unknown
+                                                         unknown,
+                                                         :form
+                                                         (or
+                                                           (:form
+                                                             entry)
+                                                           (:form-input
+                                                             entry))}
+                                                        :ex/message
+                                                        (str
+                                                          "UNKNOWN VARIABLES @ "
+                                                          (:module
+                                                            entry)
+                                                          "/"
+                                                          id)))))
+                                                :pass)))))
+
+;;
+;;
+;;
+
+(defonce +registry+
+  (atom {}))
+
+(def +settings+
+  (atom {:lua   {:linters [sym-check-linter]
+                 :globals '#{tonumber
+                             unpack
+                             error
+                             next
+                             type
+                             pcall
+                             table
+                             math
+                             cjson
+                             os
+                             io
+                             string
+                             getmetatable
+                             ngx
+                             require
+                             GLOBAL
+                             CONFIG}}
+         :xtalk {:linters [sym-check-linter]
+                 :globals '#{XT}}
+         :solidity {:linters [sym-check-linter]
+                    :globals '#{msg
+                                require}}
+         :js    {:linters [sym-check-linter]
+                 :globals '#{Worker
+                             Request
+                             Response
+                             Promise
+                             alert
+                             setTimeout
+                             setInterval
+                             clearTimeout
+                             clearInterval
+                             Date
+                             eval
+                             WebSocket
+                             EventSource
+                             self
+                             arguments
+                             fetch
+                             FileReader
+                             globalThis
+                             JSON
+                             BigInt
+                             console
+                             import
+                             document
+                             window
+                             navigator
+                             screen
+                             location
+                             localStorage
+                             sessionStorage
+                             Array
+                             Object
+                             Math
+                             Number
+                             require
+                             process}}}))
+
+(defn lint-set
+  "sets the linter for a namespace"
+  {:added "4.0"}
+  ([ns]
+   (lint-set ns true))
+  ([ns option]
+   (swap! +registry+
+          (fn [m]
+            (if option
+              (assoc m ns true)
+              (dissoc m ns))))))
+
+(defn lint-clear
+  "clears all linted namespaces"
+  {:added "4.0"}
+  []
+  (reset! +registry+ {}))
+
+(defn lint-needed?
+  "checks if lint is needed"
+  {:added "4.0"}
+  [ns]
+  (get (deref +registry+) ns))
+
+(defn lint-entry
+  "lints a single entry"
+  {:added "4.0"}
+  [entry module]
+  (let [{:keys [lang]} entry
+        {:keys [linters globals]} (get (deref +settings+) lang)]
+    (when (not (-> module :static :lang/no-lint))
+      (doseq [linter linters]
+        (linter
+          entry
+          module
+          globals
+          {:unknown :error, :unused :silent})))))
+
+
+(comment
+  (keys *module*)
+  )

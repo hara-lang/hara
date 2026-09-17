@@ -2,8 +2,10 @@
   (:require [db.protocol :as protocol]
             [db.postgres.connection :as connection]
             [lang.core.compile :as compile]
+            [lang.core.impl :as impl]
             [lang.core.library :as library]
-            [lang.core.script :as script]
+            [lang.base.book :as book]
+            [lang.base.util :as ut]
             [std.lib.context.registry :as context]))
 
 (defstruct PostgresClient
@@ -179,7 +181,7 @@
 (defn postgres-book
   "Returns the active Library PostgreSQL Book and its lifecycle metadata."
   []
-  (library/library-get-book (library/runtime-library) :postgres))
+  (library/get-book (impl/runtime-library) :postgres))
 
 (defn lifecycle-hook
   "Returns one BookMeta lifecycle function when PostgreSQL declares it."
@@ -191,11 +193,9 @@
   [module]
   (if (map? module)
     module
-    (let [loaded (if (symbol? module)
-                   (try (script/load-module :postgres module) (catch error module))
-                   module)]
-      (or (get (library/library-book-modules (library/runtime-library) :postgres)
-               loaded)
+    (let [loaded module
+          lib (impl/runtime-library)]
+      (or (library/get-module lib :postgres loaded)
           {:id module :lang :postgres :code {} :fragment {}}))))
 
 (defn lifecycle-module-id
@@ -222,7 +222,10 @@
   (let [compile-form (get-in (:options client) [:adapter :compile-lifecycle])]
     (if compile-form
       (await (compile-form client module form))
-      (script/compile-form :postgres (:id module) form))))
+      (impl/emit-str form {:lang :postgres
+                           :library (impl/runtime-library)
+                           :module (:id module)
+                           :layout :module}))))
 
 (defn lifecycle-eval
   "Executes compiled lifecycle output, allowing an isolated adapter in tests."
@@ -264,9 +267,9 @@
 (defn module-source?
   "Returns true only for a module registered by the script source pipeline."
   [module]
-  (and (symbol? (:id module))
-       (has? (library/library-book-modules (library/runtime-library) :postgres)
-             (:id module))))
+  (let [id (:id module)
+        book (library/get-book (impl/runtime-library) :postgres)]
+    (and (symbol? id) (book/has-module? book id))))
 
 (defn compile-module-output
   "Compiles one registered PostgreSQL module or delegates to an isolated adapter."
@@ -304,8 +307,11 @@
       (let [module (or (get pointer :module) (get pointer :namespace))
             id (get pointer :id)]
         (if (and module id)
-          (get-in (library/library-book-modules (library/runtime-library) :postgres)
-                  [module :code (script/symbol-id id)])))))
+          (library/get-entry (impl/runtime-library)
+                             {:lang :postgres
+                              :module module
+                              :section :code
+                              :id (ut/sym-id id)})))))
 
 (defn lifecycle-pointer
   "Supplies BookMeta with source entry metadata when a pointer can be resolved."

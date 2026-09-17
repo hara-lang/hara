@@ -1,6 +1,8 @@
 (ns postgres.gen.bind-macro
-  (:require [lang.base.emit-helper :as helper]
+  (:require [lang.base.book-entry :as book-entry]
+            [lang.base.emit-helper :as helper]
             [lang.base.util :as util]
+            [lang.core.pointer :as pointer]
             [postgres.application :as application]))
 
 (defn to-lookup [values] (zipmap values (repeat true)))
@@ -17,13 +19,21 @@
               [(symbol module) :code (symbol (name value))])
       nil)))
 
+(defn hydrate-pointer
+  "Resolves a bare pointer descriptor to its full compiled library entry.
+   Pointer descriptors are a native associative type (not `map?`), so this
+   dispatches on the presence of pointer keys rather than `map?`."
+  [value]
+  (cond (book-entry/book-entry? value) value
+        (and (:lang value) (:id value)) (or (pointer/get-entry value) value)
+        :else value))
+
 (defn bind-entry
   [value]
-  (cond (map? value) value
-        (symbol? value)
+  (cond (symbol? value)
         (let [resolved (Base/resolve value)]
-          (if resolved (deref resolved) (module-entry value)))
-        :else value))
+          (if resolved (hydrate-pointer (deref resolved)) (module-entry value)))
+        :else (hydrate-pointer value)))
 
 (defn transform-to-str
   [value]
@@ -32,7 +42,7 @@
         (or (list? value) (map? value) (number? value) (boolean? value) (nil? value)) value
         (symbol? value)
         (let [resolved (when (namespace value) (Base/resolve value))
-              entry (when resolved (deref resolved))]
+              entry (when resolved (hydrate-pointer (deref resolved)))]
           (if (map? entry)
             {"::" (str "sql/" (name (or (:op-key entry) :ref)))
              :schema (:static/schema entry)
@@ -69,7 +79,7 @@
 (defn query-name
   [value]
   (let [resolved (when (symbol? value) (Base/resolve value))
-        entry (when resolved (deref resolved))
+        entry (when resolved (hydrate-pointer (deref resolved)))
         schema (:static/schema entry)
         identifier (util/sym-default-str value)]
     (if schema (str schema "." identifier) identifier)))
@@ -260,7 +270,7 @@
   [module predicate]
   (vec
    (filter predicate
-           (vals (get-in (application/module-snapshot) [module :code])))))
+           (vals (get-in (application/module-map nil) [module :code])))))
 
 (defn entry-pair [entry] [(:id entry) (util/sym-full entry)])
 

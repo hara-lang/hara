@@ -1,0 +1,85 @@
+(ns code.test.interactive-transport-test
+  (:require [code.test.interactive-transport :as transport]))
+
+(def options
+  {:command [(or (OS/getenv "HARA_NATIVE_TEST_EXECUTABLE")
+                  (str (OS/cwd) "/../hara-native/core/rust/target/debug/hara-native"))
+             "headless" "--project" (OS/cwd)]
+   :cwd (OS/cwd) :timeout 10000})
+
+^{:refer code.test.interactive-transport/hello-metadata}
+(Test/check
+ [{:name "HELLO requires protocol and report version, not a printed success string"
+   :test (fn []
+           [(get (transport/hello-metadata ["SERVER" "HARA" "PROTOCOL" "4" "EVAL-REPORT" "1"]) "SERVER")
+            (try (transport/hello-metadata ["SERVER" "HARA" "PROTOCOL" "4"]) :unexpected (catch error :rejected))
+            (try (transport/hello-metadata ["SERVER"]) :unexpected (catch error :rejected))])
+   :expected ["HARA" :rejected :rejected]}])
+
+^{:refer code.test.interactive-transport/endpoint}
+(Test/check
+ [{:name "child endpoint survives partial lines and preceding startup output"
+   :test (fn []
+           (let [chunks (atom [(str/encode-utf8 "starting\nHARA RESP 127.0.")
+                              (str/encode-utf8 "0.1:12345\n")])
+                 stream (Stream/create (fn []
+                          (let [chunk (first (deref chunks))]
+                            (swap! chunks (fn [values] (vec (rest values))))
+                            (Promise/from chunk))))]
+             (transport/endpoint stream (+ (time-ms) 1000))))
+   :expected {:host "127.0.0.1" :port 12345}}
+  {:name "remote endpoints and EOF fail closed"
+   :test (fn []
+           [(try (transport/endpoint (Stream/create (fn [] (Promise/from (str/encode-utf8 "HARA RESP example.com:12345\n")))) (+ (time-ms) 1000))
+              :unexpected (catch error :remote-rejected))
+            (try (transport/endpoint (Stream/create (fn [] (Promise/from nil))) (+ (time-ms) 1000))
+              :unexpected (catch error :eof))])
+   :expected [:remote-rejected :eof]}])
+
+^{:refer code.test.interactive-transport/open}
+(Test/check
+ [{:name "a fresh report-capable child starts and evaluates setup without claiming assertions"
+   :test (fn []
+           (let [connection (transport/open options)]
+             (try
+               (let [response ((:evaluate connection) {:source "(+ 20 22)" :file "/tmp/report.hal" :start {:line 7 :column 1}})]
+                 [(:value response) (get (:report response) "status") (get (:report response) "checks")])
+               (finally ((:close connection))))))
+   :expected ["42" "none" 0]}
+  {:name "startup failure is not treated as a connection"
+   :test (fn []
+           (try (transport/open {:command ["/usr/bin/false"] :timeout 1000}) :unexpected
+                (catch error :failed)))
+   :expected :failed}])
+
+^{:refer code.test.interactive-transport/request}
+(Test/check
+ [{:name "assertions survive a later error and the source side effect occurs once"
+   :test (fn []
+           (let [connection (transport/open options)
+                 origin {:file "/tmp/report.hal" :start {:line 7 :column 1}}]
+             (try
+               (transport/request connection (assoc origin :source "(def count-once 0)"))
+               (let [response (transport/request connection
+                                (assoc origin :source "(do (require 'code.test.compile) (def count-once (+ count-once 1)) ^{:tags #{:smoke}} (code.test.compile/fact \"wire\" count-once => 1) (throw (ex :state {} :ex/message \"after assertions\")))"))
+                     next (transport/request connection (assoc origin :source "count-once"))]
+                 [(first (:error response))
+                  (get (:report response) "facts")
+                  (get (:report response) "checks")
+                  (get-in (:report response) ["events" 0 "checks" 0 "passed"])
+                  (:value next) (get (:report next) "status")
+                  (:tags (Edn/read (get-in (:report response) ["events" 0 "meta/source"])))])
+               (finally ((:close connection))))))
+   :expected ["EVAL_ERROR" 1 1 true "1" "none" #{:smoke}]}])
+
+^{:refer code.test.interactive-transport/close}
+(Test/check
+ [{:name "close is idempotent and prevents further requests"
+   :test (fn []
+           (let [connection (transport/open options)]
+             (try
+               [(transport/close connection) (transport/close connection)
+                (deref (:closed connection))
+                (try (transport/request connection {}) :unexpected (catch error :closed))]
+               (finally (transport/close connection)))))
+   :expected [nil nil true :closed]}])

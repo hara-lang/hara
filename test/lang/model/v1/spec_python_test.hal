@@ -1,4 +1,551 @@
 (ns lang.model.v1.spec-python-test
+  (:require [lang.core.impl :as l]
+            [lang.core.library :as lib]
+            [lang.model.v1.spec-python :as py]
+            [lang.model.v1.spec-xtalk :as xtalk]
+            [lang.typed.xtalk-infer :as infer]
+            [code.test :refer :all]))
+
+(def migration-library (lib/library:create {}))
+
+(fact:global {:teardown [(lib/reset-all! migration-library) (reset! (:settings migration-library) {})]})
+
+(lib/install-book! migration-library xtalk/+book+)
+
+(lib/install-book! migration-library py/+book+)
+
+^{:refer lang.model.v1.spec-python/python-emit-nonlocal, :added "4.1"}
+(comment
+  "Original empty historical fact; behavioral coverage remains required."
+  "^{:refer tahto.model.spec-python/python-emit-nonlocal, :added \"4.1\"} (fact \"emits python nonlocal statements\")")
+
+^{:refer lang.model.v1.spec-python/python-defn-, :added "4.0"}
+(fact
+  "hidden function without decorators"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python '[(defn- hello [] (return 1))]))
+  =>
+  "def hello():\n  return 1")
+
+^{:refer lang.model.v1.spec-python/python-defn, :added "4.0"}
+(fact
+  "creates a defn function for python"
+  (l/with:library
+    [migration-library]
+    (l/emit-as
+      :python
+      '[(defn ^{:decorators [classmethod classmethod (app.route "/about")]} hello []
+          (return 1))]))
+  =>
+  (str/join
+    "\n"
+    [""
+     "@classmethod"
+     "@classmethod"
+     "@app.route(\"/about\")"
+     "def hello():"
+     "  return 1"]))
+
+^{:refer lang.model.v1.spec-python/python-fn, :added "4.1"}
+(fact
+  "lifts callbacks that lower to Python assignment statements"
+  (l/with:library
+    [migration-library]
+    (let [out (l/emit-as
+                :python
+                '[(var
+                    data
+                    {:set_props
+                     (fn [elem props]
+                       (x:set-key elem "props" props))})])]
+      [(boolean (re-find #"def py_callback__.*\(elem,props\):" out))
+       (str/includes? out "elem[\"props\"] = props")
+       (boolean (re-find #"data = \{\"set_props\":py_callback__" out))
+       (not
+         (boolean
+           (re-find
+             #"lambda elem,props : elem\[\"props\"\] = props"
+             out)))]))
+  =>
+  [true true true true])
+
+^{:refer lang.model.v1.spec-python/python-fn, :added "4.1", :id test-python-fn-direct-assignment}
+(fact
+  "lifts callbacks that use direct assignment"
+  (l/with:library
+    [migration-library]
+    (let [out (l/emit-as
+                :python
+                '[(var removed nil)
+                  (var
+                    data
+                    {:callback (fn
+                                 [link-id]
+                                 (:= removed link-id))})])]
+      [(boolean (re-find #"def py_callback__.*\(link_id\):" out))
+       (boolean (re-find #"removed = link_id" out))
+       (boolean (re-find #"data = \{\"callback\":py_callback__" out))
+       (not
+         (boolean
+           (re-find #"lambda link_id : removed = link_id" out)))]))
+  =>
+  [true true true true])
+
+^{:refer lang.model.v1.spec-python/python-fn, :added "4.1", :id test-python-fn-invoke-argument}
+(fact
+  "lifts callbacks passed directly as invoke arguments"
+  (l/with:library
+    [migration-library]
+    (let [out (l/emit-as
+                :python
+                '[(var removed nil)
+                  (use_callback (fn
+                                  [link-id]
+                                  (:= removed link-id)))])]
+      [(boolean (re-find #"def py_callback__.*\(link_id\):" out))
+       (boolean (re-find #"removed = link_id" out))
+       (boolean (re-find #"use_callback\(py_callback__" out))
+       (not
+         (boolean
+           (re-find
+             #"use_callback\(lambda link_id : removed = link_id\)"
+             out)))]))
+  =>
+  [true true true true])
+
+^{:refer lang.model.v1.spec-python/python-dot, :added "4.1"}
+(fact
+  "rewrites JS-style array length lookups to len"
+  (l/with:library
+    [migration-library]
+    [(l/emit-as :python '[(. xs ["length"])])
+     (l/emit-as :python '[(. obj ["key"])])])
+  =>
+  ["len(xs)" "obj.get(\"key\")"])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-get-key, :added "4.1"}
+(fact
+  "preserves falsey defaults for canonical key reads"
+  (l/with:library
+    [migration-library]
+    (let [out (l/emit-as :python '[(x:get-key obj "key" false)])] out))
+  =>
+  "obj.get(\"key\") or False")
+
+^{:refer tahto.core.impl/emit-as, :added "4.1", :id test-python-typed-canonical-access}
+(fact
+  "emits typed canonical object and array access"
+  (l/with:library
+    [migration-library]
+    [(l/emit-as
+       :python
+       '[(. obj [key])]
+       {:lang/xtalk-context
+        {:infer infer/infer-type,
+         :env
+         '{obj {:kind :record, :fields []},
+           key {:kind :primitive, :name :xt/str}}}})
+     (l/emit-as
+       :python
+       '[(. arr [i])]
+       {:lang/xtalk-context
+        {:infer infer/infer-type,
+         :env
+         '{arr {:kind :array, :item {:kind :primitive, :name :xt/int}},
+           i {:kind :primitive, :name :xt/int}}}})])
+  =>
+  ["obj.get(key)" "arr[i]"])
+
+^{:refer lang.model.v1.spec-python/python-defclass, :added "4.0"}
+(fact
+ "emits a defclass template for python"
+ (l/with:library
+  [migration-library]
+  (l/emit-as
+   :python
+   '[(var*
+      :%
+      (StringProperty
+       :default
+       "*.text"
+       :options
+       #{"HIDDEN"}
+       :maxlen
+       255)
+      bl-text)]))
+ =>
+ "bl_text: StringProperty(default=\"*.text\",options={\"HIDDEN\"},maxlen=255)"
+ (l/with:library
+  [migration-library]
+  (let
+   [out
+    (l/emit-as
+     :python
+     '[(defclass
+        ReloadScriptsOperator
+        [bpy.types.Operator]
+        (var bl-idname "script")
+        (var bl-label "Reload code")
+        (var bl-description "Reloads all distance code.")
+        (var*
+         :%
+         (StringProperty
+          :default
+          "*.text"
+          :options
+          #{"HIDDEN"}
+          :maxlen
+          255)
+         bl-text)
+        ^{:decorators [classmethod classmethod classmethod]}
+        (fn
+         execute
+         [self context]
+         (let
+          [my-path (bpy.path.abspath "//")]
+          (when
+           [:not my-path]
+           (self.report #{"ERROR"} "Save the Blend file first")
+           (return #{"CANCELLED"}))
+          (return #{"FINISHED"}))))])]
+   [(boolean
+     (re-find
+      #"class ReloadScriptsOperator\(bpy.types.Operator\):"
+      out))
+    (boolean (re-find #"bl_idname = \"script\"" out))
+    (boolean (re-find #"bl_label = \"Reload code\"" out))
+    (boolean
+     (re-find #"bl_description = \"Reloads all distance code\.\"" out))
+    (boolean
+     (re-find
+      #"bl_text: StringProperty\(default=\"\*\.text\",options=\{\"HIDDEN\"\},maxlen=255\)"
+      out))
+    (boolean (re-find #"def execute\(self,context\):" out))
+    (boolean
+     (re-find
+      #"self\.report\(\{\"ERROR\"\},\"Save the Blend file first\"\)"
+      out))
+    (boolean (re-find #"return \{\"FINISHED\"\}" out))]))
+ =>
+ [true true true true true true true true])
+
+^{:refer lang.model.v1.spec-python/python-var, :added "4.0"}
+(fact
+  "var -> fn.inner shorthand"
+  (l/with:library
+    [migration-library]
+    (py/python-var '(var hello (fn [x] x))))
+  =>
+  '(fn.inner hello [x] x)
+  (l/with:library
+    [migration-library]
+    (py/python-var '(var hello (fn []))))
+  =>
+  '(fn.inner hello [])
+  (l/with:library [migration-library] (py/python-var '#'hello))
+  =>
+  '(var* hello := nil))
+
+^{:refer lang.model.v1.spec-python/tf-for-object, :added "4.0"}
+(fact
+  "for object loop"
+  (l/with:library
+    [migration-library]
+    (py/tf-for-object '(for:object [[k v] arr] [k v])))
+  =>
+  '(for [[k v] :in (. arr (items))] [k v]))
+
+^{:refer lang.model.v1.spec-python/tf-for-array, :added "4.0"}
+(fact
+  "for array loop"
+  (l/with:library
+    [migration-library]
+    (py/tf-for-array '(for:array [[i e] arr] [i e])))
+  =>
+  '(for [i :in (range (len arr))] (var e (. arr [i])) [i e])
+  (l/with:library
+    [migration-library]
+    (py/tf-for-array '(for:array [e arr] e)))
+  =>
+  '(for [e :in arr] e))
+
+^{:refer lang.model.v1.spec-python/tf-for-iter, :added "4.0"}
+(fact
+  "for iter loop"
+  (l/with:library
+    [migration-library]
+    (py/tf-for-array '(for:iter [e it] e)))
+  =>
+  '(for [e :in it] e))
+
+^{:refer lang.model.v1.spec-python/tf-for-index, :added "4.0"}
+(fact
+  "for index transform"
+  (l/with:library
+    [migration-library]
+    (py/tf-for-index '(for:index [i [0 2 10]] i)))
+  =>
+  '(for [i :in (range 0 2 10)] i))
+
+^{:refer lang.model.v1.spec-python/tf-for-return, :added "4.0"}
+(fact
+  "for return transform"
+  (l/with:library
+    [migration-library]
+    (py/tf-for-return
+      '(for:return
+         [[ok err] (call)]
+         {:success (return ok), :error (return err)})))
+  =>
+  '(try
+     (var ok (call))
+     (return ok)
+     (catch [Exception :as err] (return err))))
+
+^{:refer lang.model.v1.spec-python/python-tf-prototype-create, :added "4.1"}
+(comment
+  "Original empty historical fact; behavioral coverage remains required."
+  "^{:refer tahto.model.spec-python/python-tf-prototype-create, :added \"4.1\"} (fact \"creates python prototypes\")")
+
+^{:refer lang.model.v1.spec-python/python-tf-prototype-get, :added "4.1"}
+(comment
+  "Original empty historical fact; behavioral coverage remains required."
+  "^{:refer tahto.model.spec-python/python-tf-prototype-get, :added \"4.1\"} (fact \"gets python prototypes\")")
+
+^{:refer lang.model.v1.spec-python/python-tf-prototype-set, :added "4.1"}
+(comment
+  "Original empty historical fact; behavioral coverage remains required."
+  "^{:refer tahto.model.spec-python/python-tf-prototype-set, :added \"4.1\"} (fact \"sets python prototypes\")")
+
+^{:refer lang.model.v1.spec-python/python-tf-prototype-method, :added "4.1"}
+(comment
+  "Original empty historical fact; behavioral coverage remains required."
+  "^{:refer tahto.model.spec-python/python-tf-prototype-method, :added \"4.1\"} (fact \"calls python prototype methods\")")
+
+^{:refer lang.model.v1.spec-python/python-emit-input-rest, :added "4.1"}
+(fact
+  "emits a Python variadic parameter"
+  (l/with:library
+    [migration-library]
+    (binding [lang.base.emit-common/*emit-fn* (fn
+                                                [symbol _ _]
+                                                (name symbol))]
+      (py/python-emit-input-rest {:symbol 'args} nil nil)))
+  =>
+  "*args")
+(require [lang.base.preprocess-base :as pre]
+          [lang.base.emit-common :as common]
+          [lang.typed.xtalk-analysis :as analysis]
+          [lang.base.book :as book]
+          [lang.model.v1.spec-python.rewrite :as rewrite])
+^{:refer lang.model.v1.spec-python/python-symbol-global}
+(fact "global symbols use globals with the grammar's full-name encoding"
+ [(py/python-symbol-global 'value {} {})
+  (py/python-symbol-global 'demo.ns/value {:default {:common {:namespace-full "$"}}} {})]
+ => ['(. (globals) ["value"]) '(. (globals) ["demo_ns$value"])])
+^{:refer lang.model.v1.spec-python/python-token-boolean}
+(fact "boolean tokens use Python spelling and source truthiness"
+ (mapv py/python-token-boolean [true false nil 0 ""])
+ => ["True" "False" "False" "True" "True"])
+^{:refer lang.model.v1.spec-python/python-qualified-symbol}
+(fact "qualification respects explicit namespaces inner functions and missing modules"
+ [(binding [pre/*macro-opts* {:module {:id 'demo}}]
+    [(py/python-qualified-symbol nil)
+     (py/python-qualified-symbol 'other/work)
+     (py/python-qualified-symbol (with-meta 'inner {:inner true}))
+     (py/python-qualified-symbol 'work)])
+  (binding [pre/*macro-opts* {}] (py/python-qualified-symbol 'work))]
+ => '[[nil other/work inner demo/work] work])
+^{:refer lang.model.v1.spec-python/python-optional-input?}
+(fact "only maybe input types are optional"
+ (mapv py/python-optional-input? [{:type {:kind :maybe}} {:type {:kind :primitive}} {} nil])
+ => [true false false false])
+^{:refer lang.model.v1.spec-python/python-apply-optional-defaults}
+(fact "optional defaults affect only the trailing inferred maybe arguments and restore the resolver"
+ (let [saved (deref (var analysis/resolve-function-def))]
+  (try
+   (intern 'lang.typed.xtalk-analysis 'resolve-function-def
+           (fn [_] {:inputs [{:type {:kind :primitive}}
+                            {:type {:kind :maybe}} {:type {:kind :maybe}}]}))
+   (let [normal (binding [pre/*macro-opts* {}]
+                  [(py/python-apply-optional-defaults 'f '[a b c])
+                   (py/python-apply-optional-defaults 'f '[a b := 1])
+                   (py/python-apply-optional-defaults nil '[a b c])
+                   (py/python-apply-optional-defaults 'f '(a b c))])]
+    (intern 'lang.typed.xtalk-analysis 'resolve-function-def (fn [_] nil))
+    (let [missing (py/python-apply-optional-defaults 'f '[a b c])]
+     (intern 'lang.typed.xtalk-analysis 'resolve-function-def
+             (fn [_] (throw (ex :test/resolver {}))))
+     [normal missing (py/python-apply-optional-defaults 'f '[a b c])]))
+   (finally (intern 'lang.typed.xtalk-analysis 'resolve-function-def saved))))
+ => [['[a b := nil c := nil] '[a b := 1] '[a b c] '(a b c)] '[a b c] '[a b c]])
+^{:refer lang.model.v1.spec-python/python-lambda-body}
+(fact "lambda bodies unwrap return and quote literal strings keywords and nil"
+ (mapv py/python-lambda-body '[ (return (+ x 1)) (return "text") :tag nil false 42])
+ => '[(+ x 1) (quote "text") (quote :tag) (quote nil) false 42])
+^{:refer lang.model.v1.spec-python/python-plain-symbol?}
+(fact "plain symbols exclude qualified symbols and non-symbol values"
+ (mapv py/python-plain-symbol? '[local ns/value :local "local" nil])
+ => [true false false false false])
+^{:refer lang.model.v1.spec-python/python-binding-symbols}
+(fact "binding discovery descends vectors sets and map values but not forms or map keys"
+ [(py/python-binding-symbols '[a [b ns/c] #{d} {:ignored e}])
+  (py/python-binding-symbols '(a b))]
+ => '[#{a b d e} #{}])
+^{:refer lang.model.v1.spec-python/python-scope-form?}
+(fact "all original function forms establish a scope boundary"
+ (mapv py/python-scope-form? '[(fn []) (fn.inner f []) (defn f []) (defn- f []) (defgen f []) (do x) [fn] nil])
+ => [true true true true true false false false])
+^{:refer lang.model.v1.spec-python/python-local-symbols}
+(fact "local discovery excludes nested scopes and quoted declarations"
+ (py/python-local-symbols
+  '(do (var [a b] value)
+       (var* c 0)
+       (quote (var hidden 1))
+       (fn nested [] (var hidden 2))
+       [(var d 3)]
+       #{(var e 4)}
+       {(var k 5) (var v 6)}))
+ => '#{a b c d e k v})
+^{:refer lang.model.v1.spec-python/python-assigned-symbols}
+(fact "assignment discovery excludes declarations nested functions and quoted assignments"
+ (py/python-assigned-symbols
+  '(do (:= [a b] value)
+       (var local 0)
+       (quote (:= hidden 1))
+       (fn nested [] (:= hidden 2))
+       [(visit d 3) (:= e 4)]
+       #{(:= f 5)}
+       {(:= k 6) (:= v 7)}))
+ => '#{a b e f k v})
+^{:refer lang.model.v1.spec-python/python-prepend-nonlocals}
+(fact "inner functions declare only sorted assigned names outside arguments and locals"
+ (let [body '((var local 0) (:= zeta 1) (:= alpha 2)
+              (:= local 3) (:= argument 4) (fn nested [] (:= hidden 5)))]
+  [(py/python-prepend-nonlocals 'outer '[argument] body)
+   (py/python-prepend-nonlocals (with-meta 'inner {:inner true}) '[argument] body)
+   (py/python-prepend-nonlocals (with-meta 'inner {:inner true}) '[argument] '((:= argument 1)))])
+ => ['((var local 0) (:= zeta 1) (:= alpha 2) (:= local 3) (:= argument 4) (fn nested [] (:= hidden 5)))
+     '((nonlocal alpha zeta) (var local 0) (:= zeta 1) (:= alpha 2) (:= local 3) (:= argument 4) (fn nested [] (:= hidden 5)))
+     '((:= argument 1))])
+^{:refer lang.model.v1.spec-python/python-emit-nonlocal}
+(fact "nonlocal emission preserves symbol order and comma separation"
+ (binding [common/*emit-fn* (fn [sym _ _] (name sym))]
+  [(py/python-emit-nonlocal '(nonlocal alpha zeta) nil nil)
+   (py/python-emit-nonlocal '(nonlocal) nil nil)])
+ => ["nonlocal alpha, zeta" "nonlocal "])
+^{:refer lang.model.v1.spec-python/python-dot-length?}
+(fact "length access requires one literal length key"
+ (mapv py/python-dot-length? '[["length"] [length] ["length" 0] ("length") nil])
+ => [true false false false false])
+^{:refer lang.model.v1.spec-python/python-dot-string-key?}
+(fact "string key access requires exactly one vector entry"
+ (mapv py/python-dot-string-key? '[["name"] [name] [0] [] ["a" "b"] ("name")])
+ => [true false false false false false])
+^{:refer lang.model.v1.spec-python/python-dot-setitem?}
+(fact "setitem access requires a two-element list form"
+ (mapv py/python-dot-setitem? '[(setitem key) (setitem) (setitem key value) [setitem key] (get key)])
+ => [true false false false false])
+^{:refer lang.model.v1.spec-python/python-tf-prototype-create}
+(fact "Python prototype creation retains its descriptor"
+ (py/python-tf-prototype-create '[_ {:method f}]) => '{:method f})
+^{:refer lang.model.v1.spec-python/python-tf-prototype-get}
+(fact "prototype lookup uses the original private key and nil fallback"
+ (py/python-tf-prototype-get '[_ object]) => '(x:get-key object "_xt_proto" nil))
+^{:refer lang.model.v1.spec-python/python-tf-prototype-set}
+(fact "prototype assignment returns the object after setitem"
+ (py/python-tf-prototype-set '[_ object prototype])
+ => '(or (. object (__setitem__ "_xt_proto" prototype)) object))
+^{:refer lang.model.v1.spec-python/python-tf-prototype-method}
+(fact "direct methods take precedence over prototype fallback"
+ (py/python-tf-prototype-method '[_ object key])
+ => '(:? (not= nil (x:get-key object key nil))
+         (x:get-key object key nil)
+         (x:get-key (or (proto:get object) {}) key nil)))
+^{:refer lang.model.v1.spec-python/+features+}
+(fact "Python features retain operator spelling and original callbacks"
+ [(:raw (:pow py/+features+)) (:raw (:and py/+features+))
+  (:macro (:index py/+features+)) (:macro (:defclass py/+features+))
+  (:macro (:prototype-method py/+features+))]
+ => ["**" "and" #'py/python-dot #'py/python-defclass #'py/python-tf-prototype-method])
+^{:refer lang.model.v1.spec-python/+template+}
+(fact "Python template preserves target literals function syntax and rewrite ownership"
+ [(get-in py/+template+ [:token :nil :as])
+  (get-in py/+template+ [:token :boolean :as])
+  (get-in py/+template+ [:default :common :statement])
+  (get-in py/+template+ [:function :defn :raw])
+  (get-in py/+template+ [:rewrite :staging])]
+ => ["None" #'py/python-token-boolean "" "def" [#'rewrite/python-rewrite-stage]])
+^{:refer lang.model.v1.spec-python/+grammar+}
+(fact "Python grammar uses the original py tag and native operator names"
+ [(:tag py/+grammar+) (get-in py/+grammar+ [:reserved 'not :raw])
+  (get-in py/+grammar+ [:reserved 'throw :raw])]
+ => [:py "not" "raise"])
+^{:refer lang.model.v1.spec-python/+meta+}
+(fact "Book metadata keeps original module import export current and unload forms"
+ [((:module-current py/+meta+))
+  ((:module-export py/+meta+) {:as 'alias :refer '[x]} {})
+  ((:module-import py/+meta+) 'package {:as 'alias} {})
+  ((:module-import py/+meta+) 'package {} {})
+  ((:module-unload py/+meta+) "package" 'alias)]
+ => ['(list (b:& (set [(str x) :for x :in (locals)])
+                 (set [(str m) :for m :in sys.modules])))
+     nil '(:- :import package :as alias) '(:- :import package)
+     '(do (del (. sys.modules ["package"])) (del package))])
+^{:refer lang.model.v1.spec-python/+book+}
+(fact "Python Book retains its parent grammar metadata and unmerged module baseline"
+ [(book/book? py/+book+) (:lang py/+book+) (:parent py/+book+) (:modules py/+book+)
+  (:merged py/+book+) (= (:grammar py/+book+) py/+grammar+) (= (:meta py/+book+) py/+meta+)]
+ => [true :python :xtalk {} #{:python} true true])
+
+(require [lang.core.impl :as init-impl]
+         [lang.core.library :as init-lib]
+         [lang.model.v1.spec-xtalk :as init-xtalk]
+         [lang.model.v1.spec-python :as init-python]
+         [std.lib.context.resource :as init-resource]
+         [std.lib.context.registry :as init-registry]
+         [std.lib.context.space :as init-space])
+^{:refer lang.model.v1.spec-python/+init+ :id original-load-time-install}
+(fact "the original model init installs the Book and runtime through the global Library and tears down deterministically"
+ (let [result init-python/+init+
+       publications (vec (mapcat (fn [result]
+                             (let [publication (nth result 2)]
+                              (concat (first (:macros publication))
+                                      (second (:macros publication))
+                                      (:highlights publication))))
+                           [init-xtalk/+init+ init-python/+init+]))
+       library (init-impl/default-library)
+       outcome (try
+                 (let [stored (get-in (init-lib/get-snapshot library) [:python :book])]
+                  [(vector? result) (count result)
+                   (set (keys (init-lib/get-snapshot library)))
+                   (:lang stored) (:parent stored)
+                   (= (nth result 2) (select-keys stored [:macros :highlights]))
+                   (= (nth result 1) (init-registry/registry-get :lang/python))
+                   (mapv var-sym (first (:macros stored)))
+                   (Base/identical? library (init-impl/default-library))])
+                 (finally
+                  (doseq [v publications]
+                   (let [sym (var-sym v)]
+                    (intern (symbol (namespace sym)) (with-meta (symbol (name sym)) {:macro false}) nil)))
+                  (intern 'lang.model.v1.spec-xtalk '+init+ nil)
+                  (intern 'lang.model.v1.spec-python '+init+ nil)
+                  (init-resource/resource-stop :lang/lang.library)
+                  (init-resource/resource-stop :lang/lang.library)
+                  (init-space/reset-spaces!) (init-registry/reset-registry!)))]
+  [outcome
+   (init-resource/resource-active-get :global :lang/lang.library :default nil)
+   (set (init-registry/registry-list))
+   (every? (fn [v] (= [nil {:macro false}] [(deref v) (meta v)])) publications)
+   [init-xtalk/+init+ init-python/+init+]])
+ => [[true 3 #{:xtalk :python} :python :xtalk true true
+      '[lang.model.v1.spec-python/def$.py lang.model.v1.spec-python/defmacro.py
+        lang.model.v1.spec-python/!.py lang.model.v1.spec-python/defptr.py] true]
+     nil #{:null} true [nil nil]])
+
+(comment :previous-native-model-architecture
+(ns lang.model.v1.spec-python-test
   (:require [lang.base.book :as book]
             [lang.model.v1.spec-python :as subject]
             [lang.model.v1.spec-python.python-grammar :as model]))
@@ -39,3 +586,13 @@
  [{:name "Python selection installs its staging rewrite"
    :test (fn [] (count (get-in subject/+selection+ [:rewrite :staging])))
    :expected 1}])
+
+)
+
+
+^{:refer lang.model.v1.spec-python/+book+
+  :id original-identity-deletion-from-script}
+(fact "the original Python Book deletes identity keys without a silent missing-key fallback"
+ (l/with:library [migration-library]
+  (l/emit-as :python '[(x:lu-del lookup key)]))
+ => "del lookup[id(key)]")

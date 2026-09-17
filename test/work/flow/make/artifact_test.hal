@@ -1,6 +1,8 @@
 (ns work.flow.make.artifact-test
   (:require [std.fs :as fs]
-            [work.flow.make.artifact :as artifact]))
+            [work.flow.make.artifact :as artifact]
+            [std.lib.context.space :as space])
+  (:use code.test))
 
 (defn mock
   [function]
@@ -9,17 +11,29 @@
 
 ^{:refer work.flow.make.artifact/with:mock-compile}
 (Test/check
- [{:name "binds the mock compiler boundary"
-   :test (fn [] (mock (fn [] artifact/*mock-compile*)))
-   :expected true}])
+  [{:name
+    "mock macro binds its owner and restores it after an exception",
+    :test
+    (fn [] [(artifact/with:mock-compile artifact/*mock-compile*)
+            (try
+              (artifact/with:mock-compile
+                (throw (ex :generic {} :ex/message "fixture")))
+              (catch e artifact/*mock-compile*))
+            artifact/*mock-compile*]),
+    :expected [true false false]}])
 
 ^{:refer work.flow.make.artifact/with:compile-filter}
 (Test/check
- [{:name "binds the compile filter boundary"
-   :test (fn [] (binding [artifact/*compile-filter* nil]
-                  (binding [artifact/*compile-filter* #{'demo}]
-                    artifact/*compile-filter*)))
-   :expected #{'demo}}])
+  [{:name "filter macro binds its owner and restores nested scope",
+    :test
+    (fn [] [(artifact/with:compile-filter
+              #{'outer}
+              [(artifact/with:compile-filter
+                 #{'inner}
+                 artifact/*compile-filter*)
+               artifact/*compile-filter*])
+            artifact/*compile-filter*]),
+    :expected [[#{'inner} #{'outer}] nil]}])
 
 ^{:refer work.flow.make.artifact/compile-fullbody}
 (Test/check
@@ -309,9 +323,15 @@
 
 ^{:refer work.flow.make.artifact/compile-resolve}
 (Test/check
- [{:name "retains unresolved symbols"
-   :test (fn [] (artifact/compile-resolve 'artifact/not-defined))
-   :expected 'artifact/not-defined}])
+  [{:name "unresolved symbols fail as in Foundation",
+    :test
+    (fn []
+      (try
+        (artifact/compile-resolve 'artifact/not-defined)
+        :unexpected
+        (catch error (ex-message error)))),
+    :expected
+    "protocol/unsupported-receiver: missing protocol implementation: std.protocol.ideref.IDeref/deref"}])
 
 ^{:refer work.flow.make.artifact/compile-ext-fn}
 (Test/check
@@ -325,3 +345,63 @@
  [{:name "reports a missing section without writing"
    :test (fn [] (artifact/compile-directive {} {} :missing))
    :expected :not-found}])
+
+(def +value+ {:entry 42})
+(def +producer+ (fn [] (var +value+)))
+(defstruct ResolveRuntime [value] IContextEval (deref-ptr [self ptr] (:value self)))
+^{:refer work.flow.make.artifact/compile-resolve :id literal}
+(fact "literal callables are not producers"
+  (mapv artifact/compile-resolve [nil false 7 :key {:a 1} #{:a} [1 2]]) => [nil false 7 :key {:a 1} #{:a} [1 2]])
+^{:refer work.flow.make.artifact/compile-resolve, :id var-symbol-function}
+(fact
+  "resolves recursive Var symbol and function chains"
+  (artifact/compile-resolve #'+producer+)
+  =>
+  {:entry 42}
+  (artifact/compile-resolve 'work.flow.make.artifact-test/+producer+)
+  =>
+  {:entry 42}
+  (artifact/compile-resolve (fn [] (fn [] #'+value+)))
+  =>
+  {:entry 42})
+^{:refer work.flow.make.artifact/compile-resolve, :id unresolved}
+(fact
+  "unresolved symbols fail at dereference"
+  (try
+    (artifact/compile-resolve 'work.flow.make.artifact-test/missing)
+    :unexpected
+    (catch error (ex-message error)))
+  =>
+  "protocol/unsupported-receiver: missing protocol implementation: std.protocol.ideref.IDeref/deref")
+^{:refer work.flow.make.artifact/compile-resolve :id producer-failure}
+(fact "producer exceptions propagate"
+  (try (artifact/compile-resolve (fn [] (throw (ex :generic {:fixture 7} :ex/message "producer failed"))))
+       (catch error [(:fixture (ex-data error)) (ex-message error)])) => [7 "producer failed"])
+^{:refer work.flow.make.artifact/compile-resolve :id pointer-chain}
+(fact "pointer dereference resolves through its runtime"
+ (let [variable (var space/space:rt-current)
+       original (deref variable)
+       metadata (meta variable)
+       runtime (ResolveRuntime (fn [] (var +value+)))]
+   (try
+     (intern 'std.lib.context.space (with-meta 'space:rt-current metadata) (fn [context] runtime))
+     (artifact/compile-resolve (pointer {:context :fixture :id 'entry}))
+     (finally (intern 'std.lib.context.space (with-meta 'space:rt-current metadata) original))))
+ => {:entry 42})
+^{:refer work.flow.make.artifact/compile-resolve :id pointer-cleanup}
+(fact "pointer producer errors preserve runtime roots and metadata"
+ (let [variable (var space/space:rt-current)
+       original (deref variable)
+       metadata (meta variable)
+       runtime (ResolveRuntime (fn [] (throw (ex :generic {:fixture 11} :ex/message "pointer producer failed"))))
+       result (try
+                (try
+                  (intern 'std.lib.context.space (with-meta 'space:rt-current metadata) (fn [context] runtime))
+                  (artifact/compile-resolve (pointer {:context :fixture :id 'entry}))
+                  (finally (intern 'std.lib.context.space (with-meta 'space:rt-current metadata) original)))
+                (catch error [(:fixture (ex-data error)) (ex-message error)]))]
+   [result (= original (deref variable)) (= metadata (meta variable))])
+ => [[11 "pointer producer failed"] true true])
+^{:refer work.flow.make.artifact/compile-resolve :id opaque-deref}
+(fact "non-pointer dereferenceables remain values"
+ (let [value (atom 9)] (= value (artifact/compile-resolve value))) => true)

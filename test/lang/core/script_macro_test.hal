@@ -1,11 +1,90 @@
 (ns lang.core.script-macro-test
-  (:require [lang.core.script-macro :as macro] [code.test :refer :all]))
+  (:require [lang.core.script-macro :as macro]
+            [code.test :refer :all]
+            [lang.core.pointer :as ptr]))
+
 (def ^{:macro false} toy.hello nil)
+
 (def ^{:macro false} quoted.probe nil)
+
+(require [std.lib.context.space :as space] [std.lib.context.registry :as registry])
+
+(def ^{:macro false} highlight.one nil)
+
+(def ^{:macro false} highlight.two nil)
+
+(def ^{:macro false} hello nil)
+
+(def ^{:macro false} defptr.hello nil)
+
+(def published nil)
+
+(require [lang.core.impl :as impl] [lang.core.library :as lib]
+ [lang.core.library-snapshot :as snap] [lang.base.emit-prep-lua-test :as prep])
+
+(def ^{:macro false} def$.hello nil)
+
+(def ^{:macro false} defmacro.hello nil)
+
+(require [lang.core.runtime :as rt])
+
+(def ^{:macro false} !.hello nil)
+
+(defstruct ScriptEvalProbe [module calls]
+ IContextEval
+ (invoke-ptr [self pointer args]
+  (swap! (:calls self) conj
+   [(IPointer/ptr-context pointer) (:module pointer)
+    ptr/*print* ptr/*output* ptr/*input* ptr/*clip*])
+  [(select-keys pointer [:lang :form]) args]))
+
+(require [lang.base.book :as book])
+
+(def ^{:macro false} add-more nil)
+
+(def ^{:macro false} abc nil)
+
+(def ^{:macro false} def.hello nil)
+
+(defstruct ScriptTopSetup [module library calls result]
+ IContextLifeCycle
+ (setup-ptr [self entry]
+  (swap! (:calls self) conj
+   [(:id entry)
+    (:id (lib/get-entry (:library self)
+           (select-keys entry [:lang :module :id :section])))])
+  (:result self)))
+
+(doseq [sym '[def$.lua defmacro.lua !.lua defptr.lua defrun.lua defn.lua
+             defglobal.lua defgen.lua defn-.lua deftemp.lua defclass.lua defabstract.lua def.lua return break set= br]]
+ (intern (ns-current) (with-meta sym {:macro false}) nil))
+
+(ns lang.core.script-macro-test
+ (:require [lang.core.script-macro :as macro]
+           [lang.core.impl :as impl]
+           [lang.core.library :as lib]
+           [lang.core.library-snapshot-prep-test :as snapshot-prep])
+ (:use code.test))
+
+(def ^{:macro false} make-array-0 nil)
+
+(def ^{:macro false} make-array-0:ptr nil)
+
+(def get-idx nil)
+
+
+
+
+
+
+
+
+
 ^{:refer lang.core.script-macro/body-arglists :added "4.0"}
 (fact "makes arglists from body"
   (macro/body-arglists '([a b c])) => '([a b c])
   (macro/body-arglists '(([a b c := 5]))) => '([a b c]))
+
 ^{:refer lang.core.script-macro/intern-in :added "4.0"}
 (fact "interns a macro"
   (try
@@ -13,6 +92,421 @@
         (eval '@(var toy.hello)))
     (finally (intern (ns-current) (with-meta 'toy.hello {:macro false}) nil)))
   => 1)
+
+^{:refer lang.core.script-macro/intern-prep :added "4.0"}
+(fact "outputs the module and form meta"
+ (macro/intern-prep :lua (with-meta '(def$.lua hello hello) {:module 'L.core :line 1}))
+ => '[L.core {:module L.core :line 1}])
+
+^{:refer lang.core.script-macro/intern-def$-fn :id historical-fragment-clauses}
+(fact "interns a fragment macro"
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (registry/registry-install :lang/lua {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+   (impl/with:library [library]
+(let [v (macro/intern-def$-fn :lua
+           (with-meta '(def$.lua hello hello) {:module 'L.core})
+           {:time 1 :line 1})]
+v))
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (space/reset-spaces!) (registry/reset-registry!)
+    (lib/reset-all! library) (reset! (:settings library) {})))))
+ => #'lang.core.script-macro-test/hello
+
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (registry/registry-install :lang/lua {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+   (impl/with:library [library]
+(let [v (macro/intern-def$-fn :lua
+           (with-meta '(def$.lua hello hello) {:module 'L.core})
+           {:time 1 :line 1})]
+(reduce-kv (fn [out key value] (if value (assoc out key value) out)) {} (ptr/ptr-deref (deref (var hello))))))
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (space/reset-spaces!) (registry/reset-registry!)
+    (lib/reset-all! library) (reset! (:settings library) {})))))
+ => (contains {:section :fragment :time 1 :op 'def$ :module 'L.core :lang :lua :line 1 :id 'hello :display :default :form 'hello :namespace 'lang.core.script-macro-test})
+
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (registry/registry-install :lang/lua {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+   (impl/with:library [library]
+(let [v (macro/intern-def$-fn :lua
+           (with-meta '(def$.lua hello hello) {:module 'L.core})
+           {:time 1 :line 1})]
+(ptr/ptr-display (deref (var hello)) {})))
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (space/reset-spaces!) (registry/reset-registry!)
+    (lib/reset-all! library) (reset! (:settings library) {})))))
+ => "hello"
+
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (registry/registry-install :lang/lua {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+   (impl/with:library [library]
+(let [v (macro/intern-def$-fn :lua
+           (with-meta '(def$.lua hello hello) {:module 'L.core})
+           {:time 1 :line 1})]
+(ptr/ptr-invoke-string (let [original (deref (var hello))] (with-meta (pointer (assoc (assoc (into {} original) :context (IPointer/ptr-context original)) :library library)) (meta original))) [1 2 3] {})))
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (space/reset-spaces!) (registry/reset-registry!)
+    (lib/reset-all! library) (reset! (:settings library) {})))))
+ => "hello(1,2,3)"
+
+)
+
+(comment :pending-historical-reconciliation "intern a def fragment macro")
+
+(comment :pending-historical-reconciliation "xtalk fragments display their stored form")
+
+^{:refer lang.core.script-macro/intern-defmacro-fn :id historical-callable-clauses}
+(fact "function to intern a macro"
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (registry/registry-install :lang/lua {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+   (impl/with:library [library]
+(let [v (macro/intern-defmacro-fn :lua
+           (with-meta '(defmacro.lua make-array-0 [& args] (vec args)) '{:module L.core}) {})]
+v))
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (space/reset-spaces!) (registry/reset-registry!)
+    (lib/reset-all! library) (reset! (:settings library) {})))))
+ => #'lang.core.script-macro-test/make-array-0
+
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (registry/registry-install :lang/lua {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+   (impl/with:library [library]
+(let [v (macro/intern-defmacro-fn :lua
+           (with-meta '(defmacro.lua make-array-0 [& args] (vec args)) '{:module L.core}) {})]
+(ptr/ptr-deref (deref (var make-array-0)))))
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (space/reset-spaces!) (registry/reset-registry!)
+    (lib/reset-all! library) (reset! (:settings library) {})))))
+ => (satisfies book/book-entry?)
+
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (registry/registry-install :lang/lua {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+   (impl/with:library [library]
+(let [v (macro/intern-defmacro-fn :lua
+           (with-meta '(defmacro.lua make-array-0 [& args] (vec args)) '{:module L.core}) {})]
+(ptr/ptr-invoke-string (deref (var make-array-0)) [1 2 3] {})))
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (space/reset-spaces!) (registry/reset-registry!)
+    (lib/reset-all! library) (reset! (:settings library) {})))))
+ => "[1,2,3]"
+
+)
+
+^{:refer lang.core.script-macro/intern-defmacro-fn :id historical-multi-arity}
+(fact "function to intern a macro supports multi-arity clauses"
+  (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+   (let [xlib (lib/library {})
+        slot (resolve 'get-idx)
+        before [(deref slot) (meta slot)]]
+    (try
+      (rt/install-lang! :xtalk)
+      (lib/add-book! xlib (assoc lang.model.v1.spec-xtalk/+book+ :modules {}))
+      (lib/add-module! xlib (lang.base.book-module/book-module
+                             {:lang :xtalk :id 'xt.lang.common-lib}))
+      (impl/with:library [xlib]
+        (let [macro-var (macro/intern-defmacro-fn
+                         :xtalk
+                         (with-meta
+                           '(defmacro.xt get-idx
+                              "gets array indices"
+                              {:standalone true}
+                              ([arr idx] (list 'x:get-idx arr idx))
+                              ([arr idx default] (list 'x:get-idx arr idx default)))
+                           '{:module xt.lang.common-lib})
+                         {})
+              entry (deref (deref macro-var))]
+          [(-> macro-var meta :arglists)
+           ((:template entry) 'arr 'idx)
+           ((:template entry) 'arr 'idx 'fallback)]))
+      (finally
+        (intern (ns-current) (with-meta 'get-idx (second before)) (first before))
+        (IComponent/stop xlib)
+        (lib/reset-all! xlib)
+        (reset! (:settings xlib) {})
+        (space/reset-spaces!)
+        (registry/reset-registry!)))))
+  => '[([arr idx] [arr idx default])
+       (x:get-idx arr idx)
+       (x:get-idx arr idx fallback)])
+
+
+(comment :pending-historical-reconciliation "top level function and macro pointers can be printed")
+
+(comment :pending-historical-reconciliation "xtalk top level forms print and hydrate without forcing abstract emit")
+
+(comment :pending-historical-reconciliation "postgres top level functions initialize against a runtime context")
+
+(comment :pending-historical-reconciliation "the intern macro function")
+
+^{:refer lang.core.script-macro/call-thunk :added "4.0"}
+(fact "calls the thunk given meta to control pointer output" (macro/call-thunk {:debug true} (fn [] ptr/*print*)) => #{:input})
+
+^{:refer lang.core.script-macro/intern-!-fn :id historical-free-pointer-clauses}
+(fact "interns a free pointer macro"
+  (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+    (let [library (lib/library {:snapshot (snap/snapshot
+                      {:lua {:id :lua :book prep/+book-min+}})})]
+      (try
+        (registry/registry-install :lang/lua
+          {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+        (str/replace (macro/intern-!-fn :lua [1 2 3] {}) ";" "")
+        (finally
+          (space/reset-spaces!) (registry/reset-registry!)
+          (IComponent/stop library) (lib/reset-all! library) (reset! (:settings library) {})))))
+  => "1\n2\n3"
+
+  (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+    (let [library (lib/library {:snapshot (snap/snapshot
+                      {:xtalk {:id :xtalk :book lang.model.v1.spec-xtalk/+book+}
+                       :js {:id :js :book lang.model.v1.spec-js/+book+}})})]
+      (try
+        (registry/registry-install :lang/js
+          {:scratch (rt/rt-default {:lang :js :module 'J.core :library library})})
+        (macro/intern-!-fn :js [1 2 3] {})
+        (finally
+          (space/reset-spaces!) (registry/reset-registry!)
+          (IComponent/stop library) (lib/reset-all! library) (reset! (:settings library) {})))))
+  => "1;\n2;\n3;"
+
+  (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+    (let [calls (atom [])]
+      (try
+        (registry/registry-install :lang/lua {:scratch (ScriptEvalProbe 'L.core calls)})
+        (macro/intern-!-fn :lua [1 2 3] {})
+        (finally (reset! calls []) (space/reset-spaces!) (registry/reset-registry!)))))
+  => [{:lang :lua :form '(do 1 2 3)} []]
+
+  (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+    (let [calls (atom [])]
+      (try
+        (registry/registry-install :lang/lua {:scratch (ScriptEvalProbe 'L.core calls)})
+        (macro/intern-!-fn :lua ['(+ 1 2)] {})
+        (finally (reset! calls []) (space/reset-spaces!) (registry/reset-registry!)))))
+  => [{:lang :lua :form '(+ 1 2)} []])
+
+
+^{:refer lang.core.script-macro/intern-! :id historical-free-macro-clauses}
+(fact "interns a macro for free evalutation"
+  (let [v (resolve '!.hello) before [(deref v) (meta v)]]
+    (try
+      (macro/intern-! :lua "hello")
+      (finally (intern (ns-current) (with-meta '!.hello (second before)) (first before)))))
+  => #'lang.core.script-macro-test/!.hello
+
+  (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+    (let [library (lib/library {:snapshot (snap/snapshot
+                      {:lua {:id :lua :book prep/+book-min+}})})
+          v (resolve '!.hello) before [(deref v) (meta v)]]
+      (try
+        (registry/registry-install :lang/lua
+          {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+        (macro/intern-! :lua "hello")
+        (str/replace (eval '(!.hello 1 2 3 4 5)) ";" "")
+        (finally
+          (intern (ns-current) (with-meta '!.hello (second before)) (first before))
+          (space/reset-spaces!) (registry/reset-registry!)
+          (IComponent/stop library) (lib/reset-all! library) (reset! (:settings library) {})))))
+  => "1\n2\n3\n4\n5")
+
+
+^{:refer lang.core.script-macro/intern-free-fn :added "4.0"}
+(fact "interns a free pointer in the namespace"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (try
+   (registry/registry-install :lang/lua {:scratch {:module 'runtime.core}})
+   (macro/intern-free-fn :lua '(defptr.lua hello 1) {})
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (space/reset-spaces!) (registry/reset-registry!))))
+ => #'lang.core.script-macro-test/hello)
+
+^{:refer lang.core.script-macro/intern-free :added "4.0"}
+(fact "creates a defptr macro"
+ (try (macro/intern-free :lua "hello")
+  (finally (intern (ns-current) (with-meta 'defptr.hello {:macro false}) nil)))
+ => #'lang.core.script-macro-test/defptr.hello)
+
+^{:refer lang.core.script-macro/intern-top-level-fn :id historical-top-level-clauses}
+(fact "interns a top level function"
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [v (macro/intern-top-level-fn :lua
+               ['defn (get-in (lib/get-book library :lua) [:grammar :reserved 'defn])]
+               (with-meta '(defn.lua ^{:b 2} add-more
+                             "hello" {:a 1} [x y z] (return (+ x y z)))
+                          {:module 'L.core}) {})]
+v))
+    (finally
+     (intern (ns-current) (with-meta 'add-more {:macro false}) nil)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => #'lang.core.script-macro-test/add-more
+
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [v (macro/intern-top-level-fn :lua
+               ['defn (get-in (lib/get-book library :lua) [:grammar :reserved 'defn])]
+               (with-meta '(defn.lua ^{:b 2} add-more
+                             "hello" {:a 1} [x y z] (return (+ x y z)))
+                          {:module 'L.core}) {})]
+(lib/get-entry library '{:lang :lua :module L.core :id add-more})))
+    (finally
+     (intern (ns-current) (with-meta 'add-more {:macro false}) nil)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => (satisfies book/book-entry?)
+
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [v (macro/intern-top-level-fn :lua
+               ['defn (get-in (lib/get-book library :lua) [:grammar :reserved 'defn])]
+               (with-meta '(defn.lua ^{:b 2} add-more
+                             "hello" {:a 1} [x y z] (return (+ x y z)))
+                          {:module 'L.core}) {})]
+(meta (var add-more))))
+    (finally
+     (intern (ns-current) (with-meta 'add-more {:macro false}) nil)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => (contains {:a 1 :doc "hello"})
+
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [v (macro/intern-top-level-fn :lua
+               ['defn (get-in (lib/get-book library :lua) [:grammar :reserved 'defn])]
+               (with-meta '(defn.lua ^{:b 2} add-more
+                             "hello" {:a 1} [x y z] (return (+ x y z)))
+                          {:module 'L.core}) {})]
+(ptr/ptr-invoke-string (deref (var add-more)) [1 2 3] {})))
+    (finally
+     (intern (ns-current) (with-meta 'add-more {:macro false}) nil)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => "add_more(1,2,3)"
+
+(binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [v (macro/intern-top-level-fn :lua
+               ['defn (get-in (lib/get-book library :lua) [:grammar :reserved 'defn])]
+               (with-meta '(defn.lua ^{:b 2} add-more
+                             "hello" {:a 1} [x y z] (return (+ x y z)))
+                          {:module 'L.core}) {})]
+(ptr/ptr-invoke-string (deref (var add-more)) [1 2 3] {:layout :full})))
+    (finally
+     (intern (ns-current) (with-meta 'add-more {:macro false}) nil)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => "L_core____add_more(1,2,3)"
+
+)
+
+(comment :pending-historical-reconciliation "interns a top level macro")
+
+^{:refer lang.core.script-macro/intern-macros :id historical-intern-macros}
+(fact "interns the top-level macros in the grammar"
+  (let [library (lib/library {:snapshot snapshot-prep/+snap+})
+        before (mapv (fn [sym] (let [v (resolve sym)] [sym (deref v) (meta v)]))
+                     '[def$.lua defmacro.lua !.lua defptr.lua defrun.lua defn.lua defglobal.lua defgen.lua defn-.lua deftemp.lua defclass.lua defabstract.lua def.lua return break set= br])]
+    (try
+      (impl/with:library [library]
+        (macro/intern-macros :lua (:grammar (lib/get-book library :lua))))
+      (finally
+        (doseq [[sym value metadata] before]
+          (intern (ns-current) (with-meta sym metadata) value))
+        (IComponent/stop library)
+        (lib/reset-all! library)
+        (reset! (:settings library) {}))))
+  => (satisfies vector?))
+
+
+^{:refer lang.core.script-macro/intern-highlights :id historical-intern-highlights}
+(fact "interns the highlight macros in the grammar"
+  (let [library (lib/library {:snapshot snapshot-prep/+snap+})
+        before (mapv (fn [sym] (let [v (resolve sym)] [sym (deref v) (meta v)]))
+                     '[def$.lua defmacro.lua !.lua defptr.lua defrun.lua defn.lua defglobal.lua defgen.lua defn-.lua deftemp.lua defclass.lua defabstract.lua def.lua return break set= br])]
+    (try
+      (impl/with:library [library]
+        (macro/intern-highlights :lua (:grammar (lib/get-book library :lua))))
+      (finally
+        (doseq [[sym value metadata] before]
+          (intern (ns-current) (with-meta sym metadata) value))
+        (IComponent/stop library)
+        (lib/reset-all! library)
+        (reset! (:settings library) {}))))
+  => (satisfies vector?))
+
+
+(comment :pending-historical-reconciliation "interns a bunch of macros in the namespace")
+
+^{:refer lang.core.script-macro/intern-defmacro-rt-fn :added "4.0"}
+(fact "defines both a library entry as well as a runtime macro"
+ (let [library (lib/library:create {:snapshot snapshot-prep/+snap+})]
+  (try
+   (impl/with:library [library]
+    (macro/intern-defmacro-rt-fn :lua
+     (with-meta '(defmacro.lua make-array-0 [& args] (vec args)) '{:module L.core}) {}))
+   (finally
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0:ptr {:macro false}) nil)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => (satisfies vector?))
+
+(comment :pending-historical-reconciliation "macro for runtime lang macros")
+
+
+(comment :pending-historical-reconciliation "hydrates a top level entry with grammar and module metadata")
 ^{:refer lang.core.script-macro/body-arglists :id decorated-multiple-arities}
 (fact "retains binding symbols and drops DSL annotations in each arity"
   (macro/body-arglists '(([a :int 7 "doc" [:json] [nested] & rest] body)
@@ -20,6 +514,7 @@
   => '([a [nested] & rest] [x])
   (macro/body-arglists '([] body)) => '([])
   (macro/body-arglists '()) => '())
+
 ^{:refer lang.core.script-macro/intern-in :id callback-install-reset}
 (fact "publishes a live macro callback through the explicit namespace argument"
   (try
@@ -32,6 +527,7 @@
        (eval '(quoted.probe (+ 1 2)))])
     (finally (intern (ns-current) (with-meta 'quoted.probe {:macro false}) nil)))
   => [true {:macro true :arglists '([& body])} '(quote (+ 1 2)) '(+ 1 2)])
+
 ^{:refer lang.core.script-macro/intern-in :id baseline-restored}
 (fact "both fixture slots return to their nonmacro baseline"
   [(deref (var toy.hello)) (:macro (meta (var toy.hello)))
@@ -42,13 +538,6 @@
 ^{:refer lang.core.script-macro/+form-allow+}
 (fact "preserves the original allowed form metadata fields" macro/+form-allow+ => [:line :column :file :name :ns])
 
-(require [std.lib.context.space :as space] [std.lib.context.registry :as registry])
-(def ^{:macro false} highlight.one nil)
-(def ^{:macro false} highlight.two nil)
-^{:refer lang.core.script-macro/intern-prep :added "4.0"}
-(fact "outputs the module and form meta"
- (macro/intern-prep :lua (with-meta '(def$.lua hello hello) {:module 'L.core :line 1}))
- => '[L.core {:module L.core :line 1}])
 ^{:refer lang.core.script-macro/intern-prep :id runtime-module-fallback}
 (fact "uses the runtime module only when form metadata does not select one"
  (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
@@ -58,6 +547,7 @@
     (macro/intern-prep :lua (with-meta '(def x 1) {:module 'form.core :line 8}))]
    (finally (space/reset-spaces!) (registry/reset-registry!))))
  => '[[runtime.core {:line 9}] [form.core {:module form.core :line 8}]])
+
 ^{:refer lang.core.script-macro/intern-highlights :id metadata-and-expansion}
 (fact "interns highlights with only their original selected metadata"
  (try
@@ -74,6 +564,7 @@
    (intern (ns-current) (with-meta 'highlight.one {:macro false}) nil)
    (intern (ns-current) (with-meta 'highlight.two {:macro false}) nil)))
  => [true {:macro true :arglists '([x]) :style/indent 2} {:macro true} nil nil []])
+
 ^{:refer lang.core.script-macro/intern-highlights :id highlight-reset}
 (fact "highlight slots return to ordinary values after interning"
  [(deref (var highlight.one)) (deref (var highlight.two))
@@ -91,24 +582,6 @@
    (finally (space/reset-spaces!) (registry/reset-registry!))))
  => [:hara/argument "Module required for insertion."])
 
-(def hello nil)
-(def ^{:macro false} defptr.hello nil)
-(def published nil)
-^{:refer lang.core.script-macro/intern-free-fn :added "4.0"}
-(fact "interns a free pointer in the namespace"
- (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
-  (try
-   (registry/registry-install :lang/lua {:scratch {:module 'runtime.core}})
-   (macro/intern-free-fn :lua '(defptr.lua hello 1) {})
-   (finally
-    (intern (ns-current) 'hello nil)
-    (space/reset-spaces!) (registry/reset-registry!))))
- => #'lang.core.script-macro-test/hello)
-^{:refer lang.core.script-macro/intern-free :added "4.0"}
-(fact "creates a defptr macro"
- (try (macro/intern-free :lua "hello")
-  (finally (intern (ns-current) (with-meta 'defptr.hello {:macro false}) nil)))
- => #'lang.core.script-macro-test/defptr.hello)
 ^{:refer lang.core.script-macro/intern-free-fn :id native-pointer-fields}
 (fact "uses the native Pointer and respects explicit versus runtime modules"
  (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
@@ -118,10 +591,11 @@
          b (deref (macro/intern-free-fn :lua '(defptr.lua hello false) {:module 'explicit.core}))]
     [(IPointer/ptr-context a) (select-keys a [:lang :module :form])
      (IPointer/ptr-context b) (select-keys b [:lang :module :form])])
-   (finally (intern (ns-current) 'hello nil)
+   (finally (intern (ns-current) (with-meta 'hello {:macro false}) nil)
     (space/reset-spaces!) (registry/reset-registry!))))
  => [:lang/lua '{:lang :lua :module runtime.core :form (+ 1 2)}
      :lang/lua '{:lang :lua :module explicit.core :form false}])
+
 ^{:refer lang.core.script-macro/intern-free :id macro-expansion-and-evaluation}
 (fact "preserves the original quoted expansion and call metadata through evaluation"
  (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
@@ -141,8 +615,684 @@
  => '[(lang.core.script-macro/intern-free-fn :lua
        (quote (defptr.hello published (+ 1 2))) {:module (quote form.core)})
       true :lang/lua {:lang :lua :module form.core :form (+ 1 2)}])
+
 ^{:refer lang.core.script-macro/intern-free :id free-pointer-reset}
 (fact "restores pointer and macro slots"
  [(deref (var hello)) (deref (var published)) (deref (var defptr.hello))
   (:macro (meta (var defptr.hello))) (macroexpand-1 '(defptr.hello published 1))]
  => '[nil nil nil false (defptr.hello published 1)])
+
+^{:refer lang.core.script-macro/intern-def$-fn :id historical-fragment-var}
+(fact "retains the original fragment handler Var result"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (impl/with:library [library]
+    (macro/intern-def$-fn :lua
+     (with-meta '(def$.lua hello hello) {:module 'L.core}) {:time 1 :line 1}))
+   (finally (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => #'lang.core.script-macro-test/hello)
+
+^{:refer lang.core.script-macro/intern-def$-fn :id fragment-entry-and-pointer}
+(fact "stores the original fragment entry and publishes a native pointer with distinct metadata precedence"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (impl/with:library [library]
+    (let [v (macro/intern-def$-fn :lua
+              (with-meta '(def$.lua hello 7) {:module 'L.core :line 3 :discard 1})
+              {:time 1 :line 2 :namespace (ns-current)})
+          p (deref v)
+          entry (lib/get-entry library {:lang :lua :module 'L.core :id 'hello :section :fragment})]
+     [(IPointer/ptr-context p) (select-keys p [:lang :module :id :section :form])
+      (select-keys entry [:lang :module :id :section :form :line :time :discard])
+      (select-keys (meta v) [:line :time :discard])]))
+   (finally (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [:lang/lua '{:lang :lua :module L.core :id hello :section :fragment}
+     '{:lang :lua :module L.core :id hello :section :fragment :form 7 :line 3 :time 1}
+     {:line 2 :time 1}])
+
+^{:refer lang.core.script-macro/intern-def$ :id fragment-macro-execution}
+(fact "runs the original generated fragment macro against a real Library"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (impl/with:library [library]
+    (let [macro-var (macro/intern-def$ :lua "hello")
+          started (time-ns)
+          result (eval (with-meta '(def$.hello hello 9) {:module 'L.core :line 12}))
+          finished (time-ns)
+          entry (lib/get-entry library {:lang :lua :module 'L.core :id 'hello :section :fragment})]
+     [(= macro-var (var def$.hello)) (= result (var hello))
+      (select-keys entry [:lang :module :id :section :form :line])
+      (<= started (:time entry) finished)]))
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (intern (ns-current) (with-meta 'def$.hello {:macro false}) nil)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [true true '{:lang :lua :module L.core :id hello :section :fragment :form 9 :line 12} true])
+
+^{:refer lang.core.script-macro/intern-def$ :id fragment-slots-restored}
+(fact "fragment slots return to their explicit baseline" [(deref (var hello)) (meta (var hello)) (deref (var def$.hello)) (meta (var def$.hello))] => [nil {:macro false} nil {:macro false}])
+
+^{:refer lang.core.script-macro/intern-defmacro-fn :id callable-metadata-and-arities}
+(fact "preserves callable metadata and executes the original templates across all preamble branches"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (impl/with:library [library]
+    (mapv
+     (fn [[form args]]
+      (let [v (macro/intern-defmacro-fn :lua (with-meta form {:module 'L.core}) {})
+            entry (lib/get-entry library {:lang :lua :module 'L.core :id 'hello :section :fragment})]
+       [(select-keys (meta v) [:doc :custom :arglists])
+        (apply (:template entry) args)]))
+     [['(defmacro.lua hello [x] (list '+ x 1)) [2]]
+      ['(defmacro.lua hello "doc" [x] (list '+ x 1)) [2]]
+      ['(defmacro.lua hello {:custom :attribute} [x] (list '+ x 1)) [2]]
+      ['(defmacro.lua hello "doc" {:custom :attribute} [x] (list '+ x 1)) [2]]
+      ['(defmacro.lua hello ([x] (list '+ x 1))) [2]]
+      ['(defmacro.lua hello ([x] (list '+ x 1)) ([x y] (list '+ x y))) [2 3]]
+      ['(defmacro.lua hello "doc" {:custom :attribute}
+         ([x] (list '+ x 1)) ([x y] (list '+ x y))) [2 3]]]))
+   (finally (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => '[[{:doc "" :arglists ([x])} (+ 2 1)]
+      [{:doc "doc" :arglists ([x])} (+ 2 1)]
+      [{:doc "" :custom :attribute :arglists ([x])} (+ 2 1)]
+      [{:doc "doc" :custom :attribute :arglists ([x])} (+ 2 1)]
+      [{:doc "" :arglists ([x])} (+ 2 1)]
+      [{:doc "" :arglists ([x] [x y])} (+ 2 3)]
+      [{:doc "doc" :custom :attribute :arglists ([x] [x y])} (+ 2 3)]])
+
+^{:refer lang.core.script-macro/intern-defmacro :id generated-macro-entry}
+(fact "evaluates the generated macro builder into an executable Library entry"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (impl/with:library [library]
+    (let [macro-var (macro/intern-defmacro :lua "hello")
+          started (time-ns)
+          v (eval (with-meta '(defmacro.hello hello [x] (list '+ x 1))
+                    {:module 'L.core :line 20}))
+          finished (time-ns)
+          entry (lib/get-entry library {:lang :lua :module 'L.core :id 'hello :section :fragment})]
+     [(= macro-var (var defmacro.hello)) (= v (var hello))
+      (select-keys (meta v) [:doc :arglists :line])
+      ((:template entry) 4)
+      (<= started (:time entry) finished)]))
+   (finally
+    (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (intern (ns-current) (with-meta 'defmacro.hello {:macro false}) nil)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => '[true true {:doc "" :arglists ([x]) :line 20} (+ 4 1) true])
+
+^{:refer lang.core.script-macro/intern-defmacro-fn :id invalid-callable-no-mutation}
+(fact "rejects invalid callable bodies before entry insertion or Var publication"
+ (let [library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})
+       before (lib/get-snapshot library)]
+  (try
+   (impl/with:library [library]
+    (let [result (try (macro/intern-defmacro-fn :lua
+                      (with-meta '(defmacro.lua hello :bad) {:module 'L.core}) {})
+                    (catch error (select-keys (ex-data error) [:ex/code :ex/message :body])))]
+     [result (= before (lib/get-snapshot library)) (deref (var hello))]))
+   (finally (intern (ns-current) (with-meta 'hello {:macro false}) nil)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => '[{:ex/code :hara/argument :ex/message "Invalid callable body" :body (:bad)} true nil])
+
+^{:refer lang.core.script-macro/intern-defmacro :id macro-entry-slots-restored}
+(fact "restores both macro-entry publication slots"
+ [(deref (var hello)) (meta (var hello)) (deref (var defmacro.hello)) (meta (var defmacro.hello))]
+ => [nil {:macro false} nil {:macro false}])
+
+^{:refer lang.core.script-macro/call-thunk :id controls-and-tags}
+(fact "preserves inherited controls and applies the original function-valued tags"
+ (binding [ptr/*print* #{:baseline} ptr/*output* #{:full}
+           ptr/*input* #{:prior} ptr/*clip* true]
+  (mapv (fn [options]
+    (macro/call-thunk options
+     (fn [] [ptr/*print* ptr/*output* ptr/*input* ptr/*clip*])))
+   [{} {:debug true :raw true :input true :clip true}
+    {:tag *} {:tag -} {:tag '*}]))
+ => [[#{:baseline} #{:full} #{:prior} false]
+     [#{:baseline :input :raw-output} #{:full :raw} #{:prior :input} true]
+     [#{:input-form :raw-input :raw-output} #{:full} #{:prior} false]
+     [#{:baseline} #{:full} #{:input} false]
+     [#{:baseline} #{:full} #{:prior} false]])
+
+^{:refer lang.core.script-macro/call-thunk :id nested-restoration}
+(fact "returns the thunk result and restores the outer controls after nested execution"
+ (binding [ptr/*print* #{} ptr/*output* #{:full} ptr/*input* #{} ptr/*clip* false]
+  (let [result (macro/call-thunk {:debug true :clip true}
+         (fn []
+          (let [inner (macro/call-thunk {:raw true :input true}
+                        (fn [] [ptr/*print* ptr/*output* ptr/*input* ptr/*clip*]))]
+           [inner [ptr/*print* ptr/*output* ptr/*input* ptr/*clip*]])))]
+   [result [ptr/*print* ptr/*output* ptr/*input* ptr/*clip*]]))
+ => [[[#{:input :raw-output} #{:full :raw} #{:input} false]
+      [#{:input} #{:full} #{} true]]
+     [#{} #{:full} #{} false]])
+
+^{:refer lang.core.script-macro/call-thunk :id failure-restoration}
+(fact "propagates failure and restores every control on the exceptional exit"
+ (binding [ptr/*print* #{:before} ptr/*output* #{:full}
+           ptr/*input* #{:before} ptr/*clip* true]
+  (let [result (try
+          (macro/call-thunk {:raw true :debug true :input true}
+           (fn [] (throw (ex :argument {:marker 7} :ex/message "thunk failed"))))
+          (catch error (select-keys (ex-data error) [:ex/code :ex/message :marker])))]
+   [result [ptr/*print* ptr/*output* ptr/*input* ptr/*clip*]]))
+ => [{:ex/code :hara/argument :ex/message "thunk failed" :marker 7}
+     [#{:before} #{:full} #{:before} true]])
+
+^{:refer lang.core.script-macro/hydrate-top-level-entry :id module-book-context}
+(fact "hydrates with the module-owning Book while preserving the requested language"
+ (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})
+       original {:form-input '(defn sample [] 1) :retained 7}
+       reserved {:hydrate
+        (fn [form grammar options]
+         [{:observed [form (:tag grammar) (:lang options)
+                      (:lang (:book options)) (:id (:module options))
+                      (vec (keys (:snapshot options)))]}
+          '(rewritten-but-not-stored)])}]
+  (try
+   (let [before (lib/get-snapshot library)
+         hydrated (macro/hydrate-top-level-entry original :requested reserved library 'L.core)]
+    [(= before (lib/get-snapshot library)) hydrated])
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [true {:form-input '(defn sample [] 1) :retained 7
+           :observed ['(defn sample [] 1) :lua :requested :lua 'L.core [:lua]]}])
+
+^{:refer lang.core.script-macro/hydrate-top-level-entry :id requested-book-fallback}
+(fact "uses the requested Book and nil module when the module is absent"
+ (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})
+       reserved {:hydrate
+        (fn [form grammar options]
+         [{:observed [(:tag grammar) (:lang options)
+                      (:lang (:book options)) (:module options)]} form])}]
+  (try
+   (macro/hydrate-top-level-entry {:form-input '(def sample 1)}
+     :lua reserved library 'missing.module)
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => {:form-input '(def sample 1) :observed [:lua :lua :lua nil]})
+
+^{:refer lang.core.script-macro/hydrate-top-level-entry :id metadata-and-hook-results}
+(fact "merges hydration metadata before the post-hook and retains the entry on nil or false"
+ (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})
+       original {:form-input '(def sample 1) :winner :before :retained 7}
+       hydrate (fn [form grammar options] [{:winner :hydrated} '(ignored)])]
+  (try
+   [(macro/hydrate-top-level-entry original :lua {} library 'L.core)
+    (mapv (fn [hook]
+      (macro/hydrate-top-level-entry original :lua
+       {:hydrate hydrate :hydrate-hook hook} library 'L.core))
+     [(fn [entry] nil) (fn [entry] false)
+      (fn [entry] {:winner (:winner entry) :seen (:retained entry)})])]
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [{:form-input '(def sample 1) :winner :before :retained 7}
+     [{:form-input '(def sample 1) :winner :hydrated :retained 7}
+      {:form-input '(def sample 1) :winner :hydrated :retained 7}
+      {:winner :hydrated :seen 7}]])
+
+^{:refer lang.core.script-macro/hydrate-top-level-entry :id hook-failure-no-mutation}
+(fact "propagates a post-hook error without changing the Library"
+ (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})
+       before (lib/get-snapshot library)]
+  (try
+   (let [result (try
+          (macro/hydrate-top-level-entry {:form-input '(def sample 1)} :lua
+           {:hydrate-hook (fn [entry]
+              (throw (ex :argument {:marker 9} :ex/message "hydrate failed")))}
+           library 'L.core)
+          (catch error (select-keys (ex-data error) [:ex/code :ex/message :marker])))]
+    [result (= before (lib/get-snapshot library))])
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [{:ex/code :hara/argument :ex/message "hydrate failed" :marker 9} true])
+
+^{:refer lang.core.script-macro/intern-!-fn :id historical-lua-free-emission}
+(fact "retains the original Lua free-evaluation output through RuntimeDefault"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                   {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (str/replace (macro/intern-!-fn :lua [1 2 3] {}) ";" "")
+    (finally (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => "1\n2\n3")
+
+^{:refer lang.core.script-macro/intern-! :id historical-generated-free-evaluation}
+(fact "retains the original generated macro Var and five-form output"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                   {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    [(macro/intern-! :lua "hello")
+     (str/replace (eval '(!.hello 1 2 3 4 5)) ";" "")]
+    (finally
+     (intern (ns-current) (with-meta '!.hello {:macro false}) nil)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => [#'lang.core.script-macro-test/!.hello "1\n2\n3\n4\n5"])
+
+^{:refer lang.core.script-macro/intern-!-fn :id historical-pointer-arguments}
+(fact "retains both original mocked-invocation assertions through a native protocol fixture"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [calls (atom [])]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (ScriptEvalProbe 'L.core calls)})
+    [(macro/intern-!-fn :lua [1 2 3] {})
+     (macro/intern-!-fn :lua ['(+ 1 2)] {})]
+    (finally (reset! calls []) (space/reset-spaces!) (registry/reset-registry!)))))
+ => [[{:lang :lua :form '(do 1 2 3)} []]
+     [{:lang :lua :form '(+ 1 2)} []]])
+
+^{:refer lang.core.script-macro/intern-! :id generated-call-metadata}
+(fact "forwards macro call metadata into the scoped pointer controls and restores them"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})
+           ptr/*print* #{} ptr/*output* #{:full} ptr/*input* #{} ptr/*clip* false]
+  (let [calls (atom [])]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (ScriptEvalProbe 'L.core calls)})
+    (macro/intern-! :lua "hello")
+    (let [result (eval (with-meta '(!.hello (+ 1 2))
+                         {:debug true :raw true :input true :clip true}))]
+     [result (deref calls) [ptr/*print* ptr/*output* ptr/*input* ptr/*clip*]])
+    (finally
+     (intern (ns-current) (with-meta '!.hello {:macro false}) nil)
+     (reset! calls []) (space/reset-spaces!) (registry/reset-registry!)))))
+ => [[{:lang :lua :form '(+ 1 2)} []]
+     [[:lang/lua 'L.core #{:input :raw-output} #{:full :raw} #{:input} true]]
+     [#{} #{:full} #{} false]])
+
+^{:refer lang.core.script-macro/intern-! :id free-evaluation-slot-restored}
+(fact "restores the generated macro slot root and metadata"
+ [(deref (var !.hello)) (meta (var !.hello))]
+ => [nil {:macro false}])
+
+^{:refer lang.core.script-macro/intern-top-level-fn :id historical-top-level-handler}
+(fact "retains the original top-level Var, Entry, metadata, and invocation strings"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [v (macro/intern-top-level-fn :lua
+               ['defn (get-in (lib/get-book library :lua) [:grammar :reserved 'defn])]
+               (with-meta '(defn.lua ^{:b 2} add-more
+                             "hello" {:a 1} [x y z] (return (+ x y z)))
+                          {:module 'L.core}) {})]
+      [v (book/book-entry? (lib/get-entry library
+             '{:lang :lua :module L.core :id add-more}))
+       (select-keys (meta (var add-more)) [:a :doc])
+       (ptr/ptr-invoke-string (deref (var add-more)) [1 2 3] {})
+       (ptr/ptr-invoke-string (deref (var add-more)) [1 2 3] {:layout :full})]))
+    (finally
+     (intern (ns-current) (with-meta 'add-more {:macro false}) nil)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => [#'lang.core.script-macro-test/add-more true {:a 1 :doc "hello"}
+     "add_more(1,2,3)" "L_core____add_more(1,2,3)"])
+
+^{:refer lang.core.script-macro/intern-top-level :id generated-top-level-entry}
+(fact "runs the original three-arity builder and publishes its generated definition"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [macro-var (macro/intern-top-level :lua "hello" 'def)
+           started (time-ns)
+           v (eval (with-meta '(def.hello abc 1) {:module 'L.core}))
+           finished (time-ns)
+           entry (ptr/ptr-deref (deref (var abc)))]
+      [macro-var v (book/book-entry? entry)
+       (select-keys entry [:lang :module :id :form-input])
+       (<= started (:time entry) finished)]))
+    (finally
+     (intern (ns-current) (with-meta 'abc {:macro false}) nil)
+     (intern (ns-current) (with-meta 'def.hello {:macro false}) nil)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => [#'lang.core.script-macro-test/def.hello #'lang.core.script-macro-test/abc true
+     {:lang :lua :module 'L.core :id 'abc :form-input '(def abc 1)} true])
+
+^{:refer lang.core.script-macro/intern-top-level :id missing-operation}
+(fact "reports the original missing operation data before publishing a macro"
+ [(try (macro/intern-top-level :lua "hello" 'missing {:reserved {}})
+       (catch error (select-keys (ex-data error) [:ex/code :ex/message :op :tag :lang])))
+  (deref (var def.hello))]
+ => [{:ex/code :hara/generic :ex/message "Not found" :op 'missing :tag "hello" :lang :lua} nil])
+
+^{:refer lang.core.script-macro/intern-top-level-fn :id setup-order-and-return}
+(fact "stores the entry before setup-ptr and preserves its truthy return override"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})
+        calls (atom [])]
+   (try
+    (impl/with:library [library]
+     (let [results (mapv (fn [result]
+                     (registry/registry-install :lang/lua
+                      {:scratch (ScriptTopSetup 'L.core library calls result)})
+                     (macro/intern-top-level-fn :lua
+                      ['def (get-in (lib/get-book library :lua) [:grammar :reserved 'def])]
+                      (with-meta '(def.lua abc 1) {:module 'L.core}) {}))
+                   [nil false :initialized])]
+      [results (deref calls)]))
+    (finally
+     (intern (ns-current) (with-meta 'abc {:macro false}) nil)
+     (reset! calls []) (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => [[#'lang.core.script-macro-test/abc #'lang.core.script-macro-test/abc :initialized]
+     [['abc 'abc] ['abc 'abc] ['abc 'abc]]])
+
+^{:refer lang.core.script-macro/intern-top-level :id generated-live-hydration-hook}
+(fact "retains a live grammar hydration callback in the generated macro"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})]
+   (try
+    (registry/registry-install :lang/lua
+     {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [grammar (:grammar (lib/get-book library :lua))
+           grammar (assoc-in grammar [:reserved 'def :hydrate]
+                      (fn [form grammar options] [{:static/probe :hydrated} form]))]
+      (macro/intern-top-level :lua "hello" 'def grammar)
+      (eval (with-meta '(def.hello abc 1) {:module 'L.core}))
+      (select-keys (lib/get-entry library
+                     '{:lang :lua :module L.core :id abc})
+                   [:form-input :static/probe])))
+    (finally
+     (intern (ns-current) (with-meta 'abc {:macro false}) nil)
+     (intern (ns-current) (with-meta 'def.hello {:macro false}) nil)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => {:form-input '(def abc 1) :static/probe :hydrated})
+
+^{:refer lang.core.script-macro/hydrate-top-level-entry :id record-preserving-hydration}
+(fact "retains BookEntry type and metadata and preserves identity when hydration adds nothing"
+ (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})
+       entry (with-meta
+               (book/book-entry {:lang :lua :module 'L.core :id 'sample
+                                 :section :code :form-input '(def sample 1)})
+               {:origin :probe})]
+  (try
+   (let [plain (macro/hydrate-top-level-entry entry :lua {} library 'L.core)
+         hydrated (macro/hydrate-top-level-entry entry :lua
+                    {:hydrate (fn [form grammar options]
+                                [{:static/probe :added} form])} library 'L.core)]
+    [(book/book-entry? hydrated) (meta hydrated) (:static/probe hydrated)
+     (Base/identical? entry plain)])
+   (finally (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [true {:origin :probe} :added true])
+
+^{:refer lang.core.script-macro/intern-macros :id historical-publication}
+(fact "publishes all four helper macros and the original nine top-level macro Vars"
+ (let [slots '[def$.lua defmacro.lua !.lua defptr.lua defrun.lua defn.lua
+               defglobal.lua defgen.lua defn-.lua deftemp.lua defclass.lua defabstract.lua def.lua return break set= br]
+       grammar (:grammar prep/+book-min+)]
+  (try
+   (let [result (macro/intern-macros :lua grammar)]
+    [(vector? result)
+     (first result)
+     (set (second result))
+     (mapv (fn [v] (select-keys (meta v) [:macro :arglists])) (first result))
+     (every? (fn [v] (= true (:macro (meta v)))) (second result))
+     (macroexpand-1 '(defptr.lua probe 7))])
+   (finally
+    (doseq [sym slots] (intern (ns-current) (with-meta sym {:macro false}) nil)))))
+ => [true
+     [#'lang.core.script-macro-test/def$.lua #'lang.core.script-macro-test/defmacro.lua
+      #'lang.core.script-macro-test/!.lua #'lang.core.script-macro-test/defptr.lua]
+     #{#'lang.core.script-macro-test/defrun.lua #'lang.core.script-macro-test/defn.lua
+       #'lang.core.script-macro-test/defglobal.lua #'lang.core.script-macro-test/defgen.lua
+       #'lang.core.script-macro-test/defn-.lua #'lang.core.script-macro-test/deftemp.lua
+       #'lang.core.script-macro-test/defclass.lua #'lang.core.script-macro-test/defabstract.lua
+       #'lang.core.script-macro-test/def.lua}
+     [{:macro true :arglists '([& body])} {:macro true :arglists '([& body])}
+      {:macro true :arglists '([& body])} {:macro true :arglists '([& body])}]
+     true
+     '(lang.core.script-macro/intern-free-fn :lua (quote (defptr.lua probe 7)) nil)])
+
+^{:refer lang.core.script-macro/intern-grammar :id historical-book-publication}
+(fact "uses the Book grammar and stores published Vars without losing Book type or entries"
+ (let [slots '[def$.lua defmacro.lua !.lua defptr.lua defrun.lua defn.lua
+               defglobal.lua defgen.lua defn-.lua deftemp.lua defclass.lua defabstract.lua def.lua return break set= br]
+       initial (with-meta prep/+book-min+ {:publication/probe :retained})
+       library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book initial}})})]
+  (try
+   (impl/with:library [library]
+    (let [before (lib/get-book library :lua)
+          result (macro/intern-grammar :lua {:tag :ignored :macros []})
+          after (lib/get-book library :lua)]
+     [(:macros (:grammar before))
+      (map? result)
+      (= result (select-keys after [:macros :highlights]))
+      (mapv count (:macros result))
+      (:highlights result)
+      (book/book? after)
+      (meta after)
+      (= (:modules before) (:modules after))
+      (= (:grammar before) (:grammar after))]))
+   (finally
+    (doseq [sym slots] (intern (ns-current) (with-meta sym {:macro false}) nil))
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => ['#{defrun defn defglobal defgen defn- deftemp defclass defabstract def}
+     true true [4 9] [#'lang.core.script-macro-test/return #'lang.core.script-macro-test/break
+                      #'lang.core.script-macro-test/set= #'lang.core.script-macro-test/br] true {:publication/probe :retained} true true])
+
+^{:refer lang.core.script-macro/intern-macros :id publication-baseline-restored}
+(fact "all published macro slots return to the nonmacro baseline"
+ (mapv (fn [sym]
+         (let [v (eval (list 'var sym))]
+          [(deref v) (meta v)]))
+       '[def$.lua defmacro.lua !.lua defptr.lua defrun.lua defn.lua
+         defglobal.lua defgen.lua defn-.lua deftemp.lua defclass.lua defabstract.lua def.lua return break set= br])
+ => [[nil {:macro false}] [nil {:macro false}] [nil {:macro false}] [nil {:macro false}]
+     [nil {:macro false}] [nil {:macro false}] [nil {:macro false}] [nil {:macro false}]
+     [nil {:macro false}] [nil {:macro false}] [nil {:macro false}] [nil {:macro false}]
+     [nil {:macro false}] [nil {:macro false}] [nil {:macro false}]
+     [nil {:macro false}] [nil {:macro false}]])
+
+^{:refer lang.core.script-macro/intern-grammar :id repeat-publication}
+(fact "republication retains Var identities, highlight behavior, and existing entries"
+ (let [slots '[def$.lua defmacro.lua !.lua defptr.lua defrun.lua defn.lua
+               defglobal.lua defgen.lua defn-.lua deftemp.lua defclass.lua defabstract.lua def.lua
+               return break set= br]
+       library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book prep/+book-min+}})})]
+  (try
+   (impl/with:library [library]
+    (let [before (lib/get-book library :lua)
+          first-result (macro/intern-grammar :lua nil)
+          second-result (macro/intern-grammar :lua nil)
+          after (lib/get-book library :lua)]
+     [(= first-result second-result)
+      (= second-result (select-keys after [:macros :highlights]))
+      (book/book? after)
+      (= (:modules before) (:modules after))
+      (mapv (fn [v] (:macro (meta v))) (:highlights second-result))
+      (eval '(return 1 2))
+      (eval '(break))
+      (eval '(set= x 3))
+      (eval '(br))]))
+   (finally
+    (doseq [sym slots] (intern (ns-current) (with-meta sym {:macro false}) nil))
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => [true true true true [true true true true] nil nil nil nil])
+
+^{:refer lang.core.script-macro/intern-grammar :id failed-publication-boundary}
+(fact "a missing operation leaves the Book snapshot unchanged and fixture cleanup restores partial publication"
+ (let [slots '[def$.lua defmacro.lua !.lua defptr.lua]
+       grammar (assoc (:grammar prep/+book-min+) :macros '[missing] :highlight [])
+       initial (assoc prep/+book-min+ :grammar grammar)
+       library (lib/library:create {:snapshot (snap/snapshot {:lua {:id :lua :book initial}})})
+       outcome (try
+                 (impl/with:library [library]
+                  (let [before (lib/get-snapshot library)
+                        error (try (macro/intern-grammar :lua nil)
+                                   (catch error (select-keys (ex-data error)
+                                                 [:ex/code :ex/message :op :tag :lang])))]
+                   [error
+                    (= before (lib/get-snapshot library))
+                    (mapv (fn [sym] (:macro (meta (eval (list 'var sym))))) slots)]))
+                 (finally
+                  (doseq [sym slots] (intern (ns-current) (with-meta sym {:macro false}) nil))
+                  (lib/reset-all! library) (reset! (:settings library) {})))]
+  [outcome
+   (mapv (fn [sym] (let [v (eval (list 'var sym))] [(deref v) (meta v)])) slots)])
+ => [[{:ex/code :hara/generic :ex/message "Not found" :op 'missing :tag :lua :lang :lua}
+      true [true true true true]]
+     [[nil {:macro false}] [nil {:macro false}] [nil {:macro false}] [nil {:macro false}]]])
+
+^{:refer lang.core.script-macro/intern-defmacro-rt-fn :id runtime-macro-publication}
+(fact "publishes a callable macro and retains its pointer while quoting runtime arguments"
+ (let [library (lib/library:create {:snapshot snapshot-prep/+snap+})]
+  (try
+   (impl/with:library [library]
+    (let [[v p] (macro/intern-defmacro-rt-fn :lua
+                  (with-meta '(defmacro.lua make-array-0 [& args] (vec args)) '{:module L.core}) {})
+          expanded (macroexpand-1 '(make-array-0 (+ 1 2) [3 4]))
+          [v2 p2] (macro/intern-defmacro-rt-fn :lua
+                    (with-meta '(defmacro.lua make-array-0 [& args] (vec args)) '{:module L.core}) {})]
+     [(var-sym v) (var-sym p) (:macro (meta v)) (boolean (:macro (meta p)))
+      (select-keys (deref p) [:lang :module :id :section])
+      expanded (= v v2) (= p p2)]))
+   (finally
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0:ptr {:macro false}) nil)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => '[lang.core.script-macro-test/make-array-0 lang.core.script-macro-test/make-array-0:ptr
+      true false {:lang :lua :module L.core :id make-array-0 :section :fragment}
+      (lang.core.script-control/script-rt-oneshot :oneshot
+        lang.core.script-macro-test/make-array-0:ptr [(quote (+ 1 2)) (quote [3 4])])
+      true true])
+
+^{:refer lang.core.script-macro/intern-defmacro-rt-fn :id runtime-macro-options}
+(fact "retains absent explicit and nil defaults and optional wrapping"
+ (let [library (lib/library:create {:snapshot snapshot-prep/+snap+})]
+  (try
+   (impl/with:library [library]
+    (mapv (fn [options]
+      (macro/intern-defmacro-rt-fn :lua
+       (with-meta '(defmacro.lua make-array-0 [& args] (vec args)) '{:module L.core}) options)
+      (macroexpand-1 '(make-array-0 false)))
+     [{} {:rt/default :basic} {:rt/default nil}
+      {:rt/default :basic :static/wrap 'identity} {:static/wrap false}]))
+   (finally
+    (intern (ns-current) (with-meta 'make-array-0 {:macro false}) nil)
+    (intern (ns-current) (with-meta 'make-array-0:ptr {:macro false}) nil)
+    (lib/reset-all! library) (reset! (:settings library) {}))))
+ => '[(lang.core.script-control/script-rt-oneshot :oneshot lang.core.script-macro-test/make-array-0:ptr [(quote false)])
+      (lang.core.script-control/script-rt-oneshot :basic lang.core.script-macro-test/make-array-0:ptr [(quote false)])
+      (lang.core.script-control/script-rt-oneshot nil lang.core.script-macro-test/make-array-0:ptr [(quote false)])
+      (identity (lang.core.script-control/script-rt-oneshot :basic lang.core.script-macro-test/make-array-0:ptr [(quote false)]))
+      (lang.core.script-control/script-rt-oneshot :oneshot lang.core.script-macro-test/make-array-0:ptr [(quote false)])])
+
+^{:refer lang.core.script-macro/defmacro.! :added "4.0"}
+(fact "quotes the defining form and keeps language metadata and deferred timestamp evaluation"
+ (mapv
+  (fn [metadata]
+   (let [symbol (with-meta 'make-array-0 metadata)
+         form (list 'macro/defmacro.! symbol '[& args] '(vec args))
+         expanded (macroexpand-1 form)]
+    [(first expanded) (second expanded)
+     (= (nth expanded 2) (list 'quote form))
+     (meta (second (second (nth expanded 2))))
+     (nth expanded 3)]))
+  [{:static/lang :lua :custom :kept} {}])
+ => '[[lang.core.script-macro/intern-defmacro-rt-fn :lua true
+       {:static/lang :lua :custom :kept}
+       (merge {:static/lang :lua :custom :kept} {:time (std.foundation/time-ns)})]
+      [lang.core.script-macro/intern-defmacro-rt-fn nil true {}
+       (merge {} {:time (std.foundation/time-ns)})]])
+
+;; A normal reader form need not carry metadata. Module selection still comes
+;; from the active runtime; absent metadata must contribute an empty map.
+(ns lang.core.script-macro-test)
+
+^{:refer lang.core.script-macro/intern-def$-fn :id absent-fragment-form-metadata}
+(fact "metadata-free fragment uses the active module and publishes its exact value"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})
+        before hello before-meta (meta (var hello))]
+   (try
+    (registry/registry-install :lang/lua
+      {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [result (macro/intern-def$-fn :lua
+                    (with-meta '(def$.lua hello 19) nil)
+                    {:namespace (ns-current) :line 31})
+           entry (lib/get-entry library {:lang :lua :module 'L.core :id 'hello :section :fragment})
+           pointer (deref result)]
+      [(= result (var hello)) (:module pointer) (:id pointer)
+       (:form entry) (:line (meta result))]))
+    (finally
+     (intern (ns-current) (with-meta 'hello before-meta) before)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => [true 'L.core 'hello 19 31])
+
+^{:refer lang.core.script-macro/intern-defmacro-fn :id absent-callable-form-metadata}
+(fact "metadata-free macro retains documentation arglists and executable template"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})
+        before hello before-meta (meta (var hello))]
+   (try
+    (registry/registry-install :lang/lua
+      {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [result (macro/intern-defmacro-fn :lua
+                    (with-meta '(defmacro.lua hello "plain form" [x] (list '+ x 1)) nil)
+                    {:namespace (ns-current)})
+           entry (lib/get-entry library {:lang :lua :module 'L.core :id 'hello :section :fragment})]
+      [(= result (var hello)) (:module (deref result))
+       (select-keys (meta result) [:doc :arglists])
+       ((:template entry) 5)]))
+    (finally
+     (intern (ns-current) (with-meta 'hello before-meta) before)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => [true 'L.core '{:doc "plain form" :arglists ([x])} '(+ 5 1)])
+
+^{:refer lang.core.script-macro/intern-top-level-fn :id absent-top-level-form-metadata}
+(fact "metadata-free top-level function registers code and preserves callable metadata"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [library (lib/library:create {:snapshot (snap/snapshot
+                  {:lua {:id :lua :book prep/+book-min+}})})
+        before add-more before-meta (meta (var add-more))]
+   (try
+    (registry/registry-install :lang/lua
+      {:scratch (rt/rt-default {:lang :lua :module 'L.core :library library})})
+    (impl/with:library [library]
+     (let [result (macro/intern-top-level-fn :lua
+                    ['defn (get-in (lib/get-book library :lua) [:grammar :reserved 'defn])]
+                    (with-meta '(defn.lua add-more "sum" [x y] (return (+ x y))) nil)
+                    {:namespace (ns-current) :line 41})
+           entry (lib/get-entry library {:lang :lua :module 'L.core :id 'add-more :section :code})]
+      [(= result (var add-more)) (:module (deref result))
+       (:id entry) (:section entry)
+       (select-keys (meta result) [:doc :arglists :line])
+       (:form-input entry)]))
+    (finally
+     (intern (ns-current) (with-meta 'add-more before-meta) before)
+     (space/reset-spaces!) (registry/reset-registry!)
+     (lib/reset-all! library) (reset! (:settings library) {})))))
+ => [true 'L.core 'add-more :code
+     '{:doc "sum" :arglists ([x y]) :line 41}
+     '(defn add-more [x y] (return (+ x y)))])

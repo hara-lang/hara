@@ -357,46 +357,65 @@
 (defn emit-entry
   "emits a given entry"
   {:added "4.0"}
-  [grammar entry {:as mopts :keys [snapshot module emit]}]
+  [grammar entry {:as mopts, :keys [snapshot module emit]}]
   (if (not (:suppress emit))
-    (let [mopts                      (or
-                                      (and
-                                       (not module)
-                                       snapshot
-                                       (let
-                                        [{:keys [lang module]} entry book (book/book-from snapshot lang)]
-                                        (assoc
-                                         mopts
-                                         :book
-                                         book
-                                         :modules
-                                         (:modules book)
-                                         :module
-                                         (get-in book [:modules module]))))
-                                      mopts)
+    (let [mopts (or
+                  (and
+                    (not module)
+                    snapshot
+                    (let [{:keys [lang module]} entry
+                          book (book/book-from snapshot lang)]
+                      (assoc
+                        mopts
+                        :book
+                        book
+                        :modules
+                        (:modules book)
+                        :module
+                        (get-in book [:modules module]))))
+                  mopts)
           {:keys [label trim cache]} emit
-          body                       (cond
-                                      (or *cache-none* (:static/no-cache entry) (= cache :none)) (emit-entry-raw grammar entry mopts)
-                                      :else                                                      (binding
-                                                                                                  [*cache-force* (or *cache-force* (= cache :force))] (emit-entry-cached {:entry entry :grammar grammar :mopts mopts})))
-          body                       (reduce
-                                      (fn
-                                       [body transform]
-                                       ((if (= :std.native.Var (Base/type transform)) (deref transform) transform)
-                                        body
-                                        {:entry entry :grammar grammar :mopts mopts}))
-                                      body
-                                      (-> emit :code :transforms :entry))
-          body                       (reduce
-                                      (fn
-                                       [body transform]
-                                       ((if (= :std.native.Var (Base/type transform)) (deref transform) transform)
-                                        body
-                                        {:entry entry :grammar grammar :mopts mopts}))
-                                      body
-                                      (get-in snapshot [(:lang mopts) :book :meta :transforms :entry]))
-          body                       (cond->> body label (str (emit-entry-label grammar entry) "
-") trim (trim))]
+          body (cond
+                 (or
+                   *cache-none*
+                   (:static/no-cache entry)
+                   (= cache :none)) (emit-entry-raw
+                                      grammar
+                                      entry
+                                      mopts)
+                 :else (binding [*cache-force*
+                                 (or *cache-force* (= cache :force))]
+                         (emit-entry-cached
+                           {:entry entry,
+                            :grammar grammar,
+                            :mopts mopts})))
+          body (reduce
+                 (fn [body transform]
+                   ((if (= :std.native.Var (Base/type transform))
+                      (deref transform)
+                      transform)
+                     body
+                     {:entry entry, :grammar grammar, :mopts mopts}))
+                 body
+                 (let [transforms (-> emit :code :transforms)]
+                   (if (vector? transforms) nil (:entry transforms))))
+          body (reduce
+                 (fn [body transform]
+                   ((if (= :std.native.Var (Base/type transform))
+                      (deref transform)
+                      transform)
+                     body
+                     {:entry entry, :grammar grammar, :mopts mopts}))
+                 body
+                 (get-in
+                   snapshot
+                   [(:lang mopts) :book :meta :transforms :entry]))
+          body (cond->>
+                 body
+                 label
+                 (str (emit-entry-label grammar entry) "\n")
+                 trim
+                 (trim))]
       body)))
 
 (comment

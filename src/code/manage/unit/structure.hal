@@ -145,8 +145,12 @@
   ([text path record commented]
    (let [form (:form record)
          head (form-head record)
+         native-registration (= 'Test/register head)
+         descriptor (if (and native-registration (> (count form) 1))
+                      (second form)
+                      nil)
          start (:start record)]
-     (if (not (fact-head? head))
+     (if (not (or (fact-head? head) native-registration))
        nil
        {:kind :fact
         :path path
@@ -157,15 +161,25 @@
         :text (span-text text record)
         :value form
         :head head
-        :title (str (or (if (> (count form) 1) (nth form 1) nil) ""))
+        :title (str (or (if native-registration
+                         (if (map? descriptor)
+                           (or (:desc descriptor) (:name descriptor))
+                           nil)
+                         (if (> (count form) 1) (nth form 1) nil))
+                       ""))
         :refer (or (:refer (meta form)) (:ref (meta form)))
         :meta (or (meta form) {})
         :added (:added (meta form))
         :unchecked-allowed (= true (:unchecked (meta form)))
-        :checked (reduce (fn [matched value]
-                           (or matched (= '=> value)))
-                         false
-                         (drop 2 form))
+        :checked (if native-registration
+                   (and (map? descriptor)
+                        (has? descriptor :test)
+                        (not (nil? (:test descriptor)))
+                        (has? descriptor :expected))
+                   (reduce (fn [matched value]
+                             (or matched (= '=> value)))
+                           false
+                           (drop 2 form)))
         :commented commented}))))
 
 (defn facts-in-record

@@ -1,0 +1,107 @@
+(ns lang.core.script-control
+  (:config {:role :internal})
+  (:require [lang.core.registry :as reg]
+            [lang.base.util :as ut]
+            [std.lib.context.registry :as ctx-reg]
+            [std.lib.context.space :as space]))
+
+(def +watch-keys+ [:context :lang :module :layout])
+
+;;
+;; Runtime
+;;
+
+(defn script-rt-prep
+  "gets the current runtime\n \n   (script-rt-get :lua :default {})\n   => rt/rt-default?\n \n   (h/p:space-context-list)\n   => (contains '[:lang/lua])\n \n   (h/p:registry-rt-list :lang/lua)\n   => (contains '(:default))\n \n   \n   (do (script-rt-stop :lua)\n       (h/p:space-rt-active))\n   => []"
+  {:added "4.0"}
+  [lang key config]
+  (let [_ (if-let [ns (get
+                        (std.foundation/deref reg/+registry+)
+                        [lang key])]
+            (eval (list 'require [ns])))
+        sp (space/space space/*namespace*)
+        ctx (ut/lang-context lang)
+        placement (get (std.foundation/deref (:state sp)) ctx)
+        started? (boolean (:instance placement))
+        new-config (merge
+                     (:config placement)
+                     (-> (ctx-reg/registry-get ctx)
+                      (get-in [:rt key :config]))
+                     config)
+        changed? (or
+                   (not= new-config (:config placement))
+                   (not= (:key placement) key))
+        _ (when (and started? changed?) (space/space:rt-stop sp ctx))
+        _ (if (or (empty? placement) changed?)
+            (space/space:context-set sp ctx key config))]
+    [sp ctx]))
+
+(defn script-rt-get
+  "gets the current runtime, optionally without starting it\n \n   (script-rt-get :lua :default {})\n   => rt/rt-default?\n \n   (h/p:space-context-list)\n   => (contains '[:lang/lua])\n \n   (h/p:registry-rt-list :lang/lua)\n   => (contains '(:default))\n \n   \n   (do (script-rt-stop :lua)\n       (h/p:space-rt-active))\n   => []"
+  {:added "4.0"}
+  ([lang key config] (script-rt-get lang key config false))
+  ([lang key config no-start?]
+    (let [[sp ctx] (script-rt-prep lang key config)]
+      (if no-start?
+        (let [rt (space/space-rt-create sp ctx)]
+          (ctx-reg/registry-scratch-set ctx rt)
+          rt)
+        (space/space:rt-start sp ctx)))))
+
+(defn script-rt-stop
+  "stops the current runtime"
+  {:added "4.0"}
+  ([] (into {}
+        (map (fn [migration-map-juxt-value]
+               [(identity migration-map-juxt-value) (script-rt-stop migration-map-juxt-value)])
+          (ut/lang-rt-list))))
+  ([lang] (script-rt-stop lang nil))
+  ([lang ns] (let [ctx       (ut/lang-context lang)
+                   space     (space/space-resolve ns)
+                   placement (space/space:context-get space ctx)
+                   started?  (:instance placement)
+                   _         (if started? (space/space:rt-stop space ctx))]
+               started?)))
+
+(defn script-rt-restart
+  "restarts a given runtime"
+  {:added "4.0"}
+  ([] (into {}
+        (map (fn [migration-map-juxt-value]
+               [(identity migration-map-juxt-value)
+                (script-rt-restart migration-map-juxt-value)])
+          (ut/lang-rt-list))))
+  ([lang] (script-rt-restart lang nil))
+  ([lang ns] (let [ctx       (ut/lang-context lang)
+                   space     (space/space-resolve ns)
+                   placement (space/space:context-get space ctx)
+                   started?  (:instance placement)
+                   _         (if started? (space/space:rt-stop space ctx))
+                   rt        (space/space:rt-start space ctx)]
+               rt)))
+
+(defn script-rt-oneshot-eval
+  "oneshot evals a statement"
+  {:added "4.0"}
+  [default lang args]
+  (let [has-rt (get (set (ut/lang-rt-list)) lang)
+        rt (if has-rt
+             (ut/lang-rt lang)
+             (script-rt-get lang default {}))]
+    (try
+      (IContextEval/invoke-ptr
+        rt
+        (ut/lang-pointer lang {:module (:module rt)})
+        args)
+      (finally
+        (when (not has-rt)
+          (try
+            (script-rt-stop lang)
+            (finally
+              (space/space:context-unset (ut/lang-context lang)))))))))
+
+(defn script-rt-oneshot
+  "for use with the defmacro.! function"
+  {:added "4.0"}
+  [default {:keys [lang] :as ptr} args]
+  (script-rt-oneshot-eval default lang [(cons ptr args)]))

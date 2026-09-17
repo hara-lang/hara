@@ -1,101 +1,1843 @@
-(ns lang.model.v1.spec-xtalk.fn-python-test
-  (:use code.test)
-  (:require [lang.model.v1.spec-xtalk.fn-python :as subject]))
+(ns lang.model.v1.spec-xtalk.fn-python-test (:require [lang.core.impl :as l] [lang.core.library :as lib] [lang.model.v1.spec-python :as model] [lang.model.v1.spec-xtalk :as xtalk] [lang.model.v1.spec-xtalk.fn-python :refer :all] [code.test :refer :all]) (:config {:role :internal}))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-err}
-(fact "lowers a Python exception"
-  (subject/python-tf-x-err '(x:err value))
-  => '(throw (std.native.Exception value)))
+(def migration-library (lib/library:create {}))
+(fact:global {:teardown [(lib/reset-all! migration-library) (reset! (:settings migration-library) {})]})
+(lib/install-book! migration-library xtalk/+book+)
+(lib/install-book! migration-library model/+book+)
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-random}
-(fact "lowers a Python random call"
-  (subject/python-tf-x-random '(x:random))
-  => '(. (__import__ "random") (random)))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-string?}
-(fact "lowers the Python string predicate"
-  (subject/python-tf-x-is-string? '(x:is-string? value))
-  => '(isinstance value str))
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-promise+, :added "4.1"}
+(fact
+  "async run emits a host thread start"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-async-run '[_ thunk])]))
+  =>
+  (satisfies #"(?s)threading.*Thread.*target"))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-number?}
-(fact "lowers the Python number predicate"
-  (subject/python-tf-x-is-number? '(x:is-number? value))
-  => '(isinstance value (quote (int float))))
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-iter, :added "4.1"}
+(fact
+  "iter null"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(:default (:x-iter-null +python-iter+))]))
+  =>
+  (satisfies #"iter"))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-integer?}
-(fact "lowers the Python integer predicate"
-  (subject/python-tf-x-is-integer? '(x:is-integer? value))
-  => '(isinstance value (quote (int))))
+^{:refer xt.lang.spec-primitive/throw, :added "4.1"}
+(fact
+  "normalizes thrown values and catch bindings"
+  (l/with:library
+    [migration-library]
+    (let [out (l/emit-as
+                :python
+                ['(do:>
+                    (try (throw "boom") (catch err (return err))))])]
+      [(boolean (re-find #"(?s)raise .*Exception" out))
+       (boolean (re-find #"except Exception as [^:]+:" out))]))
+  =>
+  [true true])
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-boolean?}
-(fact "lowers the Python boolean predicate"
-  (subject/python-tf-x-is-boolean? '(x:is-boolean? value))
-  => '(isinstance value bool))
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-del, :added "4.0"}
+(fact
+  "deletes object"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-del '[_ obj])]))
+  =>
+  (satisfies #"del"))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-function?}
-(fact "lowers the Python callable predicate"
-  (subject/python-tf-x-is-function? '(x:is-function? value))
-  => '(callable value))
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-cat, :added "4.0"}
+(fact
+  "concatenates"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-cat '[_ "a" "b"])]))
+  =>
+  (satisfies #"\+"))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-object?}
-(fact "lowers the Python dictionary predicate"
-  (subject/python-tf-x-is-object? '(x:is-object? value))
-  => '(isinstance value dict))
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-len, :added "4.0"}
+(fact
+  "gets length"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-len '[_ arr])]))
+  =>
+  (satisfies #"len"))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-array?}
-(fact "lowers the Python list predicate"
-  (subject/python-tf-x-is-array? '(x:is-array? value))
-  => '(isinstance value list))
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-get-key, :added "4.0"}
+(fact
+  "gets key"
+  (l/with:library
+    [migration-library]
+    (python-tf-x-get-key '[_ obj key default]))
+  =>
+  '(or (. obj (get key)) default))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push}
-(fact "lowers Python array append"
-  (subject/python-tf-x-arr-push '(x:arr-push arr value))
-  => '(. arr (append value)))
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-has-key?, :added "4.1"}
+(fact
+  "has key"
+  (l/with:library
+    [migration-library]
+    (python-tf-x-has-key? '[_ obj key nil]))
+  =>
+  '(not= nil (. obj (get key))))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop}
-(fact "lowers Python array pop"
-  (subject/python-tf-x-arr-pop '(x:arr-pop arr))
-  => '(. arr (pop)))
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-err, :added "4.0"}
+(fact
+  "raises error"
+  (l/with:library [migration-library] (python-tf-x-err '[_ "msg"]))
+  =>
+  '(throw (Exception "msg")))
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push-first}
-(fact "lowers Python array insertion at the start"
-  (subject/python-tf-x-arr-push-first '(x:arr-push-first arr value))
-  => '(. arr (insert 0 value)))
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-native?, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-ex-native?, :added \"4.1\"} (fact \"checks native exceptions\")")
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop-first}
-(fact "lowers Python array removal at the start"
-  (subject/python-tf-x-arr-pop-first '(x:arr-pop-first arr))
-  => '(. arr (pop 0)))
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-new, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-ex-new, :added \"4.1\"} (fact \"creates exceptions\")")
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-connect}
-(fact "builds the Python socket connection form"
-  (let [form (subject/python-tf-x-socket-connect
-              '(x:socket-connect host port opts cb))]
-    [(first form)
-     (first (nth form 1))
-     (first (nth form 2))
-     (first (nth (nth form 2) 3))
-     (first (nth form 3))
-     (nth (nth (nth (nth form 2) 2) 2) 1)])
-  => ['do ':- 'try 'catch 'return '(quote (host port))])
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-message, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-ex-message, :added \"4.1\"} (fact \"gets exception message\")")
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-send}
-(fact "builds the Python socket send form"
-  (let [form (subject/python-tf-x-socket-send
-              '(x:socket-send conn bytes))]
-    [(first form) (nth form 2) (first (nth form 1))])
-  => ['x:get-idx 1 '(. conn (sendall (bytes bytes)))])
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-data, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-ex-data, :added \"4.1\"} (fact \"gets exception data\")")
 
-^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-close}
-(fact "builds the Python socket close form"
-  (let [form (subject/python-tf-x-socket-close
-              '(x:socket-close conn))]
-    [(first form) (nth form 1) (first (nth form 2))])
-  => ['. 'conn 'close])
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-eval, :added "4.0"}
+(fact
+  "evals"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-eval '[_ "1 + 1"])]))
+  =>
+  (satisfies #"eval"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-apply, :added "4.0"}
+(fact
+  "applies"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-apply '[_ f args])]))
+  =>
+  (satisfies #"\*"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-random, :added "4.0"}
+(fact
+  "random"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-random '[_])]))
+  =>
+  (satisfies #"random"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-print, :added "4.0"}
+(fact
+  "prints"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-print '[_ "hello"])]))
+  =>
+  (satisfies #"print"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-type-native, :added "4.0"}
+(fact
+  "type native"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-type-native '[_ obj])]))
+  =>
+  (satisfies #"isinstance"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-abs, :added "4.0"}
+(fact
+  "math abs"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-abs '[_ 1])]))
+  =>
+  (satisfies #"abs"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-acos, :added "4.0"}
+(fact
+  "math acos"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-acos '[_ 1])]))
+  =>
+  (satisfies #"acos"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-asin, :added "4.0"}
+(fact
+  "math asin"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-asin '[_ 1])]))
+  =>
+  (satisfies #"asin"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-atan, :added "4.0"}
+(fact
+  "math atan"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-atan '[_ 1])]))
+  =>
+  (satisfies #"atan"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-ceil, :added "4.0"}
+(fact
+  "math ceil"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-ceil '[_ 1])]))
+  =>
+  (satisfies #"ceil"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cos, :added "4.0"}
+(fact
+  "math cos"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-cos '[_ 1])]))
+  =>
+  (satisfies #"cos"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cosh, :added "4.0"}
+(fact
+  "math cosh"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-cosh '[_ 1])]))
+  =>
+  (satisfies #"cosh"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-exp, :added "4.0"}
+(fact
+  "math exp"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-exp '[_ 1])]))
+  =>
+  (satisfies #"exp"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-floor, :added "4.0"}
+(fact
+  "math floor"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-floor '[_ 1])]))
+  =>
+  (satisfies #"floor"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-loge, :added "4.0"}
+(fact
+  "math log"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-loge '[_ 1])]))
+  =>
+  (satisfies #"log"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-log10, :added "4.0"}
+(fact
+  "math log10"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-log10 '[_ 1])]))
+  =>
+  (satisfies #"log10"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-max, :added "4.0"}
+(fact
+  "math max"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-max '[_ 1 2])]))
+  =>
+  (satisfies #"max"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-min, :added "4.0"}
+(fact
+  "math min"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-min '[_ 1 2])]))
+  =>
+  (satisfies #"min"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-mod, :added "4.0"}
+(fact
+  "math mod"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-mod '[_ 1 2])]))
+  =>
+  (satisfies #"%"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-quot, :added "4.0"}
+(fact
+  "math quot"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-quot '[_ 1 2])]))
+  =>
+  (satisfies #"//"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-pow, :added "4.0"}
+(fact
+  "math pow"
+  (l/with:library [migration-library] (python-tf-x-m-pow '[_ 1 2]))
+  =>
+  '(pow 1 2))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sin, :added "4.0"}
+(fact
+  "math sin"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-sin '[_ 1])]))
+  =>
+  (satisfies #"sin"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sinh, :added "4.0"}
+(fact
+  "math sinh"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-sinh '[_ 1])]))
+  =>
+  (satisfies #"sinh"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sqrt, :added "4.0"}
+(fact
+  "math sqrt"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-sqrt '[_ 1])]))
+  =>
+  (satisfies #"sqrt"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tan, :added "4.0"}
+(fact
+  "math tan"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-tan '[_ 1])]))
+  =>
+  (satisfies #"tan"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tanh, :added "4.0"}
+(fact
+  "math tanh"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-m-tanh '[_ 1])]))
+  =>
+  (satisfies #"tanh"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-string, :added "4.0"}
+(fact
+  "to string"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-to-string '[_ x])]))
+  =>
+  (satisfies #"str"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-number, :added "4.0"}
+(fact
+  "to number"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-to-number '[_ x])]))
+  =>
+  (satisfies #"float"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-string?, :added "4.0"}
+(fact
+  "is string"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-is-string? '[_ x])]))
+  =>
+  (satisfies #"isinstance"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-number?, :added "4.0"}
+(fact
+  "is number"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-is-number? '[_ x])]))
+  =>
+  (satisfies #"isinstance"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-integer?, :added "4.0"}
+(fact
+  "is integer"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-is-integer? '[_ x])]))
+  =>
+  (satisfies #"isinstance"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-boolean?, :added "4.0"}
+(fact
+  "is boolean"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-is-boolean? '[_ x])]))
+  =>
+  (satisfies #"bool"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-function?, :added "4.0"}
+(fact
+  "is function"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-is-function? '[_ x])]))
+  =>
+  (satisfies #"callable"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-object?, :added "4.0"}
+(fact
+  "is object"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-is-object? '[_ x])]))
+  =>
+  (satisfies #"isinstance"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-array?, :added "4.0"}
+(fact
+  "is array"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-is-array? '[_ x])]))
+  =>
+  (satisfies #"isinstance"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-create, :added "4.0"}
+(fact
+  "lu create"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-lu-create '[_])]))
+  =>
+  (satisfies #"\{\}"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-eq, :added "4.0"}
+(fact
+  "lu eq"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-lu-eq '[_ a b])]))
+  =>
+  (satisfies #"id"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-get, :added "4.0"}
+(fact
+  "lu get"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-lu-get '[_ lu k])]))
+  =>
+  (satisfies #"get"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-set, :added "4.0"}
+(fact
+  "lu set"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-lu-set '[_ lu k v])]))
+  =>
+  (satisfies #"id"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-del, :added "4.0"}
+(fact
+  "lu del"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-lu-del '[_ lu k])]))
+  =>
+  (satisfies #"del"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-keys, :added "4.0"}
+(fact
+  "obj keys"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-obj-keys '[_ obj])]))
+  =>
+  (satisfies #"keys"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-vals, :added "4.0"}
+(fact
+  "obj vals"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-obj-vals '[_ obj])]))
+  =>
+  (satisfies #"values"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-pairs, :added "4.0"}
+(fact
+  "obj pairs"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-obj-pairs '[_ obj])]))
+  =>
+  (satisfies #"items"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-clone, :added "4.0"}
+(fact
+  "obj clone"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-obj-clone '[_ obj])]))
+  =>
+  (satisfies #"copy"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-clone, :added "4.0"}
+(fact
+  "arr clone"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-arr-clone '[_ arr])]))
+  =>
+  (satisfies #":"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-slice, :added "4.0"}
+(fact
+  "arr slice"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-arr-slice '[_ arr 0 1])]))
+  =>
+  (satisfies #":"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push, :added "4.0"}
+(fact
+  "arr push"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-arr-push '[_ arr 1])]))
+  =>
+  (satisfies #"append"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop, :added "4.0"}
+(fact
+  "arr pop"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-arr-pop '[_ arr])]))
+  =>
+  (satisfies #"pop"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-reverse, :added "4.0"}
+(fact
+  "arr reverse"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-arr-reverse '[_ arr])]))
+  =>
+  (satisfies #"reversed"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push-first, :added "4.0"}
+(fact
+  "arr push first"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-arr-push-first '[_ arr 1])]))
+  =>
+  (satisfies #"insert"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop-first, :added "4.0"}
+(fact
+  "arr pop first"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-arr-pop-first '[_ arr])]))
+  =>
+  (satisfies #"pop"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-insert, :added "4.0"}
+(fact
+  "arr insert"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-arr-insert '[_ arr 0 1])]))
+  =>
+  (satisfies #"insert"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-remove, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-arr-remove, :added \"4.1\"} (fact \"removes array elements\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-sort, :added "4.0"}
+(fact
+  "arr sort"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-arr-sort '[_ arr k c])]))
+  =>
+  (satisfies #"sort"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-comp, :added "4.0"}
+(fact
+  "arr str comp"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-str-comp '[_ a b])]))
+  =>
+  (satisfies #"<"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-arr-every, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-arr-every, :added \"4.1\"} (fact \"transforms arr-every forms\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-arr-some, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-arr-some, :added \"4.1\"} (fact \"transforms arr-some forms\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-char, :added "4.0"}
+(fact
+  "str char"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-str-char '[_ s 0])]))
+  =>
+  (satisfies #"ord"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-split, :added "4.0"}
+(fact
+  "str split"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-str-split '[_ s " "])]))
+  =>
+  (satisfies #"split"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-join, :added "4.0"}
+(fact
+  "str join"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-str-join '[_ s arr])]))
+  =>
+  (satisfies #"join"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-index-of, :added "4.0"}
+(fact
+  "str index of"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-str-index-of '[_ s "a"])]))
+  =>
+  (satisfies #"find"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-fixed, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-str-to-fixed, :added \"4.1\"} (fact \"formats numbers\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-substring, :added "4.0"}
+(fact
+  "str substring"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-str-substring '[_ s 0 1])]))
+  =>
+  (satisfies #":"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-upper, :added "4.0"}
+(fact
+  "str to upper"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-str-to-upper '[_ s])]))
+  =>
+  (satisfies #"upper"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-lower, :added "4.0"}
+(fact
+  "str to lower"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-str-to-lower '[_ s])]))
+  =>
+  (satisfies #"lower"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-replace, :added "4.0"}
+(fact
+  "str replace"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-str-replace '[_ s "a" "b"])]))
+  =>
+  (satisfies #"replace"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-str-trim, :added \"4.1\"} (fact \"trims strings\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-left, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-str-trim-left, :added \"4.1\"} (fact \"trims left whitespace\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-right, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-str-trim-right, :added \"4.1\"} (fact \"trims right whitespace\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-left, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-str-pad-left, :added \"4.1\"} (fact \"pads strings on the left\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-right, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-str-pad-right, :added \"4.1\"} (fact \"pads strings on the right\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-encode, :added "4.0"}
+(fact
+  "json encode"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-json-encode '[_ obj])]))
+  =>
+  (satisfies #"json"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-decode, :added "4.0"}
+(fact
+  "json decode"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-json-decode '[_ s])]))
+  =>
+  (satisfies #"json"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-encode, :added "4.0"}
+(fact
+  "return encode"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-return-encode '[_ out id key])]))
+  =>
+  (satisfies #"json.dumps"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-wrap, :added "4.0"}
+(fact
+  "return wrap"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-return-wrap '[_ f encode-fn])]))
+  =>
+  (satisfies #"try"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-eval, :added "4.0"}
+(fact
+  "return eval"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-return-eval '[_ s wrap-fn])]))
+  =>
+  (satisfies #"exec"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-connect, :added "4.0"}
+(fact
+  "socket connect"
+  (l/with:library
+    [migration-library]
+    (let [out (l/emit-as
+                :python
+                [(python-tf-x-socket-connect '[_ host port opts cb])])]
+      [(boolean (re-find #"conn = socket\.socket\(\)" out))
+       (boolean (re-find #"conn\.connect\(\(host,port\)\)" out))
+       (boolean (re-find #"except Exception as e:" out))
+       (boolean (re-find #"return cb\(e,None\)" out))
+       (boolean
+         (re-find
+           #"(?s)conn\.connect\(\(host,port\)\)\s+except Exception as e:\s+return cb\(e,None\)\s+return cb\(None,conn\)"
+           out))]))
+  =>
+  [true true true true true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-send, :added "4.0"}
+(fact
+  "socket send"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-socket-send '[_ conn s])]))
+  =>
+  (satisfies #"sendall"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-close, :added "4.0"}
+(fact
+  "socket close"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-socket-close '[_ conn])]))
+  =>
+  (satisfies #"close"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-obj, :added "4.0"}
+(fact
+  "iter from obj"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-iter-from-obj '[_ obj])]))
+  =>
+  (satisfies #"iter"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-arr, :added "4.0"}
+(fact
+  "iter from arr"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-iter-from-arr '[_ arr])]))
+  =>
+  (satisfies #"iter"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from, :added "4.0"}
+(fact
+  "iter from"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-iter-from '[_ obj])]))
+  =>
+  (satisfies #"iter"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-eq, :added "4.0"}
+(fact
+  "iter eq"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-iter-eq '[_ it0 it1 eq-fn])]))
+  =>
+  (satisfies #"next"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-next, :added "4.0"}
+(fact
+  "iter next"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-iter-next '[_ it])]))
+  =>
+  (satisfies #"next"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-has?, :added "4.0"}
+(fact
+  "iter has?"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-iter-has? '[_ obj])]))
+  =>
+  (satisfies #"hasattr"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-native?, :added "4.0"}
+(fact
+  "iter native?"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-iter-native? '[_ it])]))
+  =>
+  (satisfies #"hasattr"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-async-run, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-async-run, :added \"4.1\"} (fact \"runs asynchronously\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-with-delay, :added "4.0"}
+(fact
+  "with delay"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-with-delay '[_ ms thunk])]))
+  =>
+  (satisfies #"sleep"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-pwd, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-pwd, :added \"4.1\"} (fact \"gets working directory\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-shell, :added "4.0"}
+(fact
+  "shell"
+  (l/with:library
+    [migration-library]
+    (l/emit-as :python [(python-tf-x-shell '[_ "ls" cm])]))
+  =>
+  (satisfies #"subprocess"))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-resolve, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-file-resolve, :added \"4.1\"} (fact \"resolves file paths\")")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-read, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-file-read, :added \"4.1\"} (fact \"reads a file\" (comment (l/emit-as :python [(python-tf-x-file-read (quote [_ filename opts cb]))]) => nil?))")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-write, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-file-write, :added \"4.1\"} (fact \"writes a file\" (comment (l/emit-as :python [(python-tf-x-file-write (quote [_ filename s opts cb]))]) => nil?))")
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-del-key, :added "4.1"}
+(comment
+  "Original inactive historical fact; not asserted coverage."
+  "^{:refer tahto.model.spec-xtalk.fn-python/python-tf-x-del-key, :added \"4.1\"} (fact \"deletes object key\")")
+
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-construct, :added "4.1"}
+(fact
+  "constructs with splatted arguments"
+  (l/with:library
+    [migration-library]
+    (python-tf-x-construct '(_ Widget args)))
+  =>
+  '(Widget (:* args)))
+
+(require [lang.model.v1.spec-xtalk.fn-python :as py])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-encode, :id :pinned-python-return-0}
+(fact "preserves pinned python-tf-x-return-encode expansion case 0" (py/python-tf-x-return-encode (quote [_ out id key])) => (quote (do (:- :import json) (var type-fn (fn [obj] (cond (isinstance obj (quote (dict))) (return "object") (isinstance obj (quote (list))) (return "array") (callable obj) (return "function") (== bool (type obj)) (return "boolean") (isinstance obj (quote (int float))) (return "number") (isinstance obj (quote (str))) (return "string") :else (return (str (type obj)))))) (var json-filter (fn [obj] (cond (isinstance obj (quote (dict))) (do (var out {}) (for:object [[k v] obj] (when (not (callable v)) (:= (. out [k]) (json-filter v)))) (return out)) (isinstance obj (quote (list))) (do (var out []) (for:array [v obj] (when (not (callable v)) (. out (append (json-filter v))))) (return out)) (callable obj) (return nil) :else (return obj)))) (var ts (type-fn out)) (try (return (json.dumps {:id id, :key key, :type "data", :return ts, :value (json-filter out)})) (catch Exception (return (json.dumps {:id id, :key key, :type "raw", :return ts, :value (str out)})))))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-wrap, :id :pinned-python-return-1}
+(fact "preserves pinned python-tf-x-return-wrap expansion case 1" (py/python-tf-x-return-wrap (quote [_ f encode-fn])) => (quote (do (:- :import json) (try (:= out (f)) (catch [Exception :as e] (return (json.dumps {:type "error", :value (str e)})))) (return (encode-fn out nil nil)))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-eval, :id :pinned-python-return-2}
+(fact "preserves pinned python-tf-x-return-eval expansion case 2" (py/python-tf-x-return-eval (quote [_ s wrap-fn])) => (quote (do (fn thunk [] (let [g (globals)] (exec s g g) (return (g.get "OUT")))) (return (wrap-fn thunk)))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-encode, :id :pinned-python-return-3}
+(fact "preserves pinned python-tf-x-return-encode expansion case 3" (py/python-tf-x-return-encode (quote [_ (get data :value) nil :tag])) => (quote (do (:- :import json) (var type-fn (fn [obj] (cond (isinstance obj (quote (dict))) (return "object") (isinstance obj (quote (list))) (return "array") (callable obj) (return "function") (== bool (type obj)) (return "boolean") (isinstance obj (quote (int float))) (return "number") (isinstance obj (quote (str))) (return "string") :else (return (str (type obj)))))) (var json-filter (fn [obj] (cond (isinstance obj (quote (dict))) (do (var out {}) (for:object [[k v] obj] (when (not (callable v)) (:= (. out [k]) (json-filter v)))) (return out)) (isinstance obj (quote (list))) (do (var out []) (for:array [v obj] (when (not (callable v)) (. out (append (json-filter v))))) (return out)) (callable obj) (return nil) :else (return obj)))) (var ts (type-fn (get data :value))) (try (return (json.dumps {:id nil, :key :tag, :type "data", :return ts, :value (json-filter (get data :value))})) (catch Exception (return (json.dumps {:id nil, :key :tag, :type "raw", :return ts, :value (str (get data :value))})))))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-wrap, :id :pinned-python-return-4}
+(fact "preserves pinned python-tf-x-return-wrap expansion case 4" (py/python-tf-x-return-wrap (quote [_ (fn [] 42) result/encode])) => (quote (do (:- :import json) (try (:= out ((fn [] 42))) (catch [Exception :as e] (return (json.dumps {:type "error", :value (str e)})))) (return (result/encode out nil nil)))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-eval, :id :pinned-python-return-5}
+(fact "preserves pinned python-tf-x-return-eval expansion case 5" (py/python-tf-x-return-eval (quote [_ "OUT = 3" result/wrap])) => (quote (do (fn thunk [] (let [g (globals)] (exec "OUT = 3" g g) (return (g.get "OUT")))) (return (result/wrap thunk)))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-return+}
+(fact "retains original return group callback identities and block permissions"
+   py/+python-return+
+   => {:x-return-encode {:macro (var py/python-tf-x-return-encode) :emit :macro :op-spec {:allow-blocks true}}
+       :x-return-wrap {:macro (var py/python-tf-x-return-wrap) :emit :macro :op-spec {:allow-blocks true}}
+       :x-return-eval {:macro (var py/python-tf-x-return-eval) :emit :macro :op-spec {:allow-blocks true}}})
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-core+}
+(fact "preserves every original entry and restores callback identities for +python-core+"
+ (let [original py/+python-core+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-ex-message {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-message, :emit :macro}, :x-len {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-len, :emit :macro}, :x-unpack {:raw :*, :emit :alias}, :x-err {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-err, :emit :macro}, :x-ex-data {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-data, :emit :macro}, :x-del {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-del, :emit :macro}, :x-ex-native? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-native?, :emit :macro}, :x-apply {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-apply, :emit :macro}, :x-cat {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-cat, :emit :macro}, :x-ex-new {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-new, :emit :macro}, :x-type-native {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-type-native, :emit :macro}, :x-del-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-del-key, :emit :macro}, :x-eval {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-eval, :emit :macro}, :x-print {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-print, :emit :macro}, :x-now-ms {:default (round (* 1000 (. (__import__ "time") (time)))), :emit :unit}, :x-random {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-random, :emit :macro}, :x-construct {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-construct, :emit :macro}}) (quote {:x-ex-message {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-message, :emit :macro}, :x-len {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-len, :emit :macro}, :x-unpack {:raw :*, :emit :alias}, :x-err {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-err, :emit :macro}, :x-ex-data {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-data, :emit :macro}, :x-del {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-del, :emit :macro}, :x-ex-native? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-native?, :emit :macro}, :x-apply {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-apply, :emit :macro}, :x-cat {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-cat, :emit :macro}, :x-ex-new {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-new, :emit :macro}, :x-type-native {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-type-native, :emit :macro}, :x-del-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-del-key, :emit :macro}, :x-eval {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-eval, :emit :macro}, :x-print {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-print, :emit :macro}, :x-now-ms {:default (round (* 1000 (. (__import__ "time") (time)))), :emit :unit}, :x-random {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-random, :emit :macro}, :x-construct {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-construct, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-global+}
+(fact "preserves every original entry and restores callback identities for +python-global+"
+ (let [original py/+python-global+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {}) (quote {}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-custom+}
+(fact "preserves every original entry and restores callback identities for +python-custom+"
+ (let [original py/+python-custom+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-get-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-get-key}, :x-set-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-set-key, :emit :macro}, :x-has-key? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-has-key?, :emit :macro}}) (quote {:x-get-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-get-key}, :x-set-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-set-key, :emit :macro}, :x-has-key? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-has-key?, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-math+}
+(fact "preserves every original entry and restores callback identities for +python-math+"
+ (let [original py/+python-math+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-m-ceil {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-ceil, :emit :macro}, :x-m-abs {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-abs, :emit :macro}, :x-m-acos {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-acos, :emit :macro}, :x-m-tanh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tanh, :emit :macro}, :x-m-sinh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sinh, :emit :macro}, :x-m-sin {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sin, :emit :macro}, :x-m-log10 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-log10, :emit :macro}, :x-m-mod {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-mod, :emit :macro}, :x-m-atan {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-atan, :emit :macro}, :x-m-sqrt {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sqrt, :emit :macro}, :x-m-pow {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-pow, :emit :macro}, :x-m-loge {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-loge, :emit :macro}, :x-m-asin {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-asin, :emit :macro}, :x-m-quot {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-quot, :emit :macro}, :x-m-min {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-min, :emit :macro}, :x-m-cosh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cosh, :emit :macro}, :x-m-floor {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-floor, :emit :macro}, :x-m-exp {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-exp, :emit :macro}, :x-m-cos {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cos, :emit :macro}, :x-m-tan {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tan, :emit :macro}, :x-m-max {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-max, :emit :macro}}) (quote {:x-m-ceil {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-ceil, :emit :macro}, :x-m-abs {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-abs, :emit :macro}, :x-m-acos {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-acos, :emit :macro}, :x-m-tanh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tanh, :emit :macro}, :x-m-sinh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sinh, :emit :macro}, :x-m-sin {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sin, :emit :macro}, :x-m-log10 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-log10, :emit :macro}, :x-m-mod {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-mod, :emit :macro}, :x-m-atan {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-atan, :emit :macro}, :x-m-sqrt {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sqrt, :emit :macro}, :x-m-pow {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-pow, :emit :macro}, :x-m-loge {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-loge, :emit :macro}, :x-m-asin {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-asin, :emit :macro}, :x-m-quot {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-quot, :emit :macro}, :x-m-min {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-min, :emit :macro}, :x-m-cosh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cosh, :emit :macro}, :x-m-floor {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-floor, :emit :macro}, :x-m-exp {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-exp, :emit :macro}, :x-m-cos {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cos, :emit :macro}, :x-m-tan {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tan, :emit :macro}, :x-m-max {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-max, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-type+}
+(fact "preserves every original entry and restores callback identities for +python-type+"
+ (let [original py/+python-type+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-to-string {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-string, :emit :macro}, :x-is-boolean? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-boolean?, :emit :macro}, :x-is-string? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-string?, :emit :macro}, :x-to-number {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-number, :emit :macro}, :x-is-number? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-number?, :emit :macro}, :x-is-array? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-array?, :emit :macro}, :x-is-object? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-object?, :emit :macro}, :x-is-function? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-function?, :emit :macro}, :x-is-integer? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-integer?, :emit :macro}}) (quote {:x-to-string {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-string, :emit :macro}, :x-is-boolean? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-boolean?, :emit :macro}, :x-is-string? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-string?, :emit :macro}, :x-to-number {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-number, :emit :macro}, :x-is-number? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-number?, :emit :macro}, :x-is-array? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-array?, :emit :macro}, :x-is-object? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-object?, :emit :macro}, :x-is-function? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-function?, :emit :macro}, :x-is-integer? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-integer?, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-lu+}
+(fact "preserves every original entry and restores callback identities for +python-lu+"
+ (let [original py/+python-lu+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-lu-create {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-create, :emit :macro}, :x-lu-eq {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-eq, :emit :macro}, :x-lu-get {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-get, :emit :macro}, :x-lu-set {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-set, :emit :macro}, :x-lu-del {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-del, :emit :macro}}) (quote {:x-lu-create {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-create, :emit :macro}, :x-lu-eq {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-eq, :emit :macro}, :x-lu-get {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-get, :emit :macro}, :x-lu-set {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-set, :emit :macro}, :x-lu-del {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-del, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-obj+}
+(fact "preserves every original entry and restores callback identities for +python-obj+"
+ (let [original py/+python-obj+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-obj-keys {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-keys, :emit :macro}, :x-obj-vals {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-vals, :emit :macro}, :x-obj-pairs {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-pairs, :emit :macro}, :x-obj-clone {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-clone, :emit :macro}}) (quote {:x-obj-keys {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-keys, :emit :macro}, :x-obj-vals {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-vals, :emit :macro}, :x-obj-pairs {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-pairs, :emit :macro}, :x-obj-clone {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-clone, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-arr+}
+(fact "preserves every original entry and restores callback identities for +python-arr+"
+ (let [original py/+python-arr+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-arr-pop-first {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop-first, :emit :macro}, :x-arr-push-first {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push-first, :emit :macro}, :x-arr-clone {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-clone, :emit :macro, :type :template}, :x-arr-pop {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop, :emit :macro}, :x-arr-insert {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-insert, :emit :macro}, :x-arr-remove {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-remove, :emit :macro}, :x-arr-slice {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-slice, :emit :macro, :type :template}, :x-str-comp {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-comp, :emit :macro}, :x-arr-reverse {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-reverse, :emit :macro, :type :template}, :x-arr-push {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push, :emit :macro}}) (quote {:x-arr-pop-first {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop-first, :emit :macro}, :x-arr-push-first {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push-first, :emit :macro}, :x-arr-clone {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-clone, :emit :macro, :type :template}, :x-arr-pop {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop, :emit :macro}, :x-arr-insert {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-insert, :emit :macro}, :x-arr-remove {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-remove, :emit :macro}, :x-arr-slice {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-slice, :emit :macro, :type :template}, :x-str-comp {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-comp, :emit :macro}, :x-arr-reverse {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-reverse, :emit :macro, :type :template}, :x-arr-push {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-fn+}
+(fact "preserves every original entry and restores callback identities for +python-fn+"
+ (let [original py/+python-fn+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:arr-every {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-arr-every, :emit :macro}, :arr-some {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-arr-some, :emit :macro}}) (quote {:arr-every {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-arr-every, :emit :macro}, :arr-some {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-arr-some, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-str+}
+(fact "preserves every original entry and restores callback identities for +python-str+"
+ (let [original py/+python-str+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-str-trim {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim, :emit :macro}, :x-str-to-upper {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-upper, :emit :macro}, :x-str-to-lower {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-lower, :emit :macro}, :x-str-replace {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-replace, :emit :macro}, :x-str-pad-left {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-left, :emit :macro}, :x-str-join {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-join, :emit :macro}, :x-str-char {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-char, :emit :macro}, :x-str-split {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-split, :emit :macro}, :x-str-substring {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-substring, :emit :macro}, :x-str-trim-right {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-right, :emit :macro}, :x-str-pad-right {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-right, :emit :macro}, :x-str-index-of {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-index-of, :emit :macro}, :x-str-trim-left {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-left, :emit :macro}, :x-str-to-fixed {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-fixed, :emit :macro}}) (quote {:x-str-trim {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim, :emit :macro}, :x-str-to-upper {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-upper, :emit :macro}, :x-str-to-lower {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-lower, :emit :macro}, :x-str-replace {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-replace, :emit :macro}, :x-str-pad-left {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-left, :emit :macro}, :x-str-join {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-join, :emit :macro}, :x-str-char {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-char, :emit :macro}, :x-str-split {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-split, :emit :macro}, :x-str-substring {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-substring, :emit :macro}, :x-str-trim-right {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-right, :emit :macro}, :x-str-pad-right {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-right, :emit :macro}, :x-str-index-of {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-index-of, :emit :macro}, :x-str-trim-left {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-left, :emit :macro}, :x-str-to-fixed {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-fixed, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-bytes+}
+(fact "preserves every original entry and restores callback identities for +python-bytes+"
+ (let [original py/+python-bytes+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-bytes-new {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-new, :emit :macro}, :x-bytes-set {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-set, :emit :macro}, :x-str-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-encode, :emit :macro}, :x-bit-not {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bit-not, :emit :macro}, :x-str-decode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-decode, :emit :macro}, :x-bytes-copy {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-copy, :emit :macro}, :x-bytes-u8 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-u8, :emit :macro}, :x-bytes-slice {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-slice, :emit :macro}, :x-bytes-s8 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-s8, :emit :macro}}) (quote {:x-bytes-new {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-new, :emit :macro}, :x-bytes-set {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-set, :emit :macro}, :x-str-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-encode, :emit :macro}, :x-bit-not {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bit-not, :emit :macro}, :x-str-decode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-decode, :emit :macro}, :x-bytes-copy {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-copy, :emit :macro}, :x-bytes-u8 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-u8, :emit :macro}, :x-bytes-slice {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-slice, :emit :macro}, :x-bytes-s8 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-s8, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-js+}
+(fact "preserves every original entry and restores callback identities for +python-js+"
+ (let [original py/+python-js+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-json-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-encode, :emit :macro}, :x-json-decode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-decode, :emit :macro}}) (quote {:x-json-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-encode, :emit :macro}, :x-json-decode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-decode, :emit :macro}}) true])
 
 ^{:refer lang.model.v1.spec-xtalk.fn-python/+python-socket+}
-(fact "registers all Python socket operators"
-  [(count subject/+python-socket+)
-   (get-in subject/+python-socket+ [:x-socket-connect :emit])
-   (get-in subject/+python-socket+ [:x-socket-connect :op-spec :allow-blocks])]
-  => [3 :macro true])
+(fact "preserves every original entry and restores callback identities for +python-socket+"
+ (let [original py/+python-socket+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-socket-connect {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-connect, :emit :macro, :op-spec {:allow-blocks true}}, :x-socket-send {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-send, :emit :macro}, :x-socket-close {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-close, :emit :macro}}) (quote {:x-socket-connect {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-connect, :emit :macro, :op-spec {:allow-blocks true}}, :x-socket-send {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-send, :emit :macro}, :x-socket-close {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-close, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-iter+}
+(fact "preserves every original entry and restores callback identities for +python-iter+"
+ (let [original py/+python-iter+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-iter-from-obj {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-obj, :emit :macro}, :x-iter-from-arr {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-arr, :emit :macro}, :x-iter-from {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from, :emit :macro}, :x-iter-eq {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-eq, :emit :macro, :op-spec {:allow-blocks true}}, :x-iter-null {:default (iter []), :emit :unit}, :x-iter-next {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-next, :emit :macro}, :x-iter-has? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-has?, :emit :macro}, :x-iter-native? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-native?, :emit :macro}}) (quote {:x-iter-from-obj {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-obj, :emit :macro}, :x-iter-from-arr {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-arr, :emit :macro}, :x-iter-from {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from, :emit :macro}, :x-iter-eq {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-eq, :emit :macro, :op-spec {:allow-blocks true}}, :x-iter-null {:default (iter []), :emit :unit}, :x-iter-next {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-next, :emit :macro}, :x-iter-has? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-has?, :emit :macro}, :x-iter-native? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-native?, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-promise+}
+(fact "preserves every original entry and restores callback identities for +python-promise+"
+ (let [original py/+python-promise+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-async-run {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-async-run, :emit :macro}, :x-with-delay {:emit :hard-link, :raw xt.lang.common-promise/with-delay}}) (quote {:x-async-run {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-async-run, :emit :macro}, :x-with-delay {:emit :hard-link, :raw xt.lang.common-promise/with-delay}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-shell+}
+(fact "preserves every original entry and restores callback identities for +python-shell+"
+ (let [original py/+python-shell+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-pwd {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-pwd, :emit :macro}, :x-shell {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-shell, :emit :macro, :op-spec {:allow-blocks true}}}) (quote {:x-pwd {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-pwd, :emit :macro}, :x-shell {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-shell, :emit :macro, :op-spec {:allow-blocks true}}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-file+}
+(fact "preserves every original entry and restores callback identities for +python-file+"
+ (let [original py/+python-file+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-file-resolve {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-resolve, :emit :macro}, :x-file-read {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-read, :emit :macro}, :x-file-write {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-write, :emit :macro}}) (quote {:x-file-resolve {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-resolve, :emit :macro}, :x-file-read {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-read, :emit :macro}, :x-file-write {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-write, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python+}
+(fact "preserves every original entry and restores callback identities for +python+"
+ (let [original py/+python+
+       encode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (= :std.native.Var (type (:macro entry)))
+                 (assoc entry :macro (var-sym (:macro entry))) entry)]) registry)))
+       decode (fn [registry]
+         (into {} (map (fn [[op entry]]
+           [op (if (symbol? (:macro entry))
+                 (assoc entry :macro (resolve (:macro entry))) entry)]) registry)))
+       canonical (encode original)]
+  [canonical (encode canonical) (= original (decode canonical))])
+ => [(quote {:x-str-trim {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim, :emit :macro}, :x-to-string {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-string, :emit :macro}, :x-iter-native? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-native?, :emit :macro}, :x-bytes-new {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-new, :emit :macro}, :x-return-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-encode, :emit :macro, :op-spec {:allow-blocks true}}, :x-obj-clone {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-clone, :emit :macro}, :x-str-to-upper {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-upper, :emit :macro}, :x-m-ceil {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-ceil, :emit :macro}, :x-bytes-set {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-set, :emit :macro}, :x-m-abs {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-abs, :emit :macro}, :x-m-acos {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-acos, :emit :macro}, :x-json-decode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-decode, :emit :macro}, :x-ex-message {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-message, :emit :macro}, :x-m-tanh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tanh, :emit :macro}, :x-len {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-len, :emit :macro}, :x-m-sinh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sinh, :emit :macro}, :x-lu-eq {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-eq, :emit :macro}, :x-arr-pop-first {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop-first, :emit :macro}, :x-m-sin {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sin, :emit :macro}, :x-m-log10 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-log10, :emit :macro}, :x-unpack {:raw :*, :emit :alias}, :x-file-resolve {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-resolve, :emit :macro}, :x-arr-push-first {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push-first, :emit :macro}, :x-arr-clone {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-clone, :emit :macro, :type :template}, :x-shell {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-shell, :emit :macro, :op-spec {:allow-blocks true}}, :x-iter-from {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from, :emit :macro}, :x-m-mod {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-mod, :emit :macro}, :x-str-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-encode, :emit :macro}, :x-bit-not {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bit-not, :emit :macro}, :x-err {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-err, :emit :macro}, :x-has-key? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-has-key?, :emit :macro}, :x-m-atan {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-atan, :emit :macro}, :x-ex-data {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-data, :emit :macro}, :x-str-to-lower {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-lower, :emit :macro}, :x-str-replace {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-replace, :emit :macro}, :x-m-sqrt {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sqrt, :emit :macro}, :x-del {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-del, :emit :macro}, :x-pwd {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-pwd, :emit :macro}, :x-with-delay {:emit :hard-link, :raw xt.lang.common-promise/with-delay}, :x-is-boolean? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-boolean?, :emit :macro}, :x-file-write {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-write, :emit :macro}, :x-str-pad-left {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-left, :emit :macro}, :x-arr-pop {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop, :emit :macro}, :x-iter-from-obj {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-obj, :emit :macro}, :x-socket-close {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-close, :emit :macro}, :x-async-run {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-async-run, :emit :macro}, :x-str-decode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-decode, :emit :macro}, :x-is-string? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-string?, :emit :macro}, :x-return-wrap {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-wrap, :emit :macro, :op-spec {:allow-blocks true}}, :x-m-pow {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-pow, :emit :macro}, :x-m-loge {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-loge, :emit :macro}, :x-lu-create {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-create, :emit :macro}, :x-str-join {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-join, :emit :macro}, :x-ex-native? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-native?, :emit :macro}, :x-to-number {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-number, :emit :macro}, :x-str-char {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-char, :emit :macro}, :x-apply {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-apply, :emit :macro}, :x-arr-insert {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-insert, :emit :macro}, :x-cat {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-cat, :emit :macro}, :x-arr-remove {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-remove, :emit :macro}, :x-arr-slice {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-slice, :emit :macro, :type :template}, :x-iter-null {:default (iter []), :emit :unit}, :x-ex-new {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-new, :emit :macro}, :x-str-split {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-split, :emit :macro}, :x-type-native {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-type-native, :emit :macro}, :x-str-comp {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-comp, :emit :macro}, :x-str-substring {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-substring, :emit :macro}, :x-is-number? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-number?, :emit :macro}, :x-iter-from-arr {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-arr, :emit :macro}, :x-str-trim-right {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-right, :emit :macro}, :x-m-asin {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-asin, :emit :macro}, :x-m-quot {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-quot, :emit :macro}, :x-return-eval {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-eval, :emit :macro, :op-spec {:allow-blocks true}}, :x-m-min {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-min, :emit :macro}, :x-file-read {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-read, :emit :macro}, :x-is-array? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-array?, :emit :macro}, :x-iter-eq {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-eq, :emit :macro, :op-spec {:allow-blocks true}}, :x-set-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-set-key, :emit :macro}, :x-is-object? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-object?, :emit :macro}, :x-bytes-copy {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-copy, :emit :macro}, :x-is-function? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-function?, :emit :macro}, :x-obj-pairs {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-pairs, :emit :macro}, :x-bytes-u8 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-u8, :emit :macro}, :x-del-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-del-key, :emit :macro}, :x-iter-has? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-has?, :emit :macro}, :x-eval {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-eval, :emit :macro}, :x-bytes-slice {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-slice, :emit :macro}, :x-bytes-s8 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-s8, :emit :macro}, :x-json-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-encode, :emit :macro}, :x-is-integer? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-integer?, :emit :macro}, :x-socket-connect {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-connect, :emit :macro, :op-spec {:allow-blocks true}}, :x-m-cosh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cosh, :emit :macro}, :x-print {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-print, :emit :macro}, :x-m-floor {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-floor, :emit :macro}, :x-now-ms {:default (round (* 1000 (. (__import__ "time") (time)))), :emit :unit}, :x-str-pad-right {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-right, :emit :macro}, :x-lu-set {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-set, :emit :macro}, :x-str-index-of {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-index-of, :emit :macro}, :x-arr-reverse {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-reverse, :emit :macro, :type :template}, :x-obj-vals {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-vals, :emit :macro}, :x-lu-get {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-get, :emit :macro}, :x-m-exp {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-exp, :emit :macro}, :x-iter-next {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-next, :emit :macro}, :x-m-cos {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cos, :emit :macro}, :x-socket-send {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-send, :emit :macro}, :x-obj-keys {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-keys, :emit :macro}, :x-lu-del {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-del, :emit :macro}, :x-str-trim-left {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-left, :emit :macro}, :x-arr-push {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push, :emit :macro}, :x-str-to-fixed {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-fixed, :emit :macro}, :x-get-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-get-key}, :x-random {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-random, :emit :macro}, :x-m-tan {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tan, :emit :macro}, :x-m-max {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-max, :emit :macro}, :x-construct {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-construct, :emit :macro}}) (quote {:x-str-trim {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim, :emit :macro}, :x-to-string {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-string, :emit :macro}, :x-iter-native? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-native?, :emit :macro}, :x-bytes-new {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-new, :emit :macro}, :x-return-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-encode, :emit :macro, :op-spec {:allow-blocks true}}, :x-obj-clone {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-clone, :emit :macro}, :x-str-to-upper {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-upper, :emit :macro}, :x-m-ceil {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-ceil, :emit :macro}, :x-bytes-set {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-set, :emit :macro}, :x-m-abs {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-abs, :emit :macro}, :x-m-acos {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-acos, :emit :macro}, :x-json-decode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-decode, :emit :macro}, :x-ex-message {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-message, :emit :macro}, :x-m-tanh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tanh, :emit :macro}, :x-len {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-len, :emit :macro}, :x-m-sinh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sinh, :emit :macro}, :x-lu-eq {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-eq, :emit :macro}, :x-arr-pop-first {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop-first, :emit :macro}, :x-m-sin {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sin, :emit :macro}, :x-m-log10 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-log10, :emit :macro}, :x-unpack {:raw :*, :emit :alias}, :x-file-resolve {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-resolve, :emit :macro}, :x-arr-push-first {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push-first, :emit :macro}, :x-arr-clone {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-clone, :emit :macro, :type :template}, :x-shell {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-shell, :emit :macro, :op-spec {:allow-blocks true}}, :x-iter-from {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from, :emit :macro}, :x-m-mod {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-mod, :emit :macro}, :x-str-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-encode, :emit :macro}, :x-bit-not {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bit-not, :emit :macro}, :x-err {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-err, :emit :macro}, :x-has-key? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-has-key?, :emit :macro}, :x-m-atan {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-atan, :emit :macro}, :x-ex-data {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-data, :emit :macro}, :x-str-to-lower {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-lower, :emit :macro}, :x-str-replace {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-replace, :emit :macro}, :x-m-sqrt {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sqrt, :emit :macro}, :x-del {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-del, :emit :macro}, :x-pwd {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-pwd, :emit :macro}, :x-with-delay {:emit :hard-link, :raw xt.lang.common-promise/with-delay}, :x-is-boolean? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-boolean?, :emit :macro}, :x-file-write {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-write, :emit :macro}, :x-str-pad-left {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-left, :emit :macro}, :x-arr-pop {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop, :emit :macro}, :x-iter-from-obj {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-obj, :emit :macro}, :x-socket-close {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-close, :emit :macro}, :x-async-run {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-async-run, :emit :macro}, :x-str-decode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-decode, :emit :macro}, :x-is-string? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-string?, :emit :macro}, :x-return-wrap {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-wrap, :emit :macro, :op-spec {:allow-blocks true}}, :x-m-pow {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-pow, :emit :macro}, :x-m-loge {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-loge, :emit :macro}, :x-lu-create {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-create, :emit :macro}, :x-str-join {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-join, :emit :macro}, :x-ex-native? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-native?, :emit :macro}, :x-to-number {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-number, :emit :macro}, :x-str-char {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-char, :emit :macro}, :x-apply {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-apply, :emit :macro}, :x-arr-insert {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-insert, :emit :macro}, :x-cat {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-cat, :emit :macro}, :x-arr-remove {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-remove, :emit :macro}, :x-arr-slice {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-slice, :emit :macro, :type :template}, :x-iter-null {:default (iter []), :emit :unit}, :x-ex-new {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-new, :emit :macro}, :x-str-split {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-split, :emit :macro}, :x-type-native {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-type-native, :emit :macro}, :x-str-comp {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-comp, :emit :macro}, :x-str-substring {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-substring, :emit :macro}, :x-is-number? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-number?, :emit :macro}, :x-iter-from-arr {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-arr, :emit :macro}, :x-str-trim-right {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-right, :emit :macro}, :x-m-asin {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-asin, :emit :macro}, :x-m-quot {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-quot, :emit :macro}, :x-return-eval {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-return-eval, :emit :macro, :op-spec {:allow-blocks true}}, :x-m-min {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-min, :emit :macro}, :x-file-read {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-read, :emit :macro}, :x-is-array? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-array?, :emit :macro}, :x-iter-eq {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-eq, :emit :macro, :op-spec {:allow-blocks true}}, :x-set-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-set-key, :emit :macro}, :x-is-object? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-object?, :emit :macro}, :x-bytes-copy {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-copy, :emit :macro}, :x-is-function? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-function?, :emit :macro}, :x-obj-pairs {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-pairs, :emit :macro}, :x-bytes-u8 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-u8, :emit :macro}, :x-del-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-del-key, :emit :macro}, :x-iter-has? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-has?, :emit :macro}, :x-eval {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-eval, :emit :macro}, :x-bytes-slice {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-slice, :emit :macro}, :x-bytes-s8 {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-s8, :emit :macro}, :x-json-encode {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-encode, :emit :macro}, :x-is-integer? {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-integer?, :emit :macro}, :x-socket-connect {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-connect, :emit :macro, :op-spec {:allow-blocks true}}, :x-m-cosh {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cosh, :emit :macro}, :x-print {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-print, :emit :macro}, :x-m-floor {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-floor, :emit :macro}, :x-now-ms {:default (round (* 1000 (. (__import__ "time") (time)))), :emit :unit}, :x-str-pad-right {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-right, :emit :macro}, :x-lu-set {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-set, :emit :macro}, :x-str-index-of {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-index-of, :emit :macro}, :x-arr-reverse {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-reverse, :emit :macro, :type :template}, :x-obj-vals {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-vals, :emit :macro}, :x-lu-get {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-get, :emit :macro}, :x-m-exp {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-exp, :emit :macro}, :x-iter-next {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-next, :emit :macro}, :x-m-cos {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cos, :emit :macro}, :x-socket-send {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-send, :emit :macro}, :x-obj-keys {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-keys, :emit :macro}, :x-lu-del {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-del, :emit :macro}, :x-str-trim-left {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-left, :emit :macro}, :x-arr-push {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push, :emit :macro}, :x-str-to-fixed {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-fixed, :emit :macro}, :x-get-key {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-get-key}, :x-random {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-random, :emit :macro}, :x-m-tan {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tan, :emit :macro}, :x-m-max {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-max, :emit :macro}, :x-construct {:macro lang.model.v1.spec-xtalk.fn-python/python-tf-x-construct, :emit :macro}}) true])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-del}
+(fact "deletion preserves binding forms and lowers only supported key-access shapes"
+ [(py/python-tf-x-del '[_ obj])
+  (py/python-tf-x-del '[_ (. obj ["key"])])
+  (py/python-tf-x-del '[_ (. obj [key])])
+  (py/python-tf-x-del '[_ (x:get-key obj key)])
+  (py/python-tf-x-del '[_ (xt/x:get-key obj key fallback)])
+  (py/python-tf-x-del '[_ (. obj [])])
+  (py/python-tf-x-del '[_ (. obj [a b])])
+  (py/python-tf-x-del '[_ (x:get-key obj)])
+  (py/python-tf-x-del '[_ (x:get-key obj key fallback extra)])
+  (py/python-tf-x-del '[_ (. obj (get key))])]
+ => '[(del obj)
+      (del (. obj (setitem "key")))
+      (del (. obj (setitem key)))
+      (del (. obj (setitem key)))
+      (del (. obj (setitem key)))
+      (del (. obj []))
+      (del (. obj [a b]))
+      (del (x:get-key obj))
+      (del (x:get-key obj key fallback extra))
+      (del (. obj (get key)))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-del-key}
+(fact "key deletion uses pop with an explicit nil default and preserves key expressions"
+ [(py/python-tf-x-del-key '[_ obj "key"])
+  (py/python-tf-x-del-key '[_ (make-object) (key-fn)])]
+ => '[(. obj (pop "key" nil)) (. (make-object) (pop (key-fn) nil))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-get-key}
+(fact "key access distinguishes nil from false zero and empty-string defaults"
+ [(py/python-tf-x-get-key '[_ obj key])
+  (py/python-tf-x-get-key '[_ obj key nil])
+  (py/python-tf-x-get-key '[_ obj key false])
+  (py/python-tf-x-get-key '[_ obj key 0])
+  (py/python-tf-x-get-key '[_ obj key ""])
+  (py/python-tf-x-get-key '[_ (make-object) (key-fn) (fallback)])]
+ => '[(. obj (get key)) (. obj (get key))
+      (or (. obj (get key)) false) (or (. obj (get key)) 0)
+      (or (. obj (get key)) "")
+      (or (. (make-object) (get (key-fn))) (fallback))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-has-key?}
+(fact "key presence preserves the original non-nil test and explicit comparison branch"
+ [(py/python-tf-x-has-key? '[_ obj key])
+  (py/python-tf-x-has-key? '[_ obj key nil])
+  (py/python-tf-x-has-key? '[_ obj key false])
+  (py/python-tf-x-has-key? '[_ obj key 0])
+  (py/python-tf-x-has-key? '[_ obj key ""])
+  (py/python-tf-x-has-key? '[_ (make-object) (key-fn) (check-fn)])]
+ => '[(not= nil (. obj (get key))) (not= nil (. obj (get key)))
+      (== false (x:get-key obj key nil)) (== 0 (x:get-key obj key nil))
+      (== "" (x:get-key obj key nil))
+      (== (check-fn) (x:get-key (make-object) (key-fn) nil))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-set-key}
+(fact "key assignment uses setitem even for literal keys and preserves value expressions"
+ [(py/python-tf-x-set-key '[_ obj "key" nil])
+  (py/python-tf-x-set-key '[_ obj key false])
+  (py/python-tf-x-set-key '[_ (make-object) (key-fn) (value-fn)])]
+ => '[(:= (. obj (setitem "key")) nil)
+      (:= (. obj (setitem key)) false)
+      (:= (. (make-object) (setitem (key-fn))) (value-fn))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-cat}
+(fact "concatenation keeps zero one and many operands in their original order"
+ [(py/python-tf-x-cat '[_])
+  (py/python-tf-x-cat '[_ "a"])
+  (py/python-tf-x-cat '[_ "a" (str b) "c"])]
+ => '[(+) (+ "a") (+ "a" (str b) "c")])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-len}
+(fact "length preserves literals and compound operand forms"
+ [(py/python-tf-x-len '[_ []])
+  (py/python-tf-x-len '[_ "abc"])
+  (py/python-tf-x-len '[_ (load-items)])]
+ => '[(len []) (len "abc") (len (load-items))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-err}
+(fact "error construction preserves literal and computed messages"
+ [(py/python-tf-x-err '[_ "boom"])
+  (py/python-tf-x-err '[_ (message-fn)])
+  (py/python-tf-x-err '[_ nil])]
+ => '[(throw (Exception "boom")) (throw (Exception (message-fn))) (throw (Exception nil))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-native?}
+(fact "native exception recognition uses BaseException for any operand form"
+ [(py/python-tf-x-ex-native? '[_ err])
+  (py/python-tf-x-ex-native? '[_ (fetch-error)])
+  (py/python-tf-x-ex-native? '[_ nil])]
+ => '[(isinstance err BaseException) (isinstance (fetch-error) BaseException) (isinstance nil BaseException)])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-new}
+(fact "exception data is omitted only when missing or nil"
+ [(py/python-tf-x-ex-new '[_ "boom"])
+  (py/python-tf-x-ex-new '[_ "boom" nil])
+  (py/python-tf-x-ex-new '[_ "boom" false])
+  (py/python-tf-x-ex-new '[_ "boom" 0])
+  (py/python-tf-x-ex-new '[_ "boom" ""])
+  (py/python-tf-x-ex-new '[_ (message-fn) {:code 7}])]
+ => '[(Exception "boom") (Exception "boom")
+      (Exception "boom" false) (Exception "boom" 0) (Exception "boom" "")
+      (Exception (message-fn) {:code 7})])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-message}
+(fact "exception message guards type and argument length before selecting index zero"
+ [(py/python-tf-x-ex-message '[_ err])
+  (py/python-tf-x-ex-message '[_ (fetch-error)])]
+ => '[(:? (isinstance err BaseException)
+           (:? (> (len (. err args)) 0) (. (. err args) [0]) nil) nil)
+      (:? (isinstance (fetch-error) BaseException)
+           (:? (> (len (. (fetch-error) args)) 0) (. (. (fetch-error) args) [0]) nil) nil)])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-data}
+(fact "exception data guards type and two arguments before selecting index one"
+ [(py/python-tf-x-ex-data '[_ err])
+  (py/python-tf-x-ex-data '[_ (fetch-error)])]
+ => '[(:? (isinstance err BaseException)
+           (:? (> (len (. err args)) 1) (. (. err args) [1]) nil) nil)
+      (:? (isinstance (fetch-error) BaseException)
+           (:? (> (len (. (fetch-error) args)) 1) (. (. (fetch-error) args) [1]) nil) nil)])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-eval}
+(fact "evaluation preserves code strings and computed input without evaluating them"
+ [(py/python-tf-x-eval '[_ "1 + 2"])
+  (py/python-tf-x-eval '[_ (source-fn)])]
+ => '[(eval "1 + 2") (eval (source-fn))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-apply}
+(fact "function application creates one unpack operand for empty literal and computed arguments"
+ [(py/python-tf-x-apply '[_ f []])
+  (py/python-tf-x-apply '[_ f [1 false nil]])
+  (py/python-tf-x-apply '[_ (get-fn) (get-args)])]
+ => '[(f (:* [])) (f (:* [1 false nil])) ((get-fn) (:* (get-args)))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-construct}
+(fact "construction preserves the constructor and creates one unpack operand"
+ [(py/python-tf-x-construct '[_ Thing []])
+  (py/python-tf-x-construct '[_ Thing [1 false nil]])
+  (py/python-tf-x-construct '[_ (get-ctor) (get-args)])]
+ => '[(Thing (:* [])) (Thing (:* [1 false nil])) ((get-ctor) (:* (get-args)))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-random}
+(fact "random expansion imports Python random and ignores the input marker"
+ [(py/python-tf-x-random '[_])
+  (py/python-tf-x-random '[_ ignored])]
+ => '[(. (__import__ "random") (random)) (. (__import__ "random") (random))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-print}
+(fact "print retains zero one and many arguments in order"
+ [(py/python-tf-x-print '[_])
+  (py/python-tf-x-print '[_ "hello"])
+  (py/python-tf-x-print '[_ "hello" (value-fn) false nil])]
+ => '[(print) (print "hello") (print "hello" (value-fn) false nil)])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-type-native}
+(fact "native type expansion preserves all branches and checks boolean before number"
+ (py/python-tf-x-type-native '[_ obj])
+ => '(cond (isinstance obj '(dict)) (return "object")
+           (isinstance obj '(list)) (return "array")
+           (callable obj) (return "function")
+           (== bool (type obj)) (return "boolean")
+           (isinstance obj '(int float)) (return "number")
+           (isinstance obj '(str)) (return "string")
+           :else (return (str (type obj)))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-ex-new :id :python-exception-ignored-tail}
+(fact "exception construction ignores operands beyond the first optional data value"
+ [(py/python-tf-x-ex-new '[_ "boom" nil extra]) (py/python-tf-x-ex-new '[_ "boom" {:code 7} extra])]
+ => '[(Exception "boom") (Exception "boom" {:code 7})])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-abs}
+(fact "preserves original target form and operand order for python-tf-x-m-abs" [(py/python-tf-x-m-abs (quote [_ -7])) (py/python-tf-x-m-abs (quote [_ 0])) (py/python-tf-x-m-abs (quote [_ (value-fn)]))] => (quote [(abs -7) (abs 0) (abs (value-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-acos}
+(fact "preserves original target form and operand order for python-tf-x-m-acos" [(py/python-tf-x-m-acos (quote [_ 0])) (py/python-tf-x-m-acos (quote [_ 1])) (py/python-tf-x-m-acos (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (acos 0)) (. (__import__ "math") (acos 1)) (. (__import__ "math") (acos (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-asin}
+(fact "preserves original target form and operand order for python-tf-x-m-asin" [(py/python-tf-x-m-asin (quote [_ 0])) (py/python-tf-x-m-asin (quote [_ 1])) (py/python-tf-x-m-asin (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (asin 0)) (. (__import__ "math") (asin 1)) (. (__import__ "math") (asin (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-atan}
+(fact "preserves original target form and operand order for python-tf-x-m-atan" [(py/python-tf-x-m-atan (quote [_ 0])) (py/python-tf-x-m-atan (quote [_ 1])) (py/python-tf-x-m-atan (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (atan 0)) (. (__import__ "math") (atan 1)) (. (__import__ "math") (atan (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-ceil}
+(fact "preserves original target form and operand order for python-tf-x-m-ceil" [(py/python-tf-x-m-ceil (quote [_ -1.5])) (py/python-tf-x-m-ceil (quote [_ 0])) (py/python-tf-x-m-ceil (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (ceil -1.5)) (. (__import__ "math") (ceil 0)) (. (__import__ "math") (ceil (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cos}
+(fact "preserves original target form and operand order for python-tf-x-m-cos" [(py/python-tf-x-m-cos (quote [_ 0])) (py/python-tf-x-m-cos (quote [_ 1])) (py/python-tf-x-m-cos (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (cos 0)) (. (__import__ "math") (cos 1)) (. (__import__ "math") (cos (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-cosh}
+(fact "preserves original target form and operand order for python-tf-x-m-cosh" [(py/python-tf-x-m-cosh (quote [_ 0])) (py/python-tf-x-m-cosh (quote [_ 1])) (py/python-tf-x-m-cosh (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (cosh 0)) (. (__import__ "math") (cosh 1)) (. (__import__ "math") (cosh (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-exp}
+(fact "preserves original target form and operand order for python-tf-x-m-exp" [(py/python-tf-x-m-exp (quote [_ 0])) (py/python-tf-x-m-exp (quote [_ 1])) (py/python-tf-x-m-exp (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (exp 0)) (. (__import__ "math") (exp 1)) (. (__import__ "math") (exp (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-floor}
+(fact "preserves original target form and operand order for python-tf-x-m-floor" [(py/python-tf-x-m-floor (quote [_ -1.5])) (py/python-tf-x-m-floor (quote [_ 0])) (py/python-tf-x-m-floor (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (floor -1.5)) (. (__import__ "math") (floor 0)) (. (__import__ "math") (floor (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-loge}
+(fact "preserves original target form and operand order for python-tf-x-m-loge" [(py/python-tf-x-m-loge (quote [_ 1])) (py/python-tf-x-m-loge (quote [_ 10])) (py/python-tf-x-m-loge (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (log 1)) (. (__import__ "math") (log 10)) (. (__import__ "math") (log (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-log10}
+(fact "preserves original target form and operand order for python-tf-x-m-log10" [(py/python-tf-x-m-log10 (quote [_ 1])) (py/python-tf-x-m-log10 (quote [_ 10])) (py/python-tf-x-m-log10 (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (log10 1)) (. (__import__ "math") (log10 10)) (. (__import__ "math") (log10 (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-max}
+(fact "preserves original target form and operand order for python-tf-x-m-max" [(py/python-tf-x-m-max (quote [_])) (py/python-tf-x-m-max (quote [_ 7])) (py/python-tf-x-m-max (quote [_ -2 0 7])) (py/python-tf-x-m-max (quote [_ (left-fn) (right-fn)]))] => (quote [(max) (max 7) (max -2 0 7) (max (left-fn) (right-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-min}
+(fact "preserves original target form and operand order for python-tf-x-m-min" [(py/python-tf-x-m-min (quote [_])) (py/python-tf-x-m-min (quote [_ 7])) (py/python-tf-x-m-min (quote [_ -2 0 7])) (py/python-tf-x-m-min (quote [_ (left-fn) (right-fn)]))] => (quote [(min) (min 7) (min -2 0 7) (min (left-fn) (right-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-mod}
+(fact "preserves original target form and operand order for python-tf-x-m-mod" [(py/python-tf-x-m-mod (quote [_ -7 3])) (py/python-tf-x-m-mod (quote [_ 7 -3])) (py/python-tf-x-m-mod (quote [_ (left-fn) (right-fn)]))] => (quote [(:% -7 (:- " % ") 3) (:% 7 (:- " % ") -3) (:% (left-fn) (:- " % ") (right-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-quot}
+(fact "preserves original target form and operand order for python-tf-x-m-quot" [(py/python-tf-x-m-quot (quote [_ -7 3])) (py/python-tf-x-m-quot (quote [_ 7 -3])) (py/python-tf-x-m-quot (quote [_ (left-fn) (right-fn)]))] => (quote [(:% -7 (:- " // ") 3) (:% 7 (:- " // ") -3) (:% (left-fn) (:- " // ") (right-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-pow}
+(fact "preserves original target form and operand order for python-tf-x-m-pow" [(py/python-tf-x-m-pow (quote [_ 2 0])) (py/python-tf-x-m-pow (quote [_ 2 -3])) (py/python-tf-x-m-pow (quote [_ (base-fn) (exponent-fn)]))] => (quote [(pow 2 0) (pow 2 -3) (pow (base-fn) (exponent-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sin}
+(fact "preserves original target form and operand order for python-tf-x-m-sin" [(py/python-tf-x-m-sin (quote [_ 0])) (py/python-tf-x-m-sin (quote [_ 1])) (py/python-tf-x-m-sin (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (sin 0)) (. (__import__ "math") (sin 1)) (. (__import__ "math") (sin (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sinh}
+(fact "preserves original target form and operand order for python-tf-x-m-sinh" [(py/python-tf-x-m-sinh (quote [_ 0])) (py/python-tf-x-m-sinh (quote [_ 1])) (py/python-tf-x-m-sinh (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (sinh 0)) (. (__import__ "math") (sinh 1)) (. (__import__ "math") (sinh (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-sqrt}
+(fact "preserves original target form and operand order for python-tf-x-m-sqrt" [(py/python-tf-x-m-sqrt (quote [_ 0])) (py/python-tf-x-m-sqrt (quote [_ 1])) (py/python-tf-x-m-sqrt (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (sqrt 0)) (. (__import__ "math") (sqrt 1)) (. (__import__ "math") (sqrt (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tan}
+(fact "preserves original target form and operand order for python-tf-x-m-tan" [(py/python-tf-x-m-tan (quote [_ 0])) (py/python-tf-x-m-tan (quote [_ 1])) (py/python-tf-x-m-tan (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (tan 0)) (. (__import__ "math") (tan 1)) (. (__import__ "math") (tan (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-m-tanh}
+(fact "preserves original target form and operand order for python-tf-x-m-tanh" [(py/python-tf-x-m-tanh (quote [_ 0])) (py/python-tf-x-m-tanh (quote [_ 1])) (py/python-tf-x-m-tanh (quote [_ (value-fn)]))] => (quote [(. (__import__ "math") (tanh 0)) (. (__import__ "math") (tanh 1)) (. (__import__ "math") (tanh (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-string}
+(fact "preserves original target form and operand order for python-tf-x-to-string" [(py/python-tf-x-to-string (quote [_ nil])) (py/python-tf-x-to-string (quote [_ (value-fn)]))] => (quote [(str nil) (str (value-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-to-number}
+(fact "preserves original target form and operand order for python-tf-x-to-number" [(py/python-tf-x-to-number (quote [_ "3.5"])) (py/python-tf-x-to-number (quote [_ (value-fn)]))] => (quote [(float "3.5") (float (value-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-string?}
+(fact "preserves original target form and operand order for python-tf-x-is-string?" [(py/python-tf-x-is-string? (quote [_ "x"])) (py/python-tf-x-is-string? (quote [_ (value-fn)]))] => (quote [(isinstance "x" str) (isinstance (value-fn) str)]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-number?}
+(fact "preserves original target form and operand order for python-tf-x-is-number?" [(py/python-tf-x-is-number? (quote [_ 3])) (py/python-tf-x-is-number? (quote [_ (value-fn)]))] => (quote [(isinstance 3 (quote (int float))) (isinstance (value-fn) (quote (int float)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-integer?}
+(fact "preserves original target form and operand order for python-tf-x-is-integer?" [(py/python-tf-x-is-integer? (quote [_ 3])) (py/python-tf-x-is-integer? (quote [_ (value-fn)]))] => (quote [(isinstance 3 (quote (int))) (isinstance (value-fn) (quote (int)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-boolean?}
+(fact "preserves original target form and operand order for python-tf-x-is-boolean?" [(py/python-tf-x-is-boolean? (quote [_ false])) (py/python-tf-x-is-boolean? (quote [_ (value-fn)]))] => (quote [(== bool (type false)) (== bool (type (value-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-function?}
+(fact "preserves original target form and operand order for python-tf-x-is-function?" [(py/python-tf-x-is-function? (quote [_ f])) (py/python-tf-x-is-function? (quote [_ (value-fn)]))] => (quote [(callable f) (callable (value-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-object?}
+(fact "preserves original target form and operand order for python-tf-x-is-object?" [(py/python-tf-x-is-object? (quote [_ {}])) (py/python-tf-x-is-object? (quote [_ (value-fn)]))] => (quote [(isinstance {} dict) (isinstance (value-fn) dict)]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-array?}
+(fact "preserves original target form and operand order for python-tf-x-is-array?" [(py/python-tf-x-is-array? (quote [_ []])) (py/python-tf-x-is-array? (quote [_ (value-fn)]))] => (quote [(isinstance [] list) (isinstance (value-fn) list)]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-create}
+(fact "preserves original target form and operand order for python-tf-x-lu-create" [(py/python-tf-x-lu-create (quote [_])) (py/python-tf-x-lu-create (quote [_ ignored]))] => (quote [{} {}]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-eq}
+(fact "preserves original target form and operand order for python-tf-x-lu-eq" [(py/python-tf-x-lu-eq (quote [_ a b])) (py/python-tf-x-lu-eq (quote [_ (left-fn) (right-fn)]))] => (quote [(== (id a) (id b)) (== (id (left-fn)) (id (right-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-get}
+(fact "preserves original target form and operand order for python-tf-x-lu-get" [(py/python-tf-x-lu-get (quote [_ lu obj])) (py/python-tf-x-lu-get (quote [_ (lookup-fn) (object-fn)]))] => (quote [(. lu (get (id obj))) (. (lookup-fn) (get (id (object-fn))))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-set}
+(fact "preserves original target form and operand order for python-tf-x-lu-set" [(py/python-tf-x-lu-set (quote [_ lu obj nil])) (py/python-tf-x-lu-set (quote [_ (lookup-fn) (object-fn) (gid-fn)]))] => (quote [(:= (. lu [(id obj)]) nil) (:= (. (lookup-fn) [(id (object-fn))]) (gid-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-lu-del}
+(fact "preserves original target form and operand order for python-tf-x-lu-del" [(py/python-tf-x-lu-del (quote [_ lu obj])) (py/python-tf-x-lu-del (quote [_ (lookup-fn) (object-fn)]))] => (quote [(del (. lu [(id obj)])) (del (. (lookup-fn) [(id (object-fn))]))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-keys}
+(fact "preserves original target form and operand order for python-tf-x-obj-keys" [(py/python-tf-x-obj-keys (quote [_ obj])) (py/python-tf-x-obj-keys (quote [_ (object-fn)]))] => (quote [(list (. obj (keys))) (list (. (object-fn) (keys)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-vals}
+(fact "preserves original target form and operand order for python-tf-x-obj-vals" [(py/python-tf-x-obj-vals (quote [_ obj])) (py/python-tf-x-obj-vals (quote [_ (object-fn)]))] => (quote [(list (. obj (values))) (list (. (object-fn) (values)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-pairs}
+(fact "preserves original target form and operand order for python-tf-x-obj-pairs" [(py/python-tf-x-obj-pairs (quote [_ obj])) (py/python-tf-x-obj-pairs (quote [_ (object-fn)]))] => (quote [(list (. obj (items))) (list (. (object-fn) (items)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-obj-clone}
+(fact "preserves original target form and operand order for python-tf-x-obj-clone" [(py/python-tf-x-obj-clone (quote [_ obj])) (py/python-tf-x-obj-clone (quote [_ (object-fn)]))] => (quote [(. obj (copy)) (. (object-fn) (copy))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-clone}
+(fact "preserves original target form and operand order for python-tf-x-arr-clone" [(py/python-tf-x-arr-clone (quote [_ []])) (py/python-tf-x-arr-clone (quote [_ (array-fn)]))] => (quote [(. [] [(:- ":")]) (. (array-fn) [(:- ":")])]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-slice}
+(fact "preserves original target form and operand order for python-tf-x-arr-slice" [(py/python-tf-x-arr-slice (quote [_ arr 0 3])) (py/python-tf-x-arr-slice (quote [_ arr -2 -1])) (py/python-tf-x-arr-slice (quote [_ arr 1])) (py/python-tf-x-arr-slice (quote [_ (array-fn) (start-fn) (end-fn)]))] => (quote [(. arr [(:to (- 0 (x:offset)) 3)]) (. arr [(:to (- -2 (x:offset)) -1)]) (. arr [(:to (- 1 (x:offset)) nil)]) (. (array-fn) [(:to (- (start-fn) (x:offset)) (end-fn))])]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push}
+(fact "preserves original target form and operand order for python-tf-x-arr-push" [(py/python-tf-x-arr-push (quote [_ arr nil])) (py/python-tf-x-arr-push (quote [_ (array-fn) (item-fn)]))] => (quote [(. arr (append nil)) (. (array-fn) (append (item-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop}
+(fact "preserves original target form and operand order for python-tf-x-arr-pop" [(py/python-tf-x-arr-pop (quote [_ arr])) (py/python-tf-x-arr-pop (quote [_ (array-fn)]))] => (quote [(. arr (pop)) (. (array-fn) (pop))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-reverse}
+(fact "preserves original target form and operand order for python-tf-x-arr-reverse" [(py/python-tf-x-arr-reverse (quote [_ []])) (py/python-tf-x-arr-reverse (quote [_ (array-fn)]))] => (quote [(list (reversed [])) (list (reversed (array-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push-first}
+(fact "preserves original target form and operand order for python-tf-x-arr-push-first" [(py/python-tf-x-arr-push-first (quote [_ arr false])) (py/python-tf-x-arr-push-first (quote [_ (array-fn) (item-fn)]))] => (quote [(. arr (insert 0 false)) (. (array-fn) (insert 0 (item-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop-first}
+(fact "preserves original target form and operand order for python-tf-x-arr-pop-first" [(py/python-tf-x-arr-pop-first (quote [_ arr])) (py/python-tf-x-arr-pop-first (quote [_ (array-fn)]))] => (quote [(. arr (pop 0)) (. (array-fn) (pop 0))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-insert}
+(fact "preserves original target form and operand order for python-tf-x-arr-insert" [(py/python-tf-x-arr-insert (quote [_ arr -1 nil])) (py/python-tf-x-arr-insert (quote [_ (array-fn) (index-fn) (item-fn)]))] => (quote [(. arr (insert -1 nil)) (. (array-fn) (insert (index-fn) (item-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-remove}
+(fact "preserves original target form and operand order for python-tf-x-arr-remove" [(py/python-tf-x-arr-remove (quote [_ arr -1])) (py/python-tf-x-arr-remove (quote [_ (array-fn) (index-fn)]))] => (quote [(. arr (pop -1)) (. (array-fn) (pop (index-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-sort}
+(fact "preserves original target form and operand order for python-tf-x-arr-sort" [(py/python-tf-x-arr-sort (quote [_ arr key-fn compare-fn])) (py/python-tf-x-arr-sort (quote [_ (array-fn) (get-key-fn) (get-compare-fn)]))] => (quote [(. arr (sort :key (. (__import__ "functools") (cmp_to_key (fn:> [a b] (:? (compare-fn (key-fn a) (key-fn b)) -1 1)))))) (. (array-fn) (sort :key (. (__import__ "functools") (cmp_to_key (fn:> [a b] (:? ((get-compare-fn) ((get-key-fn) a) ((get-key-fn) b)) -1 1))))))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-arr-every}
+(fact "preserves original target form and operand order for python-tf-arr-every" [(py/python-tf-arr-every (quote [_ [] pred])) (py/python-tf-arr-every (quote [_ (array-fn) (predicate-fn)]))] => (quote [(all (map pred [])) (all (map (predicate-fn) (array-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-arr-some}
+(fact "preserves original target form and operand order for python-tf-arr-some" [(py/python-tf-arr-some (quote [_ [] pred])) (py/python-tf-arr-some (quote [_ (array-fn) (predicate-fn)]))] => (quote [(any (map pred [])) (any (map (predicate-fn) (array-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-comp}
+(fact "preserves original target form and operand order for python-tf-x-str-comp" [(py/python-tf-x-str-comp (quote [_ "a" "b"])) (py/python-tf-x-str-comp (quote [_ (left-fn) (right-fn)]))] => (quote [(< "a" "b") (< (left-fn) (right-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-char}
+(fact "preserves original target form and operand order for python-tf-x-str-char" [(py/python-tf-x-str-char (quote [_ "abc" 1])) (py/python-tf-x-str-char (quote [_ (string-fn) (index-fn)]))] => (quote [(ord (. "abc" [(- 1 (x:offset))])) (ord (. (string-fn) [(- (index-fn) (x:offset))]))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-split}
+(fact "preserves original target form and operand order for python-tf-x-str-split" [(py/python-tf-x-str-split (quote [_ "a,b" ","])) (py/python-tf-x-str-split (quote [_ (string-fn) (token-fn)]))] => (quote [(. "a,b" (split ",")) (. (string-fn) (split (token-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-join}
+(fact "preserves original target form and operand order for python-tf-x-str-join" [(py/python-tf-x-str-join (quote [_ "," []])) (py/python-tf-x-str-join (quote [_ (separator-fn) (array-fn)]))] => (quote [(. "," (join [])) (. (separator-fn) (join (array-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-index-of}
+(fact "preserves original target form and operand order for python-tf-x-str-index-of" [(py/python-tf-x-str-index-of (quote [_ s tok])) (py/python-tf-x-str-index-of (quote [_ s tok nil])) (py/python-tf-x-str-index-of (quote [_ s tok 0])) (py/python-tf-x-str-index-of (quote [_ s tok -1])) (py/python-tf-x-str-index-of (quote [_ (string-fn) (token-fn) (start-fn) ignored])) (py/python-tf-x-str-index-of (quote [_ s tok false]))] => (quote [(+ (. s (find tok 0)) (x:offset)) (+ (. s (find tok 0)) (x:offset)) (+ (. s (find tok 0)) (x:offset)) (+ (. s (find tok -1)) (x:offset)) (+ (. (string-fn) (find (token-fn) (start-fn))) (x:offset)) (+ (. s (find tok 0)) (x:offset))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-fixed}
+(fact "preserves original target form and operand order for python-tf-x-str-to-fixed" [(py/python-tf-x-str-to-fixed (quote [_ 3.5 0])) (py/python-tf-x-str-to-fixed (quote [_ (number-fn) (digits-fn)]))] => (quote [(. (x:cat "{:." (str 0) "f}") (format 3.5)) (. (x:cat "{:." (str (digits-fn)) "f}") (format (number-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-substring}
+(fact "preserves original target form and operand order for python-tf-x-str-substring" [(py/python-tf-x-str-substring (quote [_ s 1])) (py/python-tf-x-str-substring (quote [_ s 1 nil])) (py/python-tf-x-str-substring (quote [_ s 0 0])) (py/python-tf-x-str-substring (quote [_ s -2 -1])) (py/python-tf-x-str-substring (quote [_ (string-fn) (start-fn) (end-fn) ignored])) (py/python-tf-x-str-substring (quote [_ s 1 false]))] => (quote [(. s [(:to (- 1 (x:offset)) \0)]) (. s [(:to (- 1 (x:offset)) \0)]) (. s [(:to (- 0 (x:offset)) 0)]) (. s [(:to (- -2 (x:offset)) -1)]) (. (string-fn) [(:to (- (start-fn) (x:offset)) (end-fn))]) (. s [(:to (- 1 (x:offset)) \0)])]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-upper}
+(fact "preserves original target form and operand order for python-tf-x-str-to-upper" [(py/python-tf-x-str-to-upper (quote [_ "Ab"])) (py/python-tf-x-str-to-upper (quote [_ (string-fn)]))] => (quote [(. "Ab" (upper)) (. (string-fn) (upper))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-to-lower}
+(fact "preserves original target form and operand order for python-tf-x-str-to-lower" [(py/python-tf-x-str-to-lower (quote [_ "Ab"])) (py/python-tf-x-str-to-lower (quote [_ (string-fn)]))] => (quote [(. "Ab" (lower)) (. (string-fn) (lower))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-replace}
+(fact "preserves original target form and operand order for python-tf-x-str-replace" [(py/python-tf-x-str-replace (quote [_ "a" "a" ""])) (py/python-tf-x-str-replace (quote [_ (string-fn) (token-fn) (replacement-fn)]))] => (quote [(. "a" (replace "a" "")) (. (string-fn) (replace (token-fn) (replacement-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim}
+(fact "preserves original target form and operand order for python-tf-x-str-trim" [(py/python-tf-x-str-trim (quote [_ " a "])) (py/python-tf-x-str-trim (quote [_ (string-fn)]))] => (quote [(. " a " (strip)) (. (string-fn) (strip))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-left}
+(fact "preserves original target form and operand order for python-tf-x-str-trim-left" [(py/python-tf-x-str-trim-left (quote [_ " a "])) (py/python-tf-x-str-trim-left (quote [_ (string-fn)]))] => (quote [(. " a " (lstrip)) (. (string-fn) (lstrip))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-trim-right}
+(fact "preserves original target form and operand order for python-tf-x-str-trim-right" [(py/python-tf-x-str-trim-right (quote [_ " a "])) (py/python-tf-x-str-trim-right (quote [_ (string-fn)]))] => (quote [(. " a " (rstrip)) (. (string-fn) (rstrip))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-left}
+(fact "preserves original target form and operand order for python-tf-x-str-pad-left" [(py/python-tf-x-str-pad-left (quote [_ "a" 3 "0"])) (py/python-tf-x-str-pad-left (quote [_ (string-fn) (width-fn) (char-fn)]))] => (quote [(. "a" (rjust 3 "0")) (. (string-fn) (rjust (width-fn) (char-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-pad-right}
+(fact "preserves original target form and operand order for python-tf-x-str-pad-right" [(py/python-tf-x-str-pad-right (quote [_ "a" 3 "0"])) (py/python-tf-x-str-pad-right (quote [_ (string-fn) (width-fn) (char-fn)]))] => (quote [(. "a" (ljust 3 "0")) (. (string-fn) (ljust (width-fn) (char-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-new}
+(fact "preserves original target form and operand order for python-tf-x-bytes-new" [(py/python-tf-x-bytes-new (quote [_ []])) (py/python-tf-x-bytes-new (quote [_ (values-fn)]))] => (quote [(bytearray []) (bytearray (values-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-set}
+(fact "preserves original target form and operand order for python-tf-x-bytes-set" [(py/python-tf-x-bytes-set (quote [_ data 0 255])) (py/python-tf-x-bytes-set (quote [_ (bytes-fn) (index-fn) (byte-fn)]))] => (quote [(x:get-idx [(. (__import__ "operator") (setitem data 0 255)) data] 1) (x:get-idx [(. (__import__ "operator") (setitem (bytes-fn) (index-fn) (byte-fn))) (bytes-fn)] 1)]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-copy}
+(fact "preserves original target form and operand order for python-tf-x-bytes-copy" [(py/python-tf-x-bytes-copy (quote [_ []])) (py/python-tf-x-bytes-copy (quote [_ (bytes-fn)]))] => (quote [(bytearray []) (bytearray (bytes-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-slice}
+(fact "preserves original target form and operand order for python-tf-x-bytes-slice" [(py/python-tf-x-bytes-slice (quote [_ data 1])) (py/python-tf-x-bytes-slice (quote [_ data 1 nil])) (py/python-tf-x-bytes-slice (quote [_ data 0 0])) (py/python-tf-x-bytes-slice (quote [_ data -2 -1])) (py/python-tf-x-bytes-slice (quote [_ (bytes-fn) (start-fn) (end-fn) ignored])) (py/python-tf-x-bytes-slice (quote [_ data 1 false]))] => (quote [(. data [(:to 1 \0)]) (. data [(:to 1 \0)]) (. data [(:to 0 0)]) (. data [(:to -2 -1)]) (. (bytes-fn) [(:to (start-fn) (end-fn))]) (. data [(:to 1 \0)])]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-u8}
+(fact "preserves original target form and operand order for python-tf-x-bytes-u8" [(py/python-tf-x-bytes-u8 (quote [_ -1])) (py/python-tf-x-bytes-u8 (quote [_ (byte-fn)]))] => (quote [(b:& -1 255) (b:& (byte-fn) 255)]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-bytes-s8}
+(fact "preserves original target form and operand order for python-tf-x-bytes-s8" [(py/python-tf-x-bytes-s8 (quote [_ 128])) (py/python-tf-x-bytes-s8 (quote [_ (byte-fn)]))] => (quote [(:? (> 128 127) (- 128 256) 128) (:? (> (byte-fn) 127) (- (byte-fn) 256) (byte-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-encode}
+(fact "preserves original target form and operand order for python-tf-x-str-encode" [(py/python-tf-x-str-encode (quote [_ "é"])) (py/python-tf-x-str-encode (quote [_ (string-fn)]))] => (quote [(bytearray (. "é" (encode "utf-8"))) (bytearray (. (string-fn) (encode "utf-8")))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-str-decode}
+(fact "preserves original target form and operand order for python-tf-x-str-decode" [(py/python-tf-x-str-decode (quote [_ [195 169]])) (py/python-tf-x-str-decode (quote [_ (bytes-fn)]))] => (quote [(. (bytes [195 169]) (decode "utf-8")) (. (bytes (bytes-fn)) (decode "utf-8"))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-bit-not}
+(fact "preserves original target form and operand order for python-tf-x-bit-not" [(py/python-tf-x-bit-not (quote [_ 0])) (py/python-tf-x-bit-not (quote [_ (value-fn)]))] => (quote [(b:xor 0 -1) (b:xor (value-fn) -1)]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-encode}
+(fact "preserves original target form and operand order for python-tf-x-json-encode" [(py/python-tf-x-json-encode (quote [_ {:a 1}])) (py/python-tf-x-json-encode (quote [_ (object-fn)]))] => (quote [(. (__import__ "json") (dumps {:a 1} :separators ["," ":"])) (. (__import__ "json") (dumps (object-fn) :separators ["," ":"]))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-json-decode}
+(fact "preserves original target form and operand order for python-tf-x-json-decode" [(py/python-tf-x-json-decode (quote [_ "{}"])) (py/python-tf-x-json-decode (quote [_ (string-fn)]))] => (quote [(. (__import__ "json") (loads "{}")) (. (__import__ "json") (loads (string-fn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-connect}
+(fact "preserves original target form and operand order for python-tf-x-socket-connect" [(py/python-tf-x-socket-connect (quote [_ "localhost" 9000 {} cb])) (py/python-tf-x-socket-connect (quote [_ (host-fn) (port-fn) {:ignored true} (callback-fn)]))] => (quote [(do (:- :import socket) (try (var conn (socket.socket)) (conn.connect (quote ("localhost" 9000))) (catch [Exception :as e] (return (cb e nil)))) (return (cb nil conn))) (do (:- :import socket) (try (var conn (socket.socket)) (conn.connect (quote ((host-fn) (port-fn)))) (catch [Exception :as e] (return ((callback-fn) e nil)))) (return ((callback-fn) nil conn)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-send}
+(fact "preserves original target form and operand order for python-tf-x-socket-send" [(py/python-tf-x-socket-send (quote [_ conn []])) (py/python-tf-x-socket-send (quote [_ (connection-fn) (bytes-fn)]))] => (quote [(x:get-idx [(. conn (sendall (bytes []))) (len [])] 1) (x:get-idx [(. (connection-fn) (sendall (bytes (bytes-fn)))) (len (bytes-fn))] 1)]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-close}
+(fact "preserves original target form and operand order for python-tf-x-socket-close" [(py/python-tf-x-socket-close (quote [_ conn])) (py/python-tf-x-socket-close (quote [_ (connection-fn)]))] => (quote [(. conn (close)) (. (connection-fn) (close))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-obj}
+(fact "preserves original target form and operand order for python-tf-x-iter-from-obj" [(py/python-tf-x-iter-from-obj (quote [_ {}])) (py/python-tf-x-iter-from-obj (quote [_ (object-fn)]))] => (quote [(iter (. {} (items))) (iter (. (object-fn) (items)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from-arr}
+(fact "preserves original target form and operand order for python-tf-x-iter-from-arr" [(py/python-tf-x-iter-from-arr (quote [_ []])) (py/python-tf-x-iter-from-arr (quote [_ (array-fn)]))] => (quote [(iter []) (iter (array-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-from}
+(fact "preserves original target form and operand order for python-tf-x-iter-from" [(py/python-tf-x-iter-from (quote [_ x])) (py/python-tf-x-iter-from (quote [_ (value-fn)]))] => (quote [(iter x) (iter (value-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-eq}
+(fact "preserves original target form and operand order for python-tf-x-iter-eq" [(py/python-tf-x-iter-eq (quote [_ left right eq])) (py/python-tf-x-iter-eq (quote [_ (left-fn) (right-fn) (equal-fn)]))] => (quote [(do (for [x0 :in left] (try (var x1 (next right)) (if (not (eq x0 x1)) (return false)) (catch StopIteration (return false)))) (try (next right) (return false) (catch StopIteration (return true)))) (do (for [x0 :in (left-fn)] (try (var x1 (next (right-fn))) (if (not ((equal-fn) x0 x1)) (return false)) (catch StopIteration (return false)))) (try (next (right-fn)) (return false) (catch StopIteration (return true))))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-next}
+(fact "preserves original target form and operand order for python-tf-x-iter-next" [(py/python-tf-x-iter-next (quote [_ it])) (py/python-tf-x-iter-next (quote [_ (iterator-fn)]))] => (quote [(next it) (next (iterator-fn))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-has?}
+(fact "preserves original target form and operand order for python-tf-x-iter-has?" [(py/python-tf-x-iter-has? (quote [_ x])) (py/python-tf-x-iter-has? (quote [_ (value-fn)]))] => (quote [(hasattr x "__iter__") (hasattr (value-fn) "__iter__")]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-iter-native?}
+(fact "preserves original target form and operand order for python-tf-x-iter-native?" [(py/python-tf-x-iter-native? (quote [_ it])) (py/python-tf-x-iter-native? (quote [_ (iterator-fn)]))] => (quote [(hasattr it "__next__") (hasattr (iterator-fn) "__next__")]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-async-run}
+(fact "preserves original target form and operand order for python-tf-x-async-run" [(py/python-tf-x-async-run (quote [_ thunk])) (py/python-tf-x-async-run (quote [_ (thunk-fn)]))] => (quote [(do (. (__import__ "threading") (Thread :target thunk) (start))) (do (. (__import__ "threading") (Thread :target (thunk-fn)) (start)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-with-delay}
+(fact "preserves original target form and operand order for python-tf-x-with-delay" [(py/python-tf-x-with-delay (quote [_ 0 thunk])) (py/python-tf-x-with-delay (quote [_ (milliseconds-fn) (thunk-fn)]))] => (quote [(do (. (__import__ "time") (sleep (/ 0 1000.0))) (return (thunk))) (do (. (__import__ "time") (sleep (/ (milliseconds-fn) 1000.0))) (return ((thunk-fn))))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-pwd}
+(fact "preserves original target form and operand order for python-tf-x-pwd" [(py/python-tf-x-pwd (quote [_])) (py/python-tf-x-pwd (quote [_ ignored]))] => (quote [(or (. (__import__ "os") environ (get "PWD")) (. (__import__ "os") (getcwd))) (or (. (__import__ "os") environ (get "PWD")) (. (__import__ "os") (getcwd)))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-shell}
+(fact "preserves original target form and operand order for python-tf-x-shell" [(py/python-tf-x-shell (quote [_ "echo hi" nil cb])) (py/python-tf-x-shell (quote [_ (command-fn) (root-fn) (callback-fn)]))] => (quote [(do (try (var result (. (__import__ "subprocess") (run ["sh" "-lc" "echo hi"] :capture_output true :text true :cwd nil))) (if (not= 0 (. result returncode)) (return (cb {:code (. result returncode), :err (. result stderr), :out (. result stdout)} nil)) (return (cb nil (. result stdout)))) (catch [Exception :as e] (return (cb e nil))))) (do (try (var result (. (__import__ "subprocess") (run ["sh" "-lc" (command-fn)] :capture_output true :text true :cwd (root-fn)))) (if (not= 0 (. result returncode)) (return ((callback-fn) {:code (. result returncode), :err (. result stderr), :out (. result stdout)} nil)) (return ((callback-fn) nil (. result stdout)))) (catch [Exception :as e] (return ((callback-fn) e nil)))))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-resolve}
+(fact "preserves original target form and operand order for python-tf-x-file-resolve" [(py/python-tf-x-file-resolve (quote [_ "/tmp" "a"])) (py/python-tf-x-file-resolve (quote [_ (root-fn) (relative-fn)]))] => (quote [(. (__import__ "os") path (abspath (. (__import__ "os") path (join "/tmp" "a")))) (. (__import__ "os") path (abspath (. (__import__ "os") path (join (root-fn) (relative-fn)))))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-read}
+(fact "preserves original target form and operand order for python-tf-x-file-read" [(py/python-tf-x-file-read (quote [_ "a.bin"])) (py/python-tf-x-file-read (quote [_ (filename-fn)]))] => (quote [(x:promise (fn [] (return (bytearray (. (. (__import__ "pathlib") (Path "a.bin")) (read_bytes)))))) (x:promise (fn [] (return (bytearray (. (. (__import__ "pathlib") (Path (filename-fn))) (read_bytes))))))]))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-file-write}
+(fact "preserves original target form and operand order for python-tf-x-file-write" [(py/python-tf-x-file-write (quote [_ "a.bin" []])) (py/python-tf-x-file-write (quote [_ (filename-fn) (content-fn)]))] => (quote [(x:promise (fn [] (return (x:get-idx [(. (. (__import__ "pathlib") (Path "a.bin")) (write_bytes (bytes []))) nil] 1)))) (x:promise (fn [] (return (x:get-idx [(. (. (__import__ "pathlib") (Path (filename-fn))) (write_bytes (bytes (content-fn)))) nil] 1))))]))
+
+
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-err, :id :native-preserved-python/python-tf-x-err}
+(fact
+  "lowers a Python exception"
+  (py/python-tf-x-err '(x:err value))
+  =>
+  '(throw (Exception value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-random, :id :native-preserved-python/python-tf-x-random}
+(fact
+  "lowers a Python random call"
+  (py/python-tf-x-random '(x:random))
+  =>
+  '(. (__import__ "random") (random)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-string?, :id :native-preserved-python/python-tf-x-is-string?}
+(fact
+  "lowers the Python string predicate"
+  (py/python-tf-x-is-string? '(x:is-string? value))
+  =>
+  '(isinstance value str))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-number?, :id :native-preserved-python/python-tf-x-is-number?}
+(fact
+  "lowers the Python number predicate"
+  (py/python-tf-x-is-number? '(x:is-number? value))
+  =>
+  '(isinstance value '(int float)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-integer?, :id :native-preserved-python/python-tf-x-is-integer?}
+(fact
+  "lowers the Python integer predicate"
+  (py/python-tf-x-is-integer? '(x:is-integer? value))
+  =>
+  '(isinstance value '(int)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-boolean?, :id :native-preserved-python/python-tf-x-is-boolean?}
+(fact
+  "lowers the Python boolean predicate"
+  (py/python-tf-x-is-boolean? '(x:is-boolean? value))
+  =>
+  '(== bool (type value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-function?, :id :native-preserved-python/python-tf-x-is-function?}
+(fact
+  "lowers the Python callable predicate"
+  (py/python-tf-x-is-function? '(x:is-function? value))
+  =>
+  '(callable value))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-object?, :id :native-preserved-python/python-tf-x-is-object?}
+(fact
+  "lowers the Python dictionary predicate"
+  (py/python-tf-x-is-object? '(x:is-object? value))
+  =>
+  '(isinstance value dict))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-is-array?, :id :native-preserved-python/python-tf-x-is-array?}
+(fact
+  "lowers the Python list predicate"
+  (py/python-tf-x-is-array? '(x:is-array? value))
+  =>
+  '(isinstance value list))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push, :id :native-preserved-python/python-tf-x-arr-push}
+(fact
+  "lowers Python array append"
+  (py/python-tf-x-arr-push '(x:arr-push arr value))
+  =>
+  '(. arr (append value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop, :id :native-preserved-python/python-tf-x-arr-pop}
+(fact
+  "lowers Python array pop"
+  (py/python-tf-x-arr-pop '(x:arr-pop arr))
+  =>
+  '(. arr (pop)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-push-first, :id :native-preserved-python/python-tf-x-arr-push-first}
+(fact
+  "lowers Python array insertion at the start"
+  (py/python-tf-x-arr-push-first '(x:arr-push-first arr value))
+  =>
+  '(. arr (insert 0 value)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-arr-pop-first, :id :native-preserved-python/python-tf-x-arr-pop-first}
+(fact
+  "lowers Python array removal at the start"
+  (py/python-tf-x-arr-pop-first '(x:arr-pop-first arr))
+  =>
+  '(. arr (pop 0)))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-connect, :id :native-preserved-python/python-tf-x-socket-connect}
+(fact
+  "builds the Python socket connection form"
+  (py/python-tf-x-socket-connect '(x:socket-connect host port opts cb))
+  =>
+  '(do
+     (:- :import socket)
+     (try
+       (var conn (socket.socket))
+       (conn.connect '(host port))
+       (catch [Exception :as e] (return (cb e nil))))
+     (return (cb nil conn))))
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-send, :id :native-preserved-python/python-tf-x-socket-send}
+(fact
+  "builds the Python socket send form"
+  (let [form (py/python-tf-x-socket-send '(x:socket-send conn bytes))]
+    [(first form) (nth form 2) (first (nth form 1))])
+  =>
+  ['x:get-idx 1 '(. conn (sendall (bytes bytes)))])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/python-tf-x-socket-close, :id :native-preserved-python/python-tf-x-socket-close}
+(fact
+  "builds the Python socket close form"
+  (let [form (py/python-tf-x-socket-close '(x:socket-close conn))]
+    [(first form) (nth form 1) (first (nth form 2))])
+  =>
+  ['. 'conn 'close])
+
+^{:refer lang.model.v1.spec-xtalk.fn-python/+python-socket+, :id :native-preserved-python/+python-socket+}
+(fact
+  "registers all Python socket operators"
+  [(count py/+python-socket+)
+   (get-in py/+python-socket+ [:x-socket-connect :emit])
+   (get-in
+     py/+python-socket+
+     [:x-socket-connect :op-spec :allow-blocks])]
+  =>
+  [3 :macro true])
+
+(require [lang.core.impl :as init-impl]
+         [lang.core.library :as init-lib]
+         [lang.model.v1.spec-xtalk :as init-xtalk]
+         [lang.model.v1.spec-python :as init-python]
+         [std.lib.context.resource :as init-resource]
+         [std.lib.context.registry :as init-registry]
+         [std.lib.context.space :as init-space])
+^{:refer lang.model.v1.spec-python/+init+ :id original-load-time-install}
+(fact "the original model init installs the Book and runtime through the global Library and tears down deterministically"
+ (let [result init-python/+init+
+       publications (vec (mapcat (fn [result]
+                             (let [publication (nth result 2)]
+                              (concat (first (:macros publication))
+                                      (second (:macros publication))
+                                      (:highlights publication))))
+                           [init-xtalk/+init+ init-python/+init+]))
+       library (init-impl/default-library)
+       outcome (try
+                 (let [stored (get-in (init-lib/get-snapshot library) [:python :book])]
+                  [(vector? result) (count result)
+                   (set (keys (init-lib/get-snapshot library)))
+                   (:lang stored) (:parent stored)
+                   (= (nth result 2) (select-keys stored [:macros :highlights]))
+                   (= (nth result 1) (init-registry/registry-get :lang/python))
+                   (mapv var-sym (first (:macros stored)))
+                   (Base/identical? library (init-impl/default-library))])
+                 (finally
+                  (doseq [v publications]
+                   (let [sym (var-sym v)]
+                    (intern (symbol (namespace sym)) (with-meta (symbol (name sym)) {:macro false}) nil)))
+                  (intern 'lang.model.v1.spec-xtalk '+init+ nil)
+                  (intern 'lang.model.v1.spec-python '+init+ nil)
+                  (init-resource/resource-stop :lang/lang.library)
+                  (init-resource/resource-stop :lang/lang.library)
+                  (init-space/reset-spaces!) (init-registry/reset-registry!)))]
+  [outcome
+   (init-resource/resource-active-get :global :lang/lang.library :default nil)
+   (set (init-registry/registry-list))
+   (every? (fn [v] (= [nil {:macro false}] [(deref v) (meta v)])) publications)
+   [init-xtalk/+init+ init-python/+init+]])
+ => [[true 3 #{:xtalk :python} :python :xtalk true true
+      '[lang.model.v1.spec-python/def$.py lang.model.v1.spec-python/defmacro.py
+        lang.model.v1.spec-python/!.py lang.model.v1.spec-python/defptr.py] true]
+     nil #{:null} true [nil nil]])

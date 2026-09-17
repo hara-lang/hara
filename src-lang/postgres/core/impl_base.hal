@@ -1,7 +1,13 @@
 (ns postgres.core.impl-base
-  (:require [lang.base.preprocess-base :as preprocess]
+  (:require [lang.base.emit-common :as emit-common]
+            [lang.base.preprocess-base :as preprocess]
             [lang.base.util :as util]
+            [lang.core.impl :as impl]
+            [lang.core.library :as library]
+            [lang.core.library-snapshot :as snapshot]
+            [lang.model.v1.spec-postgres.postgres-common :as common]
             [lang.model.v1.spec-postgres.deftype.common :as table]
+            [postgres.application :as app]
             [lang.model.v1.spec-postgres.deftype.hydrate :as hydrate]))
 
 (def ^:dynamic *skip-checks* false)
@@ -20,62 +26,145 @@
 (defn schema-key? [table-schema key]
   (not (nil? (get table-schema key))))
 
-(defn portable-entry
-  [value]
-  (let [context (preprocess/macro-opts)
-        link (if context (table/target-link value context) nil)
-        entry (if link (table/linked-entry context link) nil)
-        form (if entry (table/linked-entry-form entry) nil)]
-    (if (and form (= 'deftype (first form)))
-      (let [formatted (hydrate/pg-deftype-format form)
-            hydrated (hydrate/pg-deftype-hydrate
-                      (second formatted) (:grammar context) context)
-            table-symbol (second (second hydrated))
-            metadata (or (meta table-symbol) {})
-            table-schema
-            (loop [index 0
-                   remaining (:static/columns metadata)
-                   output {}]
-              (if (= 0 (count remaining))
-                output
-                (let [pair (first remaining)]
-                  (recur (+ index 1)
-                         (vec (rest remaining))
-                         (assoc output
-                                (first pair)
-                                (assoc (second pair) :order index))))))]
-        (merge entry metadata {:table-schema table-schema})))))
+(defn module-table-entries
+  [module]
+  (->> (:code module)
+       vals
+       (map (fn [entry]
+              (or (and (:static/schema-seed entry)
+                       entry)
+                  (some-> entry
+                          (select-keys [:module :id])
+                          common/pg-link-symbol
+                          resolve
+                          deref))))
+       (filter :static/schema-seed)))
+
+(defn module-application-view
+  [module app-name]
+  (let [entries (module-table-entries module)
+        current (when app-name (app/app app-name))
+        tables (merge (:tables current)
+                      (->> entries
+                           (mapcat (comp :vec :static/schema-seed))
+                           (partition 2)
+                           (map (fn [pair]
+                                  [(symbol (str (first pair))) (second pair)]))
+                           (into {})))
+        pointers (merge (:pointers current)
+                        (into {}
+                              (map (fn [entry]
+                                     [(:id entry)
+                                      (select-keys entry [:id :module :lang :section])])
+                                   entries)))]
+    (if (or current (seq entries))
+      (app/app-create-raw tables pointers (:typed current))
+      nil)))
+
+(defn ensure-table-entry-static
+  [book entry mopts]
+  (let [module (get mopts :module)
+        snapshot (get mopts :snapshot)]
+    (cond (nil? entry) nil
+          (not= :table (:static/dbtype entry)) entry
+          (or (:static/schema-seed entry)
+              (:static/schema-primary entry)
+              (:static/application entry)) entry
+          (nil? book) entry
+          :else
+          (let [entry-module (or (and module
+                                      (= (:id module) (:module entry))
+                                      module)
+                                  (get-in book [:modules (:module entry)]))
+                hydrated (hydrate/pg-deftype-hydrate
+                           (:form-input entry)
+                           (:grammar book)
+                           {:module entry-module
+                            :book book
+                            :snapshot snapshot})
+                hmeta (first hydrated)
+                entry' (merge entry hmeta)]
+            (if (or (:static/schema-seed entry')
+                    (:static/application entry'))
+              entry'
+              (throw (ex :database
+                         {:entry (:id entry)
+                          :module (:module entry)
+                          :entry-module (:id entry-module)
+                          :hmeta hmeta}
+                         :ex/message "Table hydrate did not produce schema metadata.")))))))
 
 (defn prep-entry
-  "Resolves a directly supplied or locally defined table entry."
-  [value options]
-  (cond (map? value) [nil value]
-        (symbol? value)
-        (let [caller-ns (:caller-ns options)
-              qualified (if (and caller-ns (nil? (namespace value)))
-                          (symbol (str caller-ns) (name value))
-                          value)
-              resolved (std.foundation/resolve qualified)
-              entry (or (if resolved (deref resolved) nil)
-                        (portable-entry value))]
-          (if (map? entry)
-            [nil entry]
-            (throw (ex :database {:input value :resolved qualified :options options}
-                       :ex/message "No entry found"))))
-        :else (throw (ex :database {:input value :options options} :ex/message "No entry found"))))
+  "Prepares a PostgreSQL entry through the active Library and Book." 
+  [sym mopts]
+  (if (map? sym)
+    [(get mopts :book) sym]
+    (let [lang (get mopts :lang)
+          module (get mopts :module)
+          snapshot (get mopts :snapshot)
+          classified (emit-common/emit-symbol-classify sym mopts)
+          type (first classified)
+          initial-sym-module (second classified)
+          sym-id (symbol (name sym))
+          local-entry (and (= '- initial-sym-module)
+                           (some-> sym-id resolve deref))
+          sym-module (cond local-entry (:module local-entry)
+                           (nil? initial-sym-module)
+                           (throw (ex :database {:input sym}
+                                      :ex/message "No module entry for sym"))
+                           (= '- initial-sym-module) (:id module)
+                           :else initial-sym-module)
+          lang (or lang :postgres)
+          base-book (or (:book mopts)
+                        (and snapshot (snapshot/get-book snapshot lang))
+                        (library/get-book (impl/runtime-library) lang))
+          resolved (if local-entry
+                     [base-book local-entry]
+                     (common/pg-resolve-entry
+                      {:lang lang
+                       :module sym-module
+                       :id sym-id
+                       :section :code}
+                      (assoc mopts :book base-book)))
+          book (first resolved)
+          raw-entry (second resolved)
+          entry (ensure-table-entry-static book raw-entry mopts)]
+      (if entry
+        [book entry]
+        (throw (ex :database
+                   {:input sym-id :type type :module sym-module}
+                   :ex/message "No entry found"))))))
 
 (defn prep-table
-  "Prepares a table entry that already carries a portable table schema."
-  [value full options]
-  (let [entry (second (prep-entry value options))
-        table-schema
-        (or (:table-schema entry)
-            (get-in entry
-                    [:static/schema-seed :tree
-                     (keyword (name (:id entry)))]))]
-    (if table-schema
-      [entry table-schema options]
-      (throw (ex :not-found {:entry (:id entry) :full full} :ex/message "Table not found in schema")))))
+  "Prepares a table entry and schema through the original application path."
+  [sym full mopts]
+  (let [module (get mopts :module)]
+    (if *skip-checks*
+      [{:id sym} {} (snapshot/get-book (:snapshot mopts) (:lang mopts))]
+      (let [prepared (prep-entry sym mopts)
+            book (first prepared)
+            entry (second prepared)
+            application (get entry :static/application)
+            schema-seed (get entry :static/schema-seed)
+            app-view (module-application-view module (first application))
+            schema (if (not full)
+                     (or schema-seed (:schema app-view))
+                     (or (:schema app-view) schema-seed))
+            table-schema (or (:table-schema entry)
+                             (get-in schema [:tree (keyword (name sym))]))]
+        (if table-schema
+          [entry table-schema (cond-> (or mopts {})
+                               schema (assoc :schema schema)
+                               book (assoc :book book)
+                               app-view (assoc :application app-view))]
+          (throw (ex :not-found
+                     {:sym sym
+                      :entry (:id entry)
+                      :module (:module entry)
+                      :current-module (:id module)
+                      :application application
+                      :schema-keys (keys (:tree schema))}
+                     :ex/message "Table not found in schema")))))))
 
 (defn t-input-check
   ([table-schema input] (t-input-check table-schema input {}))
@@ -121,15 +210,18 @@
   "Resolves the primary type of a referenced table when available."
   [attrs options]
   (let [link (get-in attrs [:ref :link])
-        linked-schema (or (get-in options [:schema :tree (keyword (name (:id link)))])
-                          (get-in options [:schema :tree (name (:id link))]))
-        local (schema-attrs linked-schema :id)
-        resolved (if (and (:id link) (map? (:schema options)))
-                   (try (Base/resolve (:id link)) (catch error nil))
-                   nil)
-        entry (if resolved (deref resolved) nil)
-        primary (:static/schema-primary entry)]
-    (or local (if (vector? primary) (first primary) primary)
+        resolved (when link
+                   (common/pg-resolve-entry link (or options {})))
+        book (first resolved)
+        entry (second resolved)
+        entry (when entry
+                (ensure-table-entry-static book entry (or options {})))
+        primary (:static/schema-primary entry)
+        primary (if (vector? primary)
+                  (or (first (filter (fn [value] (= (:id value) :id)) primary))
+                      (first primary))
+                  primary)]
+    (or primary
         (get-in attrs [:ref :type])
         {:type :uuid})))
 

@@ -1,0 +1,221 @@
+(ns lang.core.script-control-test
+  (:require [lang.core.runtime :as rt]
+            [lang.core.script-control :refer :all]
+            [lang.base.util :as ut]
+            [lang.model.v1.spec-lua ]
+            [std.lib.context.registry :as reg]
+            [std.lib.context.space :as space])
+  (:use code.test))
+
+(def +registry-baseline+ (deref reg/*registry*))
+(fact:global {:setup [(space/reset-spaces!)]
+  :teardown [(try (space/reset-spaces!)
+               (finally (reset! reg/*registry* +registry-baseline+)))
+   (if (not (and (= {} (deref space/*spaces*))
+                 (= +registry-baseline+ (deref reg/*registry*))))
+     (throw (ex :test/cleanup-failed {:owner :script-control})))
+   (println :script-control-test-cleanup-verified)]})
+
+^{:refer lang.core.script-control/script-rt-get, :added "4.0"}
+(fact
+  "gets the current runtime"
+  (script-rt-get :lua :default {})
+  =>
+  (satisfies (fn [value] (or (map? value) (rt/rt-default? value))))
+  (space/space:context-list)
+  =>
+  (contains '[:lang/lua])
+  (reg/registry-rt-list :lang/lua)
+  =>
+  (contains '(:default))
+  (do (script-rt-stop :lua) (space/space:rt-active))
+  =>
+  [])
+
+^{:refer lang.core.script-control/script-rt-stop, :added "4.0"}
+(fact "stops the current runtime" (script-rt-stop :lua) => nil)
+
+^{:refer lang.core.script-control/script-rt-restart, :added "4.0"}
+(fact
+  "restarts a given runtime"
+  (script-rt-restart :lua)
+  =>
+  (satisfies (fn [value] (or (map? value) (rt/rt-default? value)))))
+
+^{:refer lang.core.script-control/script-rt-oneshot-eval, :added "4.0"}
+(fact
+  "oneshot evals a statement"
+  (script-rt-oneshot-eval :default :lua ['(return 1)])
+  =>
+  "return 1")
+
+^{:refer lang.core.script-control/script-rt-oneshot :added "4.0"}
+(fact "for use with the defmacro.! function"
+
+  (script-rt-oneshot
+   :default
+   (ut/lang-pointer :lua {:module 'L.core}) [])
+  => (throws))
+
+
+^{:refer lang.core.script-control/script-rt-prep :added "4.0"}
+(fact "prepares a runtime context without starting it"
+
+  (do (script-rt-stop :lua)
+      (space/space:context-unset (ut/lang-context :lua))
+      (space/space:rt-active))
+  => []
+
+  (let [[sp ctx] (script-rt-prep :lua :default {})]
+    [(space/space? sp) ctx])
+  => [true :lang/lua]
+
+  (space/space:context-list)
+  => (contains '[:lang/lua])
+
+  (do (script-rt-stop :lua)
+      (space/space:context-unset (ut/lang-context :lua))
+      (space/space:rt-active))
+  => [])
+
+
+^{:refer lang.core.script-control/+watch-keys+}
+(fact "retains the original runtime watch fields"
+  +watch-keys+ => [:context :lang :module :layout])
+
+^{:refer lang.core.script-control/script-rt-oneshot-eval :id :owned-context-success}
+(fact "one-shot success removes only its newly created context"
+  (binding [space/*spaces* (atom {}) reg/*registry* (atom (deref reg/*registry*))]
+    (try
+      [(script-rt-oneshot-eval :default :lua ['(return 1)])
+       (space/space:context-list)
+       (space/space:rt-active)]
+      (finally (space/reset-spaces!))))
+  => ["return 1" [] []])
+
+^{:refer lang.core.script-control/script-rt-oneshot :id :owned-context-failure}
+(fact "one-shot failure removes its newly created context"
+  (binding [space/*spaces* (atom {}) reg/*registry* (atom (deref reg/*registry*))]
+    (try
+      [(try
+         (script-rt-oneshot :default (ut/lang-pointer :lua {:module 'L.core}) [])
+         :unexpected-success
+         (catch error :thrown))
+       (space/space:context-list)
+       (space/space:rt-active)]
+      (finally (space/reset-spaces!))))
+  => [:thrown [] []])
+
+^{:refer lang.core.script-control/script-rt-oneshot-eval :id :existing-context-ownership}
+(fact "one-shot success and failure preserve an existing runtime instance"
+  (binding [space/*spaces* (atom {}) reg/*registry* (atom (deref reg/*registry*))]
+    (try
+      (let [runtime (script-rt-get :lua :default {})
+            output (script-rt-oneshot-eval :default :lua ['(return 1)])
+            after-success (space/space:rt-get :lang/lua)
+            failure (try
+                      (script-rt-oneshot :default (ut/lang-pointer :lua {:module 'L.core}) [])
+                      :unexpected-success
+                      (catch error :thrown))
+            after-failure (space/space:rt-get :lang/lua)]
+        [output
+         (Base/identical? runtime after-success)
+         failure
+         (Base/identical? runtime after-failure)
+         (space/space:context-list)])
+      (finally (space/reset-spaces!))))
+  => ["return 1" true :thrown true [:lang/lua]])
+
+^{:refer lang.core.script-control/script-rt-prep :id :configuration-transition}
+(fact "unchanged preparation retains the runtime while changed configuration stops and replaces it"
+  (binding [space/*spaces* (atom {}) reg/*registry* (atom (deref reg/*registry*))]
+    (try
+      (let [initial (script-rt-get :lua :default {})
+            unchanged (script-rt-prep :lua :default {})
+            retained (Base/identical? initial (space/space:rt-get :lang/lua))
+            changed (script-rt-prep :lua :default {:module 'changed.module})
+            stopped (space/space:rt-active)
+            placement (space/space:context-get :lang/lua)
+            restarted (script-rt-get :lua :default {:module 'changed.module})]
+        [retained (second unchanged) (second changed) stopped
+         (:instance placement) (:module (:config placement))
+         (Base/identical? initial restarted) (:module restarted)])
+      (finally (space/reset-spaces!))))
+  => [true :lang/lua :lang/lua [] nil 'changed.module false 'changed.module])
+
+^{:refer lang.core.script-control/script-rt-get :id :no-start-scratch}
+(fact "no-start creates scratch without marking the placement active"
+  (binding [space/*spaces* (atom {}) reg/*registry* (atom (deref reg/*registry*))]
+    (try
+      (let [scratch (script-rt-get :lua :default {} true)]
+        [(Base/identical? scratch (reg/registry-scratch :lang/lua))
+         (space/space:rt-active)
+         (:instance (space/space:context-get :lang/lua))
+         (:lang scratch)])
+      (finally (space/reset-spaces!))))
+  => [true [] nil :lua])
+
+^{:refer lang.core.script-control/script-rt-stop :id :stop-restart-arities}
+(fact "stop returns the previous instance and restart preserves placement across all arities"
+  (binding [space/*spaces* (atom {}) reg/*registry* (atom (deref reg/*registry*))]
+    (try
+      (let [initial (script-rt-get :lua :default {})
+            stopped (script-rt-stop :lua (ns-current))
+            stopped-again (script-rt-stop :lua)
+            restarted (script-rt-restart :lua (ns-current))
+            stop-all (script-rt-stop)
+            active-after-stop (space/space:rt-active)
+            restart-all (script-rt-restart)]
+        [(Base/identical? initial stopped) stopped-again
+         (Base/identical? initial restarted)
+         (Base/identical? restarted (:lua stop-all))
+         active-after-stop (vec (keys restart-all)) (space/space:rt-active)])
+      (finally (space/reset-spaces!))))
+  => [true nil false true [] [:lua] [:lang/lua]])
+
+^{:refer lang.core.script-control/script-rt-oneshot-eval :id :owned-teardown-failure}
+(fact "resource teardown failure is suppressed while the owned context is removed"
+  (binding [space/*spaces* (atom {})
+            reg/*registry* (atom (deref reg/*registry*))
+            std.lib.context.resource/*resource-registry*
+            (atom (deref std.lib.context.resource/*resource-registry*))]
+    (let [events (atom [])]
+      (try
+        (std.lib.context.resource/spec-add
+          (assoc-in (std.lib.context.resource/spec-get :tahto/lang.rt)
+                    [:instance :teardown]
+                    (fn [runtime]
+                      (swap! events conj :stop)
+                      (throw (ex :generic {} :ex/message "forced teardown failure")))))
+        [(script-rt-oneshot-eval :default :lua ['(return 1)])
+         (deref events)
+         (space/space:context-list)
+         (space/space:rt-active)]
+        (finally (space/reset-spaces!)))))
+  => ["return 1" [:stop] [] []])
+
+^{:refer lang.core.script-control/script-rt-prep, :id :registered-runtime-libspec}
+(fact
+  "registered runtime namespace loads through a native vector libspec"
+  (binding [space/*spaces* (atom {})
+            reg/*registry* (atom (deref reg/*registry*))]
+    (let [baseline (deref lang.core.registry/+registry+)]
+      (try
+        (reset!
+          lang.core.registry/+registry+
+          (assoc baseline [:lua :default] 'std.lib.component))
+        (let [[sp ctx] (script-rt-prep
+                         :lua
+                         :default
+                         {:module 'loaded.module})
+              placement (space/space-context-get sp ctx)]
+          [ctx
+           (get-in placement [:config :module])
+           (space/space:rt-active)])
+        (finally
+          (try
+            (space/reset-spaces!)
+            (finally
+              (reset! lang.core.registry/+registry+ baseline)))))))
+  =>
+  [:lang/lua 'loaded.module []])

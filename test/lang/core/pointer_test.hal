@@ -1,0 +1,642 @@
+(ns lang.core.pointer-test
+  (:require [lang.core.pointer :refer :all]
+            [lang.base.book :as book]
+            [lang.base.emit-prep-lua-test :as prep]
+            [lang.core.impl-entry :as entry]
+            [lang.core.library :as lib]
+            [lang.core.library-snapshot :as snap]
+            [lang.base.util :as ut])
+  (:use code.test))
+(defstruct OriginalRuntimeFixture [lang runtime library]
+  IContextEval
+  (tags-ptr [self ptr] (lang.core.runtime/default-tags-ptr self ptr))
+  (deref-ptr [self ptr] (lang.core.runtime/default-deref-ptr self ptr))
+  (invoke-ptr [self ptr args] (lang.core.runtime/default-invoke-ptr self ptr args)))
+
+(def +library-ext+
+  (doto (lib/library:create
+         {:snapshot (snap/snapshot {:lua {:id :lua
+                                          :book prep/+book-min+}})})
+    (lib/install-module! :lua 'L.util
+                         {:require '[[L.core :as u]]
+                          :import '[["cjson" :as cjson]]})
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn sub-fn
+         [a b]
+         (return ((u/identity-fn u/sub) a b)))
+      {:lang :lua
+       :namespace 'L.util
+       :module 'L.util}
+      {}))
+    (lib/add-entry-single!
+     (entry/create-code-base
+      '(defn add-fn
+         [a b]
+         (return ((u/identity-fn u/add) a (-/sub-fn b 0))))
+      {:lang :lua
+       :namespace 'L.util
+       :module 'L.util}
+      {}))))
+
+(def +ptr+
+  (ut/lang-pointer :lua
+                   {:module 'L.core
+                    :id 'add
+                    :section :fragment
+                    :library +library-ext+}))
+
+
+(fact:global {:teardown [(lib/reset-all! +library-ext+) (reset! (:settings +library-ext+) {})
+  (if (not (and (= (snap/snapshot {}) (lib/get-snapshot +library-ext+))
+                (= {} (deref (:settings +library-ext+)))))
+    (throw (ex :test/cleanup-failed {:owner :pointer})))
+  (println :pointer-test-cleanup-verified)]})
+
+^{:refer lang.core.pointer/with:clip :added "4.0"}
+(fact "form to control `clip` option"
+  (with:clip *clip*) => true)
+
+^{:refer lang.core.pointer/with:print :added "4.0"}
+(fact "form to control `print` option"
+  (with:print *print*) => #{:input})
+
+^{:refer lang.core.pointer/with:print-all :added "4.0"}
+(fact "toggles print for all intermediate steps"
+  (with:print-all *print*) => #{:input-form :raw-input :raw-output})
+
+^{:refer lang.core.pointer/with:rt-wrap :added "4.0"}
+(fact "wraps an additional function to the invoke function"
+  (with:rt-wrap [inc] *rt-wrap*) => inc)
+
+^{:refer lang.core.pointer/with:rt :added "4.0"}
+(fact "forcibly applies a runtime"
+  (with:rt [1] std.lib.context.pointer/*runtime*) => 1)
+
+^{:refer lang.core.pointer/with:rt :added "4.0" :id native-resolution}
+(fact "overrides native resolution and restores nested bindings"
+ (let [ptr (pointer {:context :unused :context/rt :direct})]
+  [(with:rt [:outer]
+     [(IApplicable/apply-default ptr)
+      (with:rt [:inner] (IApplicable/apply-default ptr))
+      (IApplicable/apply-default ptr)])
+   (IApplicable/apply-default ptr)
+   std.lib.context.pointer/*runtime*])
+ => [[:outer :inner :outer] :direct nil])
+
+^{:refer lang.core.pointer/with:rt :id scope-exits}
+(fact "evaluates the runtime once, returns the last body, and restores after failure"
+ (let [calls (atom 0)
+       ptr (pointer {:context :unused :context/rt :direct})
+       value (with:rt [(do (swap! calls inc) :bound)]
+               (swap! calls inc)
+               (IApplicable/apply-default ptr))
+       failure (try (with:rt [:temporary] (throw (ex :test/expected {})))
+                    (catch e :caught))]
+  [value (deref calls) failure std.lib.context.pointer/*runtime*
+   (with:rt [false] (IApplicable/apply-default ptr))])
+ => [:bound 2 :caught nil :direct])
+
+^{:refer lang.core.pointer/with:input :added "4.0"}
+(fact "form to control `input` option"
+  (with:input *input*) => #{:default})
+
+^{:refer lang.core.pointer/with:raw :added "4.0"}
+(fact "form to control `raw` option"
+  (with:raw *output*) => #{:raw})
+
+^{:refer lang.core.pointer/get-entry, :added "4.0"}
+(fact
+  "gets the library entry given pointer"
+  (get-entry +ptr+)
+  =>
+  (satisfies book/book-entry?))
+
+^{:refer lang.core.pointer/ptr-tag :added "4.0"}
+(fact "creates a tag for the pointer"
+
+  (ptr-tag +ptr+ :lib)
+  => '[:lib L.core/add :fragment])
+
+^{:refer lang.core.pointer/free-form :added "4.1"}
+(fact "normalizes free-pointer bodies"
+  (free-form [1 2 3]) => '(do 1 2 3)
+  (free-form '[(+ 1 2)]) => '(+ 1 2))
+
+^{:refer lang.core.pointer/free-form-body :added "4.1"}
+(fact "expands canonical free-pointer forms into body forms"
+  (free-form-body '(do 1 2 3)) => '(1 2 3)
+  (free-form-body '(+ 1 2)) => '((+ 1 2)))
+
+^{:refer lang.core.pointer/ptr-deref, :added "4.0"}
+(fact
+  "gets the entry or the free pointer data"
+  (ptr-deref +ptr+)
+  =>
+  (satisfies book/book-entry?)
+  (ptr-deref (dissoc (into {} +ptr+) :id))
+  =>
+  (satisfies map?))
+
+^{:refer lang.core.pointer/ptr-display, :added "4.0"}
+(do)
+
+^{:refer lang.core.pointer/ptr-invoke-meta, :added "4.0"}
+(fact
+  "prepares the meta for a pointer"
+  (ptr-invoke-meta +ptr+ {})
+  =>
+  (satisfies map?))
+
+^{:refer lang.core.pointer/rt-macro-opts, :added "4.0"}
+(do)
+
+^{:refer lang.core.pointer/ptr-invoke-string, :added "4.0"}
+(do)
+
+^{:refer lang.core.pointer/ptr-invoke-script, :added "4.0"}
+(do)
+
+^{:refer lang.core.pointer/ptr-intern, :added "4.0"}
+(do)
+
+^{:refer lang.core.pointer/ptr-output-json, :added "4.0"}
+(do)
+
+^{:refer lang.core.pointer/ptr-output, :added "4.0"}
+(do)
+
+^{:refer lang.core.pointer/ptr-invoke :added "4.0"}
+(fact "invokes the pointer"
+ (ptr-invoke nil (fn [_ x] x) 1 {} nil) => 1
+ (ptr-invoke {:output/preserve-payload true}
+  (fn [_ _] (Json/write {"type" "data" "value" [1 2 3]}))
+  "ignored" {} :full)
+ => {"type" "data" "value" [1 2 3]})
+
+^{:refer lang.core.pointer/ptr-invoke :id input-shortcuts}
+(fact "input shortcuts bypass runtime and decoding; raw input applies only the input transform"
+ (let [events (atom [])
+       eval-fn (fn [_ _] (throw (ex :unexpected/eval {})))
+       main {:in (fn [value] (swap! events conj :in) (str "in:" value))
+             :out (fn [_] (throw (ex :unexpected/out {})))}
+       decoder (fn [_] (throw (ex :unexpected/decoder {})))]
+  [(binding [*input* #{:default}] (ptr-invoke nil eval-fn "body" main decoder))
+   (binding [*input* #{:raw}] (ptr-invoke nil eval-fn "body" main decoder))
+   (deref events) *input*])
+ => ["body" "in:body" [:in] #{}])
+
+^{:refer lang.core.pointer/ptr-invoke :id pipeline-order}
+(fact "orders input transform wrapper evaluation output transform and decoder"
+ (let [events (atom [])
+       result
+       (binding [*rt-wrap* (fn [evaluate] (swap! events conj :wrap) evaluate)]
+        (ptr-invoke :runtime
+         (fn [runtime input] (swap! events conj [:eval runtime input]) "result")
+         "source"
+         {:in (fn [value] (swap! events conj [:in value]) (str "in:" value))
+          :out (fn [value] (swap! events conj [:out value]) (str "out:" value))}
+         (fn [value] (swap! events conj [:decode value]) [:decoded value])))]
+  [result (deref events) (= *rt-wrap* #'default-rt-wrap)])
+ => [[:decoded "out:result"]
+     [[:in "source"] :wrap [:eval :runtime "in:source"] [:out "result"] [:decode "out:result"]]
+     true])
+
+^{:refer lang.core.pointer/ptr-invoke :id preservation-options}
+(fact "honors process-level preservation and the original truthy fallback"
+ (let [data "{\"type\":\"data\",\"value\":false}"
+       error "{\"type\":\"error\",\"value\":\"bad\"}"]
+  [(ptr-invoke {:process {:output/preserve-payload true}} (fn [_ _] data) "body" {} :full)
+   (ptr-invoke {:output/preserve-errors false :process {:output/preserve-errors true}}
+               (fn [_ _] error) "body" {} :full)
+   (ptr-invoke {} (fn [_ _] data) "body" {} :full)])
+ => [{"type" "data" "value" false} {"type" "error" "value" "bad"} false])
+
+^{:refer lang.core.pointer/ptr-invoke :id error-propagation}
+(fact "propagates input runtime and output failures and restores control bindings"
+ (ptr-invoke nil (fn [_ _] "unused") "body"
+             {:in (fn [_] (throw (ex :invoke/input {})))} nil)
+ => (throws-info {:ex/code :invoke/input})
+ (binding [*rt-wrap* nil]
+  (ptr-invoke nil (fn [_ _] (throw (ex :invoke/eval {:detail "kept"}))) "body" {} nil))
+ => (throws-info {:ex/code :invoke/eval :detail "kept"})
+ (ptr-invoke nil (fn [_ _] "value") "body"
+             {:out (fn [_] (throw (ex :invoke/output {})))} nil)
+ => (throws-info {:ex/code :invoke/output})
+ (= *rt-wrap* #'default-rt-wrap) => true)
+
+^{:refer lang.core.pointer/ptr-invoke :id native-diagnostics}
+(fact "retains numbered raw input and raw output diagnostics without changing returned values"
+ [(with-out-string
+   (binding [*print* #{:raw-input}]
+    (ptr-invoke nil (fn [_ value] value) "alpha\nbeta" {} nil)))
+  (with-out-string
+   (binding [*print* #{:raw-output}]
+    (ptr-invoke nil (fn [_ _] "not-json") "body" {} nil)))
+  (with-out-string
+   (binding [*print* #{:raw-output} *output* #{:raw}]
+    (ptr-invoke nil (fn [_ _] "{\"type\":\"error\",\"value\":{\"bad\":\"oops\"}}")
+                "body" {} :full)))
+  *print* *output*]
+ => ["\n  01  alpha\n 02  beta \n\n" "not-json\n" "bad:\noops\n" #{} #{:full}])
+
+
+(do)
+
+^{:refer lang.core.pointer/default-rt-wrap}
+(fact "forwards the runtime and input unchanged"
+  ((default-rt-wrap (fn [rt input] [rt input])) :runtime "input")
+  => [:runtime "input"])
+
+^{:refer lang.core.pointer/with:clip :id pointer-control-restoration}
+(fact "restores control bindings after nesting and failure"
+  (let [before [*clip* *print* *input* *output*]
+        during (with:clip
+                 (with:print [:raw-output]
+                   (with:input [:raw]
+                     (with:raw [*clip* *print* *input* *output*]))))
+        failure (try (with:clip (throw (ex :pointer/control {})))
+                     (catch t (:ex/code (ex-data t))))]
+    [before during failure [*clip* *print* *input* *output*]])
+  => [[nil #{} #{} #{:full}] [true #{:raw-output} #{:raw} #{:raw}] :pointer/control [nil #{} #{} #{:full}]])
+
+^{:refer lang.core.pointer/free-form :id pointer-form-canonicalization}
+(fact "round trips body forms and canonicalizes empty and singleton do forms"
+  (let [bodies [[] [1] [1 2 3]]]
+    [(mapv (fn [body] (vec (free-form-body (free-form body)))) bodies)
+     (mapv (fn [body] (free-form (free-form-body (free-form body)))) bodies)])
+  => '[[[] [1] [1 2 3]] [(do) 1 (do 1 2 3)]])
+
+^{:refer lang.core.pointer/*clip*}
+(fact "clipboard control is opt-in and dynamically restored"
+  [*clip* (with:clip *clip*) *clip*]
+  => [nil true nil])
+
+^{:refer lang.core.pointer/*rt-wrap*}
+(fact "the default runtime wrapper forwards both values and restores overrides"
+  (let [original *rt-wrap*
+        before ((deref original) (fn [runtime input] [runtime input]))
+        nested (with:rt-wrap [(fn [f] (fn [runtime input] [:override (f runtime input)]))]
+                 ((*rt-wrap* (fn [runtime input] [runtime input])) :rt "input"))]
+    [(before :rt "input") nested (= original *rt-wrap*)])
+  => [[:rt "input"] [:override [:rt "input"]] true])
+
+^{:refer lang.core.pointer/*print*}
+(fact "print controls preserve explicit stages and the quiet baseline"
+  [*print* (with:print [:raw-input :raw-output] *print*) *print*]
+  => [#{} #{:raw-input :raw-output} #{}])
+
+^{:refer lang.core.pointer/*input*}
+(fact "input shortcut controls preserve default and explicit raw modes"
+  [*input* (with:input *input*) (with:input [:raw] *input*) *input*]
+  => [#{} #{:default} #{:raw} #{}])
+
+^{:refer lang.core.pointer/*output*}
+(fact "output control defaults to decoded full responses and restores after raw mode"
+  [*output* (with:raw *output*) *output*]
+  => [#{:full} #{:raw} #{:full}])
+
+
+
+^{:refer lang.core.pointer/ptr-invoke-string, :added "4.0"} (fact "emits the invoke string" (ptr-invoke-string +ptr+ [1 2] {:layout :full}) => "1 + 2")
+
+^{:refer lang.core.pointer/ptr-invoke-script, :added "4.0"}
+(fact
+  "emits a script with dependencies"
+  (binding [std.lib.context.registry/*registry* (atom
+                                                  {:lang/lua
+                                                   {:scratch
+                                                    (->OriginalRuntimeFixture
+                                                      :lua
+                                                      :default
+                                                      +library-ext+)}})]
+    (ptr-invoke-script +ptr+ [1 2] {:layout :full}))
+  =>
+  "1 + 2"
+  (binding [std.lib.context.registry/*registry* (atom
+                                                  {:lang/lua
+                                                   {:scratch
+                                                    (->OriginalRuntimeFixture
+                                                      :lua
+                                                      :default
+                                                      +library-ext+)}})]
+    (ptr-invoke-script
+      (ut/lang-pointer
+        :lua
+        {:module 'L.core, :form '(do 1 2 3), :library +library-ext+})
+      []
+      {:layout :full}))
+  =>
+  (satisfies (fn [value] (boolean (re-find #"1;?\n2;?\n3;?" value))))
+  (binding [std.lib.context.registry/*registry* (atom
+                                                  {:lang/lua
+                                                   {:scratch
+                                                    (->OriginalRuntimeFixture
+                                                      :lua
+                                                      :default
+                                                      +library-ext+)}})]
+    (ptr-invoke-script
+      (ut/lang-pointer
+        :lua
+        {:module 'L.core,
+         :id 'identity-fn,
+         :section :code,
+         :library +library-ext+})
+      [1]
+      {:layout :full,
+       :emit {:body {:transform (fn [x _] (list 'print x))}}}))
+  =>
+  (str/join
+    "\n"
+    ["function L_core____identity_fn(x){"
+     "  return x;"
+     "}"
+     ""
+     "print(L_core____identity_fn(1))"]))
+
+^{:refer lang.core.pointer/ptr-invoke-script :id original-runtime-defrun-body}
+(fact "uses the Library entry's defrun body instead of invoking the pointer as a function"
+  (let [before (deref (:instance +library-ext+))
+        settings-before (deref (:settings +library-ext+))]
+    (try
+      (lib/add-entry-single! +library-ext+
+        (entry/create-code-base
+          '(defrun runtime-script-test 1 2 3)
+          {:lang :lua :namespace 'L.util :module 'L.util}
+          (:grammar prep/+book-min+)))
+      (binding [std.lib.context.registry/*registry*
+                (atom {:lang/lua {:scratch (->OriginalRuntimeFixture :lua :default +library-ext+)}})]
+        (ptr-invoke-script
+          (ut/lang-pointer :lua {:module 'L.util :id 'runtime-script-test :section :code :library +library-ext+})
+          [] {:layout :full}))
+      (finally
+        (reset! (:instance +library-ext+) before)
+        (reset! (:settings +library-ext+) settings-before))))
+  => (str/join "
+" ["1;" "2;" "3;"]))
+
+^{:refer lang.core.pointer/ptr-display, :added "4.0"}
+(fact
+  "emits the display string for pointer"
+  (ptr-display +ptr+ {})
+  =>
+  "(fn:> [x y] (+ x y))"
+  (ptr-display
+    (ut/lang-pointer
+      :lua
+      {:module 'L.core,
+       :id 'identity-fn,
+       :section :code,
+       :library +library-ext+})
+    {:layout :full})
+  =>
+  "function L_core____identity_fn(x){\n  return x;\n}")
+
+^{:refer lang.core.pointer/ptr-display :id display-boundaries}
+(fact "displays free descriptors, explicit forms, missing entries and standalone fragments"
+  [(ptr-display {:lang :lua :library +library-ext+} {})
+   (ptr-display {:lang :lua :module 'L.core :library +library-ext+} {})
+   (ptr-display {:lang :lua :module 'L.core :form '(+ 1 2) :library +library-ext+} {})
+   (ptr-display {:lang :lua :module 'L.core :id 'missing :section :fragment :library +library-ext+} {})
+   (ptr-display {:lang :lua :module 'L.core :id 'sub :section :fragment :library +library-ext+} {})]
+  => ["<free>" "<free:L.core>" "1 + 2" "[:not-found L.core/missing :fragment]" "[x y]"])
+
+(def display-template (fn [x y] (list '+ x y)))
+(def display-template-failure (fn [x y] (throw (ex :fixture {}))))
+
+^{:refer lang.core.pointer/ptr-display :id display-template-callback}
+(fact "dereferences Var templates and falls back to the original form after template failure"
+  (let [before (deref (:instance +library-ext+))
+        settings-before (deref (:settings +library-ext+))
+        entry-value (get-entry +ptr+)]
+    (try
+      (lib/add-entry-single! +library-ext+ (assoc entry-value :template #'display-template))
+      (let [success (ptr-display +ptr+ {})]
+        (lib/add-entry-single! +library-ext+
+          (assoc entry-value :form '(fn [x y] (+ x y)) :template #'display-template-failure))
+        [success (ptr-display +ptr+ {})])
+      (finally
+        (reset! (:instance +library-ext+) before)
+        (reset! (:settings +library-ext+) settings-before))))
+  => ["(fn:> [x y] (+ x y))" "(fn [x y] (+ x y))"])
+
+
+^{:refer lang.core.pointer/ptr-display :id missing-code-display-error}
+(fact "retains the original Book lookup error for missing code entries"
+  (ptr-display {:lang :lua :module 'L.core :id 'missing :section :code :library +library-ext+} {})
+  => (throws-info {:module 'L.core :symbol 'missing :ex/message "ENTRY NOT FOUND"}))
+
+^{:refer lang.core.pointer/ptr-display :id display-symbol-and-form}
+(fact "displays symbol fragments and emits fragments without templates"
+  (let [before (deref (:instance +library-ext+))
+        settings-before (deref (:settings +library-ext+))
+        entry-value (get-entry +ptr+)]
+    (try
+      (lib/add-entry-single! +library-ext+ (assoc entry-value :form 'M.alias :template nil))
+      (let [symbol-result (ptr-display +ptr+ {})]
+        (lib/add-entry-single! +library-ext+ (assoc entry-value :form '(+ 1 2) :template nil))
+        [symbol-result (ptr-display +ptr+ {})])
+      (finally
+        (reset! (:instance +library-ext+) before)
+        (reset! (:settings +library-ext+) settings-before))))
+  => ["M.alias" "1 + 2"])
+
+(def foo nil)
+
+^{:refer lang.core.pointer/ptr-intern :added "4.0"}
+(fact "interns the symbol into the workspace environment"
+  (let [baseline foo]
+    (try (ptr-intern (ns-current) 'foo {:lang :lua})
+         (finally (set! foo baseline))))
+  => (var lang.core.pointer-test/foo))
+
+^{:refer lang.core.pointer/ptr-intern :id pointer-intern-value}
+(fact "publishes a native pointer with the original selected descriptor fields"
+  (let [baseline foo
+        before (ns-current)]
+    (try
+      (let [published (ptr-intern before 'foo {:lang :lua :module 'L.core :id 'add :section :fragment :extra :ignored})]
+        [(pointer? (deref published))
+         (select-keys (deref published) [:lang :module :id :section])
+         (get (deref published) :extra :absent)
+         (= before (ns-current))])
+      (finally (set! foo baseline))))
+  => [true {:lang :lua :module 'L.core :id 'add :section :fragment} :absent true])
+
+(def ^{:doc "metadata baseline"} metadata-foo nil)
+
+^{:refer lang.core.pointer/ptr-intern :id pointer-intern-symbol-metadata}
+(fact "preserves script-definition metadata from the name symbol"
+  (let [baseline metadata-foo
+        original-meta (meta (var metadata-foo))
+        result
+        (try
+          (let [published (ptr-intern (ns-current)
+                            (with-meta 'metadata-foo
+                              {:doc "adds values" :arglists '([a b]) :lang :lua})
+                            {:lang :lua :module 'L.core :id 'add :section :fragment})]
+            [(select-keys (meta published) [:doc :arglists :lang])
+             (select-keys (deref published) [:lang :module :id :section])])
+          (finally
+            (intern (ns-current) (with-meta 'metadata-foo original-meta) baseline)))]
+    [result (= baseline metadata-foo) (= original-meta (meta (var metadata-foo)))])
+  => [[{:doc "adds values" :arglists '([a b]) :lang :lua}
+       {:lang :lua :module 'L.core :id 'add :section :fragment}] true true])
+(ns lang.core.pointer-test
+ (:require [lang.core.impl :as impl]
+           [lang.core.runtime :as rt]
+           [std.lib.context.space :as space]
+           [std.lib.context.registry :as registry]))
+
+^{:refer lang.core.pointer/rt-macro-opts :added "4.0"}
+(fact "creates the default macro-opts for a runtime"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (try
+   (registry/registry-install :lang/lua
+    {:scratch (rt/rt-default {:lang :lua :module 'L.core :library +library-ext+})})
+   (impl/with:library [+library-ext+] (map? (rt-macro-opts :lua)))
+   (finally (space/reset-spaces!) (registry/reset-registry!))))
+ => true)
+
+^{:refer lang.core.pointer/rt-macro-opts :id pointer-macro-options-runtime-and-keyword}
+(fact "resolves the real Book and module while retaining runtime emit options"
+ (binding [space/*spaces* (atom {}) registry/*registry* (atom {})]
+  (let [runtime (rt/rt-default {:lang :lua :module 'L.core :library +library-ext+
+                               :layout :full :emit {:native {:test "kept"}}})
+        before (lib/get-snapshot +library-ext+)]
+   (try
+    (registry/registry-install :lang/lua {:scratch runtime})
+    (impl/with:library [+library-ext+]
+     (let [direct (rt-macro-opts runtime)
+           keyword (rt-macro-opts :lua)]
+      [(select-keys direct [:lang :layout :emit])
+       [(:lang (:book direct)) (:id (:module direct))]
+       (= (:snapshot direct) before)
+       (= direct keyword)
+       (= before (lib/get-snapshot +library-ext+))]))
+    (finally (space/reset-spaces!) (registry/reset-registry!)))))
+ => [{:lang :lua :layout :full :emit {:native {:test "kept"}}}
+     [:lua 'L.core] true true true])
+
+^{:refer lang.core.pointer/rt-macro-opts :id pointer-macro-options-absent-options}
+(fact "does not invent absent layout or emission defaults"
+ (impl/with:library [+library-ext+]
+  (select-keys (rt-macro-opts {:lang :lua :module 'L.core}) [:lang :layout :emit]))
+ => {:lang :lua})
+
+(ns lang.core.pointer-test)
+(def output-decoder (fn [value] [:decoded value]))
+
+^{:refer lang.core.pointer/ptr-output-json :added "4.0"}
+(fact "extracts data while honoring payload preservation"
+ (ptr-output-json {"type" "data" "value" 1}) => 1
+ (ptr-output-json {"type" "data" "value" 1} {:preserve-payload true})
+ => {"type" "data" "value" 1})
+
+^{:refer lang.core.pointer/ptr-output :added "4.0"}
+(fact "preserves original decoding branches with the approved Result representation"
+ (ptr-output "[1,2,3]" false) => "[1,2,3]"
+ (ptr-output (Result/create :success "[1,2,3]") :string) => [1 2 3]
+ (ptr-output "[1,2,3]" true) => [1 2 3]
+ (ptr-output (Json/write {"type" "data" "value" [1 2 3]}) :full) => [1 2 3]
+ (ptr-output (Json/write {"type" "data" "value" [1 2 3]}) :full {:preserve-payload true})
+ => {"type" "data" "value" [1 2 3]}
+ (ptr-output (Json/write {"type" "error" "value" "Errored"}) :full)
+ => (throws-info {:ex/code :runtime/output :err ["Errored"]})
+ (ptr-output (Json/write {"type" "error" "value" "Errored"}) :full {:preserve-errors true})
+ => {"type" "error" "value" "Errored"}
+ (ptr-output (Json/write {"type" "error" "value" {"a" 1}}) :full)
+ => (throws-info {:ex/code :runtime/output "a" 1})
+ (let [value (ptr-output (Json/write {"type" "raw" "return" "Hello" "value" "1 + 3"}) :full)]
+  [(result? value) (:status value) (deref value) (get-in value [:context :type])])
+ => [true :success "1 + 3" "Hello"])
+
+^{:refer lang.core.pointer/ptr-output-json :id result-raw-envelope-roundtrip}
+(fact "keeps the exact wire envelope as Result provenance"
+ (let [wire {"type" ["raw"] "return" "Hello" "value" "1 + 3" "extra" [false nil]}
+       value (ptr-output-json wire)]
+  [(:status value) (:data value) (:error value) (:context value)
+   (= wire (get-in value [:context :payload]))
+   (= value (ptr-output value :full))
+   (= wire (ptr-output-json wire {:preserve-payload true}))])
+ => [:success "1 + 3" nil
+     {:type "Hello" :payload {"type" ["raw"] "return" "Hello" "value" "1 + 3" "extra" [false nil]}}
+     true true true])
+
+^{:refer lang.core.pointer/ptr-output-json :id result-data-and-unknown-values}
+(fact "preserves false nil and non-envelope values without wrapping"
+ [(mapv (fn [value] (ptr-output-json {"type" ["data"] "value" value})) [nil false 0 [] {}])
+  (mapv ptr-output-json [nil false 7 [] {} {"type" "other" "value" 2}])]
+ => [[nil false 0 [] {}] [nil false 7 [] {} {"type" "other" "value" 2}]])
+
+^{:refer lang.core.pointer/ptr-output-json :id result-wire-error-details}
+(fact "keeps wire error data and only preserves errors when explicitly requested"
+ (ptr-output-json {"type" "error" "value" "one\n\ntwo"})
+ => (throws-info {:ex/code :runtime/output :err ["one" "two"]})
+ (ptr-output-json {"type" "error" "value" {"reason" "bad"}} {:preserve-payload true})
+ => (throws-info {:ex/code :runtime/output "reason" "bad"})
+ (ptr-output-json {"type" "error" "value" {"reason" "bad"}} {:preserve-errors true})
+ => {"type" "error" "value" {"reason" "bad"}})
+
+^{:refer lang.core.pointer/ptr-output :id result-malformed-json-provenance}
+(fact "preserves malformed JSON as data rather than fabricating a wire error"
+ (mapv (fn [mode]
+  (let [value (ptr-output "{broken" mode)]
+   [(result? value) (:status value) (deref value) (:context value)
+    (= value (ptr-output value mode))]))
+  [true :full :string])
+ => [[true :success "{broken" {:format :text} true]
+     [true :success "{broken" {:format :text} true]
+     [true :success "{broken" {:format :text} true]])
+
+^{:refer lang.core.pointer/ptr-output :id result-decoder-callbacks}
+(fact "calls function and Var decoders before attempting JSON decoding"
+ [(ptr-output "input" output-decoder) (ptr-output "input" #'output-decoder)]
+ => [[:decoded "input"] [:decoded "input"]])
+
+^{:refer lang.core.pointer/ptr-output :id result-output-control-precedence}
+(fact "raw bypasses callbacks and json mode bypasses envelope extraction"
+ [(binding [*output* #{:raw}]
+   (ptr-output "{broken" (fn [value] (throw (ex :unexpected/decoder {})))))
+  (binding [*output* #{:json}]
+   (ptr-output "{\"type\":\"data\",\"value\":false}" :full))
+  *output*]
+ => ["{broken" {"type" "data" "value" false} #{:full}])
+
+^{:refer lang.core.pointer/ptr-output :id result-scalar-json}
+(fact "full mode leaves scalar and collection JSON without an envelope intact"
+ (mapv (fn [text] (ptr-output text :full)) ["null" "false" "42" "[1,2]" "{}"])
+ => [nil false 42 [1 2] {}])
+
+^{:refer lang.core.pointer/ptr-output-json :id result-output-print-control}
+(fact "uses native printer output only when requested and restores the binding"
+ [(with-out-string (ptr-output-json {"type" "data" "value" 7}))
+  (with-out-string
+   (binding [*print* #{:output}]
+    (ptr-output-json {"type" "data" "value" 7})))
+  *print*]
+ => ["" "7\n" #{}])
+
+^{:refer lang.core.pointer/ptr-output :id result-existing-error-value}
+(fact "passes through existing Results and propagates errors only when dereferencing for string input"
+ (let [value (Result/create :error (ex :runtime/failed {:detail "kept"}))]
+  (= value (ptr-output value :full)))
+ => true
+ (ptr-output (Result/create :error (ex :runtime/failed {:detail "kept"})) :string)
+ => (throws-info {:ex/code :runtime/failed :detail "kept"}))
+
+^{:refer lang.core.pointer/ptr-invoke-meta :id runtime-internal-links}
+(fact "merges inverse runtime links without mutating the library module"
+ (let [before (lib/get-module +library-ext+ :lua 'L.core)
+       metadata {:emit {:runtime {:module/internal {'L.runtime 'rt}}}}
+       first-result (ptr-invoke-meta +ptr+ metadata)
+       second-result (ptr-invoke-meta +ptr+ metadata)
+       view (:module first-result)]
+   [(get-in view [:link 'rt]) (get-in view [:internal 'L.runtime])
+    (= (:link before) (dissoc (:link view) 'rt))
+    (= before (lib/get-module +library-ext+ :lua 'L.core))
+    (= (:module first-result) (:module second-result))])
+ => '[L.runtime rt true true true])
+
+^{:refer lang.core.pointer/ptr-invoke :id native-var-main-callbacks}
+(fact "Var callbacks run at input and output boundaries" (binding [lang.core.pointer/*print* #{} lang.core.pointer/*input* #{} lang.core.pointer/*output* #{}] [(lang.core.pointer/ptr-invoke nil (fn [_ body] (str body "\n")) " value\n" {:in (var str/trim-newlines) :out (var str/trim)} nil) (lang.core.pointer/ptr-invoke nil (fn [_ body] body) "untouched" {} nil)]) => ["value" "untouched"])

@@ -1,0 +1,357 @@
+(ns lang.core.type-shared
+  (:config {:role :internal})
+  (:require [std.lib.component :as component]))
+
+(defonce ^:dynamic *groups*
+  (atom {}))
+
+(defn get-groups
+  "gets all shared groups\n \n   (shared/get-groups)\n   ;; (:tahto/rt.postgres :tahto/rt.redis :tahto/rt.nginx :tahto/rt.cpython.shared :tahto/rt.luajit.shared)\n   => vector?"
+  {:added "4.0"}
+  []
+  (vec (keys (deref *groups*))))
+
+(defn get-group-count
+  "gets the group count for a type and id\n \n   (shared/get-group-count :tahto/rt.redis)\n   ;; {:default 21, :test 2}\n   => map?"
+  {:added "4.0"}
+  ([]
+    (into
+      {}
+      (map (fn [group] [group (get-group-count group)]) (get-groups))))
+  ([type & [id]]
+    (if id
+      (or (get-in (deref *groups*) [type id :count]) 0)
+      (map-vals :count (or (get (deref *groups*) type) {})))))
+
+;(:tahto/rt.postgres :tahto/rt.redis :tahto/rt.nginx :tahto/rt.cpython.shared :tahto/rt.luajit.shared)
+
+(defn update-group-count
+  "updates the group counte"
+  {:added "4.0"}
+  [type id f]
+  (swap! *groups*
+         (fn [m]
+           (update-in m [type id :count] f))))
+
+(defn get-group-instance
+  "gets the group instance"
+  {:added "4.0"}
+  [type id]
+  (get-in (deref *groups*) [type id :instance]))
+
+(defn set-group-instance
+  "sets the group instance"
+  {:added "4.0"}
+  [type id instance & [count config client]]
+  (swap! *groups*
+         (fn [m]
+           (cond-> m
+             :then  (assoc-in [type id :instance]
+                              instance)
+             count  (assoc-in [type id :count]
+                              count)
+             config (assoc-in [type id :config]
+                              config)
+             client (assoc-in [type id :client]
+                              client)))))
+
+(defn update-group-instance
+  "updates the group instance"
+  {:added "4.0"}
+  [type id f]
+  (swap! *groups*
+         (fn [m]
+           (update-in m [type id :instance] f))))
+
+(defn restart-group-instance
+  "restarts the group instance"
+  {:added "4.0"}
+  [type id]
+  (-> (swap!
+        *groups*
+        (fn [m]
+          (let [{:keys [config client instance]} (get-in m [type id])]
+            (if instance
+              (let [component-value instance]
+                (if (Base/supports-method?
+                      IComponent
+                      'stop
+                      component-value)
+                  (component/stop component-value)
+                  component-value)))
+            (assoc-in
+              m
+              [type id :instance]
+              (let [component-value ((:constructor client) config)]
+                (if (Base/supports-method?
+                      IComponent
+                      'start
+                      component-value)
+                  (component/start component-value)
+                  component-value))))))
+   (get-in [type id :instance])))
+
+
+(defn remove-group-instance
+  "removes the group instance"
+  {:added "4.0"}
+  [type id]
+  (swap! *groups*
+         (fn [m]
+           (update-in m [type] dissoc id))))
+
+(defn start-shared
+  "starts a shared runtime client"
+  {:added "4.0"}
+  [{:keys [id client temp config], :as rt}]
+  (let [{:keys [type constructor]} client
+        instance (get-group-instance type id)]
+    (cond
+      (not instance) (set-group-instance
+                       type
+                       id
+                       (let [component-value (constructor config)]
+                         (if (Base/supports-method?
+                               IComponent
+                               'start
+                               component-value)
+                           (component/start component-value)
+                           component-value))
+                       1
+                       config
+                       client)
+      :else (update-group-count
+              type
+              id
+              (fn [n] (inc (if (nil? n) 0 n))))))
+  rt)
+
+(defn stop-shared
+  "stops a shared runtime client"
+  {:added "4.0"}
+  [{:keys [id client temp config], :as rt}]
+  (let [{:keys [type constructor]} client
+        cnt (get-group-count type id)
+        instance (get-group-instance type id)]
+    (cond
+      (not instance) nil
+      (and (or temp (= id :default)) (<= cnt 1)) (do
+                                                   (let
+                                                     [component-value
+                                                      instance]
+                                                     (if
+                                                       (Base/supports-method?
+                                                         IComponent
+                                                         'stop
+                                                         component-value)
+                                                       (component/stop
+                                                         component-value)
+                                                       component-value))
+                                                   (remove-group-instance
+                                                     type
+                                                     id))
+      :else (update-group-count
+              type
+              id
+              (fn [n] (dec (if (nil? n) 0 n))))))
+  rt)
+
+(def kill-shared stop-shared)
+
+(def wrap-shared
+ (fn [f client id config]
+   (fn [shared & args]
+     (apply
+       f
+       (reduce-kv
+         assoc
+         (or
+           (get-in (deref *groups*) [(:type client) id :instance])
+           {})
+         config)
+       args))))
+
+(defn rt-shared-string [{:keys [tag lang], :as rt}]
+  (str
+    "#rt.shared"
+    (:tag (get-group-instance (-> rt :client :type) (-> rt :id)))
+    [lang]))
+
+(do
+  (defstruct ^{:open true} SharedRuntime [id client temp config])
+  (extend-type
+    SharedRuntime
+    IComponent
+    (start [rt] (start-shared rt))
+    (stop [rt] (stop-shared rt))
+    (kill [rt] (kill-shared rt)))
+  (extend-type
+    SharedRuntime
+    IDisplay
+    (display [rt] (rt-shared-string rt)))
+  (extend-type
+    SharedRuntime
+    IContextEval
+    (evaluate-raw
+      [rt body options]
+      ((wrap-shared
+         IContextEval/evaluate-raw
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        body
+        options))
+    (tags-ptr
+      [rt ptr]
+      ((wrap-shared
+         IContextEval/tags-ptr
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        ptr))
+    (deref-ptr
+      [rt ptr]
+      ((wrap-shared
+         IContextEval/deref-ptr
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        ptr))
+    (display-ptr
+      [rt ptr]
+      ((wrap-shared
+         IContextEval/display-ptr
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        ptr))
+    (invoke-ptr
+      [rt ptr args]
+      ((wrap-shared
+         IContextEval/invoke-ptr
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        ptr
+        args))
+    (transform-in-ptr
+      [rt ptr args]
+      ((wrap-shared
+         IContextEval/transform-in-ptr
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        ptr
+        args))
+    (transform-out-ptr
+      [rt ptr output]
+      ((wrap-shared
+         IContextEval/transform-out-ptr
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        ptr
+        output)))
+  (extend-type
+    SharedRuntime
+    IContextLifeCycle
+    (has-module?
+      [rt module]
+      ((wrap-shared
+         IContextLifeCycle/has-module?
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        module))
+    (setup-module
+      [rt module]
+      ((wrap-shared
+         IContextLifeCycle/setup-module
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        module))
+    (teardown-module
+      [rt module]
+      ((wrap-shared
+         IContextLifeCycle/teardown-module
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        module))
+    (has-setup-ptr?
+      [rt ptr]
+      ((wrap-shared
+         IContextLifeCycle/has-setup-ptr?
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        ptr))
+    (setup-ptr
+      [rt ptr]
+      ((wrap-shared
+         IContextLifeCycle/setup-module
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        ptr))
+    (teardown-ptr
+      [rt ptr]
+      ((wrap-shared
+         IContextLifeCycle/teardown-ptr
+         (:client rt)
+         (:id rt)
+         (:config rt))
+        rt
+        ptr))))
+
+(defn rt-shared:create
+  "creates a shared runtime client"
+  {:added "4.0"}
+  [m]
+  (let [id (:rt/id m)
+        client (:rt/client m)
+        temp (:rt/temp m)
+        rtks (qualified-keys m :rt)
+        config (apply dissoc m (keys rtks))]
+    (map->SharedRuntime
+      (merge
+        m
+        {:id (or id :default), :config config}
+        (unqualify-keys rtks)))))
+
+(defn rt-shared
+  "creates and starts and shared runtime client"
+  {:added "4.0"}
+  ([m]
+   (-> (rt-shared:create m)
+       (component/start))))
+
+(defn rt-is-shared?
+  "checks if a runtime is shared"
+  {:added "4.0"}
+  [obj]
+  (instance? SharedRuntime obj))
+
+(defn rt-get-inner
+  "gets the inner runtime"
+  {:added "4.0"}
+  [rt]
+  (if (rt-is-shared? rt)
+    (get-group-instance (-> rt :client :type)
+                        (-> rt :id))
+    rt))
+
+

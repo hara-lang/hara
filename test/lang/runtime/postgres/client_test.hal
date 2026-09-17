@@ -1,12 +1,20 @@
 (ns lang.runtime.postgres.client-test
   (:require [db.protocol :as protocol]
+            [lang.core.impl :as impl]
             [lang.core.library :as library]
-            [lang.core.script :as script]
+            [lang.model.v1.spec-postgres :as postgres]
             [lang.runtime.postgres.client :as client]
             [std.lib.component :as component]
             [std.lib.context.registry :as context]))
 
 (defstruct FakeDatabase [events capabilities])
+
+(defn test-library
+  "Creates an isolated Library containing the concrete PostgreSQL Book."
+  []
+  (let [lib (impl/clone-default-library)]
+    (library/add-book! lib postgres/+book+)
+    lib))
 
 (extend-type FakeDatabase protocol/IDatabase
   (db-engine [_] :postgresql)
@@ -259,26 +267,27 @@
 ^{:refer lang.runtime.postgres.client/postgres-book}
 (Test/check
  [{:name "selects the active Library PostgreSQL book that owns lifecycle metadata"
-   :test (fn [] (let [current (library/library-create {:id :postgres-client})
-                      _ (library/library-add-book!
-                         current
-                         {:lang :postgres :version 1 :route :library})]
-                  (library/with:library [current]
-                    (select-keys (client/postgres-book) [:lang :version :route]))))
-   :expected {:lang :postgres :version 1 :route :library}}])
+   :test (fn [] (let [current (test-library)]
+                  (impl/with:library [current]
+                    (select-keys (client/postgres-book) [:lang :file]))))
+   :expected {:lang :postgres :file {:suffix "pg.sql"}}}])
 
 ^{:refer lang.runtime.postgres.client/lifecycle-hook}
 (Test/check
  [{:name "finds BookMeta functions by their lifecycle role"
-   :test (fn [] [(fn? (client/lifecycle-hook :has-ptr))
-                 (client/lifecycle-hook :missing)])
+   :test (fn [] (let [current (test-library)]
+                  (impl/with:library [current]
+                    [(fn? (client/lifecycle-hook :has-ptr))
+                     (client/lifecycle-hook :missing)])))
    :expected [true nil]}])
 
 ^{:refer lang.runtime.postgres.client/lifecycle-module}
 (Test/check
  [{:name "preserves caller modules and supplies a portable fallback for unregistered ids"
-   :test (fn [] [(client/lifecycle-module {:id 'demo.pg :static {:seed ["demo"]}})
-                 (select-keys (client/lifecycle-module :demo) [:id :lang :code :fragment])])
+   :test (fn [] (let [current (test-library)]
+                  (impl/with:library [current]
+                    [(client/lifecycle-module {:id 'demo.pg :static {:seed ["demo"]}})
+                     (select-keys (client/lifecycle-module :demo) [:id :lang :code :fragment])])))
    :expected [{:id 'demo.pg :static {:seed ["demo"]}}
               {:id :demo :lang :postgres :code {} :fragment {}}]}])
 
@@ -292,9 +301,11 @@
 ^{:refer lang.runtime.postgres.client/lifecycle-form}
 (Test/check
  [{:name "builds composable BookMeta setup forms from a portable module"
-   :test (fn [] (first (client/lifecycle-form :setup-module
-                                               {:id 'demo.pg
-                                                :static {:seed ["demo"]}})))
+   :test (fn [] (let [current (test-library)]
+                  (impl/with:library [current]
+                    (first (client/lifecycle-form :setup-module
+                                                  {:id 'demo.pg
+                                                   :static {:seed ["demo"]}})))))
    :expected 'do}])
 
 ^{:refer lang.runtime.postgres.client/lifecycle-forms}
@@ -357,13 +368,12 @@
 ^{:refer lang.runtime.postgres.client/module-source?}
 (Test/check
  [{:name "recognizes only source-pipeline modules as compilable"
-   :test (fn [] (let [snapshot (script/script-snapshot)]
-                  (try
-                    (script/register-library-module!
-                     :postgres {:id 'demo.pg :lang :postgres :code {} :fragment {}})
+   :test (fn [] (let [current (test-library)
+                      module {:id 'demo.pg :lang :postgres :code {} :fragment {}}]
+                  (library/add-module! current module)
+                  (impl/with:library [current]
                     [(client/module-source? {:id 'demo.pg})
-                     (client/module-source? {:id :demo})]
-                    (finally (script/script-restore! snapshot)))))
+                     (client/module-source? {:id :demo})])))
    :expected [true false]}])
 
 ^{:refer lang.runtime.postgres.client/compile-module-output}
@@ -377,28 +387,28 @@
 ^{:refer lang.runtime.postgres.client/run-module-code}
 (Test/check
  [{:name "executes compiled source-module output after lifecycle setup"
-   :test (fn [] (let [snapshot (script/script-snapshot)
+   :test (fn [] (let [current (test-library)
+                      module {:id 'demo.pg :lang :postgres :code {} :fragment {}}
                       value (client/rt-create
                              {:adapter {:compile-module (fn [client module] "SELECT 1")
                                         :lifecycle-eval (fn [client source] [:ran source])}})]
-                  (try
-                    (script/register-library-module!
-                     :postgres {:id 'demo.pg :lang :postgres :code {} :fragment {}})
-                    (client/run-module-code value {:id 'demo.pg})
-                    (finally (script/script-restore! snapshot)))))
+                  (library/add-module! current module)
+                  (impl/with:library [current]
+                    (client/run-module-code value {:id 'demo.pg}))))
    :expected [:ran "SELECT 1"]}])
 
 ^{:refer lang.runtime.postgres.client/pointer-entry}
 (Test/check
  [{:name "resolves a pointer entry from the registered source module"
-   :test (fn [] (let [snapshot (script/script-snapshot)
-                      entry {:id 'Log :static {:static/dbtype :table}}]
-                  (try
-                    (script/register-library-module!
-                     :postgres {:id 'demo.pg :lang :postgres :code {'Log entry} :fragment {}})
-                    (client/pointer-entry {:module 'demo.pg :id 'Log})
-                    (finally (script/script-restore! snapshot)))))
-   :expected {:id 'Log :static {:static/dbtype :table}}}])
+   :test (fn [] (let [current (test-library)
+                      entry {:module 'demo.pg
+                             :id 'Log
+                             :static {:static/dbtype :table}}
+                      module {:id 'demo.pg :lang :postgres :code {'Log entry} :fragment {}}]
+                  (library/add-module! current module)
+                  (impl/with:library [current]
+                    (client/pointer-entry {:module 'demo.pg :id 'Log}))))
+   :expected {:module 'demo.pg :id 'Log :static {:static/dbtype :table}}}])
 
 ^{:refer lang.runtime.postgres.client/lifecycle-pointer}
 (Test/check
@@ -411,24 +421,34 @@
 (Test/check
  [{:name "uses BookMeta remote pointer checks while retaining reversible local lifecycle state"
    :test (fn [] (let [present (atom false)
-                     pointer {:id 'Log
+                     pointer {:module 'demo.pg
+                              :id 'Log
                               :op 'deftype
                               :form '(deftype Log [:id {:type :uuid}])
                               :static {:static/schema "scratch_v0"
                                        :static/dbtype :table}}
+                     entry {:module 'demo.pg
+                            :id 'Log
+                            :form '(deftype Log [:id {:type :uuid}])
+                            :static {:static/dbtype :table}}
+                     current (test-library)
+                     module {:id 'demo.pg :lang :postgres
+                             :code {'Log entry} :fragment {}}
                      [value _ _]
                      (fixture {:compile-lifecycle (fn [client module form] form)
                                :lifecycle-eval (fn [client source] (deref present))})]
-                  [(IContextLifeCycle/has-module? value :demo)
-                   (do (IContextLifeCycle/setup-module value :demo)
-                       (IContextLifeCycle/has-module? value :demo))
-                   (do (IContextLifeCycle/teardown-module value :demo)
-                       (IContextLifeCycle/has-module? value :demo))
-                   (do (IContextLifeCycle/setup-ptr value pointer)
-                       (reset! present true)
-                       (IContextLifeCycle/has-setup-ptr? value pointer))
-                   (do (IContextLifeCycle/teardown-ptr value pointer)
-                       [(deref (:modules value)) (deref (:pointers value))])]))
+                  (library/add-module! current module)
+                  (impl/with:library [current]
+                    [(IContextLifeCycle/has-module? value :demo)
+                     (do (IContextLifeCycle/setup-module value :demo)
+                         (IContextLifeCycle/has-module? value :demo))
+                     (do (IContextLifeCycle/teardown-module value :demo)
+                         (IContextLifeCycle/has-module? value :demo))
+                     (do (IContextLifeCycle/setup-ptr value pointer)
+                         (reset! present true)
+                         (IContextLifeCycle/has-setup-ptr? value pointer))
+                     (do (IContextLifeCycle/teardown-ptr value pointer)
+                         [(deref (:modules value)) (deref (:pointers value))])])))
    :expected [false true false true [#{} #{}]]}])
 
 ^{:refer lang.runtime.postgres.client/pointer-unsupported}

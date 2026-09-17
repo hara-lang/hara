@@ -18,6 +18,45 @@
 (def first-record
   (first (reader/form-records (read-forms-spanned "(fact \"answer\" true => true)"))))
 
+^{:refer code.manage.unit.structure/fact-record}
+(Test/register
+ {:desc "native registration retains source and assertion metadata"
+  :test (fn []
+          (let [text "^{:refer demo.core/answer :added \"0.2\"}\n(Test/register {:desc \"native answer\" :test (fn [] nil) :expected nil})"
+                records (structure/facts-from-source text "demo_test.hal")
+                fact (first records)]
+            [(count records)
+             (select-keys fact [:head :title :refer :added :checked :commented])
+             (= (:text fact) (structure/span-text text
+                              {:start {:offset (:start fact)}
+                               :end {:offset (:end fact)}}))]))
+  :expected [1 {:head (quote Test/register) :title "native answer"
+                :refer (quote demo.core/answer) :added "0.2"
+                :checked true :commented false} true]})
+
+^{:refer code.manage.unit.structure/fact-record}
+(Test/register
+ {:desc "native assertion inventory distinguishes nil and false expectations from absent checks"
+  :test (fn []
+          (mapv (fn [text]
+                  (select-keys (first (structure/facts-from-source text "demo_test.hal"))
+                               [:title :checked]))
+                ["(Test/register {:name \"nil\" :test (fn [] nil) :expected nil})"
+                 "(Test/register {:desc \"false\" :test (fn [] false) :expected false})"
+                 "(Test/register {:desc \"missing expected\" :test (fn [] true)})"
+                 "(Test/register {:desc \"missing test\" :expected true})"
+                 "(Test/register {:desc \"nil test\" :test nil :expected nil})"
+                 "(Test/register descriptor)"
+                 "(Test/register)"]))
+  :expected [{:title "nil" :checked true}
+             {:title "false" :checked true}
+             {:title "missing expected" :checked false}
+             {:title "missing test" :checked false}
+             {:title "nil test" :checked false}
+             {:title "" :checked false}
+             {:title "" :checked false}]})
+
+
 ^{:refer code.manage.unit.structure/fact-head?}
 (Test/register
  {:desc "recognizes fact symbols and namespaced fact symbols"

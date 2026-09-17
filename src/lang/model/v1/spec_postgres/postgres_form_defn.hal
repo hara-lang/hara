@@ -1,9 +1,115 @@
 (ns lang.model.v1.spec-postgres.postgres-form-defn
-  (:config {:role :facade})
-  (:require [lang.model.v1.spec-postgres.postgres-native :as native]))
+  (:require [lang.model.v1.spec-postgres.postgres-common :as common]
+            [lang.model.v1.spec-postgres.postgres-form-let :as form-let]
+            [lang.base.emit-common :as emit-common]
+            [lang.base.emit-fn :as fn]
+            [lang.base.emit-helper :as helper]
+            [lang.base.grammar-spec :as grammar-spec]))
 
-(intern-in
- [pg-defn-format native/pg-defn-format]
- [pg-defnformat native/pg-defnformat]
- [+pg-defnlang-types+ native/+pg-defnlang-types+]
- [pg-defn native/pg-defn])
+(defn pg-defn-format
+  "formats a defn form"
+  {:added "4.0"}
+  [form]
+  (let [[mdefn [op sym args & body]] (update
+                                       (grammar-spec/format-defn form)
+                                       1
+                                       vec)
+        targs (helper/emit-typed-args args {})
+        msym (assoc
+               (common/pg-sym-meta
+                 (if (map? (first (drop-while string? (drop 2 form))))
+                   (with-meta sym (merge (or (meta sym) {}) mdefn))
+                   sym))
+               :static/input
+               targs)]
+    [(merge mdefn msym)
+     (apply list op (with-meta sym msym) args body)]))
+
+(def pg-defnformat pg-defn-format)
+
+(def +pg-defnlang-types+
+ {:default {:tag "plpgsql", :lang :postgres},
+  :postgres {:tag "plpgsql", :lang :postgres},
+  :sql {:tag "sql", :lang :postgres},
+  :js {:tag "plv8", :lang :js},
+  :python {:tag "plpython3u"},
+  :lua {:tag "pllua"}})
+
+(defn pg-defn
+  "creates the complete defn"
+  {:added "4.0"}
+  [migration-argument-0 grammar mopts]
+  (let [migration-argument-0-value migration-argument-0
+        form migration-argument-0-value
+        _ (first (drop 0 migration-argument-0-value))
+        sym (first (drop 1 migration-argument-0-value))
+        args (first (drop 2 migration-argument-0-value))
+        body (drop 3 migration-argument-0-value)]
+    (let [block (fn/emit-fn-block :defn grammar)
+          typestr (fn/emit-fn-type sym nil grammar mopts)
+          preamble (fn/emit-fn-preamble [:defn sym args] grammar mopts)
+          migration-map-value-1 (meta sym)
+          schema (get migration-map-value-1 :static/schema)
+          props (get migration-map-value-1 :static/props)
+          return (get migration-map-value-1 :static/return)
+          language (if (has? migration-map-value-1 :static/language)
+                     (get migration-map-value-1 :static/language)
+                     :default)
+          migration-map-value-2 (get +pg-defnlang-types+ language)
+          m migration-map-value-2
+          tag (get migration-map-value-2 :tag)
+          lang (if (has? migration-map-value-2 :lang)
+                 (get migration-map-value-2 :lang)
+                 language)
+          schstr (if (not-empty schema) (str "\"" schema "\"" "."))
+          fnstr (str schstr preamble)
+          body (if (= :sql language)
+                 (if (= 1 (count body))
+                   (if (vector? (last body))
+                     body
+                     [[:select (last body)]])
+                   (throw
+                     (ex
+                       :postgres/defn-invalid
+                       {:value body}
+                       :ex/message
+                       "Not an sql expression")))
+                 body)
+          bfull (if (or
+                      (not (= language :default))
+                      (and
+                        (= 1 (count body))
+                        (form? (first body))
+                        ('#{let let:block} (ffirst body))))
+                  [\\
+                   \\
+                   (list
+                     \|
+                     (list '!:lang {:lang lang} (apply list 'do body)))
+                   \\]
+                  (concat
+                    [\\ :begin]
+                    [\\ (list \| (apply list 'do body))]
+                    [\\ :end \;]))]
+      (binding [form-let/*input-syms* (atom
+                                        (set (filter symbol? args)))]
+        (emit-common/*emit-fn*
+          (vec
+            (concat
+              (apply
+                vector
+                (seq
+                  (concat
+                    (list :create-or-replace)
+                    (list :function)
+                    (list (seq (concat (list :-) (list fnstr))))
+                    (list :returns)
+                    (list (seq (concat (list :-) (list typestr))))
+                    (list :as)
+                    (list :$$))))
+              bfull
+              [\\ :$$ :language (list '% tag)]
+              props
+              [\;]))
+          grammar
+          mopts)))))

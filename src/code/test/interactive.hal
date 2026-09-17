@@ -1,0 +1,98 @@
+(ns code.test.interactive
+  (:config {:role :internal}))
+
+(defn source-plan
+  "Retains the original text and exact reader spans, including metadata and UTF-8 offsets.
+   The source field is the lossless reconstruction boundary; no form is printed back."
+  [file source]
+  (let [encoded (str/encode-utf8 source)]
+    {:file file :source source
+     :forms (vec (map-indexed
+                   (fn [index node]
+                     {:index (inc index) :file file
+                      :start (:start node) :end (:end node)
+                      :source (str/decode-utf8
+                                (bytes/slice encoded
+                                  (get-in node [:start :offset])
+                                  (get-in node [:end :offset])))})
+                   (read-forms-spanned source)))}))
+
+(defn valid-report?
+  "Checks version, assertion evidence, and event/count agreement. Setup is not a passing test."
+  [report]
+  (let [events (get report "events")
+        facts (get report "facts")
+        checks (get report "checks")
+        status (get report "status")]
+    (and (= 1 (get report "report/version"))
+         (vector? events)
+         (every? (fn [event]
+                   (and (vector? (get event "checks"))
+                        (every? (fn [check] (or (= true (get check "passed"))
+                                               (= false (get check "passed"))))
+                                (get event "checks"))
+                        (if (= "passed" (get event "status"))
+                          (and (seq (get event "checks"))
+                               (every? (fn [check] (= true (get check "passed")))
+                                       (get event "checks")))
+                          (has? #{"failed" "error" "timeout" "skipped" "cancelled"}
+                                (get event "status")))))
+                 events)
+         (= facts (count events))
+         (= checks (reduce (fn [n event] (+ n (count (get event "checks")))) 0 events))
+         (= status (cond (empty? events) "none"
+                         (every? (fn [event] (= "passed" (get event "status"))) events) "passed"
+                         :else "failed")))))
+
+(defn evidence
+  "Selects stable assertion evidence for cold/warm comparison, excluding elapsed time."
+  [pass]
+  (vec (map (fn [record]
+              (vec (map (fn [event]
+                          (select-keys event ["namespace" "desc" "status" "checks" "error"]))
+                        (get (:report record) "events"))))
+            (:records pass))))
+
+(defn run-pass
+  "Evaluates each exact form once. The supplied transport enforces timeout and returns
+   {:value display :report decoded-json :error diagnostic}. Progress runs after each
+   response, preserving partial evidence before the next request."
+  [plan pass evaluate progress]
+  (loop [remaining (:forms plan) records [] facts 0 checks 0]
+    (if (empty? remaining)
+      {:pass pass :status (if (and (> facts 0) (> checks 0)) :passed :failed)
+       :reason (if (and (> facts 0) (> checks 0)) nil :no-assertions)
+       :records records :facts facts :checks checks}
+      (let [form (first remaining)
+            response (try (evaluate form)
+                       (catch error {:error (str error)}))
+            report (:report response)
+            valid (valid-report? report)
+            passed (and (nil? (:error response)) valid
+                        (not= "failed" (get report "status")))
+            record (merge form response {:pass pass :status (if passed :passed :failed)})
+            records (conj records record)
+            facts (+ facts (if valid (get report "facts") 0))
+            checks (+ checks (if valid (get report "checks") 0))]
+        (progress record)
+        (if passed
+          (recur (vec (rest remaining)) records facts checks)
+          {:pass pass :status :failed :reason (if (:error response) :evaluation :assertions)
+           :records records :facts facts :checks checks})))))
+
+(defn run-file
+  "Owns a cold and warm pass in one freshly opened transport. Always closes it,
+   including assertion failure or progress callback failure. The opener must return
+   {:evaluate fn :close fn}; it must not attach to an existing user server."
+  [plan open progress]
+  (let [transport (open)]
+    (try
+      (let [cold (run-pass plan :cold (:evaluate transport) progress)
+            warm (if (= :passed (:status cold))
+                   (run-pass plan :warm (:evaluate transport) progress)
+                   nil)]
+        {:file (:file plan) :source (:source plan) :cold cold :warm warm
+         :status (if (and (= :passed (:status cold)) (= :passed (:status warm))
+                          (= (evidence cold) (evidence warm)))
+                   :passed :failed)})
+      (finally ((:close transport))))))

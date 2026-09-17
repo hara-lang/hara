@@ -1,0 +1,506 @@
+(ns lang.core.manage-task
+  (:config {:role :internal})
+  (:require [work.flow.task :as task]
+            [work.flow.task.result :as task-result]
+            [std.lib.format.ansi :as ansi]))
+
+(defn shuffle-inputs
+  "Returns a Fisher-Yates permutation without changing input values. The draw arity accepts a four-byte supplier for deterministic tests; rejected draws avoid modulo bias."
+  ([inputs] (shuffle-inputs inputs (fn [] (Crypto/random-bytes 4))))
+  ([inputs draw] (let [values (vec inputs)]
+                   (loop [output values remaining (count values)]
+                     (if (< remaining 2)
+                       output
+                       (let [limit          (- 4294967296 (mod 4294967296 remaining))
+                             selected       (loop []
+                                              (let [bytes (draw)]
+                                                (if (not (= 4 (Bytes/count bytes)))
+                                                  (throw (ex :argument {} :ex/message "shuffle draw must contain four bytes")))
+                                                (let [value (reduce (fn [value index] (+ (* value 256) (Bytes/get bytes index)))
+                                                                    0
+                                                                    [0 1 2 3])]
+                                                  (if (< value limit) (mod value remaining) (recur)))))
+                             last-index     (dec remaining)
+                             last-value     (nth output last-index)
+                             selected-value (nth output selected)]
+                         (recur (assoc (assoc output last-index selected-value) selected last-value)
+                           last-index)))))))
+
+(defn compile
+  "Compiles Foundation library-management data operations to an existing native Work task bundle.\nThe source task configuration is retained on the bundle for provenance and rendering."
+  [id definition]
+  (assoc
+    (task/compile
+      {:id id,
+       :on-error :fail,
+       :run
+       (fn [request _context]
+         (let [options (task/invocation-options [(or request {})])
+               input (if (has? options :selector)
+                       (:selector options)
+                       ((or
+                          (get-in definition [:construct :input])
+                          (constantly nil))
+                         definition))
+               supplied (dissoc options :selector :environment :lookup)
+               environment (if (has? options :environment)
+                             (:environment options)
+                             ((or
+                                (get-in definition [:construct :env])
+                                (constantly {}))
+                               (merge definition supplied)))
+               lookup (if (has? options :lookup)
+                        (:lookup options)
+                        ((or
+                           (get-in definition [:construct :lookup])
+                           (fn [_ _] {}))
+                          definition
+                          (merge environment supplied)))
+               params (merge-nested (:params definition) supplied)
+               list-fn (get-in definition [:item :list])
+               bulk? (or
+                       (keyword? input)
+                       (vector? input)
+                       (set? input)
+                       (form? input))
+               selected-inputs (if
+                                 (= input :list)
+                                 []
+                                 (if
+                                   bulk?
+                                   (task/select
+                                     input
+                                     (list-fn lookup environment))
+                                   [input]))
+               pre (or (get-in definition [:item :pre]) identity)
+               post (or (get-in definition [:item :post]) identity)
+               output (or (get-in definition [:item :output]) identity)
+               ignore (get-in definition [:result :ignore])
+               results-output (or
+                                (get-in definition [:result :output])
+                                identity)
+               main (get-in definition [:main :fn])
+               title-printed (let [title (:title params)
+                                   print-options
+                                   (or (:print params) {})]
+                               (when
+                                 (and
+                                   bulk?
+                                   (not (= input :list))
+                                   title
+                                   (or
+                                     (:function print-options)
+                                     (:item print-options)
+                                     (:result print-options)
+                                     (:summary print-options)))
+                                 (println
+                                   (report:title
+                                     (if
+                                       (function? title)
+                                       (title params environment)
+                                       title)))))
+               started (time-ms)
+               inputs (if (and
+                            bulk?
+                            (:random params)
+                            (not (empty? selected-inputs)))
+                        (shuffle-inputs selected-inputs)
+                        selected-inputs)
+               results ((if (and bulk? (:parallel params))
+                          (fn [run-item values]
+                            (let [pending
+                                  (mapv
+                                    (fn
+                                      [value]
+                                      (Promise/delay
+                                        1
+                                        (fn
+                                          []
+                                          (let
+                                            [result (atom nil)]
+                                            (try
+                                              (let
+                                                [output
+                                                 (with-out-string
+                                                   (reset!
+                                                     result
+                                                     (run-item
+                                                       value)))]
+                                                [(deref result)
+                                                 output])
+                                              (finally
+                                                (reset!
+                                                  result
+                                                  nil)))))))
+                                    values)
+                                  subscribed (Promise/all pending)]
+                              (mapv
+                                (fn
+                                  [pending-item]
+                                  (let
+                                    [[result output]
+                                     (deref pending-item)]
+                                    (p output)
+                                    result))
+                                pending)))
+                          mapv)
+                         (fn [value]
+                           (let [item-start (time-ms)]
+                             (try
+                               (let
+                                 [prepared (pre value)
+                                  result
+                                  (post
+                                    (main
+                                      prepared
+                                      (if
+                                        bulk?
+                                        (assoc params :bulk true)
+                                        params)
+                                      lookup
+                                      environment))]
+                                 (with-meta
+                                   [prepared result]
+                                   {:elapsed
+                                    (- (time-ms) item-start)}))
+                               (catch
+                                 error
+                                 (if
+                                   bulk?
+                                   (do
+                                     (println ">>" (ex-message error))
+                                     (with-meta
+                                       [value :errored]
+                                       {:task/error true,
+                                        :task/error-message
+                                        (ex-message error),
+                                        :elapsed
+                                        (- (time-ms) item-start)}))
+                                   (throw error))))))
+                         inputs)
+               processing-elapsed (- (time-ms) started)]
+           {:status :return,
+            :data
+            (cond
+              (= input :list) (list-fn lookup environment)
+              bulk? (let [records (mapv
+                                    (fn
+                                      [[key value :as entry]]
+                                      (let
+                                        [error
+                                         (:task/error (meta entry))
+                                         record
+                                         {:item/id key,
+                                          :key key,
+                                          :status
+                                          (if error :error :return),
+                                          :data value,
+                                          :time
+                                          (or
+                                            (:elapsed (meta entry))
+                                            0),
+                                          :elapsed
+                                          (or
+                                            (:elapsed (meta entry))
+                                            0)}]
+                                        (if
+                                          (or
+                                            error
+                                            (and
+                                              ignore
+                                              (ignore value)))
+                                          record
+                                          (merge
+                                            record
+                                            (into
+                                              {}
+                                              (map
+                                                (fn
+                                                  [[field function]]
+                                                  [field
+                                                   (function value)])
+                                                (seq
+                                                  (get-in
+                                                    definition
+                                                    [:result
+                                                     :keys]))))))))
+                                    results)
+                          aggregations (into
+                                         {}
+                                         (map
+                                           (fn
+                                             [[key
+                                               [select
+                                                reduce-function
+                                                initial]]]
+                                             [key
+                                              {:select
+                                               (fn
+                                                 [record]
+                                                 (if
+                                                   (and
+                                                     (=
+                                                       :return
+                                                       (:status
+                                                         record))
+                                                     (not
+                                                       (and
+                                                         ignore
+                                                         (ignore
+                                                           (:data
+                                                             record)))))
+                                                   (select record))),
+                                               :reduce reduce-function,
+                                               :initial initial}])
+                                           (seq
+                                             (get-in
+                                               definition
+                                               [:summary
+                                                :aggregate]))))
+                          summary-bundle (let
+                                           [batch
+                                            (task-result/summarise
+                                              {:items
+                                               (mapv
+                                                 (fn
+                                                   [[key _]]
+                                                   {:item/id key})
+                                                 results),
+                                               :results
+                                               (mapv
+                                                 (fn
+                                                   [record]
+                                                   {:item/value
+                                                    record})
+                                                 records)}
+                                              {:ignore ignore})
+                                            visible
+                                            (if
+                                              (:order-by params)
+                                              (vec
+                                                (sort-by
+                                                  (:order-by params)
+                                                  (:results batch)))
+                                              (:results batch))]
+                                           (assoc
+                                             batch
+                                             :results
+                                             visible
+                                             :summary
+                                             (task-result/aggregate
+                                               (dissoc
+                                                 (:summary batch)
+                                                 :cumulative)
+                                               aggregations
+                                               visible)))
+                          summary (:summary summary-bundle)
+                          finalise (get-in
+                                     definition
+                                     [:summary :finalise])
+                          final-summary (assoc
+                                          (if
+                                            finalise
+                                            (finalise
+                                              summary
+                                              (mapv
+                                                (fn
+                                                  [record]
+                                                  [(:key record)
+                                                   record])
+                                                records)
+                                              (:results
+                                                summary-bundle))
+                                            summary)
+                                          :elapsed
+                                          processing-elapsed
+                                          :cumulative
+                                          (reduce
+                                            +
+                                            0
+                                            (map :time records)))
+                          summary-printed
+                          (when (:summary (:print params))
+                            (let [display
+                                  (into {}
+                                        (remove
+                                          (fn [[_ value]]
+                                            (and (number? value) (zero? value)))
+                                          (dissoc final-summary :elapsed :cumulative)))]
+                              (println)
+                              (println
+                                (ansi/style
+                                  (str "SUMMARY "
+                                       (assoc display
+                                              :cumulative (format-ms (:cumulative final-summary))
+                                              :elapsed (format-ms (:elapsed final-summary))))
+                                  #{:bold}))
+                              (println)))
+                          notices-printed (doseq
+                                            [line
+                                             (get
+                                               (or
+                                                 (meta final-summary)
+                                                 {})
+                                               :std.task/after-summary)]
+                                            (println line))
+                          selection (or (:return params) :results)
+                          selected-fields (cond
+                                            (= selection :all)
+                                            #{:errors
+                                              :warnings
+                                              :summary
+                                              :items
+                                              :results}
+                                            (keyword? selection)
+                                            #{selection}
+                                            :else
+                                            (intersection
+                                              (set selection)
+                                              #{:errors
+                                                :warnings
+                                                :summary
+                                                :items
+                                                :results}))
+                          item-pairs (if
+                                       (has? selected-fields :items)
+                                       (Iter/seq-deferred
+                                         (Iter/iter-map
+                                           (fn
+                                             [[key value]]
+                                             [key (output value)])
+                                           results))
+                                       [])
+                          result-pairs (if
+                                         (has?
+                                           selected-fields
+                                           :results)
+                                         (Iter/seq-deferred
+                                           (Iter/iter-map
+                                             (fn
+                                               [record]
+                                               [(:key record)
+                                                (results-output
+                                                  (:data record))])
+                                             (:results
+                                               summary-bundle)))
+                                         [])
+                          package-value {:items
+                                         (if
+                                           (=
+                                             :vector
+                                             (:package params))
+                                           item-pairs
+                                           (into {} item-pairs)),
+                                         :results
+                                         (if
+                                           (=
+                                             :vector
+                                             (:package params))
+                                           result-pairs
+                                           (into {} result-pairs)),
+                                         :warnings
+                                         (mapv
+                                           (fn
+                                             [record]
+                                             [(:key record) record])
+                                           (:warnings summary-bundle)),
+                                         :errors
+                                         (mapv
+                                           (fn
+                                             [record]
+                                             [(:key record) record])
+                                           (:errors summary-bundle)),
+                                         :summary final-summary}]
+                      (task-result/package
+                        package-value
+                        (if (keyword? selection)
+                          selection
+                          (intersection
+                            (set selection)
+                            #{:errors
+                              :warnings
+                              :summary
+                              :items
+                              :results}))))
+              :else (output (second (first results))))}))})
+    :lang.core.manage/config
+    definition))
+
+;; Presentation drops lower units; retain original milliseconds in the summary.
+(defn format-ms
+  "returns ms time is human readable format\n \n   (format-ms 10000000)\n   => \"02h 46m 40s\""
+  {:added "3.0"}
+  ([time]
+    (let [millis (mod (+ (mod time 1000) 1000) 1000)
+          seconds (mod (+ (mod (quot time 1000) 60) 60) 60)
+          mins (mod (+ (mod (quot time (* 60 1000)) 60) 60) 60)
+          hours (mod (+ (mod (quot time (* 60 60 1000)) 24) 24) 24)
+          days (quot time (* 24 60 60 1000))
+          level (count
+                  (drop-while zero? [days hours mins seconds millis]))]
+      (case
+        level
+        0
+        "0ms"
+        1
+        (str (str/pad-left (str millis) 3 "0") "ms")
+        2
+        (str
+          (str/pad-left (str seconds) 2 "0")
+          "s "
+          (str/pad-left (str millis) 3 "0")
+          "ms")
+        3
+        (str
+          (str/pad-left (str mins) 2 "0")
+          "m "
+          (str/pad-left (str seconds) 2 "0")
+          "s")
+        4
+        (str
+          (str/pad-left (str hours) 2 "0")
+          "h "
+          (str/pad-left (str mins) 2 "0")
+          "m "
+          (str/pad-left (str seconds) 2 "0")
+          "s")
+        5
+        (str
+          (str/pad-left (str days) 2 "0")
+          "d "
+          (str/pad-left (str hours) 2 "0")
+          "h "
+          (str/pad-left (str mins) 2 "0")
+          "m")))))
+
+(defn report:title
+  "prints the title\n \n   (report:title \"Hello World\")"
+  {:added "3.0", :tags #{:print}}
+  ([title]
+    (let [line (apply str (repeat (count title) \-))]
+      (ansi/style
+        (str "\n" line "\n" (if (nil? title) "null" title) "\n" line)
+        #{:bold}))))
+
+(defn prepare-columns
+  "prepares columns for printing
+ 
+   (prepare-columns [{:key :name}
+                     {:key :data}]
+                    [{:name \"Chris\"
+                      :data \"1\"}
+                     {:name \"Bob\"
+                      :data \"100\"}])
+   => [{:key :name, :id :name, :length 7}
+       {:key :data, :id :data, :length 5}]"
+  {:added "3.0"}
+  ([columns outputs]
+   (mapv (fn [{:keys [length key] :as column}]
+           (let [id    key
+                 length (cond (number? length)
+                              length
+
+                              :else
+                              (->> outputs (map key) (map (comp count str)) (apply max) (+ 2)))]
+             (assoc column :id key :length length)))
+         columns)))

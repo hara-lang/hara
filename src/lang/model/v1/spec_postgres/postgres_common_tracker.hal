@@ -4,28 +4,69 @@
   "Formats archived PostgreSQL tracker metadata."
   [tracker]
   (let [name (:name tracker)
-        values (concat (if (:disable tracker) [[":disable" (:disable tracker)]] [])
-                       (if (:in tracker) [[":in" true]] [])
-                       (if (:out tracker) [[":out" true]] []))
-        body (str/join ", " (map (fn [entry]
-                                    (str (first entry) " " (second entry)))
-                                  values))]
+        values (concat
+                 (if (:disable tracker)
+                   [[":disable" (:disable tracker)]]
+                   [])
+                 (if (:in tracker) [[":in" true]] [])
+                 (if (:out tracker) [[":out" true]] []))
+        body (str/join
+               ", "
+               (map
+                 (fn [entry] (str (first entry) " " (second entry)))
+                 values))]
     (str "#pg.tracker [" name "] {" body "}")))
 
-(defn add-tracker
-  "Attaches tracker metadata while enforcing disabled and required tracking."
-  [params tracker spec operation]
-  (if (get (:disable tracker) operation)
-    (throw (ex :syntax {:op operation :spec spec}
-               :ex/message "Tracker operation is disabled"))
-    (cond (= :ignore (:track params)) params
-          (and (:in tracker)
-               (not (:track params))
-               (not (get (:ignore tracker) operation)))
-          (throw (ex :syntax {:spec spec}
-                     :ex/message "The :track key is required for this spec"))
-          :else (assoc params :static/tracker tracker))))
+(defstruct
+  ^{:open true} Tracker
+  []
+  IDisplay
+  (display [tracker] (tracker-string tracker)))
 
+(defn add-tracker
+  "call to adjust data to that of the tracker"
+  {:added "4.0"}
+  [params tracker spec op]
+  (let [_ (if (get (:disable tracker) op)
+            (throw
+              (ex
+                :generic
+                {}
+                :ex/message
+                (str op " disabled for spec" {:op op, :spec spec}))))]
+    (cond
+      (= :ignore (:track params)) params
+      (and
+        (:in tracker)
+        (not (:track params))
+        (not (get (:ignore tracker) op))) (throw
+                                            (ex
+                                              :generic
+                                              {:spec spec}
+                                              :ex/message
+                                              (str
+                                                "`:track` key required for spec")))
+      :else (assoc params :static/tracker tracker))))
+
+(defn tracker-map-in
+  "creates the insert map"
+  {:added "4.0"}
+  [{:keys [track], :as params, tracker :static/tracker}]
+  (if-let [kmp (:create (:in tracker))]
+    (map-vals
+      (fn [k] (list :->> track (str/snake-case (name k))))
+      kmp)))
+
+(defn tracker-map-modify
+  "creates the modify map"
+  {:added "4.0"}
+  [{:keys [track], :as params, tracker :static/tracker}]
+  (if-let [kmp (:modify (:in tracker))]
+    (map-vals
+      (fn [k] (list :->> track (str/snake-case (name k))))
+      kmp)))
+
+;; Existing native tracker helper surface retained.
 (defn tracker-map
   [tracker direction]
   (or (get-in tracker [:in direction]) {}))
@@ -39,13 +80,3 @@
                  {}
                  values)
       nil)))
-
-(defn tracker-map-in
-  "Creates the archived insert tracking map."
-  [params]
-  (tracker-map-output (:static/tracker params) :create (:track params)))
-
-(defn tracker-map-modify
-  "Creates the archived modify tracking map."
-  [params]
-  (tracker-map-output (:static/tracker params) :modify (:track params)))

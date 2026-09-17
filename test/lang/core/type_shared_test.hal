@@ -1,0 +1,554 @@
+(ns lang.core.type-shared-test
+  (:require [lang.core.type-shared :as shared] [code.test :refer [fact]]))
+
+^{:refer lang.core.type-shared/get-groups}
+(fact "groups reflect isolated state"
+ (binding [shared/*groups* (atom {})]
+  (try
+   [(shared/get-groups)
+    (do (shared/set-group-instance :test :id {:a 1}) (shared/get-groups))]
+   (finally (reset! shared/*groups* {}))))
+ => [[] [:test]])
+
+^{:refer lang.core.type-shared/get-group-count}
+(fact "counts cover absent, single, and all groups"
+ (binding [shared/*groups* (atom {})]
+  (try
+   (let [before [(shared/get-group-count) (shared/get-group-count :test) (shared/get-group-count :test :id)]]
+    (shared/set-group-instance :test :id {} 2)
+    [before (shared/get-group-count :test :id) (shared/get-group-count :test) (shared/get-group-count)])
+   (finally (reset! shared/*groups* {}))))
+ => [[{} {} 0] 2 {:id 2} {:test {:id 2}}])
+
+^{:refer lang.core.type-shared/update-group-count}
+(fact "updates and returns the registry"
+ (binding [shared/*groups* (atom {})]
+  (try
+   [(shared/update-group-count :test :id (fn [n] (inc (if (nil? n) 0 n))))
+    (shared/get-group-count :test :id)]
+   (finally (reset! shared/*groups* {}))))
+ => [{:test {:id {:count 1}}} 1])
+
+^{:refer lang.core.type-shared/get-group-instance}
+(fact "returns original runtime value"
+ (binding [shared/*groups* (atom {})]
+  (try
+   [(shared/get-group-instance :test :id)
+    (do (shared/set-group-instance :test :id {:a 1}) (shared/get-group-instance :test :id))]
+   (finally (reset! shared/*groups* {}))))
+ => [nil {:a 1}])
+
+^{:refer lang.core.type-shared/set-group-instance}
+(fact
+  "optional fields update only when supplied; zero count is retained"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (shared/set-group-instance
+        :test
+        :id
+        {:a 2}
+        0
+        {:x 1}
+        {:type :test})
+      (shared/set-group-instance :test :id {:a 3})
+      (deref shared/*groups*)
+      (finally (reset! shared/*groups* {}))))
+  =>
+  {:test
+   {:id
+    {:instance {:a 3},
+     :count 0,
+     :config {:x 1},
+     :client {:type :test}}}})
+
+^{:refer lang.core.type-shared/update-group-instance}
+(fact "updates existing instance and returns full state"
+ (binding [shared/*groups* (atom {})]
+  (try
+   (shared/set-group-instance :test :id {:a 2})
+   (shared/update-group-instance :test :id (fn [m] (assoc m :b 2)))
+   (shared/get-group-instance :test :id)
+   (finally (reset! shared/*groups* {}))))
+ => {:a 2 :b 2})
+
+^{:refer lang.core.type-shared/restart-group-instance}
+(fact "reconstructs from saved config without losing count"
+ (binding [shared/*groups* (atom {})]
+  (try
+   (shared/set-group-instance :test :id {:a 1} 3 {:seed 7}
+     {:constructor (fn [config] {:restarted true :seed (:seed config)})})
+   [(shared/restart-group-instance :test :id)
+    (shared/get-group-count :test :id)]
+   (finally (reset! shared/*groups* {}))))
+ => [{:restarted true :seed 7} 3])
+
+^{:refer lang.core.type-shared/remove-group-instance}
+(fact "removal is idempotent and leaves other clients intact"
+ (binding [shared/*groups* (atom {})]
+  (try
+   (shared/set-group-instance :test :id {:a 1})
+   (shared/set-group-instance :test :keep {:b 2})
+   (shared/remove-group-instance :test :id)
+   [(shared/get-group-instance :test :id)
+    (shared/remove-group-instance :test :id)]
+   (finally (reset! shared/*groups* {}))))
+ => [nil {:test {:keep {:instance {:b 2}}}}])
+
+^{:refer lang.core.type-shared/start-shared}
+(fact
+  "two clients share one construction and increment reference count"
+  (binding [shared/*groups* (atom {})]
+    (let [calls (atom [])
+          client {:type :test,
+                  :constructor
+                  (fn [config]
+                    (swap! calls conj config)
+                    {:started true})}
+          rt {:id :id, :client client, :config {:seed 1}}]
+      (try
+        [(= rt (shared/start-shared rt))
+         (= rt (shared/start-shared rt))
+         (deref calls)
+         (shared/get-group-count :test :id)
+         (shared/get-group-instance :test :id)]
+        (finally (reset! shared/*groups* {})))))
+  =>
+  [true true [{:seed 1}] 2 {:started true}])
+
+^{:refer lang.core.type-shared/stop-shared}
+(fact "temporary groups stop at last release and repeated stop is safe"
+ (binding [shared/*groups* (atom {})]
+  (let [rt {:id :id :temp true :client {:type :test :constructor (fn [config] {:started true})} :config {}}]
+   (try
+    (shared/start-shared rt)
+    (shared/start-shared rt)
+    (shared/stop-shared rt)
+    (let [one [(shared/get-group-count :test :id) (shared/get-group-instance :test :id)]]
+     (shared/stop-shared rt)
+     [(= rt (shared/stop-shared rt)) one (shared/get-group-instance :test :id) (shared/get-group-count :test :id)])
+    (finally (reset! shared/*groups* {})))))
+ => [true [1 {:started true}] nil 0])
+
+^{:refer lang.core.type-shared/kill-shared}
+(fact "kill preserves original stop alias behavior for retained named groups"
+ (binding [shared/*groups* (atom {})]
+  (let [rt {:id :named :client {:type :test :constructor (fn [config] {:kept true})} :config {}}]
+   (try
+    (shared/start-shared rt)
+    (shared/kill-shared rt)
+    [(shared/get-group-count :test :named) (shared/get-group-instance :test :named)]
+    (finally (reset! shared/*groups* {})))))
+ => [0 {:kept true}])
+
+^{:refer lang.core.type-shared/wrap-shared}
+(fact "config overlays current instance and variadic arguments stay ordered"
+ (binding [shared/*groups* (atom {})]
+  (try
+   (shared/set-group-instance :test :id {:a 1 :b 2})
+   (let [wrapped (shared/wrap-shared (fn [rt & args] [rt (vec args)]) {:type :test} :id {:a 9})]
+    [(wrapped nil 1 nil 3)
+     (do (shared/update-group-instance :test :id (fn [rt] (assoc rt :b 4))) (wrapped nil))])
+   (finally (reset! shared/*groups* {}))))
+ => [[{:a 9 :b 2} [1 nil 3]] [{:a 9 :b 4} []]])
+
+^{:refer lang.core.type-shared/rt-shared-string}
+(fact "display uses inner tag and outer language"
+ (binding [shared/*groups* (atom {})]
+  (try
+   (shared/set-group-instance :test :id {:tag :live})
+   (shared/rt-shared-string {:id :id :client {:type :test} :lang :lua})
+   (finally (reset! shared/*groups* {}))))
+ => "#rt.shared:live[:lua]")
+
+^{:refer lang.core.type-shared/rt-shared:create}
+(fact "constructor unqualifies runtime fields, retains source fields and defaults id"
+ [(select-keys (shared/rt-shared:create {:rt/id :id :rt/client {:type :test} :a 1})
+    [:id :client :config :rt/id :a])
+  (:id (shared/rt-shared:create {}))]
+ => [{:id :id :client {:type :test} :config {:a 1} :rt/id :id :a 1} :default])
+
+^{:refer lang.core.type-shared/rt-shared}
+(fact "constructor starts shared instance through native lifecycle"
+ (binding [shared/*groups* (atom {})]
+  (try
+   (let [rt (shared/rt-shared {:rt/id :id :rt/client {:type :test :constructor (fn [cfg] {:started true})}})]
+    [(shared/rt-is-shared? rt) (shared/get-group-instance :test :id) (shared/get-group-count :test :id)])
+   (finally (reset! shared/*groups* {}))))
+ => [true {:started true} 1])
+
+^{:refer lang.core.type-shared/rt-is-shared?}
+(fact "recognizes only shared records"
+ [(shared/rt-is-shared? (shared/rt-shared:create {})) (shared/rt-is-shared? {}) (shared/rt-is-shared? nil)]
+ => [true false false])
+
+^{:refer lang.core.type-shared/rt-get-inner}
+(fact "unwraps shared records and preserves ordinary values"
+ (binding [shared/*groups* (atom {})]
+  (try
+   (shared/set-group-instance :test :id {:inner true})
+   [(shared/rt-get-inner (shared/rt-shared:create {:rt/id :id :rt/client {:type :test}}))
+    (shared/rt-get-inner {:ordinary true}) (shared/rt-get-inner nil)]
+   (finally (reset! shared/*groups* {}))))
+ => [{:inner true} {:ordinary true} nil])
+
+(ns lang.core.type-shared-test
+  (:require [lang.core.type-shared :as shared]
+            [code.test :refer [fact]]))
+
+^{:refer lang.core.type-shared/get-groups, :added "4.0", :id :historical-get-groups, :setup []}
+(fact
+  "gets all shared groups"
+  (vector?
+    (binding [shared/*groups* (atom {})]
+      (try
+        (do (shared/get-groups))
+        (finally (reset! shared/*groups* {})))))
+  =>
+  true)
+
+^{:refer lang.core.type-shared/get-group-count, :added "4.0", :id :historical-get-group-count, :setup []}
+(fact
+  "gets the group count for a type and id"
+  (map?
+    (binding [shared/*groups* (atom {})]
+      (try
+        (do (shared/get-group-count :tahto/rt.redis))
+        (finally (reset! shared/*groups* {})))))
+  =>
+  true)
+
+^{:refer lang.core.type-shared/update-group-count, :added "4.0", :setup [], :id :historical-update-group-count}
+(fact
+  "updates the group counte"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/update-group-count
+          :test
+          :id
+          (fn [n] (inc (if (nil? n) 0 n))))
+        (shared/get-group-count :test :id))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  1)
+
+^{:refer lang.core.type-shared/get-group-instance, :added "4.0", :id :historical-get-group-instance, :setup []}
+(fact
+  "gets the group instance"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/set-group-instance :test :id {:a 1})
+        (shared/get-group-instance :test :id))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  {:a 1})
+
+^{:refer lang.core.type-shared/set-group-instance, :added "4.0", :id :historical-set-group-instance, :setup []}
+(fact
+  "sets the group instance"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/set-group-instance :test :id {:a 2})
+        (shared/get-group-instance :test :id))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  {:a 2})
+
+^{:refer lang.core.type-shared/update-group-instance, :added "4.0", :id :historical-update-group-instance, :setup []}
+(fact
+  "updates the group instance"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/set-group-instance :test :id {:a 2})
+        (shared/update-group-instance
+          :test
+          :id
+          (fn [m] (assoc m :b 2)))
+        (shared/get-group-instance :test :id))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  {:a 2, :b 2})
+
+^{:refer lang.core.type-shared/restart-group-instance, :added "4.0", :id :historical-restart-group-instance, :setup []}
+(fact
+  "restarts the group instance"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/set-group-instance
+          :test
+          :id
+          {:a 1}
+          1
+          {}
+          {:constructor (fn [cfg] {:restarted true})})
+        (shared/restart-group-instance :test :id))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  {:restarted true})
+
+^{:refer lang.core.type-shared/remove-group-instance, :added "4.0", :id :historical-remove-group-instance, :setup []}
+(fact
+  "removes the group instance"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/set-group-instance :test :id {:a 1})
+        (shared/remove-group-instance :test :id)
+        (shared/get-group-instance :test :id))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  nil)
+
+^{:refer lang.core.type-shared/start-shared, :added "4.0", :id :historical-start-shared, :setup []}
+(fact
+  "starts a shared runtime client"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/start-shared
+          {:id :id,
+           :client
+           {:type :test, :constructor (fn [cfg] {:started true})},
+           :config {}})
+        (shared/get-group-instance :test :id))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  {:started true})
+
+^{:refer lang.core.type-shared/stop-shared, :added "4.0", :setup [], :id :historical-stop-shared}
+(fact
+  "stops a shared runtime client"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/start-shared
+          {:id :id,
+           :temp true,
+           :client
+           {:type :test, :constructor (fn [cfg] {:started true})},
+           :config {}})
+        (shared/stop-shared
+          {:id :id,
+           :temp true,
+           :client
+           {:type :test, :constructor (fn [cfg] {:started true})},
+           :config {}})
+        (shared/get-group-instance :test :id))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  nil)
+
+^{:refer lang.core.type-shared/rt-shared:create, :added "4.0", :id :historical-rt-shared:create, :setup []}
+(fact
+  "creates a shared runtime client"
+  (select-keys
+    (binding [shared/*groups* (atom {})]
+      (try
+        (do
+          (shared/rt-shared:create
+            {:rt/id :id, :rt/client {:type :test}, :a 1}))
+        (finally (reset! shared/*groups* {}))))
+    [:id :config])
+  =>
+  {:id :id, :config {:a 1}})
+
+^{:refer lang.core.type-shared/rt-shared, :added "4.0", :id :historical-rt-shared, :setup []}
+(fact
+  "creates and starts and shared runtime client"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/rt-shared
+          {:rt/id :id,
+           :rt/client
+           {:type :test, :constructor (fn [cfg] {:started true})}})
+        (shared/get-group-instance :test :id))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  {:started true})
+
+^{:refer lang.core.type-shared/rt-is-shared?, :added "4.0", :id :historical-rt-is-shared?, :setup []}
+(fact
+  "checks if a runtime is shared"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do (shared/rt-is-shared? (shared/rt-shared:create {})))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  true)
+
+^{:refer lang.core.type-shared/rt-get-inner, :added "4.0", :id :historical-rt-get-inner, :setup []}
+(fact
+  "gets the inner runtime"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (do
+        (shared/set-group-instance :test :id {:inner true})
+        (let [rt (shared/rt-shared:create
+                   {:rt/id :id, :rt/client {:type :test}})]
+          (shared/rt-get-inner rt)))
+      (finally (reset! shared/*groups* {}))))
+  =>
+  {:inner true})
+
+(comment
+  "Historical editor-only forms are retained in the authority before-image.")
+
+
+(defstruct ^{:open true} SharedProbe [events])
+(extend-type SharedProbe IComponent
+ (start [rt] (swap! (:events rt) conj :start) rt)
+ (stop [rt] (swap! (:events rt) conj :stop) rt))
+(extend-type SharedProbe IContextEval
+ (evaluate-raw [rt body options] [:raw (:overlay rt) body options])
+ (tags-ptr [rt ptr] [:tags (:overlay rt) ptr])
+ (deref-ptr [rt ptr] [:deref (:overlay rt) ptr])
+ (display-ptr [rt ptr] [:display (:overlay rt) ptr])
+ (invoke-ptr [rt ptr args] [:invoke (:overlay rt) ptr args])
+ (transform-in-ptr [rt ptr args] [:in (:overlay rt) ptr args])
+ (transform-out-ptr [rt ptr output] [:out (:overlay rt) ptr output]))
+(extend-type SharedProbe IContextLifeCycle
+ (has-module? [rt module] [:has-module module])
+ (setup-module [rt module] [:setup-module module])
+ (teardown-module [rt module] [:teardown-module module])
+ (has-setup-ptr? [rt ptr] [:has-ptr ptr])
+ (setup-ptr [rt ptr] [:setup-ptr ptr])
+ (teardown-ptr [rt ptr] [:teardown-ptr ptr]))
+
+^{:refer lang.core.type-shared/wrap-shared, :id protocol-delegation}
+(fact
+  "shared protocol forwarding preserves config, arguments and original setup-module routing"
+  (binding [shared/*groups* (atom {})]
+    (let [events (atom [])]
+      (try
+        (let [rt (shared/rt-shared
+                   {:rt/client
+                    {:type :probe,
+                     :constructor
+                     (fn [config] (->SharedProbe events))},
+                    :overlay :outer})
+              result [(IContextEval/evaluate-raw
+                        rt
+                        "body"
+                        {:mode :raw})
+                      (IContextEval/tags-ptr rt :ptr)
+                      (IContextEval/deref-ptr rt :ptr)
+                      (IContextEval/display-ptr rt :ptr)
+                      (IContextEval/invoke-ptr rt :ptr [1 nil])
+                      (IContextEval/transform-in-ptr rt :ptr [2])
+                      (IContextEval/transform-out-ptr rt :ptr :result)
+                      (IContextLifeCycle/has-module? rt 'M)
+                      (IContextLifeCycle/setup-module rt 'M)
+                      (IContextLifeCycle/teardown-module rt 'M)
+                      (IContextLifeCycle/has-setup-ptr? rt :ptr)
+                      (IContextLifeCycle/setup-ptr rt :ptr)
+                      (IContextLifeCycle/teardown-ptr rt :ptr)]]
+          (IComponent/stop rt)
+          (IComponent/stop rt)
+          [result
+           (deref events)
+           (shared/get-group-instance :probe :default)])
+        (finally (reset! shared/*groups* {}) (reset! events [])))))
+  =>
+  [[[:raw :outer "body" {:mode :raw}]
+    [:tags :outer :ptr]
+    [:deref :outer :ptr]
+    [:display :outer :ptr]
+    [:invoke :outer :ptr [1 nil]]
+    [:in :outer :ptr [2]]
+    [:out :outer :ptr :result]
+    [:has-module 'M]
+    [:setup-module 'M]
+    [:teardown-module 'M]
+    [:has-ptr :ptr]
+    [:setup-module :ptr]
+    [:teardown-ptr :ptr]]
+   [:start :stop]
+   nil])
+
+^{:refer lang.core.type-shared/restart-group-instance, :id restart-lifecycle}
+(fact
+  "restart stops old instance before starting its replacement"
+  (binding [shared/*groups* (atom {})]
+    (let [events (atom [])]
+      (try
+        (let [rt (shared/rt-shared
+                   {:rt/client
+                    {:type :probe,
+                     :constructor
+                     (fn [config] (->SharedProbe events))}})
+              old (shared/get-group-instance :probe :default)
+              replacement (shared/restart-group-instance
+                            :probe
+                            :default)
+              same (Base/identical? old replacement)]
+          (IComponent/stop rt)
+          [same
+           (deref events)
+           (shared/get-group-count :probe :default)])
+        (finally (reset! shared/*groups* {}) (reset! events [])))))
+  =>
+  [false [:start :stop :start :stop] 0])
+
+(defstruct SharedStopFailure [])
+(extend-type
+  SharedStopFailure
+  IComponent
+  (stop [rt] (throw (ex :migration.shared/stop {:stage :stop}))))
+
+^{:refer lang.core.type-shared/stop-shared, :id lifecycle-failures}
+(fact
+  "constructor and real stop failures propagate without silently deleting state"
+  (binding [shared/*groups* (atom {})]
+    (try
+      (let [bad {:id :default,
+                 :client
+                 {:type :bad,
+                  :constructor
+                  (fn [config]
+                    (throw
+                      (ex
+                        :migration.shared/create
+                        {:stage :create})))}}
+            create-result (try
+                            (shared/start-shared bad)
+                            :unexpected
+                            (catch
+                              error
+                              (select-keys
+                                (ex-data error)
+                                [:ex/code :stage])))
+            after-create (deref shared/*groups*)
+            rt {:id :default,
+                :client
+                {:type :stop,
+                 :constructor (fn [config] (->SharedStopFailure))}}
+            _ (shared/start-shared rt)
+            instance (shared/get-group-instance :stop :default)
+            stop-result (try
+                          (shared/stop-shared rt)
+                          :unexpected
+                          (catch
+                            error
+                            (select-keys
+                              (ex-data error)
+                              [:ex/code :stage])))]
+        [create-result
+         after-create
+         stop-result
+         (shared/get-group-count :stop :default)
+         (Base/identical?
+           instance
+           (shared/get-group-instance :stop :default))])
+      (finally (reset! shared/*groups* {}))))
+  =>
+  [{:ex/code :migration.shared/create, :stage :create}
+   {}
+   {:ex/code :migration.shared/stop, :stage :stop}
+   1
+   true])
+

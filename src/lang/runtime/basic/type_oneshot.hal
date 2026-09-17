@@ -1,97 +1,225 @@
 (ns lang.runtime.basic.type-oneshot
   (:config {:role :internal})
   (:require [lang.runtime.basic.type-common :as common]
-            [tool.sh :as sh]))
+    [lang.core.runtime :as default]))
 
-(defstruct RuntimeOneshot [id lang runtime program exec process])
+(defn ^{:public true, :added "4.0"} sh-exec
+  "basic function for executing a shell process"
+  [input-args input-body options]
+  (let [{:keys [pipe stderr raw root shell]} options
+        trim (get options :trim str/trim-newlines)
+        trim (if (= (type trim) :std.native.Var) (deref trim) trim)]
+    (try
+      (let [unsupported (first
+                          (filter
+                            (fn [key] (get shell key))
+                            [:inherit :print :async :output]))
+            _ (if unsupported
+                (throw
+                  (ex
+                    :migration/oneshot-shell-option
+                    {:option unsupported}
+                    :ex/message
+                    "Native oneshot shell option is not available")))
+            args (if pipe input-args (conj input-args input-body))
+            environment (reduce-kv
+                          (fn [out key value]
+                            (assoc
+                              out
+                              (if (nil? key) "" (str key))
+                              (if (nil? value) "" (str value))))
+                          {}
+                          (or (:env shell) {}))
+            process (Process/spawn
+                      args
+                      {:cwd (or root (OS/getenv "PWD")),
+                       :env environment})]
+        (try
+          (if pipe
+            (do
+              (Process/write process (String/encode-utf8 input-body))
+              (Process/close-input process)))
+          (let [result (Result/synchronize
+                         (Promise/all
+                           [(Process/wait process)
+                            (Process/stdout process)
+                            (Process/stderr process)]))
+                values (if (Result/error? result)
+                         (let [failure (Result/error-value result)]
+                           (if (ex? failure)
+                             (throw failure)
+                             (throw
+                               (ex
+                                 :host
+                                 {}
+                                 :ex/message
+                                 (ex-message failure)))))
+                         (Result/data result))
+                exit (nth values 0)
+                out (String/decode-utf8 (nth values 1))
+                err (String/decode-utf8 (nth values 2))]
+            (if raw
+              (let [out-lines (seq
+                                (remove
+                                  empty?
+                                  (str/split-lines (trim out))))
+                    err-lines (seq
+                                (remove
+                                  empty?
+                                  (str/split-lines (trim err))))]
+                [exit (or out-lines err-lines [])])
+              (trim out)))
+          (finally
+            (Process/close-input process)
+            (Process/kill process)
+            (Result/synchronize (Process/wait process)))))
+      (catch
+        error
+        (if stderr
+          (trim (ex-message error))
+          (if (ex? error)
+            (throw error)
+            (throw (ex :host {} :ex/message (ex-message error)))))))))
 
-(defn default-id
-  [language runtime]
-  (keyword (str (name language) "." (name runtime))))
+(defn ^{:public true, :added "4.0"} raw-eval-oneshot
+  "evaluates a raw statement with oneshot"
+  [{:keys [exec process]} body]
+  (let [executor (or (:exec-fn process) sh-exec)
+        executor (if (= (type executor) :std.native.Var)
+                   (deref executor)
+                   executor)]
+    (executor exec body process)))
+
+(defn invoke-ptr-oneshot
+  "gets the oneshow invoke working"
+  {:added "4.0"}
+  [{:as rt :keys [process lang layout] :or {layout :full}} ptr args]
+  (default/default-invoke-script (assoc rt :layout layout)
+    ptr
+    args
+    raw-eval-oneshot
+    process))
+
+(defn rt-oneshot-string [{:keys [lang runtime program]}]
+  (str "#rt.oneshot" [lang runtime program]))
+
+(do
+  (defstruct ^{:open true} RuntimeOneshot [id])
+  (extend-type
+    RuntimeOneshot
+    IDisplay
+    (display [rt] (rt-oneshot-string rt)))
+  (extend-type
+    RuntimeOneshot
+    IContextEval
+    (evaluate-raw [rt body options] (raw-eval-oneshot rt body))
+    (tags-ptr [rt ptr] (default/default-tags-ptr rt ptr))
+    (deref-ptr [rt ptr] (default/default-deref-ptr rt ptr))
+    (display-ptr [rt ptr] (default/default-display-ptr rt ptr))
+    (invoke-ptr [rt ptr args] (invoke-ptr-oneshot rt ptr args))
+    (transform-in-ptr
+      [rt ptr args]
+      (default/default-transform-in-ptr rt ptr args))
+    (transform-out-ptr
+      [rt ptr value]
+      (default/default-transform-out-ptr rt ptr value)))
+  (extend-type
+    RuntimeOneshot
+    IContextLifeCycle
+    (setup-ptr [rt ptr] (default/default-init-ptr rt ptr)))
+  (extend-type
+    RuntimeOneshot
+    IComponent
+    (start [rt] rt)
+    (stop [rt] rt)
+    (kill [rt] rt)))
 
 (defn rt-oneshot-setup
-  "Prepares Foundation-compatible program, process and exec values."
-  ([language program process exec]
-   (rt-oneshot-setup language program process exec :oneshot))
-  ([language program process exec context]
-   (let [program (common/get-program-default language context program)
-         process-options (common/get-options language context program)
-         process (merge process-options process)
-         exec (or exec
-                  (common/get-program-exec language context program))]
-     [program process exec])))
+  "helper function for preparing oneshot params"
+  {:added "4.0"}
+  ([lang program process exec]
+    (rt-oneshot-setup lang program process exec :oneshot))
+  ([lang program process exec context]
+    (let [program (common/get-program-default lang context program)
+          process ((fn [left right]
+                     (letfn
+                       [(merge-options
+                          [left right]
+                          (cond
+                            (and (nil? left) (nil? right)) nil
+                            (and
+                              (or (nil? left) (map? left))
+                              (or (nil? right) (map? right))) (merge-with
+                                                                merge-options
+                                                                left
+                                                                right)
+                            :else right))]
+                       (merge-options left right)))
+                    (common/get-options lang context program)
+                    process)
+          exec (or
+                 exec
+                 (common/get-program-exec lang context program))]
+      [program process exec])))
 
-(defn rt-oneshot:create
-  "Creates a Foundation-shaped oneshot runtime."
-  [options]
-  (let [id (get options :id)
-        lang (get options :lang)
-        runtime (or (get options :runtime) :oneshot)
-        exec (get options :exec)
-        program (get options :program)
-        process (get options :process)
-        [program process exec]
-        (rt-oneshot-setup lang program process exec runtime)]
-    (lang.runtime.basic.type-oneshot/RuntimeOneshot
-     (or id (default-id lang runtime))
-     lang
-     runtime
-     program
-     exec
-     process)))
+(defn ^{:public true} rt-oneshot:create
+  "creates a oneshot runtime"
+  {:added "4.0"}
+  [{:keys [id lang runtime exec program process],
+    :as m,
+    :or {runtime :oneshot}}]
+  (let [[program process exec] (rt-oneshot-setup
+                                 lang
+                                 program
+                                 process
+                                 exec
+                                 runtime)
+        flags (common/get-program-flags lang program)
+        _ (cond
+            (not (get flags runtime)) (throw
+                                        (ex
+                                          :runtime/configuration
+                                          {:lang lang,
+                                           :runtime runtime,
+                                           :flags flags,
+                                           :program program}
+                                          :ex/message
+                                          "Program does not support runtime")))]
+    (map->RuntimeOneshot
+      (assoc
+        m
+        :id
+        (or
+          id
+          (let [buffer (String/encode-utf8 (subs (str (uuid)) 7 43))
+                number (reduce
+                         (fn [out index]
+                           (+ (* out 256) (Bytes/get buffer index)))
+                         0
+                         (range 8))]
+            (loop [number number output ""]
+              (if (zero? number)
+                output
+                (let [digit (rem number 36)]
+                  (recur
+                    (quot number 36)
+                    (str
+                      (subs
+                        "0123456789abcdefghijklmnopqrstuvwxyz"
+                        digit
+                        (inc digit))
+                      output)))))))
+        :runtime
+        runtime
+        :program
+        program
+        :exec
+        exec
+        :process
+        process))))
 
-(defn rt-oneshot
-  [options]
-  (rt-oneshot:create options))
-
-(defn process-options
-  [runtime]
-  (select-keys (or (:process runtime) {}) [:cwd :env :stdin]))
-
-(defn oneshot-result
-  "Builds the structured result returned by a one-shot target process."
-  ([runtime result]
-   (merge
-    {:phase :eval
-     :runtime/id (get runtime :id)
-     :runtime/language (get runtime :lang)
-     :lang (get runtime :lang)
-     :runtime (get runtime :runtime)
-     :program (get runtime :program)}
-    result))
-  ([runtime argv values]
-   (oneshot-result
-    runtime
-    {:command argv
-     :exit (nth values 2)
-     :stdout (str/decode-utf8 (nth values 0))
-     :stderr (str/decode-utf8 (nth values 1))})))
-
-(defn execute-oneshot
-  "Executes emitted target source through the canonical one-shot boundary."
-  [runtime source]
-  (let [argv (vec (concat (get runtime :exec) [source]))]
-    (try
-      (let [result (sh/result-record
-                    (sh/run argv (process-options runtime)))]
-        (oneshot-result runtime result))
-      (catch error
-        (throw
-         (ex :host {:phase :eval
-           :lang (get runtime :lang)
-           :runtime (get runtime :runtime)
-           :program (get runtime :program)
-           :command argv
-           :generated-fragment source
-           :cause-data (ex-data error)} :ex/message "Target runtime process could not complete" :ex/cause error))))))
-
-(defn raw-eval-oneshot
-  "Evaluates emitted target source using the selected local program."
-  [runtime source]
-  (let [result (execute-oneshot runtime source)]
-    (if (= 0 (get result :exit))
-      (if (get-in runtime [:process :raw])
-        result
-        (str/trim-right (get result :stdout)))
-      (throw
-       (ex :host (assoc result :generated-fragment source) :ex/message "Target runtime execution failed")))))
+(defn ^{:public true} rt-oneshot
+  "creates a oneshot runtime"
+  {:added "4.0"}
+  [{:keys [id lang runtime program process], :as m}]
+  (rt-oneshot:create m))

@@ -1,0 +1,112 @@
+(ns code.test.interactive-test
+  (:require [code.test.interactive :as interactive]))
+
+^{:refer code.test.interactive/source-plan}
+(Test/check
+ [{:name "reader spans retain metadata, Unicode text, and a lossless original"
+   :test (fn []
+           (let [source "; λ\n^{:refer x/y}\n(fact \"λ🙂\" 1 => 1)\n(ns x)"
+                 plan (interactive/source-plan "sample.hal" source)]
+             [(:file plan) (= source (:source plan))
+              (mapv :source (:forms plan))
+              (:start (first (:forms plan)))
+              (mapv :index (:forms plan))]))
+   :expected ["sample.hal" true
+              ["^{:refer x/y}\n(fact \"λ🙂\" 1 => 1)" "(ns x)"]
+              {:line 2 :column 1 :offset 5} [1 2]]}
+  {:name "reader rejects incomplete source before evaluation"
+   :test (fn [] (try (interactive/source-plan "broken.hal" "(ns x") :unexpected
+                    (catch error :rejected)))
+   :expected :rejected}])
+
+^{:refer code.test.interactive/valid-report?}
+(Test/check
+ [{:name "reports reject lying status, missing checks, and mismatched totals"
+   :test (fn []
+           (mapv interactive/valid-report?
+            [nil
+             {"report/version" 1 "status" "none" "facts" 0 "checks" 0 "events" []}
+             {"report/version" 1 "status" "passed" "facts" 0 "checks" 0 "events" []}
+             {"report/version" 1 "status" "passed" "facts" 1 "checks" 1
+              "events" [{"status" "passed" "checks" [{"passed" true}]}]}
+             {"report/version" 1 "status" "passed" "facts" 1 "checks" 1
+              "events" [{"status" "passed" "checks" [{"passed" false}]}]}
+             {"report/version" 1 "status" "passed" "facts" 1 "checks" 0
+              "events" [{"status" "passed" "checks" []}]}
+             {"report/version" 1 "status" "failed" "facts" 1 "checks" 0
+              "events" [{"status" "failed" "checks" []}]}
+             {"report/version" 1 "status" "failed" "facts" 2 "checks" 0
+              "events" [{"status" "failed" "checks" []}]}]))
+   :expected [false true false true false false true false]}])
+
+^{:refer code.test.interactive/evidence}
+(Test/check
+ [{:name "evidence retains exact assertions and excludes timing and display"
+   :test (fn []
+           (interactive/evidence
+            {:records [{:value "display" :report
+                         {"events" [{"namespace" "sample" "desc" "one" "status" "passed"
+                                     "elapsed" 99 "checks" [{"passed" true "actual" "42" "expected" "42"}]}]}}]}))
+   :expected [[{"namespace" "sample" "desc" "one" "status" "passed"
+                "checks" [{"passed" true "actual" "42" "expected" "42"}]}]]}])
+
+^{:refer code.test.interactive/run-pass}
+(Test/check
+ [{:name "setup alone cannot pass a test file"
+   :test (fn []
+           (select-keys
+            (interactive/run-pass (interactive/source-plan "setup.hal" "(ns setup)") :cold
+              (fn [_] {:value "nil" :report {"report/version" 1 "status" "none"
+                                           "facts" 0 "checks" 0 "events" []}})
+              (fn [_] nil))
+            [:status :reason :facts :checks]))
+   :expected {:status :failed :reason :no-assertions :facts 0 :checks 0}}
+  {:name "evaluation failure stops immediately and preserves partial progress"
+   :test (fn []
+           (let [calls (atom []) progress (atom [])
+                 result (interactive/run-pass (interactive/source-plan "sample.hal" "1 2 3") :cold
+                          (fn [form] (swap! calls conj (:source form))
+                            (if (= 2 (:index form)) (throw (ex :state {} :ex/message "failure"))
+                              {:value "printed" :report {"report/version" 1 "status" "passed"
+                                "facts" 1 "checks" 1 "events" [{"status" "passed" "checks" [{"passed" true}]}]}}))
+                          (fn [record] (swap! progress conj (:index record))))]
+             [(:status result) (:reason result) (:facts result) (:checks result)
+              (deref calls) (deref progress) (count (:records result))]))
+   :expected [:failed :evaluation 1 1 ["1" "2"] [1 2] 2]}])
+
+^{:refer code.test.interactive/run-file}
+(Test/check
+ [{:name "cold and warm share one transport and cleanup once"
+   :test (fn []
+           (let [calls (atom 0) opened (atom 0) closed (atom 0)
+                 result (interactive/run-file (interactive/source-plan "sample.hal" "42")
+                          (fn [] (swap! opened inc)
+                            {:evaluate (fn [_] (swap! calls inc)
+                              {:value "unchanged" :report {"report/version" 1 "status" "passed"
+                               "facts" 1 "checks" 1 "events" [{"status" "passed" "checks" [{"passed" true}]}]}})
+                             :close (fn [] (swap! closed inc))})
+                          (fn [_] nil))]
+             [(:status result) (:source result) (deref calls) (deref opened) (deref closed)]))
+   :expected [:passed "42" 2 1 1]}
+  {:name "warm evidence drift fails even with matching assertion totals"
+   :test (fn []
+           (let [calls (atom 0) closed (atom 0)
+                 result (interactive/run-file (interactive/source-plan "sample.hal" "42")
+                          (fn [] {:evaluate (fn [_]
+                            {:report {"report/version" 1 "status" "passed" "facts" 1 "checks" 1
+                              "events" [{"status" "passed" "checks" [{"passed" true "actual" (str (swap! calls inc))}]}]}})
+                                  :close (fn [] (swap! closed inc))})
+                          (fn [_] nil))]
+             [(:status result) (deref calls) (deref closed)]))
+   :expected [:failed 2 1]}
+  {:name "progress failure still tears down the owned transport"
+   :test (fn []
+           (let [closed (atom 0)
+                 outcome (try
+                           (interactive/run-file (interactive/source-plan "sample.hal" "42")
+                             (fn [] {:evaluate (fn [_] {:error "expected"})
+                                     :close (fn [] (swap! closed inc))})
+                             (fn [_] (throw (ex :state {} :ex/message "progress failed"))))
+                           :unexpected (catch error :failed))]
+             [outcome (deref closed)]))
+   :expected [:failed 1]}])

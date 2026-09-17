@@ -1,0 +1,205 @@
+(ns std.lib.schema.impl-test
+  (:require [std.lib.schema.impl :refer :all])
+  (:use code.test))
+
+^{:refer std.lib.schema.impl/simplify, :added "3.0", :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "helper function for easier display of spirit schema"
+  (simplify
+    {:account/name [{:type :long}],
+     :account/email [{:type :string, :cardinality :many}],
+     :email/accounts
+     [{:type :ref, :cardinality :many, :ref {:ns :account}}]})
+  =>
+  {:email {:accounts :&account<*>},
+   :account {:email :string<*>, :name :long}})
+
+^{:refer std.lib.schema.impl/create-lookup, :added "3.0", :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "lookup from flat schema mainly for reverse refs"
+  (create-lookup
+    {:account/name [{}],
+     :account/email [{}],
+     :email/accounts
+     [{:ident :email/accounts,
+       :type :ref,
+       :ref {:type :reverse, :key :account/_email}}]})
+  =>
+  {:email/accounts :email/accounts,
+   :account/_email :email/accounts,
+   :account/email :account/email,
+   :account/name :account/name})
+
+^{:refer std.lib.schema.impl/create-flat-schema, :added "3.0", :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "creates a flat schema from an input map"
+  (create-flat-schema
+    {:account {:email [{:type :ref, :ref {:ns :email}}]}})
+  =>
+  {:email/accounts
+   [{:ident :email/accounts,
+     :type :ref,
+     :cardinality :many,
+     :ref
+     {:ns :account,
+      :type :reverse,
+      :key :account/_email,
+      :val :accounts,
+      :rval :email,
+      :rkey :account/email,
+      :rident :account/email}}],
+   :account/email
+   [{:ident :account/email,
+     :type :ref,
+     :cardinality :one,
+     :ref
+     {:ns :email,
+      :type :forward,
+      :key :account/email,
+      :val :email,
+      :rval :accounts,
+      :rkey :account/_email,
+      :rident :email/accounts}}]})
+
+^{:refer std.lib.schema.impl/vec->map, :added "3.0", :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "turns a vec schema to a map"
+  (vec->map [:account [:id {:type :long} :name {:type :text}]])
+  =>
+  {:account
+   {:id [{:type :long, :order 0}], :name [{:type :text, :order 1}]}})
+
+^{:refer std.lib.schema.impl/schema-map, :added "3.0", :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "creates a schema from a map"
+  (-> (schema-map
+        {:account/name [{}],
+         :account/email
+         [{:ident :account/email, :type :ref, :ref {:ns :email}}]})
+   :flat
+   simplify)
+  =>
+  {:account {:name :string, :email :&email},
+   :email {:accounts :&account<*>}})
+
+^{:refer std.lib.schema.impl/schema, :added "3.0", :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "creates an extended schema for use by spirit"
+  (-> (std.lib.schema.impl/schema
+        [:account [:name {} :email {:type :ref, :ref {:ns :email}}]])
+   :flat
+   simplify)
+  =>
+  {:email {:accounts :&account<*>},
+   :account {:email :&email, :name :string}})
+
+^{:refer std.lib.schema.impl/schema?, :added "3.0", :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "checks if object is a schema"
+  (std.lib.schema.impl/schema?
+    (std.lib.schema.impl/schema {:user/email [{}]}))
+  =>
+  true)
+
+(comment
+  (use 'jvm.tool)
+  (./arrange)
+  (./scaffold)
+  (./import))
+
+^{:refer std.lib.schema.impl/simplify, :id :empty-and-types, :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "simplification preserves nesting and cardinality markers"
+  (std.lib.schema.impl/simplify {})
+  =>
+  {}
+  (std.lib.schema.impl/simplify
+    {:a/b/c [{:type :boolean, :cardinality :many}]})
+  =>
+  {:a {:b {:c :boolean<*>}}})
+
+^{:refer std.lib.schema.impl/create-lookup, :id :lookup-empty-and-alias, :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "lookup retains canonical and reverse aliases"
+  (std.lib.schema.impl/create-lookup {})
+  =>
+  {}
+  (std.lib.schema.impl/create-lookup
+    {:a/b [{}],
+     :b/as [{:type :ref, :ref {:type :reverse, :key :a/_b}}]})
+  =>
+  {:a/b :a/b, :b/as :b/as, :a/_b :b/as})
+
+^{:refer std.lib.schema.impl/create-flat-schema, :id :explicit-defaults, :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "explicit defaults do not override supplied attributes"
+  (std.lib.schema.impl/create-flat-schema
+    {:a {:b [{}], :c [{:type :long}]}}
+    [{:id :type, :default :string}])
+  =>
+  {:a/b [{:ident :a/b, :type :string}],
+   :a/c [{:ident :a/c, :type :long}]}
+  (std.lib.schema.impl/create-flat-schema {} [])
+  =>
+  {})
+
+^{:refer std.lib.schema.impl/vec->map, :id :column-order, :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "vector column order overrides supplied order and empty vectors remain empty"
+  (std.lib.schema.impl/vec->map [])
+  =>
+  {}
+  (std.lib.schema.impl/vec->map [:a [:x {:order 9} :y {}]])
+  =>
+  {:a {:x [{:order 0}], :y [{:order 1}]}})
+
+^{:refer std.lib.schema.impl/schema-map, :id :representation-round-trip, :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "schema map keeps consistent flat tree and lookup representations"
+  (let [s (std.lib.schema.impl/schema-map {:a {:b [{}]}} [])]
+    [(:flat s)
+     (:tree s)
+     (:lu s)
+     (:vec s)
+     (std.lib.collection/tree-flatten (:tree s))
+     (IDisplay/display s)])
+  =>
+  [{:a/b [{:ident :a/b}]}
+   {:a {:b [{:ident :a/b}]}}
+   {:a/b :a/b}
+   nil
+   {:a/b [{:ident :a/b}]}
+   "#schema{:tables 1}"])
+
+^{:refer std.lib.schema.impl/schema, :id :vector-provenance, :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "vector input is retained exactly and can reconstruct the record"
+  (let [original [:a [:x {} :y {:type :long}]]
+        s (std.lib.schema.impl/schema original [])
+        restored (std.lib.schema.impl/schema (:vec s) [])]
+    [(:vec s)
+     (= (:flat s) (:flat restored))
+     (= (:tree s) (:tree restored))
+     (:lu s)
+     (std.lib.schema.impl/schema nil)
+     (std.lib.schema.impl/schema 1)])
+  =>
+  [[:a [:x {} :y {:type :long}]]
+   true
+   true
+   {:a/x :a/x, :a/y :a/y}
+   nil
+   nil])
+
+^{:refer std.lib.schema.impl/schema?, :id :record-preservation, :setup [^{:line 3, :column 119} (std.lib.collection/re-create-reset)], :teardown [^{:line 3, :column 169} (std.lib.collection/re-create-reset)]}
+(fact
+  "only schema records qualify and assoc preserves record type"
+  (let [s (std.lib.schema.impl/schema {} [])]
+    [(std.lib.schema.impl/schema? s)
+     (std.lib.schema.impl/schema? (assoc s :extra 1))
+     (std.lib.schema.impl/schema? {})
+     (std.lib.schema.impl/schema? nil)
+     (IDisplay/display s)])
+  =>
+  [true true false false "#schema{:tables 0}"])
+

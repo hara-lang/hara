@@ -1,0 +1,218 @@
+(ns lang.core.runtime-proxy-test
+  (:require [lang.core.runtime-proxy :as p]
+            [std.lib.context.space :as space]
+            [code.test :refer :all]))
+
+(defstruct ProxyFixture [label]
+  IContextEval
+  (evaluate-raw [self request options] (promise/from [(:label self) request options]))
+  (tags-ptr [self ptr] [:tag (:label self) (:id ptr)])
+  (deref-ptr [self ptr] {:label (:label self) :pointer ptr})
+  (display-ptr [self ptr] (str "display:" (:label self) ":" (:id ptr)))
+  (invoke-ptr [self ptr args] [(:label self) ptr args])
+  (transform-in-ptr [self ptr args] [(:label self) ptr args])
+  (transform-out-ptr [self ptr value] [(:label self) ptr value])
+  IContextLifeCycle
+  (setup-ptr [self entry] (if (empty? entry) nil [(:label self) entry]))
+  IComponent
+  (started? [self] (= :a (:label self)))
+  (stopped? [self] (= :b (:label self)))
+  (remote? [self] (= :b (:label self)))
+  (info [self level] {:label (:label self) :level level})
+  (health [self] (if (= :a (:label self)) {:status :ok :label :a} false)))
+
+(def proxy-a {:redirect 'redirect.a :lang :js})
+(def proxy-b {:redirect 'redirect.b :lang :lua})
+
+(defn with-proxy-fixture [f]
+  (binding [space/*spaces*
+            (atom {'redirect.a (space/Space 'redirect.a (atom {:lang/js {:instance (->ProxyFixture :a)}}))
+                   'redirect.b (space/Space 'redirect.b (atom {:lang/lua {:instance (->ProxyFixture :b)}}))})]
+    (f)))
+
+^{:refer lang.core.runtime-proxy/rt-proxy-string}
+(fact "retains the original display field order"
+  (p/rt-proxy-string {:namespace 'origin :redirect 'target :lang :lua})
+  => "#rt.proxy[:lua target origin]")
+
+^{:refer lang.core.runtime-proxy/proxy-get-rt}
+(fact "looks up both the redirected namespace and language, without leaking fixture spaces"
+  (with-proxy-fixture
+    (fn [] [(:label (p/proxy-get-rt 'redirect.a :js))
+            (:label (p/proxy-get-rt 'redirect.b :lua))]))
+  => [:a :b]
+  (let [baseline (deref space/*spaces*)]
+    (try (with-proxy-fixture (fn [] (throw (ex :fixture {}))))
+         (catch e nil))
+    (= baseline (deref space/*spaces*)))
+  => true)
+
+^{:refer lang.core.runtime-proxy/proxy-raw-eval}
+(fact "awaits raw evaluation and supplies empty native options"
+  (with-proxy-fixture
+    (fn [] [(p/proxy-raw-eval proxy-a "1 + 1")
+            (p/proxy-raw-eval proxy-b "nil")]))
+  => [[:a "1 + 1" {}] [:b "nil" {}]])
+
+^{:refer lang.core.runtime-proxy/proxy-init-ptr}
+(fact "forwards entries to setup and preserves nil and value returns"
+  (with-proxy-fixture
+    (fn [] [(p/proxy-init-ptr proxy-a {:id 'x :rt/init true})
+            (p/proxy-init-ptr proxy-b {})]))
+  => [[:a {:id 'x :rt/init true}] nil])
+
+^{:refer lang.core.runtime-proxy/proxy-tags-ptr}
+(fact "forwards the pointer to the selected runtime tag method"
+  (with-proxy-fixture (fn [] (p/proxy-tags-ptr proxy-b {:id 'x})))
+  => [:tag :b 'x])
+
+^{:refer lang.core.runtime-proxy/proxy-deref-ptr}
+(fact "returns the runtime dereference result, not the pointer"
+  (with-proxy-fixture (fn [] (p/proxy-deref-ptr proxy-a {:id 'x})))
+  => {:label :a :pointer {:id 'x}})
+
+^{:refer lang.core.runtime-proxy/proxy-display-ptr}
+(fact "returns the selected runtime pointer display"
+  (with-proxy-fixture (fn [] (p/proxy-display-ptr proxy-b {:id 'x})))
+  => "display::b:x")
+
+^{:refer lang.core.runtime-proxy/proxy-invoke-ptr}
+(fact "preserves pointer and ordered invocation arguments"
+  (with-proxy-fixture (fn [] (p/proxy-invoke-ptr proxy-b {:id 'x} [1 2])))
+  => [:b {:id 'x} [1 2]])
+
+^{:refer lang.core.runtime-proxy/proxy-transform-in-ptr}
+(fact "uses the input transform of the redirected runtime"
+  (with-proxy-fixture (fn [] (p/proxy-transform-in-ptr proxy-a {:id 'x} [1 2])))
+  => [:a {:id 'x} [1 2]])
+
+^{:refer lang.core.runtime-proxy/proxy-transform-out-ptr}
+(fact "uses the output transform and preserves false results as inputs"
+  (with-proxy-fixture (fn [] (p/proxy-transform-out-ptr proxy-b {:id 'x} false)))
+  => [:b {:id 'x} false])
+
+^{:refer lang.core.runtime-proxy/proxy-started?}
+(fact "forwards both started states"
+  (with-proxy-fixture (fn [] [(p/proxy-started? proxy-a) (p/proxy-started? proxy-b)]))
+  => [true false])
+
+^{:refer lang.core.runtime-proxy/proxy-stopped?}
+(fact "forwards both stopped states"
+  (with-proxy-fixture (fn [] [(p/proxy-stopped? proxy-a) (p/proxy-stopped? proxy-b)]))
+  => [false true])
+
+^{:refer lang.core.runtime-proxy/proxy-remote?}
+(fact "forwards both remote states"
+  (with-proxy-fixture (fn [] [(p/proxy-remote? proxy-a) (p/proxy-remote? proxy-b)]))
+  => [false true])
+
+(comment :deferred-original-runtime-script-fixture
+(ns lang.core.runtime-proxy-test
+  (:require [tahto.core :as l]
+            [tahto.core.runtime :as rt]
+            [lang.core.runtime-proxy :as p]
+            [lang.base.util :as ut])
+  (:use code.test))
+
+^{:refer lang.core.runtime-proxy/proxy-get-rt :added "4.0"}
+(fact "gets the redirected runtime"
+
+  (p/proxy-get-rt
+   'tahto.core
+   :js)
+  => rt/rt-default?)
+
+^{:refer lang.core.runtime-proxy/proxy-raw-eval :added "4.0"}
+(fact "evaluates the raw string"
+
+  (p/proxy-raw-eval
+   {:redirect 'tahto.core
+    :lang :js}
+   "1 + 1")
+  => "1 + 1")
+
+^{:refer lang.core.runtime-proxy/proxy-init-ptr :added "4.0"}
+(fact "initialises ptr"
+  (p/proxy-init-ptr {:redirect 'tahto.core :lang :js} {}) => nil)
+
+^{:refer lang.core.runtime-proxy/proxy-tags-ptr :added "4.0"}
+(fact "gets the ptr tags"
+
+  (p/proxy-tags-ptr
+   {:redirect 'tahto.core
+    :lang :js}
+   ((l/ptr :js)))
+  => [:default nil nil])
+
+^{:refer lang.core.runtime-proxy/proxy-deref-ptr :added "4.0"}
+(fact "dereefs the pointer"
+  (p/proxy-deref-ptr {:redirect 'tahto.core :lang :js} {}) => {:library nil})
+
+^{:refer lang.core.runtime-proxy/proxy-display-ptr :added "4.0"}
+(fact "displays the pointer"
+  (p/proxy-display-ptr {:redirect 'tahto.core :lang :js} (ut/lang-pointer :js {}))
+  => "<free>")
+
+^{:refer lang.core.runtime-proxy/proxy-invoke-ptr :added "4.0"}
+(fact "invokes the pointer"
+  (p/proxy-invoke-ptr {:redirect 'tahto.core :lang :js} (ut/lang-pointer :js {}) [])
+  => string?)
+
+^{:refer lang.core.runtime-proxy/proxy-transform-in-ptr :added "4.0"}
+(fact "transforms the pointer on in"
+  (p/proxy-transform-in-ptr {:redirect 'tahto.core :lang :js} (ut/lang-pointer :js {}) [])
+  => [])
+
+^{:refer lang.core.runtime-proxy/proxy-transform-out-ptr :added "4.0"}
+(fact "transforms the pointer on out"
+  (p/proxy-transform-out-ptr {:redirect 'tahto.core :lang :js} (ut/lang-pointer :js {}) :ret)
+  => :ret)
+
+^{:refer lang.core.runtime-proxy/proxy-started? :added "4.0"}
+(fact "checks if proxied has started"
+  (p/proxy-started? {:redirect 'tahto.core :lang :js}) => true)
+
+^{:refer lang.core.runtime-proxy/proxy-stopped? :added "4.0"}
+(fact "checks if proxied has stopped"
+  (p/proxy-stopped? {:redirect 'tahto.core :lang :js}) => true)
+
+^{:refer lang.core.runtime-proxy/proxy-remote? :added "4.0"}
+(fact "checks if proxied is remote"
+  (p/proxy-remote? {:redirect 'tahto.core :lang :js}) => false)
+
+^{:refer lang.core.runtime-proxy/proxy-info :added "4.0"}
+(fact "gets the proxied info"
+  (p/proxy-info {:redirect 'tahto.core :lang :js} :brief) => {})
+
+^{:refer lang.core.runtime-proxy/proxy-health :added "4.0"}
+(fact "checks the proxied health"
+  (p/proxy-health {:redirect 'tahto.core :lang :js}) => true)
+
+)
+
+^{:refer lang.core.runtime-proxy-test/with-proxy-fixture :id fixture-boundary}
+(fact "isolates redirected spaces and restores the outer binding after value and error returns"
+ (binding [space/*spaces* (atom {})]
+  (let [value (with-proxy-fixture (fn [] [(p/proxy-raw-eval proxy-a "probe")
+                                        (set (keys (deref space/*spaces*)))]))
+        after-value (deref space/*spaces*)
+        error-value (try (with-proxy-fixture (fn [] (throw (ex :fixture {:marker :expected}))))
+                         (catch e :expected-error))]
+   [value after-value error-value (deref space/*spaces*)]))
+ => [[[:a "probe" {}] '#{redirect.a redirect.b}] {} :expected-error {}])
+
+^{:refer lang.core.runtime-proxy/proxy-info :id query-dispatch}
+(fact "forwards the level unchanged to the selected runtime"
+  (with-proxy-fixture
+    (fn [] [(p/proxy-info proxy-a :brief)
+            (p/proxy-info proxy-b {:detail true})
+            (p/proxy-info proxy-a nil)
+            (p/proxy-info proxy-a false)]))
+  => [{:label :a :level :brief} {:label :b :level {:detail true}}
+      {:label :a :level nil} {:label :a :level false}])
+
+^{:refer lang.core.runtime-proxy/proxy-health :id query-health}
+(fact "preserves structured health and false without coercion"
+  (with-proxy-fixture
+    (fn [] [(p/proxy-health proxy-a) (p/proxy-health proxy-b)]))
+  => [{:status :ok :label :a} false])

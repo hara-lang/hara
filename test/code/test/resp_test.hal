@@ -1,0 +1,71 @@
+(ns code.test.resp-test
+  (:require [code.test.resp :as resp]))
+
+^{:refer code.test.resp/encode}
+(Test/check
+ [{:name "bulk lengths count UTF-8 bytes"
+   :test (fn [] (str/decode-utf8 (resp/encode ["λ🙂" 42 nil])))
+   :expected "*3\r\n$6\r\nλ🙂\r\n:42\r\n$-1\r\n"}
+  {:name "nested values and tagged errors round trip"
+   :test (fn [] (:value (resp/parse-at (resp/encode ["x" [42 nil] {:resp/error "failure"}]) 0 0)))
+   :expected ["x" [42 nil] {:resp/error "failure"}]}])
+
+^{:refer code.test.resp/parse-at}
+(Test/check
+ [{:name "all partial byte prefixes remain incomplete, including split UTF-8"
+   :test (fn []
+           (let [encoded (resp/encode ["λ🙂" "tail"])]
+             [(every? nil? (map (fn [end] (resp/parse-at (bytes/slice encoded 0 end) 0 0))
+                               (range (bytes/count encoded))))
+              (:value (resp/parse-at encoded 0 0))]))
+   :expected [true ["λ🙂" "tail"]]}
+  {:name "wire provenance preserves simple string encoding and canonicalization is idempotent"
+   :test (fn []
+           (let [wire (str/encode-utf8 "+OK\r\n")
+                 frame (resp/parse-at wire 0 0)
+                 canonical (resp/encode (:value frame))]
+             [(str/decode-utf8 (:wire frame))
+              (str/decode-utf8 canonical)
+              (= (str/decode-utf8 canonical)
+                 (str/decode-utf8 (resp/encode (:value (resp/parse-at canonical 0 0)))))]))
+   :expected ["+OK\r\n" "$2\r\nOK\r\n" true]}
+  {:name "invalid framing and length are rejected"
+   :test (fn []
+           (mapv (fn [source]
+                   (try (resp/parse-at (str/encode-utf8 source) 0 0) :unexpected
+                     (catch error :rejected)))
+                 ["$-2\r\n" "$1\r\nx!!" "?bad\r\n" "$not-a-number\r\n"]))
+   :expected [:rejected :rejected :rejected :rejected]}])
+
+^{:refer code.test.resp/append-bytes}
+(Test/check
+ [{:name "concatenating fragments reconstructs exact UTF-8 bytes"
+   :test (fn []
+           (let [encoded (str/encode-utf8 "λ🙂")]
+             (str/decode-utf8 (resp/append-bytes (bytes/slice encoded 0 3)
+                                                (bytes/slice encoded 3)))))
+   :expected "λ🙂"}])
+
+^{:refer code.test.resp/receive}
+(Test/check
+ [{:name "fragmented and concatenated responses consume only their own bytes"
+   :test (fn []
+           (let [wire (resp/append-bytes (resp/encode ["λ🙂"]) (resp/encode 42))
+                 chunks [(bytes/slice wire 0 10) (bytes/slice wire 10)]
+                 index (atom -1)
+                 stream (Stream/create (fn [] (Promise/from (get chunks (swap! index inc)))))
+                 buffer (atom (Bytes/new))
+                 deadline (+ (time-ms) 1000)]
+             [(resp/receive stream buffer deadline)
+              (resp/receive stream buffer deadline)
+              (bytes/count (deref buffer))
+              (deref index)]))
+   :expected [["λ🙂"] 42 0 1]}
+  {:name "EOF and an expired deadline cannot pass as an empty response"
+   :test (fn []
+           (let [stream (Stream/create (fn [] (Promise/from nil)))]
+             [(try (resp/receive stream (atom (Bytes/new)) (+ (time-ms) 1000)) :unexpected
+                (catch error :eof))
+              (try (resp/receive stream (atom (Bytes/new)) 0) :unexpected
+                (catch error :timeout))]))
+   :expected [:eof :timeout]}])

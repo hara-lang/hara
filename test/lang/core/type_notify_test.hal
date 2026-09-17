@@ -1,0 +1,397 @@
+(ns lang.core.type-notify-test (:require [lang.core.type-notify :as notify]) (:use code.test))
+(def +server+ {:sinks (atom {}) :oneshots (atom #{})})
+(fact:global {:setup [(reset! (:sinks +server+) {}) (reset! (:oneshots +server+) #{}) (reset! notify/*notify-capture* [])] :teardown [(reset! (:sinks +server+) {}) (reset! (:oneshots +server+) #{}) (reset! notify/*notify-capture* [])]})
+^{:refer lang.core.type-notify/has-sink?, :added "4.0", :setup [(notify/get-sink +server+ "abc")]}
+(fact
+  "checks that sink exists"
+  (do
+    (notify/get-sink +server+ "abc")
+    (notify/has-sink? +server+ "abc"))
+  =>
+  true
+  (notify/has-sink? +server+ "def")
+  =>
+  false)
+
+^{:refer lang.core.type-notify/get-sink, :added "4.0", :setup [(notify/clear-sink +server+ "abc")]}
+(fact
+  "gets a sink from the notification app server"
+  (do
+    (notify/clear-sink +server+ "abc")
+    (notify/get-sink +server+ "abc"))
+  =>
+  (satisfies atom?))
+
+^{:refer lang.core.type-notify/clear-sink, :added "4.0", :setup [(notify/get-sink +server+ "abc")]}
+(fact
+  "clears a sink"
+  (do
+    (notify/get-sink +server+ "abc")
+    (notify/clear-sink +server+ "abc"))
+  =>
+  (satisfies atom?))
+
+^{:refer lang.core.type-notify/add-listener :added "4.0"}
+(fact "adds a listener to the sink"
+  (let [out (atom nil)]
+    (notify/add-listener +server+ "abc" :key (fn [v] (reset! out v)))
+    (reset! (notify/get-sink +server+ "abc") {:a 1})
+    @out)
+  => {:a 1})
+
+^{:refer lang.core.type-notify/remove-listener :added "4.0"}
+(fact "removes a listener from the sink"
+  (let [out (atom nil)]
+    (notify/add-listener +server+ "abc" :key (fn [v] (reset! out v)))
+    (notify/remove-listener +server+ "abc" :key)
+    (reset! (notify/get-sink +server+ "abc") {:a 2})
+    @out)
+  => nil)
+
+^{:refer lang.core.type-notify/get-oneshot-id, :added "4.0"}
+(fact
+  "registers a oneshot id for the app server"
+  (notify/get-oneshot-id +server+)
+  =>
+  (satisfies #"oneshot"))
+
+^{:refer lang.core.type-notify/remove-oneshot-id, :added "4.0"}
+(fact
+  "removes a oneshot id"
+  (->>
+    (notify/get-oneshot-id +server+)
+    (notify/remove-oneshot-id +server+))
+  =>
+  (satisfies string?))
+
+^{:refer lang.core.type-notify/clear-oneshot-sinks, :added "4.0", :setup [(notify/clear-oneshot-sinks +server+)]}
+(fact
+  "clear all registered oneshot sinks"
+  (do
+    (notify/clear-oneshot-sinks +server+)
+    (do
+      (dotimes [i 10] (notify/get-oneshot-id +server+))
+      (count (notify/clear-oneshot-sinks +server+))))
+  =>
+  10)
+
+^{:refer lang.core.type-notify/process-capture :added "4.0"}
+(fact "processes `capture` id option"
+  (notify/process-capture {:a 1})
+  (last @notify/*notify-capture*)
+  => {:a 1})
+
+^{:refer lang.core.type-notify/has-sink? :id native-sink-presence}
+(fact "presence depends on registry membership rather than the sink value"
+ (let [app {:sinks (atom {"nil" (atom nil) "false" (atom false)})}]
+  [(notify/has-sink? app "nil") (notify/has-sink? app "false") (notify/has-sink? app "absent")])
+ => [true true false])
+
+^{:refer lang.core.type-notify/get-sink :id native-sink-identity}
+(fact "repeated lookup shares the same sink and retains its content"
+ (let [app {:sinks (atom {})}
+       first-sink (notify/get-sink app "a")
+       second-sink (notify/get-sink app "a")]
+  (reset! first-sink {"value" 42})
+  [@second-sink (count @(:sinks app)) @(get @(:sinks app) "a")])
+ => [{"value" 42} 1 {"value" 42}])
+
+^{:refer lang.core.type-notify/clear-sink :id native-sink-clear-recreate}
+(fact "clearing is idempotent and recreating a sink does not revive the detached value"
+ (let [app {:sinks (atom {})}
+       old (notify/get-sink app "a")]
+  (reset! old {"value" 7})
+  (let [removed (notify/clear-sink app "a")
+        again (notify/clear-sink app "a")
+        new (notify/get-sink app "a")]
+   (reset! old {"value" 9})
+   [@removed again @new (notify/has-sink? app "a")]))
+ => [{"value" 9} nil nil true])
+
+^{:refer lang.core.type-notify/add-listener :id native-listener-replace}
+(fact "listener keys replace callbacks and normalize message keys without changing values"
+ (let [app {:sinks (atom {})} events (atom [])]
+  (try
+   (notify/add-listener app "a" :watch (fn [value] (swap! events conj [:old value])))
+   (notify/add-listener app "a" :watch (fn [value] (swap! events conj [:new value])))
+   (reset! (notify/get-sink app "a") {"id" "a" "value" false})
+   @events
+   (finally (notify/remove-listener app "a" :watch))))
+ => [[:new {:id "a" :value false}]])
+
+^{:refer lang.core.type-notify/remove-listener :id native-listener-remove-isolated}
+(fact "removing a missing listener still creates its sink and leaves other listeners active"
+ (let [app {:sinks (atom {})} events (atom [])]
+  (try
+   (notify/remove-listener app "a" :absent)
+   (notify/add-listener app "a" :keep (fn [value] (swap! events conj value)))
+   (notify/add-listener app "a" :remove (fn [_] (swap! events conj :unexpected)))
+   (notify/remove-listener app "a" :remove)
+   (notify/remove-listener app "a" :remove)
+   (reset! (notify/get-sink app "a") {"value" 3})
+   [(notify/has-sink? app "a") @events (count (vec (watch-list (notify/get-sink app "a"))))]
+   (finally
+    (notify/remove-listener app "a" :keep)
+    (notify/remove-listener app "a" :remove))))
+ => [true [{:value 3}] 1])
+
+^{:refer lang.core.type-notify/process-capture :id native-capture-order}
+(fact "capture appends complete messages in order within the dynamically selected buffer"
+ (binding [notify/*notify-capture* (atom [])]
+  [(notify/process-capture {"id" "capture" "value" false})
+   (notify/process-capture {"id" "capture" "value" nil})
+   @notify/*notify-capture*])
+ => [[{"id" "capture" "value" false}]
+     [{"id" "capture" "value" false} {"id" "capture" "value" nil}]
+     [{"id" "capture" "value" false} {"id" "capture" "value" nil}]])
+
+^{:refer lang.core.type-notify/*notify-capture* :id native-capture-binding}
+(fact "nested capture buffers restore the outer buffer without losing its messages"
+ (binding [notify/*notify-capture* (atom [{:outer 1}])]
+  (let [inner (binding [notify/*notify-capture* (atom [])]
+                (notify/process-capture {:inner 2})
+                @notify/*notify-capture*)]
+   [inner @notify/*notify-capture*]))
+ => [[{:inner 2}] [{:outer 1}]])
+
+^{:refer lang.core.type-notify/get-oneshot-id :id native-oneshot-registration}
+(fact "registers distinct short IDs without allocating notification sinks"
+ (let [app {:oneshots (atom #{}) :sinks (atom {})}
+       ids (mapv (fn [_] (notify/get-oneshot-id app)) (range 32))]
+  (try
+   [(count (set ids))
+    (= (set ids) @(:oneshots app))
+    (every? (fn [id] (boolean (re-find #"^oneshot/[0-9a-z]{12,13}$" id))) ids)
+    @(:sinks app)]
+   (finally (reset! (:oneshots app) #{}))))
+ => [32 true true {}])
+
+^{:refer lang.core.type-notify/remove-oneshot-id :id native-oneshot-removal}
+(fact "removes only the registered ID and returns nil on repeated removal"
+ (let [sink (atom {"value" 1})
+       app {:oneshots (atom #{"oneshot/a" "oneshot/b"})
+            :sinks (atom {"oneshot/a" sink})}]
+  (try
+   [(notify/remove-oneshot-id app "oneshot/a")
+    (notify/remove-oneshot-id app "oneshot/a")
+    @(:oneshots app)
+    @(get @(:sinks app) "oneshot/a")]
+   (finally
+    (reset! (:oneshots app) #{})
+    (reset! (:sinks app) {}))))
+ => ["oneshot/a" nil #{"oneshot/b"} {"value" 1}])
+
+^{:refer lang.core.type-notify/clear-oneshot-sinks :id native-oneshot-clear}
+(fact "clears registered one-shot sinks while retaining persistent and unregistered sinks"
+ (let [app {:oneshots (atom #{"oneshot/a" "oneshot/absent"})
+            :sinks (atom {"oneshot/a" (atom 1)
+                          "persistent" (atom 2)
+                          "oneshot/unregistered" (atom 3)})}]
+  (try
+   [(notify/clear-oneshot-sinks app)
+    (notify/clear-oneshot-sinks app)
+    @(:oneshots app)
+    (set (keys @(:sinks app)))]
+   (finally
+    (reset! (:oneshots app) #{})
+    (reset! (:sinks app) {}))))
+ => [#{"oneshot/a" "oneshot/absent"} #{} #{} #{"persistent" "oneshot/unregistered"}])
+
+^{:refer lang.core.type-notify/watch-oneshot, :id historical-watch-oneshot}
+(fact
+  "returns a completable future"
+  (let [pair (notify/watch-oneshot +server+ 10)]
+    (try
+      pair
+      (finally
+        (try
+          (IDerefTimeout/deref-timeout
+            (second pair)
+            500
+            :migration/deadline-failed)
+          (finally (promise/cancel (second pair)))))))
+  =>
+  (contains [(satisfies string?) (satisfies promise?)]))
+
+^{:refer lang.core.type-notify/watch-oneshot, :id native-watch-first-message}
+(fact "returns the first message and removes its sink registration and keyed watch" (let [app {:sinks (atom {}), :oneshots (atom #{})} [id pending] (notify/watch-oneshot app nil) sink (notify/get-sink app id)] (try (reset! sink {"value" 42}) (reset! sink {"value" 99}) [(IDerefTimeout/deref-timeout pending 500 :migration/deadline-failed) (std.foundation/deref (:sinks app)) (std.foundation/deref (:oneshots app)) (vec (watch-list sink))] (finally (promise/cancel pending) (reset! (:sinks app) {}) (reset! (:oneshots app) #{})))) => [{"value" 42} {} #{} []])
+
+^{:refer lang.core.type-notify/watch-oneshot, :id native-watch-false-nil}
+(fact "false and nil are messages rather than missing completion signals" (mapv (fn [value] (let [app {:sinks (atom {}), :oneshots (atom #{})} [id pending] (notify/watch-oneshot app nil "provided")] (try (reset! (notify/get-sink app id) value) [id (IDerefTimeout/deref-timeout pending 500 :migration/deadline-failed) (promise/state pending) (std.foundation/deref (:sinks app)) (std.foundation/deref (:oneshots app))] (finally (promise/cancel pending) (reset! (:sinks app) {}) (reset! (:oneshots app) #{}))))) [false nil]) => [["provided" false :fulfilled {} #{}] ["provided" nil :fulfilled {} #{}]])
+
+^{:refer lang.core.type-notify/watch-oneshot :id native-watch-timeout}
+(fact "timeout resolves nil and completes the same cleanup as message delivery"
+ (let [app {:sinks (atom {}) :oneshots (atom #{})}
+       [id pending] (notify/watch-oneshot app 5)
+       sink (notify/get-sink app id)]
+  (try
+   [(IDerefTimeout/deref-timeout pending 500 :deadline-failed)
+    (promise/state pending) @(:sinks app) @(:oneshots app) (vec (watch-list sink))]
+   (finally (promise/cancel pending) (reset! (:sinks app) {}) (reset! (:oneshots app) #{}))))
+ => [nil :fulfilled {} #{} []])
+
+^{:refer lang.core.type-notify/watch-oneshot, :id native-watch-immediate-timeout}
+(fact "zero and negative deadlines do not leave a watch installed after completion" (mapv (fn [timeout] (let [app {:sinks (atom {}), :oneshots (atom #{})} [id pending] (notify/watch-oneshot app timeout)] (try [(IDerefTimeout/deref-timeout pending 500 :migration/deadline-failed) (std.foundation/deref (:sinks app)) (std.foundation/deref (:oneshots app))] (finally (promise/cancel pending) (reset! (:sinks app) {}) (reset! (:oneshots app) #{}))))) [0 -1]) => [[nil {} #{}] [nil {} #{}]])
+
+^{:refer lang.core.type-notify/watch-oneshot, :id native-watch-cancel}
+(fact
+  "cancellation tears down the watch idempotently without waiting for a message"
+  (let [app {:sinks (atom {}), :oneshots (atom #{})}
+        [id pending] (notify/watch-oneshot app nil)
+        sink (notify/get-sink app id)]
+    (try
+      [(do (promise/cancel pending) (promise/state pending))
+       (do (promise/cancel pending) (promise/state pending))
+       (std.foundation/deref (:sinks app))
+       (std.foundation/deref (:oneshots app))
+       (vec (watch-list sink))]
+      (finally
+        (promise/cancel pending)
+        (reset! (:sinks app) {})
+        (reset! (:oneshots app) #{}))))
+  =>
+  [:cancelled :cancelled {} #{} []])
+
+^{:refer lang.core.type-notify/watch-oneshot :id native-watch-invalid-timeout}
+(fact "failure while installing the deadline restores the registry baseline"
+ (let [app {:sinks (atom {}) :oneshots (atom #{})}]
+  (try
+   [(try (notify/watch-oneshot app "invalid") :unexpected
+      (catch error :invalid-timeout))
+    @(:sinks app) @(:oneshots app)]
+   (finally (reset! (:sinks app) {}) (reset! (:oneshots app) #{}))))
+ => [:invalid-timeout {} #{}])
+
+^{:refer lang.core.type-notify/watch-oneshot, :id native-watch-no-late-cleanup}
+(fact "a settled watch cannot erase a subsequently recreated sink when its old deadline passes" (let [app {:sinks (atom {}), :oneshots (atom #{})} [id pending] (notify/watch-oneshot app 10 "provided")] (try (reset! (notify/get-sink app id) {"value" 1}) (let [result (IDerefTimeout/deref-timeout pending 500 :migration/deadline-failed) replacement (notify/get-sink app id)] (reset! replacement {"value" 2}) (std.foundation/deref (Promise/delay 20 (fn [] nil))) [result (std.foundation/deref (get (std.foundation/deref (:sinks app)) id))]) (finally (promise/cancel pending) (reset! (:sinks app) {}) (reset! (:oneshots app) #{})))) => [{"value" 1} {"value" 2}])
+
+
+^{:refer lang.core.type-notify/process-print :added "4.0"}
+(fact "processes `print` id option"
+  (Printer/capture (fn [] (notify/process-print {"value" "hello" "key" ["type" {"data" "world"}]})))
+  => (satisfies (fn [s] (str/includes? s "world"))))
+
+^{:refer lang.core.type-notify/process-print :id :original-line-format}
+(fact "retains Foundation line numbering and newline boundaries"
+  (mapv (fn [value] (Printer/capture (fn [] (notify/process-print {"value" value "key" ["type" {}]}))))
+        ["" "\n" "a\n\n" "a\r\nb" nil false 42 [1 2] {"a" 1}])
+  => ["\n\n 01  \n" "\n\n\n" "\n\n 01  a\n" "\n\n 01  a\n 02  b\n"
+      "\n\nnil\n" "\n\nfalse\n" "\n\n42\n" "\n\n[1 2]\n" "\n\n{\"a\" 1}\n"])
+
+^{:refer lang.core.type-notify/process-print :id :header-branches}
+(fact "retains optional source location and data fields"
+  (mapv (fn [context] (Printer/capture (fn [] (notify/process-print {"value" "x" "key" ["type" context]}))))
+        [{"namespace" "demo" "id" "f" "line" 7 "column" 3 "data" "tag"}
+         {"namespace" "demo" "line" 0}
+         {"column" 2}
+         {"id" "f" "data" false}])
+  => ["\ndemo/f (7:3) tag\n 01  x\n" "\ndemo (0:)\n 01  x\n"
+      "\n (:2)\n 01  x\n" "\n/f\n 01  x\n"])
+
+^{:refer lang.core.type-notify/process-print :id :wide-line-numbers}
+(fact "line numbers expand beyond two digits"
+  (let [output (Printer/capture (fn [] (notify/process-print {"value" (str/join "\n" (repeat 100 "x"))})))]
+    [(str/starts-with? output "\n\n 01  x\n")
+     (str/ends-with? output "\n 99  x\n 100  x\n")])
+  => [true true])
+
+
+^{:refer lang.core.type-notify/process-message, :added "4.0"}
+(fact
+  "processes a message recieved by the notification server"
+  (let [app {:sinks (atom {}), :oneshots (atom #{})} out (atom nil)]
+    (try
+      (notify/add-listener app "msg" :key (fn [v] (reset! out v)))
+      (notify/process-message
+        app
+        (Json/write {"id" "msg", "data" "hello"}))
+      (notify/process-message
+        app
+        (Json/write {"id" "msg", "data" "hello"}))
+      (deref out)
+      (finally (reset! (:sinks app) {}) (reset! (:oneshots app) #{}))))
+  =>
+  (contains {:data "hello"}))
+^{:refer lang.core.type-notify/process-message :id :message-special-routes}
+(fact "print and capture do not create notification sinks"
+  (let [app {:sinks (atom {}) :oneshots (atom #{})}]
+    (binding [notify/*notify-capture* (atom [])]
+      (try
+        (let [printed (Printer/capture (fn [] (notify/process-message app "{\"id\":\"print\",\"value\":\"hello\"}")))
+              captured (notify/process-message app "{\"id\":\"capture\",\"value\":false}")]
+          [printed captured (deref notify/*notify-capture*) (deref (:sinks app))])
+        (finally (reset! (:sinks app) {}) (reset! (:oneshots app) #{})
+                 (reset! notify/*notify-capture* [])))))
+  => ["\n\n 01  hello\n" [{"id" "capture" "value" false}] [{"id" "capture" "value" false}] {}])
+^{:refer lang.core.type-notify/process-message :id :message-ignored-ids}
+(fact "missing false and expired oneshot IDs do not allocate sinks"
+  (let [app {:sinks (atom {}) :oneshots (atom #{})}]
+    (try
+      [(mapv (fn [input] (notify/process-message app input))
+             ["{}" "{\"id\":null}" "{\"id\":false}" "{\"id\":\"oneshot/expired\"}"])
+       (deref (:sinks app))]
+      (finally (reset! (:sinks app) {}) (reset! (:oneshots app) #{}))))
+  => [[nil nil nil nil] {}])
+^{:refer lang.core.type-notify/process-message :id :message-persistent-values}
+(fact "persistent sinks retain decoded string keys and update on repeated delivery"
+  (let [app {:sinks (atom {}) :oneshots (atom #{})}]
+    (try
+      (let [first-value (notify/process-message app "{\"id\":\"events\",\"value\":false}")
+            second-value (notify/process-message app "{\"id\":\"events\",\"value\":null}")]
+        [first-value second-value (deref (notify/get-sink app "events"))])
+      (finally (reset! (:sinks app) {}) (reset! (:oneshots app) #{}))))
+  => [{"id" "events" "value" false} {"id" "events" "value" nil} {"id" "events" "value" nil}])
+^{:refer lang.core.type-notify/process-message :id :message-oneshot-lifecycle}
+(fact "oneshot delivery settles the waiting Promise and late messages cannot recreate its sink"
+  (let [app {:sinks (atom {}) :oneshots (atom #{})}
+        id (notify/get-oneshot-id app)
+        pair (notify/watch-oneshot app 500 id)
+        pending (second pair)]
+    (try
+      (let [message {"id" id "value" 7}
+            result (notify/process-message app (Json/write message))
+            delivered (IDerefTimeout/deref-timeout pending 500 :delivery-timeout)
+            late (notify/process-message app (Json/write message))]
+        [(= message result) (= message delivered) late (deref (:sinks app)) (deref (:oneshots app))])
+      (finally (promise/cancel pending) (reset! (:sinks app) {}) (reset! (:oneshots app) #{}))))
+  => [true true nil {} #{}])
+
+
+^{:refer lang.core.type-notify/start-notify-socket :added "4.0"}
+(fact "starts socket server"
+ (let [app {:socket-port 0 :socket-instance (atom nil) :sinks (atom {}) :oneshots (atom #{})}]
+  (try (notify/start-notify-socket app) (deref (:socket-instance app))
+       (finally (notify/stop-notify-socket app))))
+ => (satisfies map?))
+^{:refer lang.core.type-notify/stop-notify-socket :added "4.0"}
+(fact "stops socket server"
+ (let [app {:socket-port 0 :socket-instance (atom nil) :sinks (atom {}) :oneshots (atom #{})}]
+  (try (notify/start-notify-socket app) (notify/stop-notify-socket app) (deref (:socket-instance app))
+       (finally (notify/stop-notify-socket app))))
+ => nil)
+^{:refer lang.core.type-notify/start-notify-socket, :id :tcp-failed-bind}
+(fact
+  "failed bind leaves the app unstarted and does not close the existing listener"
+  (let [occupied (Socket/listen "0.0.0.0" 0 {} (fn [_] nil))
+        port (:port (Socket/endpoint occupied))
+        app {:socket-port port,
+             :socket-instance (atom nil),
+             :sinks (atom {}),
+             :oneshots (atom #{})}]
+    (try
+      [(try
+         (notify/start-notify-socket app)
+         :unexpected-start
+         (catch error :rejected))
+       (deref (:socket-instance app))
+       (= port (:port (Socket/endpoint occupied)))]
+      (finally
+        (notify/stop-notify-socket app)
+        (Socket/close occupied))))
+  =>
+  [:rejected nil true])
+^{:refer lang.core.type-notify/handle-notify-socket, :id :tcp-split-utf8} (fact "split UTF-8 is accumulated as bytes and dispatched only after EOF" (let [app {:socket-port 0, :socket-instance (atom nil), :sinks (atom {}), :oneshots (atom #{})} clients (atom []) closed (atom false) pending-holder (atom nil)] (try (notify/start-notify-socket app) (let [instance (deref (:socket-instance app)) pending (second (notify/watch-oneshot app nil "oneshot/unicode")) _ (reset! pending-holder pending) client (Socket/connect "127.0.0.1" (:port (Socket/endpoint (:server instance))) {} (fn [_ _] nil)) _ (swap! clients conj client) prefix "{\"id\":\"oneshot/unicode\",\"value\":\"" payload (String/encode-utf8 (str prefix "λ🙂\"}")) split (inc (Bytes/count (String/encode-utf8 prefix)))] (Socket/send client (Bytes/slice payload 0 split)) (IDerefTimeout/deref-timeout (Promise/delay 20 (fn [] nil)) 500 :timer-timeout) (let [partial (deref (notify/get-sink app "oneshot/unicode"))] (Socket/send client (Bytes/slice payload split)) (IDerefTimeout/deref-timeout (Promise/delay 20 (fn [] nil)) 500 :timer-timeout) (let [before-eof (deref (notify/get-sink app "oneshot/unicode"))] (if (cas! closed false true) (Socket/close client)) [partial before-eof (get (IDerefTimeout/deref-timeout pending 500 {"value" :timeout}) "value") (count (deref (:tasks instance)))]))) (finally (if (deref pending-holder) (promise/cancel (deref pending-holder))) (doseq [client (deref clients)] (if (cas! closed false true) (Socket/close client))) (notify/stop-notify-socket app) (reset! (:sinks app) {}) (reset! (:oneshots app) #{})))) => [nil nil "λ🙂" 0])
+^{:refer lang.core.type-notify/handle-notify-socket, :id :tcp-malformed} (fact "malformed JSON rejects the handler and removes its task without allocating a sink" (let [app {:socket-port 0, :socket-instance (atom nil), :sinks (atom {}), :oneshots (atom #{})} clients (atom []) closed (atom false)] (try (notify/start-notify-socket app) (let [instance (deref (:socket-instance app)) client (Socket/connect "127.0.0.1" (:port (Socket/endpoint (:server instance))) {} (fn [_ _] nil)) _ (swap! clients conj client)] (Socket/send client (String/encode-utf8 "{")) (IDerefTimeout/deref-timeout (Promise/delay 20 (fn [] nil)) 500 :timer-timeout) (let [pending (first (vals (deref (:tasks instance))))] (if (cas! closed false true) (Socket/close client)) [(if pending (try (IDerefTimeout/deref-timeout pending 500 :timeout) (catch error :invalid-json)) :missing-handler) (count (deref (:tasks instance))) (deref (:sinks app))])) (finally (doseq [client (deref clients)] (if (cas! closed false true) (Socket/close client))) (notify/stop-notify-socket app) (reset! (:sinks app) {}) (reset! (:oneshots app) #{})))) => [:invalid-json 0 {}])
+^{:refer lang.core.type-notify/start-notify-socket, :id :tcp-successive-delivery} (fact "server delivers two separate connections while waiting only on notification Promises" (let [app {:socket-port 0, :socket-instance (atom nil), :sinks (atom {}), :oneshots (atom #{})}] (try (notify/start-notify-socket app) (let [instance (deref (:socket-instance app)) same (= (:server instance) (:server (deref (:socket-instance (notify/start-notify-socket app))))) values (mapv (fn [value] (let [id (notify/get-oneshot-id app) pending (second (notify/watch-oneshot app nil id)) client (Socket/connect "127.0.0.1" (:port (Socket/endpoint (:server instance))) {} (fn [_ _] nil)) closed (atom false) close-client (fn [] (if (cas! closed false true) (Socket/close client)))] (try (Socket/send client (String/encode-utf8 (Json/write {"id" id, "value" value}))) (close-client) (get (IDerefTimeout/deref-timeout pending 500 {"value" :timeout}) "value") (finally (promise/cancel pending) (close-client))))) ["first" "second"])] (notify/stop-notify-socket app) (notify/stop-notify-socket app) [same values (deref (:socket-instance app)) (deref (:tasks instance)) (deref (:errors instance))]) (finally (notify/stop-notify-socket app) (reset! (:sinks app) {}) (reset! (:oneshots app) #{})))) => [true ["first" "second"] nil {} []])
+^{:refer lang.core.type-notify/stop-notify-socket, :id :tcp-active-cancel} (fact "stopping an active connection cancels its read and closes the peer" (let [app {:socket-port 0, :socket-instance (atom nil), :sinks (atom {}), :oneshots (atom #{})} clients (atom [])] (try (notify/start-notify-socket app) (let [instance (deref (:socket-instance app)) client (Socket/connect "127.0.0.1" (:port (Socket/endpoint (:server instance))) {} (fn [_ _] nil)) _ (swap! clients conj client) incoming (Socket/receive-stream client)] (Socket/send client (String/encode-utf8 "{\"id\":")) (IDerefTimeout/deref-timeout (Promise/delay 20 (fn [] nil)) 500 :timer-timeout) (let [tasks (vals (deref (:tasks instance))) count-before (count tasks)] (notify/stop-notify-socket app) (notify/stop-notify-socket app) [count-before (mapv promise/state tasks) (deref (:tasks instance)) (IDerefTimeout/deref-timeout (IStream/next incoming) 500 :peer-still-open) (deref (:sinks app)) (deref (:socket-instance app))])) (finally (notify/stop-notify-socket app) (doseq [client (deref clients)] (Socket/close client)) (reset! (:sinks app) {}) (reset! (:oneshots app) #{})))) => [1 [:cancelled] {} nil {} nil])
+^{:refer lang.core.type-notify/stop-notify-socket, :id :tcp-immediate-restart} (fact "stopped listener can immediately restart on the same port" (let [app {:socket-port 0, :socket-instance (atom nil), :sinks (atom {}), :oneshots (atom #{})} replacement (atom nil)] (try (notify/start-notify-socket app) (let [port (:port (Socket/endpoint (:server (deref (:socket-instance app))))) next-app (assoc app :socket-port port)] (notify/stop-notify-socket app) (notify/start-notify-socket next-app) (reset! replacement next-app) (= port (:port (Socket/endpoint (:server (deref (:socket-instance next-app))))))) (finally (if (deref replacement) (notify/stop-notify-socket (deref replacement))) (notify/stop-notify-socket app)))) => true)

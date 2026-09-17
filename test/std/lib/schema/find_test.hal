@@ -1,0 +1,75 @@
+(ns std.lib.schema.find-test
+  (:require [std.lib.schema.find :refer :all])
+  (:use code.test))
+
+^{:refer std.lib.schema.find/all-attrs :added "3.0"}
+(fact "finds all attributes satisfying `f` in a schema"
+
+  (all-attrs
+   {:account/number [{:ident   :account/number
+                      :type    :long}]
+    :account/date   [{:ident   :account/date
+                      :type    :instant}]}
+   (fn [attr] (= (:type attr) :long)))
+  => {:account/number [{:type :long, :ident :account/number}]})
+
+^{:refer std.lib.schema.find/all-idents :added "3.0"}
+(fact "finds all idents satisfying `f` in a schema"
+
+  (all-idents
+   {:account/number [{:ident   :account/number
+                      :type    :long}]
+    :account/date   [{:ident   :account/date
+                      :type    :instant}]}
+   (fn [attr] (= (:type attr) :long)))
+  => [:account/number])
+
+^{:refer std.lib.schema.find/is-reverse-ref? :added "3.0"}
+(fact "predicate for reverse ref"
+
+  (is-reverse-ref? {:ident  :email/accounts
+                    :type   :ref
+                    :ref    {:type :reverse}})
+  => true)
+
+(ns std.lib.schema.find-test
+  (:require [std.lib.schema.find :refer :all])
+  (:use code.test))
+
+^{:refer std.lib.schema.find/all-attrs :id :attribute-preservation}
+(fact "filtering preserves complete matching entries and the original schema"
+  (let [schema {:keep [{:type :long :required true} :annotation]
+                :drop [{:type :string} :other]}]
+    [(all-attrs schema (fn [attrs] (= :long (:type attrs))))
+     (all-attrs schema (constantly false))
+     schema])
+  => [{:keep [{:type :long :required true} :annotation]} {}
+      {:keep [{:type :long :required true} :annotation]
+       :drop [{:type :string} :other]}])
+
+^{:refer std.lib.schema.find/all-attrs :id :empty-attribute-inputs}
+(fact "empty schemas and empty attribute vectors preserve the original predicate inputs"
+  [(all-attrs {} (constantly true))
+   (all-attrs nil (constantly true))
+   (all-attrs {:empty [] :nil [nil] :value [{}]} nil?)]
+  => [{} {} {:empty [] :nil [nil]}])
+
+^{:refer std.lib.schema.find/all-idents :id :identifier-selection}
+(fact "identifiers are schema keys, not the attribute's ident value"
+  [(set (all-idents {:first [{:ident :different :type :ref}]
+                     :second [{:ident :other :type :ref}]
+                     :skip [{:type :long}]}
+                    (fn [attrs] (= :ref (:type attrs)))))
+   (all-idents {} (constantly true))
+   (all-idents {:skip [{:type :long}]} (constantly false))]
+  => [#{:first :second} nil nil])
+
+^{:refer std.lib.schema.find/is-reverse-ref? :id :reverse-reference-boundaries}
+(fact "only reference attributes explicitly marked reverse match"
+  [(is-reverse-ref? {:type :ref :ref {:type :reverse}})
+   (is-reverse-ref? {:type :ref :ref {:type :forward}})
+   (is-reverse-ref? {:type :long :ref {:type :reverse}})
+   (is-reverse-ref? {:type :ref})
+   (is-reverse-ref? {})
+   (is-reverse-ref? nil)]
+  => [true false false false false false])

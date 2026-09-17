@@ -1,0 +1,56 @@
+(ns code.test.interactive-runner
+  (:config {:role :internal})
+  (:require [code.project :as project]
+            [code.test.interactive :as interactive]
+            [code.test.interactive-transport :as transport]
+            [code.test.report :as report]))
+
+(defn native-only?
+  "Primitive Test/check and Test/register files remain unit-only. A top-level
+   code.test fact makes a mixed file interactive too; this choice is reported."
+  [source]
+  (let [heads (keep (fn [node] (let [form (:form node)]
+                                (when (and (list? form) (symbol? (first form)))
+                                  (first form))))
+                    (read-forms-spanned source))]
+    (and (boolean (some (fn [head] (has? #{'Test/check 'Test/register
+                                           'std.native.Test/check 'std.native.Test/register} head)) heads))
+         (not (some (fn [head] (or (= "fact" (name head))
+                                   (str/starts-with? (name head) "fact:"))) heads)))))
+
+(defn run-selected
+  "Runs every selected non-primitive file through cold and warm owned RESP passes.
+   Persists each completed response before continuing, including failures."
+  [files options]
+  (let [root (:root options)
+        records (atom [])
+        report-options {:report/name (or (:report/name options) "interactive.edn")}
+        persist (fn [summary]
+                  (report/write (or (:report/root options) root) report-options
+                    {:report/type :code.test/interactive :report/version 1
+                     :status (:status summary) :results summary :records (deref records)}))
+        results (mapv
+                  (fn [file]
+                    (try
+                     (let [source (project/read-text file)]
+                      (if (native-only? source)
+                        {:file file :status :native-only :reason :primitive-test-api}
+                          (interactive/run-file (interactive/source-plan file source)
+                            (fn [] (transport/open
+                              {:command [(:executable options) "headless" "--project" root]
+                               :cwd root :env (or (:env options) {})
+                               :timeout (or (:timeout options) 180000)}))
+                            (fn [record]
+                              (swap! records conj record)
+                              (persist {:status :running})
+                              (println (select-keys record [:file :index :pass :status :error]))))))
+                          (catch error
+                            {:file file :status :failed :error (str error)})))
+                  files)
+        summary {:status (if (and (seq files)
+                                  (every? (fn [result] (has? #{:passed :native-only} (:status result))) results))
+                           :passed :failed)
+                 :files results
+                 :interactive (count (filter (fn [result] (not= :native-only (:status result))) results))
+                 :native-only (count (filter (fn [result] (= :native-only (:status result))) results))}]
+    (assoc summary :report/path (persist summary))))

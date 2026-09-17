@@ -1,7 +1,8 @@
 (ns postgres.core.graph-insert
   (:require [postgres.core.graph-walk :as walk]
             [postgres.core.impl-base :as base]
-            [postgres.core.impl-insert :as insert]))
+            [postgres.core.impl-insert :as insert]
+            [lang.base.preprocess-base :as preprocess]))
 
 (declare annotate-value)
 
@@ -122,9 +123,15 @@
 (defn table-entry
   [table options schema]
   (or (get-in options [:entries table])
-      {:id (symbol (name table))
-       :module (or (:module options) 'postgres)
-       :table-schema schema}))
+      (let [module (get options :module)
+            module-id (if (or (symbol? module)
+                              (keyword? module)
+                              (string? module))
+                        module
+                        (get module :id))]
+        {:id (symbol (name table))
+         :module (or module-id module 'postgres)
+         :table-schema schema})))
 
 (defn declaration-data
   [data params options lookup symbols]
@@ -209,7 +216,7 @@
 
 (defn insert-fn
   [spec data params]
-  (let [prepared (base/prep-table spec true {})
+  (let [prepared (base/prep-table spec true (preprocess/macro-opts))
         entry (first prepared)
         options (nth prepared 2)
         prepared (if (:schema entry)
